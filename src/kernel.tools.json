@@ -1,0 +1,37 @@
+{
+  "tools": [
+    {
+      "name": "SPAWN",
+      "description": "Start a long-running process. Returns its PID. Stdout is auto-piped to you. Use for daemons and gateways.",
+      "params": {
+        "command": { "type": "string", "description": "Command to execute" }
+      },
+      "required": ["command"]
+    },
+    {
+      "name": "EXEC",
+      "description": "Run a command synchronously and return its stdout. Use for one-shot commands (reading files, listing directories, etc).",
+      "params": {
+        "command": { "type": "string", "description": "Command to execute" }
+      },
+      "required": ["command"]
+    },
+    {
+      "name": "KILL",
+      "description": "Stop a running process by PID.",
+      "params": {
+        "pid": { "type": "integer", "description": "Process ID to kill" }
+      },
+      "required": ["pid"]
+    },
+    {
+      "name": "SEND",
+      "description": "Send a text message to a process stdin. Use to reply to gateway.",
+      "params": {
+        "pid": { "type": "integer", "description": "Target process ID" },
+        "text": { "type": "string", "description": "Text to send" }
+      },
+      "required": ["pid", "text"]
+    }
+  ]
+}
