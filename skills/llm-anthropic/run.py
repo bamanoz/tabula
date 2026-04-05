@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """
-LLM skill for Tabula — Anthropic provider with tool use.
+Tabula LLM Driver — Anthropic adapter.
 
-Boot protocol:
-1. First line from stdin = JSON with kernel tools definition
-2. Lines until empty line = system prompt (genesis)
-3. Then: tool results and user messages
-
-Stdout: kernel commands (SPAWN, KILL, SEND), one per line, empty line = end of turn
+Connects to kernel via Unix socket (TABULA_SOCKET env var).
+Translates between Anthropic streaming API and kernel protocol.
 """
 
-import sys
-import os
 import json
+import os
+import signal
+import socket
+import sys
 import urllib.request
 import urllib.error
 
@@ -20,16 +18,50 @@ BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
 API_URL = f"{BASE_URL}/v1/messages"
 API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+SOCKET_PATH = os.environ.get("TABULA_SOCKET", "/tmp/tabula.sock")
 
-# Commands that don't produce kernel responses (fire-and-forget)
-NO_RESPONSE_COMMANDS = {"SEND"}
+
+def log(msg: str):
+    sys.stderr.write(f"[driver] {msg}\n")
+    sys.stderr.flush()
+
+
+class KernelConnection:
+    """JSON lines protocol over Unix socket."""
+
+    def __init__(self, path: str):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(path)
+        self.buf = b""
+
+    def send(self, msg: dict):
+        data = json.dumps(msg, ensure_ascii=False) + "\n"
+        self.sock.sendall(data.encode())
+
+    def recv(self) -> dict | None:
+        while True:
+            nl = self.buf.find(b"\n")
+            if nl >= 0:
+                line = self.buf[:nl]
+                self.buf = self.buf[nl + 1:]
+                if line.strip():
+                    return json.loads(line)
+                continue
+
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                return None
+            self.buf += chunk
+
+    def close(self):
+        self.sock.close()
 
 
 def kernel_to_anthropic_tools(kernel_tools: list[dict]) -> list[dict]:
-    """Convert kernel tool definitions to Anthropic API format."""
-    anthropic_tools = []
+    """Convert kernel-neutral tool definitions to Anthropic API format."""
+    result = []
     for tool in kernel_tools:
-        anthropic_tool = {
+        result.append({
             "name": tool["name"],
             "description": tool["description"],
             "input_schema": {
@@ -40,182 +72,222 @@ def kernel_to_anthropic_tools(kernel_tools: list[dict]) -> list[dict]:
                 },
                 "required": tool.get("required", []),
             },
-        }
-        anthropic_tools.append(anthropic_tool)
-    return anthropic_tools
+        })
+    return result
 
 
-def tool_call_to_command(name: str, input_data: dict) -> str:
-    """Convert a tool call to a kernel command string."""
-    if name == "SPAWN":
-        cmd = input_data['command']
-        if '\n' in cmd:
-            # Multiline: wrap in sh -c with base64 encoding
-            import base64
-            encoded = base64.b64encode(cmd.encode()).decode()
-            return f"SPAWN sh -c 'echo {encoded} | base64 -d | sh'"
-        return f"SPAWN {cmd}"
-    elif name == "EXEC":
-        cmd = input_data['command']
-        if '\n' in cmd:
-            import base64
-            encoded = base64.b64encode(cmd.encode()).decode()
-            return f"EXEC sh -c 'echo {encoded} | base64 -d | sh'"
-        return f"EXEC {cmd}"
-    elif name == "KILL":
-        return f"KILL {input_data['pid']}"
-    elif name == "SEND":
-        text = input_data['text'].replace('\n', '\\n')
-        return f"SEND {input_data['pid']} {text}"
-    return f"UNKNOWN {name}"
+class Driver:
+    def __init__(self):
+        self.conn = KernelConnection(SOCKET_PATH)
+        self.system_prompt = ""
+        self.tools = []
+        self.messages: list[dict] = []
+        self.aborted = False
 
+    def connect(self):
+        self.conn.send({
+            "type": "connect",
+            "name": "anthropic",
+            "sends": ["stream_start", "stream_delta", "stream_end", "tool_use", "done"],
+            "receives": ["message", "tool_result", "init"],
+        })
+        resp = self.conn.recv()
+        log(f"connected: {resp}")
 
-def call_llm(system: str, messages: list[dict], tools: list[dict]) -> dict:
-    """Call Claude API with tools. Returns full response."""
-    body = json.dumps({
-        "model": MODEL,
-        "max_tokens": 4096,
-        "system": system,
-        "messages": messages,
-        "tools": tools,
-    }).encode()
+        self.conn.send({"type": "join", "session": "main"})
+        resp = self.conn.recv()
+        log(f"joined: {resp}")
 
-    req = urllib.request.Request(
-        API_URL,
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "x-api-key": API_KEY,
-            "anthropic-version": "2023-06-01",
-        },
-    )
+    def call_api_streaming(self):
+        """Call Claude streaming API. Streams text deltas to kernel,
+        accumulates tool_use blocks. Returns assistant content blocks."""
 
-    try:
-        with urllib.request.urlopen(req) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode()
-        return {"error": f"{e.code} {error_body}"}
-    except Exception as e:
-        return {"error": str(e)}
+        body = json.dumps({
+            "model": MODEL,
+            "max_tokens": 4096,
+            "system": self.system_prompt,
+            "messages": self.messages,
+            "tools": self.tools if self.tools else None,
+            "stream": True,
+        }).encode()
 
+        req = urllib.request.Request(
+            API_URL,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": API_KEY,
+                "anthropic-version": "2023-06-01",
+            },
+        )
 
-def read_message() -> str | None:
-    """Read lines until empty line or EOF."""
-    lines = []
-    for line in sys.stdin:
-        stripped = line.rstrip("\n")
-        if stripped == "":
-            if lines:
-                return "\n".join(lines)
-            continue
-        lines.append(stripped)
-    if lines:
-        return "\n".join(lines)
-    return None
+        resp = urllib.request.urlopen(req)
 
+        content_blocks = []  # for history
+        tool_uses = []  # tool_use blocks to send to kernel
+        current_text = ""
+        current_tool = None
+        stream_started = False
 
-def send_command(cmd: str):
-    print(cmd, flush=True)
+        try:
+            for raw_line in resp:
+                if self.aborted:
+                    break
 
+                line = raw_line.decode().strip()
+                if not line.startswith("data: "):
+                    continue
 
-def end_turn():
-    print("", flush=True)
+                data = json.loads(line[6:])
+                event_type = data.get("type")
 
+                if event_type == "content_block_start":
+                    block = data["content_block"]
+                    if block["type"] == "text":
+                        current_text = ""
+                    elif block["type"] == "tool_use":
+                        current_tool = {
+                            "id": block["id"],
+                            "name": block["name"],
+                            "input_json": "",
+                        }
 
-def execute_tool(name: str, input_data: dict) -> str:
-    """Send tool call as kernel command and read result."""
-    cmd = tool_call_to_command(name, input_data)
-    send_command(cmd)
-    end_turn()
+                elif event_type == "content_block_delta":
+                    delta = data["delta"]
+                    if delta["type"] == "text_delta":
+                        text = delta["text"]
+                        current_text += text
+                        if not stream_started:
+                            self.conn.send({"type": "stream_start"})
+                            stream_started = True
+                        self.conn.send({"type": "stream_delta", "text": text})
+                    elif delta["type"] == "input_json_delta" and current_tool:
+                        current_tool["input_json"] += delta["partial_json"]
 
-    if name in NO_RESPONSE_COMMANDS:
-        return "OK"
+                elif event_type == "content_block_stop":
+                    if current_tool:
+                        try:
+                            input_data = json.loads(current_tool["input_json"]) if current_tool["input_json"] else {}
+                        except json.JSONDecodeError:
+                            input_data = {}
+                        tool_block = {
+                            "type": "tool_use",
+                            "id": current_tool["id"],
+                            "name": current_tool["name"],
+                            "input": input_data,
+                        }
+                        content_blocks.append(tool_block)
+                        tool_uses.append(tool_block)
+                        current_tool = None
+                    elif current_text:
+                        content_blocks.append({"type": "text", "text": current_text})
+                        current_text = ""
 
-    result = read_message()
-    return result or "ERROR: no response"
+                elif event_type == "message_delta":
+                    pass  # stop_reason handled implicitly
 
+        finally:
+            resp.close()
 
-def log(msg: str):
-    sys.stderr.write(f"[llm] {msg}\n")
-    sys.stderr.flush()
+        if stream_started:
+            self.conn.send({"type": "stream_end"})
+
+        # Send tool_use messages to kernel
+        for tool in tool_uses:
+            self.conn.send({
+                "type": "tool_use",
+                "id": tool["id"],
+                "name": tool["name"],
+                "input": tool["input"],
+            })
+
+        # Only send done if no tool calls — otherwise the turn continues
+        if not tool_uses:
+            self.conn.send({"type": "done"})
+
+        return content_blocks, tool_uses
+
+    def process_turn(self):
+        """Run one LLM turn: call API, stream response, handle tool loop."""
+        self.aborted = False
+
+        try:
+            content_blocks, tool_uses = self.call_api_streaming()
+        except Exception as e:
+            log(f"API error: {e}")
+            self.conn.send({"type": "stream_start"})
+            self.conn.send({"type": "stream_delta", "text": f"[API Error: {e}]"})
+            self.conn.send({"type": "stream_end"})
+            self.conn.send({"type": "done"})
+            return
+
+        # Add assistant message to history
+        self.messages.append({"role": "assistant", "content": content_blocks})
+
+        # If there were tool uses, wait for tool_results
+        # (kernel will send them, and our main loop dispatches handle_tool_result)
+
+    def handle_init(self, msg: dict):
+        self.system_prompt = msg.get("prompt", "")
+        kernel_tools = msg.get("tools", [])
+        self.tools = kernel_to_anthropic_tools(kernel_tools)
+        log(f"init: prompt={len(self.system_prompt)} chars, tools={len(self.tools)}")
+
+    def handle_message(self, msg: dict):
+        text = msg.get("text", "")
+        log(f"message: {text[:200]}")
+        self.messages.append({"role": "user", "content": text})
+        self.process_turn()
+
+    def handle_tool_result(self, msg: dict):
+        tool_id = msg.get("id", "")
+        output = msg.get("output", "")
+        log(f"tool_result: id={tool_id}")
+
+        self.messages.append({
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": tool_id,
+                "content": output,
+            }],
+        })
+        self.process_turn()
+
+    def run(self):
+        while True:
+            msg = self.conn.recv()
+            if msg is None:
+                log("connection closed")
+                break
+
+            msg_type = msg.get("type")
+            if msg_type == "init":
+                self.handle_init(msg)
+            elif msg_type == "message":
+                self.handle_message(msg)
+            elif msg_type == "tool_result":
+                self.handle_tool_result(msg)
+            else:
+                log(f"ignoring: {msg_type}")
 
 
 def main():
     if not API_KEY:
-        print("LLM_ERROR: ANTHROPIC_API_KEY not set", flush=True)
-        return
+        log("ERROR: ANTHROPIC_API_KEY not set")
+        sys.exit(1)
 
-    # 1. Read kernel tools definition (first line)
-    tools_line = sys.stdin.readline().strip()
-    if not tools_line:
-        log("ERROR: no tools definition received")
-        return
+    driver = Driver()
 
-    try:
-        kernel_def = json.loads(tools_line)
-        kernel_tools = kernel_def.get("tools", [])
-    except json.JSONDecodeError as e:
-        log(f"ERROR: invalid tools JSON: {e}")
-        return
+    def handle_sigint(sig, frame):
+        log("SIGINT — aborting stream")
+        driver.aborted = True
 
-    tools = kernel_to_anthropic_tools(kernel_tools)
-    log(f"loaded {len(tools)} kernel tools: {[t['name'] for t in tools]}")
+    signal.signal(signal.SIGINT, handle_sigint)
 
-    # 2. Read system prompt (genesis)
-    system = read_message()
-    if not system:
-        log("ERROR: no system prompt received")
-        return
-
-    log(f"system prompt loaded ({len(system)} chars)")
-
-    # 3. Main loop
-    messages: list[dict] = [{"role": "user", "content": "BEGIN"}]
-
-    while True:
-        response = call_llm(system, messages, tools)
-
-        if "error" in response:
-            log(f"API error: {response['error']}")
-            break
-
-        content = response.get("content", [])
-        messages.append({"role": "assistant", "content": content})
-
-        tool_results = []
-        has_tool_use = False
-
-        for block in content:
-            if block["type"] == "text" and block.get("text", "").strip():
-                log(f"text: {block['text'][:200]}")
-            elif block["type"] == "tool_use":
-                has_tool_use = True
-                tool_name = block["name"]
-                tool_input = block["input"]
-                tool_id = block["id"]
-
-                log(f"tool: {tool_name}({json.dumps(tool_input, ensure_ascii=False)})")
-                result = execute_tool(tool_name, tool_input)
-                log(f"result: {result}")
-
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": tool_id,
-                    "content": result,
-                })
-
-        if has_tool_use:
-            messages.append({"role": "user", "content": tool_results})
-            continue
-
-        # No tool use — wait for external input
-        log("waiting for input...")
-        msg = read_message()
-        if msg is None:
-            break
-        log(f"received: {msg[:200]}")
-        messages.append({"role": "user", "content": msg})
+    log(f"connecting to {SOCKET_PATH}")
+    driver.connect()
+    driver.run()
 
 
 if __name__ == "__main__":

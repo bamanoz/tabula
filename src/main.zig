@@ -1,6 +1,105 @@
 const std = @import("std");
-const yaml = @import("yaml.zig");
 const kernel = @import("kernel.zig");
+
+const Config = struct {
+    socket: []const u8,
+    system_prompt_cmd: []const u8,
+    spawn: []const []const u8,
+};
+
+fn readConfig(allocator: std.mem.Allocator, path: []const u8) !Config {
+    const raw = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 64) catch |err| {
+        std.debug.print("error: cannot read {s}: {}\n", .{ path, err });
+        std.process.exit(1);
+    };
+    defer allocator.free(raw);
+
+    var socket: ?[]const u8 = null;
+    var system_prompt_cmd: ?[]const u8 = null;
+    var spawn_list = std.ArrayList([]const u8).init(allocator);
+    defer spawn_list.deinit();
+
+    var in_spawn = false;
+
+    var line_iter = std.mem.splitScalar(u8, raw, '\n');
+    while (line_iter.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0 or trimmed[0] == '#') {
+            if (in_spawn and trimmed.len == 0) in_spawn = false;
+            continue;
+        }
+
+        if (in_spawn) {
+            if (std.mem.startsWith(u8, trimmed, "- ")) {
+                const val = std.mem.trim(u8, trimmed["- ".len..], " \t");
+                if (val.len > 0) try spawn_list.append(try allocator.dupe(u8, val));
+            } else {
+                in_spawn = false;
+                // fall through to parse this line as a key
+            }
+        }
+
+        if (!in_spawn) {
+            if (std.mem.startsWith(u8, trimmed, "socket:")) {
+                const val = std.mem.trim(u8, trimmed["socket:".len..], " \t");
+                if (val.len > 0) socket = try allocator.dupe(u8, val);
+            } else if (std.mem.startsWith(u8, trimmed, "system_prompt:")) {
+                const val = std.mem.trim(u8, trimmed["system_prompt:".len..], " \t");
+                if (val.len > 0) system_prompt_cmd = try allocator.dupe(u8, val);
+            } else if (std.mem.eql(u8, trimmed, "spawn:")) {
+                in_spawn = true;
+            }
+        }
+    }
+
+    if (socket == null) {
+        std.debug.print("error: tabula.yaml must specify 'socket'\n", .{});
+        std.process.exit(1);
+    }
+    if (system_prompt_cmd == null) {
+        std.debug.print("error: tabula.yaml must specify 'system_prompt'\n", .{});
+        std.process.exit(1);
+    }
+
+    return Config{
+        .socket = socket.?,
+        .system_prompt_cmd = system_prompt_cmd.?,
+        .spawn = try spawn_list.toOwnedSlice(),
+    };
+}
+
+fn runSystemPrompt(allocator: std.mem.Allocator, cmd: []const u8) ![]const u8 {
+    var child = std.process.Child.init(
+        &.{ "sh", "-c", cmd },
+        allocator,
+    );
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Inherit;
+    try child.spawn();
+
+    const output = try child.stdout.?.reader().readAllAlloc(allocator, 1024 * 1024);
+
+    const term = child.wait() catch |err| {
+        std.debug.print("error: system_prompt failed: {}\n", .{err});
+        std.process.exit(1);
+    };
+    if (term.Exited != 0) {
+        std.debug.print("error: system_prompt exited with code {d}\n", .{term.Exited});
+        std.process.exit(1);
+    }
+
+    // Parse JSON: {"prompt": "..."}
+    const parsed = std.json.parseFromSlice(struct {
+        prompt: []const u8,
+    }, allocator, output, .{}) catch |err| {
+        std.debug.print("error: cannot parse system_prompt output: {}\n", .{err});
+        std.process.exit(1);
+    };
+    defer parsed.deinit();
+    allocator.free(output);
+
+    return try allocator.dupe(u8, parsed.value.prompt);
+}
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -8,80 +107,76 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     // 1. Read config
-    const config_path = "tabula.yaml";
-    const config = yaml.parse(allocator, config_path) catch |err| {
-        std.debug.print("error: cannot read {s}: {}\n", .{ config_path, err });
-        std.process.exit(1);
-    };
-    defer config.deinit(allocator);
-
-    // 2. Boot kernel
-    var k = kernel.Kernel.init(allocator);
-    defer k.deinit();
-    k.installSignalHandlers();
-
-    // 3. Spawn LLM skill (inherits env from parent process)
-    const llm_cmd = config.llm_skill orelse {
-        std.debug.print("error: tabula.yaml must specify llm\n", .{});
-        std.process.exit(1);
-    };
-
-    std.debug.print("[main] LLM skill: {s}\n", .{llm_cmd});
-
-    const llm_pid = k.spawn(llm_cmd, null) catch |err| {
-        std.debug.print("error: cannot spawn LLM skill '{s}': {}\n", .{ llm_cmd, err });
-        std.process.exit(1);
-    };
-    std.debug.print("[main] LLM spawned as PID {d}\n", .{llm_pid});
-
-    // 4. Send genesis prompt to LLM
-    const genesis = config.genesis orelse {
-        std.debug.print("error: tabula.yaml must specify genesis\n", .{});
-        std.process.exit(1);
-    };
-
-    std.debug.print("[main] genesis length: {d} bytes\n", .{genesis.len});
-    std.debug.print("[main] genesis:\n{s}\n---\n", .{genesis});
-
-    // Send kernel tools definition as first line (embedded JSON)
-    {
-        const writer = if (k.processes[llm_pid]) |*proc| (if (proc.child.stdin) |s| s.writer() else null) else null;
-        if (writer) |w| {
-            const tools_json = @embedFile("kernel.tools.json");
-            // Send as single line: strip newlines
-            for (tools_json) |c| {
-                if (c != '\n' and c != '\r') {
-                    try w.writeByte(c);
-                }
-            }
-            try w.writeAll("\n");
-
-            // System prompt: kernel description (hardcoded) + genesis (user)
-            try w.writeAll("You have kernel tools: SPAWN, EXEC, KILL, SEND. Use them via tool calls.\n");
-            try w.writeAll("SPAWN starts a long-running process (returns PID, stdout auto-piped to you). EXEC runs a command synchronously (returns stdout). KILL stops a process. SEND writes to a process stdin.\n");
-
-            // Genesis as user-defined behavior
-            var line_iter = std.mem.splitScalar(u8, genesis, '\n');
-            while (line_iter.next()) |line| {
-                const trimmed = std.mem.trim(u8, line, " \t\r");
-                if (trimmed.len == 0) {
-                    try w.writeAll(" \n");
-                } else {
-                    try w.writeAll(line);
-                    try w.writeAll("\n");
-                }
-            }
-            try w.writeAll("\n"); // empty line = end of system prompt
-        } else {
-            std.debug.print("error: cannot write to LLM stdin\n", .{});
-            std.process.exit(1);
-        }
+    const config = try readConfig(allocator, "tabula.yaml");
+    defer allocator.free(config.socket);
+    defer allocator.free(config.system_prompt_cmd);
+    defer {
+        for (config.spawn) |s| allocator.free(s);
+        allocator.free(config.spawn);
     }
 
-    std.debug.print("[main] genesis sent, entering main loop\n", .{});
+    std.debug.print("[main] socket: {s}\n", .{config.socket});
+    std.debug.print("[main] system_prompt: {s}\n", .{config.system_prompt_cmd});
+    std.debug.print("[main] spawn: {d} processes\n", .{config.spawn.len});
 
-    // 5. Main loop: read LLM output, execute commands
-    k.run(llm_pid) catch |err| {
+    // 2. Run system_prompt script
+    const system_prompt = try runSystemPrompt(allocator, config.system_prompt_cmd);
+    defer allocator.free(system_prompt);
+    std.debug.print("[main] system prompt: {d} bytes\n", .{system_prompt.len});
+
+    // 3. Load tools — compact JSON (strip newlines for JSON lines protocol)
+    const tools_raw = @embedFile("kernel.tools.json");
+    const tools_json = blk: {
+        var compact = std.ArrayList(u8).init(allocator);
+        var in_string = false;
+        var prev_was_backslash = false;
+        for (tools_raw) |c| {
+            if (in_string) {
+                try compact.append(c);
+                if (c == '"' and !prev_was_backslash) in_string = false;
+                prev_was_backslash = (c == '\\' and !prev_was_backslash);
+            } else {
+                if (c == '\n' or c == '\r' or c == ' ' or c == '\t') continue;
+                try compact.append(c);
+                if (c == '"') in_string = true;
+            }
+        }
+        break :blk try compact.toOwnedSlice();
+    };
+    defer allocator.free(tools_json);
+
+    // 4. Init kernel (opens socket)
+    std.debug.print("[main] initializing kernel...\n", .{});
+    const k = kernel.Kernel.init(allocator, config.socket, system_prompt, tools_json) catch |err| {
+        std.debug.print("error: kernel init failed: {}\n", .{err});
+        std.process.exit(1);
+    };
+    defer k.deinit();
+    kernel.installSignalHandlers(k);
+
+    // 5. Spawn processes from config
+    for (config.spawn) |cmd| {
+        var env = std.process.EnvMap.init(allocator);
+        defer env.deinit();
+
+        // Inherit current environment
+        var env_iter = std.process.getEnvMap(allocator) catch continue;
+        defer env_iter.deinit();
+        var it = env_iter.iterator();
+        while (it.next()) |entry| {
+            try env.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+        try env.put("TABULA_SOCKET", config.socket);
+
+        _ = k.spawnProcess(cmd, &env) catch |err| {
+            std.debug.print("error: cannot spawn '{s}': {}\n", .{ cmd, err });
+        };
+    }
+
+    std.debug.print("[main] ready, entering main loop\n", .{});
+
+    // 6. Main loop
+    k.run() catch |err| {
         std.debug.print("error: kernel loop failed: {}\n", .{err});
         std.process.exit(1);
     };

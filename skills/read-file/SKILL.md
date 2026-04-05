@@ -4,7 +4,7 @@ Reads a file and prints its contents to stdout.
 
 ## Usage
 
-    SPAWN python3 skills/read-file/run.py <path>
+    EXEC python3 skills/read-file/run.py <path>
 
 ## Arguments
 
@@ -16,5 +16,5 @@ Prints the file contents to stdout. Errors are written to stderr with exit code 
 
 ## Examples
 
-    SPAWN python3 skills/read-file/run.py /etc/hostname
-    SPAWN python3 skills/read-file/run.py skills/read-file/SKILL.md
+    EXEC python3 skills/read-file/run.py /etc/hostname
+    EXEC python3 skills/read-file/run.py skills/read-file/SKILL.md

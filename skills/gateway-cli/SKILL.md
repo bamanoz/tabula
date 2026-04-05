@@ -1,18 +1,32 @@
 # gateway-cli
 
-Interactive CLI gateway. Reads user input from the terminal and sends it to
-stdout (auto-piped to LLM). Receives responses on stdin via SEND.
+Interactive CLI gateway for terminal use.
+
+Connects to the kernel via Unix socket (`TABULA_SOCKET` env var), reads user
+input from `/dev/tty`, and displays streaming responses on stdout.
 
 ## Usage
 
-    SPAWN python3 skills/gateway-cli/run.py
+Configured in `tabula.yaml` under `spawn`:
 
-## Output
+    .venv/bin/python3 skills/gateway-cli/run.py
 
-Each user message is sent as text lines followed by an empty line (delimiter).
+## Protocol
+
+- Sends: `message`, `cancel`
+- Receives: `stream_start`, `stream_delta`, `stream_end`, `done`, `error`
+
+## Requirements
+
+    pip install prompt_toolkit rich
+
+## Environment variables
+
+- `TABULA_SOCKET` — kernel socket path (default: /tmp/tabula.sock)
 
 ## Notes
 
-- Requires an interactive terminal (/dev/tty)
-- Long-running: stays alive for the entire session
-- Use SEND with this process's PID to deliver responses to the user
+- Reads input from `/dev/tty` directly — works when spawned with piped stdin
+- Ctrl+C during streaming sends `cancel` to kernel
+- Ctrl+C at prompt or Ctrl+D exits the gateway
+- Requires an interactive terminal
