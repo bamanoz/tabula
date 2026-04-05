@@ -21,9 +21,13 @@ MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 SOCKET_PATH = os.environ.get("TABULA_SOCKET", "/tmp/tabula.sock")
 
 
+VERBOSE = os.environ.get("TABULA_VERBOSE", "") == "1"
+
+
 def log(msg: str):
-    sys.stderr.write(f"[driver] {msg}\n")
-    sys.stderr.flush()
+    if VERBOSE:
+        sys.stderr.write(f"[driver] {msg}\n")
+        sys.stderr.flush()
 
 
 class KernelConnection:
@@ -83,6 +87,7 @@ class Driver:
         self.tools = []
         self.messages: list[dict] = []
         self.aborted = False
+        self._current_resp = None  # active HTTP response, for cancel
 
     def connect(self):
         self.conn.send({
@@ -122,6 +127,7 @@ class Driver:
         )
 
         resp = urllib.request.urlopen(req)
+        self._current_resp = resp
 
         content_blocks = []  # for history
         tool_uses = []  # tool_use blocks to send to kernel
@@ -186,8 +192,17 @@ class Driver:
                 elif event_type == "message_delta":
                     pass  # stop_reason handled implicitly
 
+        except Exception:
+            # resp.close() from SIGINT handler can break the iterator — that's ok
+            if not self.aborted:
+                raise
+
         finally:
-            resp.close()
+            self._current_resp = None
+            try:
+                resp.close()
+            except Exception:
+                pass
 
         if stream_started:
             self.conn.send({"type": "stream_end"})
@@ -219,6 +234,19 @@ class Driver:
             self.conn.send({"type": "stream_delta", "text": f"[API Error: {e}]"})
             self.conn.send({"type": "stream_end"})
             self.conn.send({"type": "done"})
+            return
+
+        # If aborted, add a minimal assistant message to keep history valid
+        if self.aborted:
+            if content_blocks:
+                # Keep only complete text blocks
+                valid = [b for b in content_blocks if b.get("type") == "text" and b.get("text")]
+                if valid:
+                    self.messages.append({"role": "assistant", "content": valid})
+                else:
+                    self.messages.append({"role": "assistant", "content": [{"type": "text", "text": "[cancelled]"}]})
+            else:
+                self.messages.append({"role": "assistant", "content": [{"type": "text", "text": "[cancelled]"}]})
             return
 
         # Add assistant message to history
@@ -282,6 +310,13 @@ def main():
     def handle_sigint(sig, frame):
         log("SIGINT — aborting stream")
         driver.aborted = True
+        # Close the HTTP response to unblock the read
+        resp = driver._current_resp
+        if resp:
+            try:
+                resp.close()
+            except Exception:
+                pass
 
     signal.signal(signal.SIGINT, handle_sigint)
 

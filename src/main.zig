@@ -106,8 +106,21 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // 1. Read config
-    const config = try readConfig(allocator, "tabula.yaml");
+    // 1. Read config from TABULA_HOME (default: ~/.tabula)
+    const tabula_home = std.process.getEnvVarOwned(allocator, "TABULA_HOME") catch blk: {
+        const home = std.process.getEnvVarOwned(allocator, "HOME") catch {
+            std.debug.print("error: neither TABULA_HOME nor HOME is set\n", .{});
+            std.process.exit(1);
+        };
+        defer allocator.free(home);
+        break :blk try std.fs.path.join(allocator, &.{ home, ".tabula" });
+    };
+    defer allocator.free(tabula_home);
+
+    const config_path = try std.fs.path.join(allocator, &.{ tabula_home, "tabula.yaml" });
+    defer allocator.free(config_path);
+
+    const config = try readConfig(allocator, config_path);
     defer allocator.free(config.socket);
     defer allocator.free(config.system_prompt_cmd);
     defer {
@@ -115,14 +128,26 @@ pub fn main() !void {
         allocator.free(config.spawn);
     }
 
-    std.debug.print("[main] socket: {s}\n", .{config.socket});
-    std.debug.print("[main] system_prompt: {s}\n", .{config.system_prompt_cmd});
-    std.debug.print("[main] spawn: {d} processes\n", .{config.spawn.len});
+    // Verbose logging only with -v flag
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+    var verbose = false;
+    for (args[1..]) |arg| {
+        if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--verbose")) verbose = true;
+    }
+    kernel.setVerbose(verbose);
+
+    // Change working directory to ~/.tabula so relative paths in config work
+    std.posix.chdir(tabula_home) catch |err| {
+        std.debug.print("error: cannot chdir to {s}: {}\n", .{ tabula_home, err });
+        std.process.exit(1);
+    };
+    if (verbose) std.debug.print("[main] working directory: {s}\n", .{tabula_home});
 
     // 2. Run system_prompt script
     const system_prompt = try runSystemPrompt(allocator, config.system_prompt_cmd);
     defer allocator.free(system_prompt);
-    std.debug.print("[main] system prompt: {d} bytes\n", .{system_prompt.len});
+    if (verbose) std.debug.print("[main] system prompt: {d} bytes\n", .{system_prompt.len});
 
     // 3. Load tools — compact JSON (strip newlines for JSON lines protocol)
     const tools_raw = @embedFile("kernel.tools.json");
@@ -146,7 +171,7 @@ pub fn main() !void {
     defer allocator.free(tools_json);
 
     // 4. Init kernel (opens socket)
-    std.debug.print("[main] initializing kernel...\n", .{});
+    if (verbose) std.debug.print("[main] initializing kernel...\n", .{});
     const k = kernel.Kernel.init(allocator, config.socket, system_prompt, tools_json) catch |err| {
         std.debug.print("error: kernel init failed: {}\n", .{err});
         std.process.exit(1);
@@ -167,13 +192,14 @@ pub fn main() !void {
             try env.put(entry.key_ptr.*, entry.value_ptr.*);
         }
         try env.put("TABULA_SOCKET", config.socket);
+        try env.put("TABULA_HOME", tabula_home);
 
         _ = k.spawnProcess(cmd, &env) catch |err| {
-            std.debug.print("error: cannot spawn '{s}': {}\n", .{ cmd, err });
+            if (verbose) std.debug.print("error: cannot spawn '{s}': {}\n", .{ cmd, err });
         };
     }
 
-    std.debug.print("[main] ready, entering main loop\n", .{});
+    if (verbose) std.debug.print("[main] ready, entering main loop\n", .{});
 
     // 6. Main loop
     k.run() catch |err| {

@@ -231,7 +231,8 @@ pub const Kernel = struct {
         var child = std.process.Child.init(argv, self.allocator);
         child.stdin_behavior = .Inherit;
         child.stdout_behavior = .Inherit;
-        child.stderr_behavior = .Inherit;
+        // Suppress spawned process stderr to keep terminal clean
+        child.stderr_behavior = .Ignore;
 
         if (extra_env) |e| {
             child.env_map = @constCast(e);
@@ -868,8 +869,16 @@ pub const Kernel = struct {
 
 // --- Logging ---
 
+var verbose: bool = false;
+
+pub fn setVerbose(v: bool) void {
+    verbose = v;
+}
+
 fn log(comptime fmt: []const u8, args: anytype) void {
-    std.debug.print("[kernel] " ++ fmt ++ "\n", args);
+    if (verbose) {
+        std.debug.print("[kernel] " ++ fmt ++ "\n", args);
+    }
 }
 
 // --- Signal handling ---

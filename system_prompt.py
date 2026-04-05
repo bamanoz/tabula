@@ -53,6 +53,21 @@ def main():
         lines.append("No skills are currently available.")
         lines.append("")
 
+    # Inject long-term memory if it exists
+    tabula_home = os.environ.get("TABULA_HOME", os.path.join(os.path.expanduser("~"), ".tabula"))
+    memory_path = os.path.join(tabula_home, "memory", "MEMORY.md")
+    if os.path.isfile(memory_path):
+        with open(memory_path) as f:
+            memory_content = f.read().strip()
+        if memory_content:
+            lines.append("## Long-term memory")
+            lines.append("")
+            lines.append("The following is your persistent memory. Use it to inform your responses.")
+            lines.append("To save new memories, use the memory skill commands above.")
+            lines.append("")
+            lines.append(memory_content)
+            lines.append("")
+
     lines.append("Be helpful, concise, and respond in Russian.")
 
     prompt = "\n".join(lines)
