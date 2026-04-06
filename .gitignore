@@ -4,3 +4,4 @@ zig-out/
 __pycache__/
 *.pyc
 .venv
+.claude

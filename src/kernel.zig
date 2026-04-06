@@ -211,12 +211,12 @@ pub const Kernel = struct {
                 i += 1;
                 const start = i;
                 while (i < command.len and command[i] != quote) : (i += 1) {}
-                try argv_list.append(command[start..i]);
+                try argv_list.append(try self.allocator.dupe(u8, command[start..i]));
                 if (i < command.len) i += 1;
             } else {
                 const start = i;
                 while (i < command.len and command[i] != ' ') : (i += 1) {}
-                try argv_list.append(command[start..i]);
+                try argv_list.append(try self.allocator.dupe(u8, command[start..i]));
             }
         }
         if (argv_list.items.len == 0) return error.EmptyCommand;
@@ -257,6 +257,7 @@ pub const Kernel = struct {
                 _ = proc.child.kill() catch {};
                 _ = proc.child.wait() catch {};
             }
+            for (proc.argv) |arg| self.allocator.free(arg);
             self.allocator.free(proc.argv);
             self.spawned[pid] = null;
         } else {
@@ -271,6 +272,7 @@ pub const Kernel = struct {
                     _ = proc.child.kill() catch {};
                     _ = proc.child.wait() catch {};
                 }
+                for (proc.argv) |arg| self.allocator.free(arg);
                 self.allocator.free(proc.argv);
                 self.spawned[i] = null;
             }
@@ -279,7 +281,10 @@ pub const Kernel = struct {
 
     fn execSync(self: *Kernel, command: []const u8) ![]const u8 {
         const argv = try self.parseArgv(command);
-        defer self.allocator.free(argv);
+        defer {
+            for (argv) |arg| self.allocator.free(arg);
+            self.allocator.free(argv);
+        }
 
         var child = std.process.Child.init(argv, self.allocator);
         child.stdin_behavior = .Close;
@@ -359,6 +364,7 @@ pub const Kernel = struct {
                     }
 
                     // Clean up: free argv and clear slot for reuse
+                    for (proc.argv) |arg| self.allocator.free(arg);
                     self.allocator.free(proc.argv);
                     self.spawned[i] = null;
                 }
@@ -708,10 +714,23 @@ pub const Kernel = struct {
             return;
         }
 
+        // Cross-session routing: if message has "session" field, deliver there
+        const target_session = blk: {
+            if (obj.get("session")) |session_val| {
+                switch (session_val) {
+                    .string => |s| {
+                        if (s.len > 0) break :blk s;
+                    },
+                    else => {},
+                }
+            }
+            break :blk session;
+        };
+
         switch (msg_type) {
             .tool_use => self.handleToolUse(session, raw_json),
             .cancel => self.handleCancel(session),
-            else => self.broadcastToSession(session, msg_type, raw_json, slot),
+            else => self.broadcastToSession(target_session, msg_type, raw_json, slot),
         }
     }
 

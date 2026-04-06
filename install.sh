@@ -11,7 +11,7 @@ mkdir -p "$TABULA_HOME" "$BIN_DIR"
 
 # Config
 cp tabula.yaml "$TABULA_HOME/"
-cp system_prompt.py "$TABULA_HOME/"
+cp boot.py "$TABULA_HOME/"
 
 # Skills
 rsync -a --delete \

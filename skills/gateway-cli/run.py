@@ -10,6 +10,7 @@ Connects to kernel via Unix socket. Rich terminal UI inspired by openclaw:
 
 import json
 import os
+import queue
 import random
 import socket
 import sys
@@ -115,6 +116,8 @@ class Gateway:
         self._waiting_phrase = ""
         self._error_text = ""
         self._tty = None
+        self._input_queue: queue.Queue[str | None] = queue.Queue()
+        self._stream_started = threading.Event()
 
     def connect(self):
         self.conn.send({
@@ -198,6 +201,7 @@ class Gateway:
                     self.waiting = False
                     with stream_lock:
                         self.stream_text = ""
+                    self._stream_started.set()
 
                 elif msg_type == "stream_delta":
                     text = msg.get("text", "")
@@ -217,6 +221,21 @@ class Gateway:
         recv_thread = threading.Thread(target=receiver, daemon=True)
         recv_thread.start()
 
+        # Input reader thread — non-blocking readline via queue
+        def input_reader():
+            try:
+                while self.alive:
+                    line = self._tty.readline()
+                    if not line:
+                        self._input_queue.put(None)
+                        break
+                    self._input_queue.put(line)
+            except (OSError, ValueError):
+                self._input_queue.put(None)
+
+        input_thread = threading.Thread(target=input_reader, daemon=True)
+        input_thread.start()
+
         # --- Startup banner ---
         console.print()
         for line in LOGO_LINES:
@@ -232,50 +251,81 @@ class Gateway:
 
         while self.alive:
             try:
-                # Prompt
+                # === IDLE: show prompt, poll for input or unsolicited stream ===
                 console.print(f"[bold {ACCENT}]  ❯[/] ", end="")
+                sys.stdout.flush()
 
-                line = self._tty.readline()
-                if not line:
+                self._stream_started.clear()
+                user_input = None
+
+                while self.alive:
+                    # Check for unsolicited stream from subagent/etc
+                    if self._stream_started.is_set():
+                        sys.stdout.write(CLEAR_LINE)
+                        sys.stdout.flush()
+                        break
+
+                    # Check for user input (non-blocking poll)
+                    try:
+                        raw = self._input_queue.get(timeout=0.1)
+                        if raw is None:
+                            self.alive = False
+                            break
+                        user_input = raw.rstrip("\n")
+                        break
+                    except queue.Empty:
+                        continue
+
+                if not self.alive:
                     break
 
-                user_input = line.rstrip("\n")
-                if not user_input.strip():
-                    continue
+                # === ACTIVE: handle whichever event arrived ===
+                if user_input is not None:
+                    if not user_input.strip():
+                        continue
 
-                # Erase prompt + typed text, reprint styled
-                sys.stdout.write(MOVE_UP + CLEAR_LINE)
-                sys.stdout.flush()
-                console.print(
-                    Text.assemble(
-                        ("  ❯ ", DIM),
-                        (user_input, USER_TEXT),
+                    # Erase prompt + typed text, reprint styled
+                    sys.stdout.write(MOVE_UP + CLEAR_LINE)
+                    sys.stdout.flush()
+                    console.print(
+                        Text.assemble(
+                            ("  ❯ ", DIM),
+                            (user_input, USER_TEXT),
+                        )
                     )
-                )
-                console.print()
+                    console.print()
 
-                # Start turn
-                done_event.clear()
-                self.turn_start = time.time()
-                self.waiting = True
-                self.stream_text = ""
-                self._error_text = ""
-                self._pick_phrase()
-                self.conn.send({"type": "message", "text": user_input})
+                    # Start user-initiated turn
+                    done_event.clear()
+                    self._stream_started.clear()
+                    self.turn_start = time.time()
+                    self.waiting = True
+                    self.stream_text = ""
+                    self._error_text = ""
+                    self._pick_phrase()
+                    self.conn.send({"type": "message", "text": user_input})
+                else:
+                    # Unsolicited stream — no message to send, just render
+                    done_event.clear()
+                    self.turn_start = time.time()
+                    # Don't reset stream_text here — receiver already cleared it
+                    # on stream_start and may have accumulated deltas by now
+                    self._error_text = ""
+                    self._pick_phrase()
 
-                # Live rendering — main thread drives all updates
+                # === RENDER: spinner + streaming (same for both cases) ===
                 with Live(
                     render_spinner(),
                     console=console,
                     refresh_per_second=12,
                     transient=True,
                 ) as live:
-                    # Spinner while waiting for stream_start
+                    # Spinner while waiting for stream_start (user-initiated only)
                     while self.waiting and self.alive and not done_event.is_set():
                         live.update(render_spinner())
                         done_event.wait(timeout=0.08)
 
-                    # Streaming — main thread polls and re-renders
+                    # Streaming
                     last_len = 0
                     while not done_event.is_set() and self.alive:
                         with stream_lock:

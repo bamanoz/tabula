@@ -1,5 +1,1 @@
-socket: /tmp/tabula.sock
-system_prompt: .venv/bin/python3 system_prompt.py skills/
-spawn:
-  - .venv/bin/python3 skills/llm-anthropic/run.py
-  - .venv/bin/python3 skills/gateway-cli/run.py
+boot: .venv/bin/python3 boot.py
