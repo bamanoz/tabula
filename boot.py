@@ -19,7 +19,7 @@ TABULA_HOME = os.environ.get("TABULA_HOME", os.path.join(os.path.expanduser("~")
 SKILLS_DIR = os.path.join(TABULA_HOME, "skills")
 MEMORY_FILE = os.path.join(TABULA_HOME, "memory", "MEMORY.md")
 VENV_PYTHON = os.path.join(TABULA_HOME, ".venv", "bin", "python3")
-SOCKET_PATH = os.environ.get("TABULA_SOCKET", "/tmp/tabula.sock")
+TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
 
 
 def scan_skills() -> list[str]:
@@ -80,7 +80,7 @@ def build_spawn() -> list[str]:
 def main():
     skills = scan_skills()
     config = {
-        "socket": SOCKET_PATH,
+        "url": TABULA_URL,
         "system_prompt": build_system_prompt(skills),
         "spawn": build_spawn(),
     }

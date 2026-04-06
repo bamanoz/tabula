@@ -12,12 +12,13 @@ import json
 import os
 import queue
 import random
-import socket
 import sys
 import threading
 import time
 
-SOCKET_PATH = os.environ.get("TABULA_SOCKET", "/tmp/tabula.sock")
+import websocket as ws_client
+
+TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
 
 # --- Theme ---
 
@@ -28,6 +29,7 @@ USER_TEXT = "#F3EEE0"
 ERROR_COLOR = "#F97066"
 LINK_COLOR = "#7DD3A5"
 CODE_COLOR = "#F0C987"
+TOOL_COLOR = "#7DD3A5"
 
 WAITING_PHRASES = [
     "pondering", "conjuring", "noodling", "moseying",
@@ -66,48 +68,38 @@ CLEAR_LINE = "\033[2K\r"
 
 
 class KernelConnection:
-    """JSON lines protocol over Unix socket."""
+    """WebSocket connection to kernel."""
 
-    def __init__(self, path: str):
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.connect(path)
-        self.buf = b""
+    def __init__(self, url: str):
+        self.ws = ws_client.create_connection(url)
         self._lock = threading.Lock()
 
     def send(self, msg: dict):
-        data = json.dumps(msg, ensure_ascii=False) + "\n"
+        data = json.dumps(msg, ensure_ascii=False)
         with self._lock:
-            self.sock.sendall(data.encode())
+            self.ws.send(data)
 
     def recv(self) -> dict | None:
-        while True:
-            nl = self.buf.find(b"\n")
-            if nl >= 0:
-                line = self.buf[:nl]
-                self.buf = self.buf[nl + 1:]
-                if line.strip():
-                    return json.loads(line)
-                continue
-
-            try:
-                chunk = self.sock.recv(65536)
-            except OSError:
+        try:
+            data = self.ws.recv()
+            if not data:
                 return None
-            if not chunk:
-                return None
-            self.buf += chunk
+            return json.loads(data)
+        except (ws_client.WebSocketConnectionClosedException, ConnectionError):
+            return None
+        except OSError:
+            return None
 
     def close(self):
         try:
-            self.sock.shutdown(socket.SHUT_RDWR)
-        except OSError:
+            self.ws.close()
+        except Exception:
             pass
-        self.sock.close()
 
 
 class Gateway:
     def __init__(self):
-        self.conn = KernelConnection(SOCKET_PATH)
+        self.conn = KernelConnection(TABULA_URL)
         self.streaming = False
         self.waiting = False
         self.alive = True
@@ -118,6 +110,7 @@ class Gateway:
         self._tty = None
         self._input_queue: queue.Queue[str | None] = queue.Queue()
         self._stream_started = threading.Event()
+        self._finished_streams: queue.Queue[str] = queue.Queue()
 
     def connect(self):
         self.conn.send({
@@ -159,16 +152,6 @@ class Gateway:
         done_event = threading.Event()
         stream_lock = threading.Lock()
 
-        def render_stream():
-            with stream_lock:
-                text = self.stream_text
-            if not text:
-                return Text("")
-            try:
-                return Padding(Markdown(text), (0, 0, 0, 4))
-            except Exception:
-                return Padding(Text(text), (0, 0, 0, 4))
-
         def render_spinner():
             phrase = self._waiting_phrase
             elapsed = time.time() - self.turn_start
@@ -200,6 +183,8 @@ class Gateway:
                     self.streaming = True
                     self.waiting = False
                     with stream_lock:
+                        if self.stream_text.strip():
+                            self._finished_streams.put(self.stream_text)
                         self.stream_text = ""
                     self._stream_started.set()
 
@@ -210,6 +195,10 @@ class Gateway:
 
                 elif msg_type == "stream_end":
                     self.streaming = False
+                    with stream_lock:
+                        if self.stream_text.strip():
+                            self._finished_streams.put(self.stream_text)
+                        self.stream_text = ""
 
                 elif msg_type == "done":
                     self.waiting = False
@@ -259,13 +248,11 @@ class Gateway:
                 user_input = None
 
                 while self.alive:
-                    # Check for unsolicited stream from subagent/etc
                     if self._stream_started.is_set():
                         sys.stdout.write(CLEAR_LINE)
                         sys.stdout.flush()
                         break
 
-                    # Check for user input (non-blocking poll)
                     try:
                         raw = self._input_queue.get(timeout=0.1)
                         if raw is None:
@@ -284,7 +271,6 @@ class Gateway:
                     if not user_input.strip():
                         continue
 
-                    # Erase prompt + typed text, reprint styled
                     sys.stdout.write(MOVE_UP + CLEAR_LINE)
                     sys.stdout.flush()
                     console.print(
@@ -295,7 +281,6 @@ class Gateway:
                     )
                     console.print()
 
-                    # Start user-initiated turn
                     done_event.clear()
                     self._stream_started.clear()
                     self.turn_start = time.time()
@@ -305,34 +290,48 @@ class Gateway:
                     self._pick_phrase()
                     self.conn.send({"type": "message", "text": user_input})
                 else:
-                    # Unsolicited stream — no message to send, just render
                     done_event.clear()
                     self.turn_start = time.time()
-                    # Don't reset stream_text here — receiver already cleared it
-                    # on stream_start and may have accumulated deltas by now
                     self._error_text = ""
                     self._pick_phrase()
 
-                # === RENDER: spinner + streaming (same for both cases) ===
+                # === RENDER: spinner + streaming ===
                 with Live(
                     render_spinner(),
                     console=console,
                     refresh_per_second=12,
                     transient=True,
                 ) as live:
-                    # Spinner while waiting for stream_start (user-initiated only)
+                    # Spinner while waiting for stream_start
                     while self.waiting and self.alive and not done_event.is_set():
                         live.update(render_spinner())
                         done_event.wait(timeout=0.08)
 
-                    # Streaming
-                    last_len = 0
+                    # Streaming — may alternate with spinner between streams
                     while not done_event.is_set() and self.alive:
+                        # Flush finished streams
+                        while not self._finished_streams.empty():
+                            try:
+                                finished = self._finished_streams.get_nowait()
+                                if finished.strip():
+                                    live.update(Text(""))
+                                    console.print(Padding(Markdown(finished), (0, 0, 0, 4)))
+                                    console.print()
+                            except queue.Empty:
+                                break
+
+                        if not self.streaming and not self.waiting:
+                            live.update(render_spinner())
+                            done_event.wait(timeout=0.08)
+                            continue
+
                         with stream_lock:
-                            cur_len = len(self.stream_text)
-                        if cur_len != last_len:
-                            live.update(render_stream())
-                            last_len = cur_len
+                            cur_text = self.stream_text
+                        if cur_text:
+                            try:
+                                live.update(Padding(Markdown(cur_text), (0, 0, 0, 4)))
+                            except Exception:
+                                live.update(Padding(Text(cur_text), (0, 0, 0, 4)))
                         if self._error_text:
                             live.update(
                                 Text(f"  error: {self._error_text}",
@@ -341,12 +340,15 @@ class Gateway:
                             self._error_text = ""
                         done_event.wait(timeout=0.08)
 
-                # Final markdown
-                with stream_lock:
-                    final_text = self.stream_text
-
-                if final_text.strip():
-                    console.print(Padding(Markdown(final_text), (0, 0, 0, 4)))
+                # Flush remaining finished streams
+                while not self._finished_streams.empty():
+                    try:
+                        finished = self._finished_streams.get_nowait()
+                        if finished.strip():
+                            console.print(Padding(Markdown(finished), (0, 0, 0, 4)))
+                            console.print()
+                    except queue.Empty:
+                        break
 
                 elapsed = time.time() - self.turn_start
                 console.print()

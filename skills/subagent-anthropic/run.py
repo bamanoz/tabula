@@ -10,58 +10,64 @@ Exits after idle timeout.
 import argparse
 import json
 import os
-import select
-import socket
 import sys
 import time
 import urllib.request
 import urllib.error
 
+import websocket as ws_client
+
 BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
 API_URL = f"{BASE_URL}/v1/messages"
 API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-SOCKET_PATH = os.environ.get("TABULA_SOCKET", "/tmp/tabula.sock")
-DEFAULT_IDLE_TIMEOUT = 120  # seconds
+TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
+DEFAULT_IDLE_TIMEOUT = 0  # 0 = oneshot (exit after task), >0 = wait for follow-ups
 
+
+VERBOSE = os.environ.get("TABULA_VERBOSE", "") == "1"
+LOG_FILE = os.path.join(os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula")), "subagent.log")
 
 def log(msg: str):
-    sys.stderr.write(f"[subagent] {msg}\n")
-    sys.stderr.flush()
+    if VERBOSE:
+        sys.stderr.write(f"[subagent] {msg}\n")
+        sys.stderr.flush()
+        try:
+            with open(LOG_FILE, "a") as f:
+                f.write(f"[{time.time():.1f}] {msg}\n")
+        except Exception:
+            pass
 
 
 class KernelConnection:
-    def __init__(self, path: str):
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.connect(path)
-        self.buf = b""
+    """WebSocket connection to kernel."""
+
+    def __init__(self, url: str):
+        self.ws = ws_client.create_connection(url)
 
     def send(self, msg: dict):
-        data = json.dumps(msg, ensure_ascii=False) + "\n"
-        self.sock.sendall(data.encode())
+        self.ws.send(json.dumps(msg, ensure_ascii=False))
 
     def recv(self, timeout: float | None = None) -> dict | None:
-        """Receive a message. Returns None on disconnect, raises TimeoutError on timeout."""
-        while True:
-            nl = self.buf.find(b"\n")
-            if nl >= 0:
-                line = self.buf[:nl]
-                self.buf = self.buf[nl + 1:]
-                if line.strip():
-                    return json.loads(line)
-                continue
-
-            if timeout is not None:
-                ready, _, _ = select.select([self.sock], [], [], timeout)
-                if not ready:
-                    raise TimeoutError()
-
-            chunk = self.sock.recv(65536)
-            if not chunk:
+        """Receive one message. Returns None on disconnect, raises TimeoutError on timeout."""
+        if timeout is not None:
+            self.ws.settimeout(timeout)
+        else:
+            self.ws.settimeout(None)
+        try:
+            data = self.ws.recv()
+            if not data:
                 return None
-            self.buf += chunk
+            return json.loads(data)
+        except ws_client.WebSocketTimeoutException:
+            raise TimeoutError()
+        except (ws_client.WebSocketConnectionClosedException, ConnectionError):
+            return None
 
     def close(self):
-        self.sock.close()
+        try:
+            self.ws.close()
+        except Exception:
+            pass
 
 
 def kernel_to_anthropic_tools(kernel_tools: list[dict]) -> list[dict]:
@@ -83,13 +89,15 @@ def kernel_to_anthropic_tools(kernel_tools: list[dict]) -> list[dict]:
 
 
 def call_api(model: str, system_prompt: str, tools: list[dict], messages: list[dict]) -> dict:
-    body = json.dumps({
+    payload = {
         "model": model,
         "max_tokens": 4096,
         "system": system_prompt,
         "messages": messages,
-        "tools": tools if tools else None,
-    }).encode()
+    }
+    if tools:
+        payload["tools"] = tools
+    body = json.dumps(payload).encode()
 
     req = urllib.request.Request(
         API_URL,
@@ -101,8 +109,13 @@ def call_api(model: str, system_prompt: str, tools: list[dict], messages: list[d
         },
     )
 
-    resp = urllib.request.urlopen(req)
-    return json.loads(resp.read())
+    try:
+        resp = urllib.request.urlopen(req)
+        return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode()[:500]
+        log(f"API HTTP {e.code}: {error_body}")
+        raise
 
 
 def extract_text(content: list[dict]) -> str:
@@ -118,6 +131,7 @@ def process_turn(conn, model, system_prompt, tools, messages, parent_session, ag
     max_turns = 20
 
     for _ in range(max_turns):
+        log(f"calling API: model={model}, messages={len(messages)}, tools={len(tools)}")
         try:
             response = call_api(model, system_prompt, tools, messages)
         except Exception as e:
@@ -125,6 +139,7 @@ def process_turn(conn, model, system_prompt, tools, messages, parent_session, ag
             return f"[subagent error: {e}]"
 
         content = response.get("content", [])
+        log(f"API response: {len(content)} blocks, stop={response.get('stop_reason')}")
         messages.append({"role": "assistant", "content": content})
 
         tool_uses = extract_tool_uses(content)
@@ -134,16 +149,20 @@ def process_turn(conn, model, system_prompt, tools, messages, parent_session, ag
 
         # Execute tools via kernel
         tool_results = []
-        for tool in tool_uses:
+        for i, tool in enumerate(tool_uses):
+            log(f"sending tool_use {i+1}/{len(tool_uses)}: {tool['name']} id={tool['id']}")
             conn.send({
                 "type": "tool_use",
                 "id": tool["id"],
                 "name": tool["name"],
                 "input": tool["input"],
             })
+            log(f"waiting for tool_result {i+1}/{len(tool_uses)}...")
             result_msg = conn.recv()
             if result_msg is None:
+                log(f"kernel disconnected while waiting for tool_result {i+1}")
                 return "[kernel disconnected]"
+            log(f"got response type={result_msg.get('type')} id={result_msg.get('id', 'none')} output_len={len(result_msg.get('output', ''))}")
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": tool["id"],
@@ -165,6 +184,8 @@ def main():
                         help=f"Idle timeout in seconds (default: {DEFAULT_IDLE_TIMEOUT})")
     args = parser.parse_args()
 
+    log(f"main() starting: id={args.id}, API_KEY={'set' if API_KEY else 'EMPTY'}, URL={TABULA_URL}")
+
     if not API_KEY:
         log("ERROR: ANTHROPIC_API_KEY not set")
         sys.exit(1)
@@ -172,7 +193,7 @@ def main():
     session_name = f"subagent-{args.id}"
 
     # Connect to kernel
-    conn = KernelConnection(SOCKET_PATH)
+    conn = KernelConnection(TABULA_URL)
     conn.send({
         "type": "connect",
         "name": session_name,
@@ -193,6 +214,8 @@ def main():
 
     system_prompt = init_msg.get("prompt", "")
     kernel_tools = init_msg.get("tools", [])
+    # Subagents only get EXEC — no SPAWN/KILL/LIST to prevent recursive spawning
+    kernel_tools = [t for t in kernel_tools if t.get("name") == "EXEC"]
     tools = kernel_to_anthropic_tools(kernel_tools)
 
     log(f"started: id={args.id}, timeout={args.timeout}s")
@@ -208,6 +231,12 @@ def main():
         "text": result,
     })
     log(f"initial task done: {len(result)} bytes")
+
+    # Oneshot mode: exit immediately unless timeout > 0
+    if args.timeout <= 0:
+        log("oneshot mode, exiting")
+        conn.close()
+        sys.exit(0)
 
     # Stay alive — wait for follow-up messages
     while True:

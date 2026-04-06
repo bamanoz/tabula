@@ -29,12 +29,12 @@ if [ ! -d "$VENV" ]; then
   echo "Creating Python venv..."
   python3 -m venv "$VENV"
 fi
-"$VENV/bin/pip" install -q rich
+"$VENV/bin/pip" install -q websocket-client rich prompt_toolkit
 echo "Python dependencies installed"
 
-# Binary
-zig build
-cp zig-out/bin/tabula "$BIN_DIR/"
+# Go binary
+echo "Building Go binary..."
+go build -o "$BIN_DIR/tabula" ./cmd/tabula/
 if [ "$(uname)" = "Darwin" ]; then
   codesign --force --sign - "$BIN_DIR/tabula" 2>/dev/null || true
 fi

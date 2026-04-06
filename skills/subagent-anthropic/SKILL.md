@@ -2,6 +2,20 @@
 
 Spawn a long-running subagent powered by Anthropic Claude. The subagent runs in its own session with its own LLM context, executes the task using available tools, and sends the result back to your session. It stays alive for follow-up messages until idle timeout.
 
+## When to use subagents
+
+Use a subagent when:
+- The task requires running a command and waiting for its output (e.g. network requests, file searches, system checks)
+- The task is independent and self-contained — can be described in one sentence
+- You want to run multiple tasks in parallel (spawn several subagents at once)
+- The task involves exploration or research that may require multiple tool calls
+
+Do NOT use a subagent when:
+- You can answer directly from your own knowledge
+- A single EXEC command is enough — just run it yourself
+- The task requires back-and-forth with the user
+- The task is trivial (e.g. "what time is it")
+
 ## Usage
 
 ```
@@ -14,7 +28,7 @@ SPAWN python3 skills/subagent-anthropic/run.py --id <id> --parent-session <sessi
 - `--parent-session` (required) — your session name, where results will be delivered (usually `main`).
 - `--task` (required) — what the subagent should do. Be specific — subagents don't see your conversation history.
 - `--model` (optional) — override LLM model (default: from ANTHROPIC_MODEL env, or claude-sonnet-4-6).
-- `--timeout` (optional) — idle timeout in seconds (default: 120). The subagent exits if it receives no messages for this duration.
+- `--timeout` (optional) — idle timeout in seconds (default: 0 = oneshot). With the default, the subagent exits immediately after completing the task. Set `--timeout 120` to keep it alive for follow-up messages.
 
 ## How it works
 
@@ -22,9 +36,9 @@ SPAWN python3 skills/subagent-anthropic/run.py --id <id> --parent-session <sessi
 2. The subagent joins its own session (`subagent-<id>`), receives tools and system prompt from the kernel.
 3. It works independently — calls tools, thinks, iterates.
 4. When done, it sends the result as a message to your session with the id you provided.
-5. The subagent stays alive, waiting for follow-up messages in its session.
-6. You can send follow-up messages to the subagent's session (`subagent-<id>`) for multi-turn interaction.
-7. If no messages arrive within the idle timeout, the subagent exits automatically.
+5. By default (oneshot mode), the subagent exits immediately after delivering the result.
+6. To enable follow-ups, pass `--timeout N` (e.g. `--timeout 120`). The subagent stays alive, waiting for messages in its session.
+7. You can send follow-up messages to the subagent's session (`subagent-<id>`) for multi-turn interaction.
 
 ## Correlation
 
@@ -53,16 +67,17 @@ SPAWN python3 skills/subagent-anthropic/run.py --id research --parent-session ma
 SPAWN python3 skills/subagent-anthropic/run.py --id code --parent-session main --task "Write a simple HTTP server in Python"
 ```
 
-With custom timeout (10 minutes):
+With follow-up support (stays alive 10 minutes):
 ```
 SPAWN python3 skills/subagent-anthropic/run.py --id long_task --parent-session main --task "Refactor the auth module" --timeout 600
 ```
 
 ## Notes
 
+- By default, subagents are oneshot — they complete the task, send the result, and exit.
+- To keep a subagent alive for follow-ups, pass `--timeout N`.
 - Each subagent uses its own LLM conversation loop (may use multiple turns for tool use).
 - Subagents have access to the same kernel tools (EXEC, SPAWN, KILL, LIST).
 - Subagents do not see your conversation history — provide full context in the task.
 - Results are delivered as messages, not streamed.
-- The subagent exits on idle timeout (default 120s) or kernel disconnect.
-- For simple tasks, the subagent will finish quickly and idle out. For complex multi-step work, use a longer `--timeout`.
+- For simple tasks, the subagent will finish quickly. For complex multi-step work, it may take longer but still exits after completing.
