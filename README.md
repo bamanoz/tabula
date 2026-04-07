@@ -1,16 +1,20 @@
 # Tabula
 
-Microkernel AI agent. Zig kernel connects skills over Unix sockets using a JSON Lines protocol.
+Microkernel AI agent. Go kernel connects skills over WebSocket using a JSON pub/sub protocol.
 
 ```
-┌──────────┐     ┌──────────────┐     ┌─────────────┐
-│ CLI      │────▶│              │────▶│ LLM Driver  │
-│ Gateway  │◀────│  Zig Kernel  │◀────│ (Anthropic)  │
-└──────────┘     │              │     └─────────────┘
-                 │  Unix Socket │
-                 │  Pub/Sub     │     ┌─────────────┐
-                 │  Tool Exec   │────▶│ Memory      │
-                 └──────────────┘     └─────────────┘
+┌──────────┐     ┌──────────────┐     ┌──────────────┐
+│ CLI      │────▶│              │────▶│ LLM Driver   │
+│ Gateway  │◀────│  Go Kernel   │◀────│ (Anthropic)  │
+└──────────┘     │              │     └──────────────┘
+                 │  WebSocket   │
+                 │  Pub/Sub     │     ┌──────────────┐
+                 │  Tool Exec   │────▶│ Subagent     │
+                 │              │     └──────────────┘
+                 │              │
+                 │              │     ┌──────────────┐
+                 │              │────▶│ Memory       │
+                 └──────────────┘     └──────────────┘
 ```
 
 ## Install
@@ -20,14 +24,15 @@ git clone <repo> && cd tabula
 ./install.sh
 ```
 
-Requires: Zig 0.14+, Python 3.11+
+Requires: Go 1.26+, Python 3.11+
 
 Installs to `~/.tabula/` (override with `TABULA_HOME`):
 
 ```
 ~/.tabula/
-├── bin/tabula          # binary
-├── tabula.yaml         # config
+├── bin/tabula          # Go binary
+├── tabula.yaml         # config (boot command)
+├── boot.py             # skill discovery & prompt assembly
 ├── skills/             # installed skills
 ├── memory/             # persistent memory
 └── .venv/              # Python dependencies
@@ -40,7 +45,7 @@ export ANTHROPIC_API_KEY=sk-...
 tabula
 ```
 
-Verbose mode:
+Verbose mode (logs to `~/.tabula/kernel.log`):
 
 ```bash
 tabula -v
@@ -48,84 +53,142 @@ tabula -v
 
 ## Architecture
 
-The kernel is a single-threaded Zig binary that:
+The kernel is a Go binary (WebSocket server) that:
 
-1. Opens a Unix domain socket
-2. Spawns skill processes (LLM driver, CLI gateway, etc.)
-3. Routes messages between them via pub/sub
-4. Intercepts and executes tool calls (EXEC, SPAWN, KILL, LIST)
+1. Runs the boot script (`boot.py`) to discover skills and assemble a system prompt
+2. Starts an HTTP/WebSocket server (default `localhost:8089`)
+3. Spawns skill processes (LLM driver, CLI gateway)
+4. Routes messages between them via session-scoped pub/sub
+5. Intercepts and executes tool calls (EXEC, SPAWN, KILL, LIST)
+6. Monitors child processes with a reaper goroutine
 
-Skills connect to the kernel socket, declare what message types they send/receive, and join a session. The kernel handles routing — skills don't know about each other.
+Skills connect to the kernel via WebSocket, declare what message types they send/receive, and join a session. The kernel handles routing — skills don't know about each other.
+
+### Boot sequence
+
+1. Kernel reads `tabula.yaml` to find the boot command
+2. Boot script scans `skills/` for `SKILL.md` files, reads long-term memory, assembles system prompt
+3. Boot outputs JSON config: `{url, system_prompt, spawn[]}`
+4. Kernel starts WebSocket server, spawns listed processes
+5. Processes connect, join sessions, begin message exchange
 
 ### Protocol
 
-JSON Lines over Unix socket. Each message has a `type` field:
+JSON messages over WebSocket. Each message has a `type` field:
 
 | Message | Direction | Description |
 |---------|-----------|-------------|
 | `connect` | skill → kernel | Register with name, sends[], receives[] |
+| `connected` | kernel → skill | Acknowledge with client ID |
 | `join` | skill → kernel | Join a session |
-| `message` | gateway → driver | User input |
+| `joined` | kernel → skill | Acknowledge session join |
+| `init` | kernel → skill | System prompt + tools (sent after join) |
+| `message` | any → any | Text message (user input, subagent results) |
 | `stream_start` | driver → gateway | LLM response begins |
 | `stream_delta` | driver → gateway | Token chunk |
 | `stream_end` | driver → gateway | LLM response complete |
 | `tool_use` | driver → kernel | LLM wants to call a tool |
 | `tool_result` | kernel → driver | Tool execution result |
 | `done` | driver → gateway | Turn complete |
+| `cancel` | gateway → kernel | Abort current operation |
+| `error` | kernel → session | Process crash notification |
 
-### Kernel Tools
+### Sessions
+
+Sessions isolate message routing. The main conversation uses session `main`. Each subagent joins its own session (`subagent-<id>`). Cross-session messaging is supported by setting the `session` field explicitly in a message.
+
+### Kernel tools
 
 | Tool | Description |
 |------|-------------|
-| `EXEC` | Run a command synchronously, return stdout |
+| `EXEC` | Run a command synchronously, return stdout (truncated to 16KB) |
 | `SPAWN` | Start a background process, return PID |
 | `KILL` | Stop a process by PID |
-| `LIST` | List spawned processes |
+| `LIST` | List all spawned processes with PID, command, alive status |
 
 ## Skills
 
 | Skill | Description |
 |-------|-------------|
-| `llm-anthropic` | Claude API driver with streaming and tool use |
+| `llm-anthropic` | Claude API driver with streaming, tool use, and subagent result collection |
 | `gateway-cli` | Interactive terminal UI (Rich markdown, shimmer spinner) |
+| `subagent-anthropic` | Autonomous LLM sub-agent spawned for parallel tasks |
 | `memory` | Persistent memory — save, search, list, get, delete |
+
+### Subagents
+
+The LLM driver can spawn sub-agents via the `SPAWN` tool. Each subagent is an independent process running its own LLM loop in a separate session.
+
+```
+Parent LLM ──SPAWN──▶ Kernel ──fork──▶ Subagent process
+     │                                      │
+     │◀─── message (result) ───────────────│
+```
+
+Key design:
+- Subagents only get `EXEC` — no `SPAWN`/`KILL`/`LIST` (prevents recursive spawning)
+- Parent detects subagent IDs via `--id` argument in SPAWN commands
+- Results collected with debounce batching (5s) and max wait (300s)
+- Multiple subagents run in parallel, results aggregated into one LLM turn
+- Subagents can stay alive for follow-up messages with `--timeout`
+
+Spawn command:
+```bash
+SPAWN python3 skills/subagent-anthropic/run.py \
+  --id research_1 \
+  --parent-session main \
+  --task "Research topic X" \
+  --timeout 30
+```
 
 ### Memory
 
 ```bash
-# Save
-EXEC python3 skills/memory/run.py save --category fact --title "Uses Zig" "Kernel written in Zig"
+# Save (short-term, daily file)
+EXEC python3 skills/memory/run.py save --category fact --title "Uses Go" "Kernel written in Go"
 
-# Search
+# Save (long-term, injected into system prompt)
+EXEC python3 skills/memory/run.py save --category fact --title "Uses Go" --long-term "Kernel written in Go"
+
+# Search (semantic + keyword)
 EXEC python3 skills/memory/run.py search "what language"
 
-# List
+# List, get, delete
 EXEC python3 skills/memory/run.py list --category fact
+EXEC python3 skills/memory/run.py get <entry-id>
+EXEC python3 skills/memory/run.py delete <entry-id>
 ```
 
-Long-term memories (`--long-term`) are injected into the system prompt on startup. Supports semantic search via OpenAI embeddings when `OPENAI_API_KEY` is set.
+Supports semantic search via OpenAI embeddings when `OPENAI_API_KEY` is set. Falls back to keyword search otherwise.
 
 ## Configuration
 
 `~/.tabula/tabula.yaml`:
 
 ```yaml
-socket: /tmp/tabula.sock
-system_prompt: .venv/bin/python3 system_prompt.py skills/
-spawn:
-  - .venv/bin/python3 skills/llm-anthropic/run.py
-  - .venv/bin/python3 skills/gateway-cli/run.py
+boot: .venv/bin/python3 boot.py
 ```
+
+The boot script handles everything else: skill discovery, system prompt assembly, and process list.
 
 ### Environment variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `TABULA_HOME` | Workspace directory | `~/.tabula` |
-| `TABULA_SOCKET` | Kernel socket path | from config |
+| `TABULA_URL` | Kernel WebSocket URL | `ws://localhost:8089/ws` |
 | `ANTHROPIC_API_KEY` | Claude API key | required |
 | `ANTHROPIC_MODEL` | Model name | `claude-sonnet-4-6` |
+| `ANTHROPIC_BASE_URL` | API endpoint override | `https://api.anthropic.com` |
 | `OPENAI_API_KEY` | For memory embeddings | optional |
+
+## Adding skills
+
+Create a directory in `skills/` with:
+- `SKILL.md` — documentation (injected into system prompt)
+- `run.py` — entry point (or any executable)
+
+The skill connects to the kernel via WebSocket (`TABULA_URL`), sends a `connect` message declaring its message types, joins a session, and starts communicating.
 
 ## License
 
