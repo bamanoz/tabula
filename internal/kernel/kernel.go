@@ -1,6 +1,8 @@
 package kernel
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -13,6 +15,7 @@ type Hub struct {
 	mu           sync.Mutex
 	clients      map[*Client]bool
 	spawned      map[int]*SpawnedProcess
+	spawnTokens  map[string]int // token → child depth (one-time use)
 	nextClientID int
 	systemPrompt string
 	toolsJSON    json.RawMessage
@@ -24,11 +27,20 @@ func NewHub(systemPrompt string, toolsJSON json.RawMessage, verbose bool) *Hub {
 	return &Hub{
 		clients:      make(map[*Client]bool),
 		spawned:      make(map[int]*SpawnedProcess),
+		spawnTokens:  make(map[string]int),
 		nextClientID: 1,
 		systemPrompt: systemPrompt,
 		toolsJSON:    toolsJSON,
 		Verbose:      verbose,
 	}
+}
+
+func (h *Hub) generateSpawnToken(childDepth int) string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	token := hex.EncodeToString(b)
+	h.spawnTokens[token] = childDepth
+	return token
 }
 
 func (h *Hub) log(format string, args ...any) {
@@ -102,6 +114,15 @@ func (h *Hub) handleConnect(c *Client, msg *Message) {
 		c.receives[r] = true
 	}
 	c.id = h.nextClientID
+	// Resolve depth from spawn token (one-time use)
+	if msg.Token != "" {
+		if depth, ok := h.spawnTokens[msg.Token]; ok {
+			c.depth = depth
+			delete(h.spawnTokens, msg.Token)
+		} else {
+			h.log("invalid spawn token from %s", msg.Name)
+		}
+	}
 	h.nextClientID++
 	c.connected = true
 

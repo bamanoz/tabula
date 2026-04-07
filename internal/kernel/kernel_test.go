@@ -125,6 +125,41 @@ func readMsgTimeout(t *testing.T, conn *websocket.Conn, d time.Duration) *Messag
 	return &msg
 }
 
+// connectWithDepth dials + sends connect with a spawn token for given depth + reads connected response.
+func (e *testEnv) connectWithDepth(name string, depth int, sends, receives []string) *websocket.Conn {
+	e.t.Helper()
+	// Generate a spawn token in the hub (simulates kernel-issued token)
+	e.Hub.mu.Lock()
+	token := e.Hub.generateSpawnToken(depth)
+	e.Hub.mu.Unlock()
+
+	conn := e.dial()
+	writeJSON(e.t, conn, Message{
+		Type:     "connect",
+		Name:     name,
+		Sends:    sends,
+		Receives: receives,
+		Token:    token,
+	})
+	msg := readMsg(e.t, conn)
+	if msg.Type != "connected" {
+		e.t.Fatalf("expected connected, got %s", msg.Type)
+	}
+	return conn
+}
+
+// connectAndJoinWithDepth dials + connect with depth + join.
+func (e *testEnv) connectAndJoinWithDepth(name, session string, depth int, sends, receives []string) *websocket.Conn {
+	e.t.Helper()
+	conn := e.connectWithDepth(name, depth, sends, receives)
+	writeJSON(e.t, conn, Message{Type: "join", Session: session})
+	msg := readMsg(e.t, conn)
+	if msg.Type != "joined" {
+		e.t.Fatalf("expected joined, got %s", msg.Type)
+	}
+	return conn
+}
+
 // --- Tests ---
 
 func TestConnectJoinHandshake(t *testing.T) {
@@ -1060,5 +1095,424 @@ func TestToolResultsNotLeakedAcrossSessions(t *testing.T) {
 	leakB := readMsgTimeout(t, connB, 500*time.Millisecond)
 	if leakB != nil {
 		t.Errorf("sess-b got extra message: %+v", leakB)
+	}
+}
+
+func TestSpawnDeniedAtMaxDepth(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Client at depth=maxSpawnDepth should be denied SPAWN
+	conn := env.connectAndJoinWithDepth("deep-agent", "sub-deep", maxSpawnDepth,
+		[]string{"tool_use"}, []string{"init", "tool_result"})
+	readMsg(t, conn) // init
+
+	writeJSON(t, conn, Message{
+		Type:  "tool_use",
+		ID:    "s1",
+		Name:  "SPAWN",
+		Input: json.RawMessage(`{"command":"sleep 60"}`),
+	})
+	msg := readMsg(t, conn)
+	if !strings.Contains(msg.Output, "max spawn depth") {
+		t.Errorf("expected max spawn depth error, got %q", msg.Output)
+	}
+}
+
+func TestSpawnAllowedBelowMaxDepth(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Client at depth=0 (default) should be allowed to SPAWN
+	conn := env.connectAndJoin("driver", "main",
+		[]string{"tool_use"}, []string{"init", "tool_result"})
+	readMsg(t, conn) // init
+
+	writeJSON(t, conn, Message{
+		Type:  "tool_use",
+		ID:    "s1",
+		Name:  "SPAWN",
+		Input: json.RawMessage(`{"command":"sleep 60"}`),
+	})
+	msg := readMsg(t, conn)
+	if !strings.HasPrefix(msg.Output, "PID ") {
+		t.Fatalf("expected PID, got %q", msg.Output)
+	}
+
+	// Cleanup
+	var pid int
+	fmt.Sscanf(msg.Output, "PID %d", &pid)
+	writeJSON(t, conn, Message{
+		Type:  "tool_use",
+		ID:    "k1",
+		Name:  "KILL",
+		Input: json.RawMessage(fmt.Sprintf(`{"pid":%d}`, pid)),
+	})
+	readMsg(t, conn)
+}
+
+func TestSpawnDeniedAtMaxChildren(t *testing.T) {
+	env := newTestEnv(t)
+
+	conn := env.connectAndJoin("driver", "main",
+		[]string{"tool_use"}, []string{"init", "tool_result"})
+	readMsg(t, conn) // init
+
+	// Spawn maxChildrenPerSession processes
+	var pids []int
+	for i := range maxChildrenPerSession {
+		writeJSON(t, conn, Message{
+			Type:  "tool_use",
+			ID:    fmt.Sprintf("s%d", i),
+			Name:  "SPAWN",
+			Input: json.RawMessage(`{"command":"sleep 60"}`),
+		})
+		msg := readMsg(t, conn)
+		if !strings.HasPrefix(msg.Output, "PID ") {
+			t.Fatalf("spawn %d: expected PID, got %q", i, msg.Output)
+		}
+		var pid int
+		fmt.Sscanf(msg.Output, "PID %d", &pid)
+		pids = append(pids, pid)
+	}
+
+	// Next SPAWN should be denied
+	writeJSON(t, conn, Message{
+		Type:  "tool_use",
+		ID:    "overflow",
+		Name:  "SPAWN",
+		Input: json.RawMessage(`{"command":"sleep 60"}`),
+	})
+	msg := readMsg(t, conn)
+	if !strings.Contains(msg.Output, "too many active subagents") {
+		t.Errorf("expected max children error, got %q", msg.Output)
+	}
+
+	// Kill one, then SPAWN should succeed again
+	writeJSON(t, conn, Message{
+		Type:  "tool_use",
+		ID:    "k1",
+		Name:  "KILL",
+		Input: json.RawMessage(fmt.Sprintf(`{"pid":%d}`, pids[0])),
+	})
+	readMsg(t, conn) // kill result
+
+	writeJSON(t, conn, Message{
+		Type:  "tool_use",
+		ID:    "retry",
+		Name:  "SPAWN",
+		Input: json.RawMessage(`{"command":"sleep 60"}`),
+	})
+	retryMsg := readMsg(t, conn)
+	if !strings.HasPrefix(retryMsg.Output, "PID ") {
+		t.Errorf("expected PID after kill, got %q", retryMsg.Output)
+	}
+
+	// Cleanup all
+	var retryPid int
+	fmt.Sscanf(retryMsg.Output, "PID %d", &retryPid)
+	allPids := append(pids[1:], retryPid)
+	for i, pid := range allPids {
+		writeJSON(t, conn, Message{
+			Type:  "tool_use",
+			ID:    fmt.Sprintf("cleanup-%d", i),
+			Name:  "KILL",
+			Input: json.RawMessage(fmt.Sprintf(`{"pid":%d}`, pid)),
+		})
+		readMsg(t, conn)
+	}
+}
+
+func TestSpawnTokenPropagatedInEnv(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Client at depth=1 spawns a process — child should get TABULA_SPAWN_TOKEN
+	conn := env.connectAndJoinWithDepth("subagent", "sub-1", 1,
+		[]string{"tool_use"}, []string{"init", "tool_result"})
+	readMsg(t, conn) // init
+
+	// Spawn a process that prints TABULA_SPAWN_TOKEN
+	writeJSON(t, conn, Message{
+		Type:  "tool_use",
+		ID:    "s1",
+		Name:  "SPAWN",
+		Input: json.RawMessage(`{"command":"echo $TABULA_SPAWN_TOKEN > /tmp/tabula_token_test.txt"}`),
+	})
+	spawnMsg := readMsg(t, conn)
+	if !strings.HasPrefix(spawnMsg.Output, "PID ") {
+		t.Fatalf("expected PID, got %q", spawnMsg.Output)
+	}
+
+	// Wait for process to write
+	time.Sleep(500 * time.Millisecond)
+
+	// Read the file via EXEC
+	writeJSON(t, conn, Message{
+		Type:  "tool_use",
+		ID:    "e1",
+		Name:  "EXEC",
+		Input: json.RawMessage(`{"command":"cat /tmp/tabula_token_test.txt"}`),
+	})
+	execMsg := readMsg(t, conn)
+	token := strings.TrimSpace(execMsg.Output)
+	if len(token) != 32 { // 16 bytes hex-encoded
+		t.Errorf("expected 32-char hex token, got %q (len %d)", token, len(token))
+	}
+
+	// Verify the token resolves to depth=2 in hub
+	env.Hub.mu.Lock()
+	depth, ok := env.Hub.spawnTokens[token]
+	env.Hub.mu.Unlock()
+	if !ok {
+		t.Errorf("token %q not found in hub spawnTokens", token)
+	} else if depth != 2 {
+		t.Errorf("expected depth 2, got %d", depth)
+	}
+
+	// Cleanup
+	writeJSON(t, conn, Message{
+		Type:  "tool_use",
+		ID:    "e2",
+		Name:  "EXEC",
+		Input: json.RawMessage(`{"command":"rm -f /tmp/tabula_token_test.txt"}`),
+	})
+	readMsg(t, conn)
+}
+
+func TestSpawnChildrenCountedPerSession(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Session A can spawn up to max
+	connA := env.connectAndJoin("driver-a", "sess-a",
+		[]string{"tool_use"}, []string{"init", "tool_result"})
+	readMsg(t, connA) // init
+
+	// Session B is independent
+	connB := env.connectAndJoin("driver-b", "sess-b",
+		[]string{"tool_use"}, []string{"init", "tool_result"})
+	readMsg(t, connB) // init
+
+	// Fill session A to max
+	for i := range maxChildrenPerSession {
+		writeJSON(t, connA, Message{
+			Type:  "tool_use",
+			ID:    fmt.Sprintf("a%d", i),
+			Name:  "SPAWN",
+			Input: json.RawMessage(`{"command":"sleep 60"}`),
+		})
+		readMsg(t, connA)
+	}
+
+	// Session B should still be able to spawn
+	writeJSON(t, connB, Message{
+		Type:  "tool_use",
+		ID:    "b1",
+		Name:  "SPAWN",
+		Input: json.RawMessage(`{"command":"sleep 60"}`),
+	})
+	msg := readMsg(t, connB)
+	if !strings.HasPrefix(msg.Output, "PID ") {
+		t.Errorf("session B should be able to spawn, got %q", msg.Output)
+	}
+}
+
+func TestSpawnTokenOneTimeUse(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Create a token for depth=1
+	env.Hub.mu.Lock()
+	token := env.Hub.generateSpawnToken(1)
+	env.Hub.mu.Unlock()
+
+	// First connect with token — should get depth=1
+	conn1 := env.dial()
+	writeJSON(t, conn1, Message{
+		Type:     "connect",
+		Name:     "first",
+		Sends:    []string{"tool_use"},
+		Receives: []string{"init", "tool_result"},
+		Token:    token,
+	})
+	msg1 := readMsg(t, conn1)
+	if msg1.Type != "connected" {
+		t.Fatalf("expected connected, got %s", msg1.Type)
+	}
+
+	// Verify depth was set
+	env.Hub.mu.Lock()
+	var firstDepth int
+	for c := range env.Hub.clients {
+		if c.name == "first" {
+			firstDepth = c.depth
+		}
+	}
+	env.Hub.mu.Unlock()
+	if firstDepth != 1 {
+		t.Errorf("first client: expected depth 1, got %d", firstDepth)
+	}
+
+	// Second connect with same token — should get depth=0 (token consumed)
+	conn2 := env.dial()
+	writeJSON(t, conn2, Message{
+		Type:     "connect",
+		Name:     "second",
+		Sends:    []string{"tool_use"},
+		Receives: []string{"init", "tool_result"},
+		Token:    token,
+	})
+	msg2 := readMsg(t, conn2)
+	if msg2.Type != "connected" {
+		t.Fatalf("expected connected, got %s", msg2.Type)
+	}
+
+	env.Hub.mu.Lock()
+	var secondDepth int
+	for c := range env.Hub.clients {
+		if c.name == "second" {
+			secondDepth = c.depth
+		}
+	}
+	env.Hub.mu.Unlock()
+	if secondDepth != 0 {
+		t.Errorf("second client (reused token): expected depth 0, got %d", secondDepth)
+	}
+}
+
+func TestNoTokenMeansDepthZero(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Connect without token — depth should be 0 (boot process)
+	conn := env.connectAndJoin("driver", "main",
+		[]string{"tool_use"}, []string{"init", "tool_result"})
+	readMsg(t, conn) // init
+
+	env.Hub.mu.Lock()
+	var depth int
+	for c := range env.Hub.clients {
+		if c.name == "driver" {
+			depth = c.depth
+		}
+	}
+	env.Hub.mu.Unlock()
+
+	if depth != 0 {
+		t.Errorf("no-token client: expected depth 0, got %d", depth)
+	}
+
+	// Should be able to spawn (depth 0 < maxSpawnDepth)
+	writeJSON(t, conn, Message{
+		Type:  "tool_use",
+		ID:    "s1",
+		Name:  "SPAWN",
+		Input: json.RawMessage(`{"command":"sleep 60"}`),
+	})
+	msg := readMsg(t, conn)
+	if !strings.HasPrefix(msg.Output, "PID ") {
+		t.Errorf("depth-0 client should be able to spawn, got %q", msg.Output)
+	}
+}
+
+func TestKillScopedToSession(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Session A spawns a process
+	connA := env.connectAndJoin("driver-a", "sess-a",
+		[]string{"tool_use"}, []string{"init", "tool_result"})
+	readMsg(t, connA) // init
+
+	writeJSON(t, connA, Message{
+		Type:  "tool_use",
+		ID:    "s1",
+		Name:  "SPAWN",
+		Input: json.RawMessage(`{"command":"sleep 60"}`),
+	})
+	spawnMsg := readMsg(t, connA)
+	var pid int
+	fmt.Sscanf(spawnMsg.Output, "PID %d", &pid)
+
+	// Session B tries to kill A's process — should fail
+	connB := env.connectAndJoin("driver-b", "sess-b",
+		[]string{"tool_use"}, []string{"init", "tool_result"})
+	readMsg(t, connB) // init
+
+	writeJSON(t, connB, Message{
+		Type:  "tool_use",
+		ID:    "k1",
+		Name:  "KILL",
+		Input: json.RawMessage(fmt.Sprintf(`{"pid":%d}`, pid)),
+	})
+	killMsg := readMsg(t, connB)
+	if !strings.Contains(killMsg.Output, "not your process") {
+		t.Errorf("session B should not kill A's process, got %q", killMsg.Output)
+	}
+
+	// Session A can kill its own process
+	writeJSON(t, connA, Message{
+		Type:  "tool_use",
+		ID:    "k2",
+		Name:  "KILL",
+		Input: json.RawMessage(fmt.Sprintf(`{"pid":%d}`, pid)),
+	})
+	killMsg2 := readMsg(t, connA)
+	if killMsg2.Output != "OK" {
+		t.Errorf("session A should kill its own process, got %q", killMsg2.Output)
+	}
+}
+
+func TestListScopedToSession(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Session A spawns a process
+	connA := env.connectAndJoin("driver-a", "sess-a",
+		[]string{"tool_use"}, []string{"init", "tool_result"})
+	readMsg(t, connA) // init
+
+	writeJSON(t, connA, Message{
+		Type:  "tool_use",
+		ID:    "s1",
+		Name:  "SPAWN",
+		Input: json.RawMessage(`{"command":"sleep 60"}`),
+	})
+	readMsg(t, connA) // PID
+
+	// Session B spawns a different process
+	connB := env.connectAndJoin("driver-b", "sess-b",
+		[]string{"tool_use"}, []string{"init", "tool_result"})
+	readMsg(t, connB) // init
+
+	writeJSON(t, connB, Message{
+		Type:  "tool_use",
+		ID:    "s2",
+		Name:  "SPAWN",
+		Input: json.RawMessage(`{"command":"sleep 61"}`),
+	})
+	readMsg(t, connB) // PID
+
+	// Session A lists — should only see "sleep 60"
+	writeJSON(t, connA, Message{
+		Type:  "tool_use",
+		ID:    "l1",
+		Name:  "LIST",
+		Input: json.RawMessage(`{}`),
+	})
+	listA := readMsg(t, connA)
+	if !strings.Contains(listA.Output, "sleep 60") {
+		t.Errorf("A should see its own process, got %q", listA.Output)
+	}
+	if strings.Contains(listA.Output, "sleep 61") {
+		t.Errorf("A should NOT see B's process, got %q", listA.Output)
+	}
+
+	// Session B lists — should only see "sleep 61"
+	writeJSON(t, connB, Message{
+		Type:  "tool_use",
+		ID:    "l2",
+		Name:  "LIST",
+		Input: json.RawMessage(`{}`),
+	})
+	listB := readMsg(t, connB)
+	if !strings.Contains(listB.Output, "sleep 61") {
+		t.Errorf("B should see its own process, got %q", listB.Output)
+	}
+	if strings.Contains(listB.Output, "sleep 60") {
+		t.Errorf("B should NOT see A's process, got %q", listB.Output)
 	}
 }

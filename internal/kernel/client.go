@@ -16,6 +16,7 @@ type Client struct {
 	name      string
 	session   string
 	id        int
+	depth     int
 	sends     map[string]bool
 	receives  map[string]bool
 	sendCh    chan []byte

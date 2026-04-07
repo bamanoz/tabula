@@ -27,8 +27,7 @@ TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
 VERBOSE = os.environ.get("TABULA_VERBOSE", "") == "1"
 
 # Subagent result batching
-DEBOUNCE_SEC = 5     # wait this long after last result before sending batch
-MAX_WAIT_SEC = 300   # never wait longer than this total (5 min)
+MAX_WAIT_SEC = 300   # max wait for subagent results (5 min)
 
 
 def log(msg: str):
@@ -104,6 +103,7 @@ class Driver:
         self._collected: list[dict] = []        # buffered results {id, text}
         self._collect_start: float = 0          # when collection started
         self._spawn_ids_this_convo: set[str] = set()  # accumulated across tool turns
+        self._pid_to_agent_id: dict[int, str] = {}    # PID → subagent ID mapping
         self._needs_turn: bool = False  # flag to trigger process_turn from run loop
 
     def connect(self):
@@ -120,9 +120,10 @@ class Driver:
         resp = self.conn.recv()
         log(f"joined: {resp}")
 
-    def call_api_streaming(self):
+    def call_api_streaming(self, suppress_stream=False):
         """Call Claude streaming API. Streams text deltas to kernel,
-        accumulates tool_use blocks. Returns assistant content blocks."""
+        accumulates tool_use blocks. Returns assistant content blocks.
+        If suppress_stream=True, text is accumulated but not sent to kernel."""
 
         body = json.dumps({
             "model": MODEL,
@@ -180,10 +181,11 @@ class Driver:
                     if delta["type"] == "text_delta":
                         text = delta["text"]
                         current_text += text
-                        if not stream_started:
-                            self.conn.send({"type": "stream_start"})
-                            stream_started = True
-                        self.conn.send({"type": "stream_delta", "text": text})
+                        if not suppress_stream:
+                            if not stream_started:
+                                self.conn.send({"type": "stream_start"})
+                                stream_started = True
+                            self.conn.send({"type": "stream_delta", "text": text})
                     elif delta["type"] == "input_json_delta" and current_tool:
                         current_tool["input_json"] += delta["partial_json"]
 
@@ -235,7 +237,8 @@ class Driver:
 
         # Only send done if no tool calls — otherwise the turn continues
         if not tool_uses:
-            self.conn.send({"type": "done"})
+            # Don't send done yet — caller may enter collection mode
+            pass
         else:
             # Track which tool_results we need before next API call
             self._expected_tool_ids = [t["id"] for t in tool_uses]
@@ -243,12 +246,15 @@ class Driver:
 
         return content_blocks, tool_uses
 
-    def process_turn(self):
-        """Run one LLM turn: call API, stream response, handle tool loop."""
+    def process_turn(self, suppress_stream=False):
+        """Run one LLM turn: call API, stream response, handle tool loop.
+        If suppress_stream=True, text is not streamed to gateway (used for
+        tool-continuation turns and collection-flush turns). The final text-only
+        response is retroactively streamed before sending done."""
         self.aborted = False
 
         try:
-            content_blocks, tool_uses = self.call_api_streaming()
+            content_blocks, tool_uses = self.call_api_streaming(suppress_stream=suppress_stream)
         except Exception as e:
             log(f"API error: {e}")
             self.conn.send({"type": "stream_start"})
@@ -286,6 +292,23 @@ class Driver:
             self._collected = []
             self._collect_start = time.time()
             log(f"collection mode: waiting for {self._pending_ids}")
+            # Don't send done — we're still working (waiting for subagents)
+        elif not tool_uses:
+            # LLM responded with text and no tools — turn is done
+            if self.collecting:
+                log(f"LLM finished but {len(self._pending_ids)} subagents still pending — giving up collection")
+                self._pending_ids.clear()
+                self._collected = []
+            # If streaming was suppressed, retroactively stream the final text
+            if suppress_stream:
+                final_text = "\n".join(
+                    b["text"] for b in content_blocks if b.get("type") == "text" and b.get("text")
+                )
+                if final_text.strip():
+                    self.conn.send({"type": "stream_start"})
+                    self.conn.send({"type": "stream_delta", "text": final_text})
+                    self.conn.send({"type": "stream_end"})
+            self.conn.send({"type": "done"})
 
         # If there were tool uses, wait for tool_results
         # (kernel will send them, and our main loop dispatches handle_tool_result)
@@ -297,7 +320,8 @@ class Driver:
             if tool.get("name") != "SPAWN":
                 continue
             cmd = tool.get("input", {}).get("command", "")
-            m = re.search(r"--id\s+(\S+)", cmd)
+            # Match --id VALUE or --id=VALUE, with optional quotes
+            m = re.search(r"--id[\s=]+['\"]?(\S+?)['\"]?(?:\s|$)", cmd)
             if m:
                 ids.add(m.group(1))
         return ids
@@ -346,7 +370,7 @@ class Driver:
     def handle_message(self, msg: dict):
         text = msg.get("text", "")
         msg_id = msg.get("id", "")
-        log(f"message: id={msg_id} {text[:200]}")
+        log(f"message: id='{msg_id}' collecting={self.collecting} pending={self._pending_ids} text={text[:100]}")
 
         # If we're in collection mode and this is from a subagent we're waiting for
         if self.collecting and msg_id and msg_id in self._pending_ids:
@@ -364,6 +388,22 @@ class Driver:
         output = msg.get("output", "")
         log(f"tool_result: id={tool_id}")
 
+        # Track PID → agent_id mapping from SPAWN results ("PID 12345")
+        import re
+        pid_match = re.match(r"PID (\d+)", output)
+        if pid_match:
+            pid = int(pid_match.group(1))
+            # Find the SPAWN tool_use that produced this to get the agent --id
+            for t in (self.messages[-1].get("content", []) if self.messages else []):
+                if isinstance(t, dict) and t.get("id") == tool_id and t.get("name") == "SPAWN":
+                    cmd = t.get("input", {}).get("command", "")
+                    id_match = re.search(r"--id\s+(\S+)", cmd)
+                    if id_match:
+                        agent_id = id_match.group(1).strip("'\"")
+                        self._pid_to_agent_id[pid] = agent_id
+                        log(f"mapped PID {pid} → agent {agent_id}")
+                    break
+
         self._tool_results_buf.append({
             "type": "tool_result",
             "tool_use_id": tool_id,
@@ -377,55 +417,63 @@ class Driver:
             return
 
         # All results in — send as single user message and continue
+        # Suppress streaming for tool-continuation turns to avoid repeating reports
         self.messages.append({"role": "user", "content": self._tool_results_buf})
         self._expected_tool_ids = []
         self._tool_results_buf = []
-        self.process_turn()
+        self.process_turn(suppress_stream=True)
 
     def handle_error(self, msg: dict):
         text = msg.get("text", "unknown error")
         log(f"error: {text}")
+
+        # If a subagent crashed during collection, mark it as done with error
+        if self.collecting:
+            import re
+            m = re.search(r"process (\d+) crashed", text)
+            if m:
+                pid = int(m.group(1))
+                agent_id = self._pid_to_agent_id.get(pid)
+                if agent_id and agent_id in self._pending_ids:
+                    self._collected.append({"id": agent_id, "text": f"[subagent crashed: {text}]"})
+                    log(f"subagent {agent_id} (PID {pid}) crashed, marked as collected")
+                    return
+            # Unknown crash during collection — don't break the loop
+            return
+
         self.messages.append({"role": "user", "content": f"[system error: {text}]"})
         self.process_turn()
 
     def run(self):
-        last_result_time = 0.0
-
         while True:
             # Process pending LLM turn from flush
             if self._needs_turn:
                 self._needs_turn = False
-                self.process_turn()
+                # Suppress streaming for collection-flush turns — if the LLM spawns more
+                # agents, we don't want to stream intermediate reports. The final text-only
+                # response will be retroactively streamed before done.
+                self.process_turn(suppress_stream=True)
                 continue
 
-            # In collection mode: use short timeout for debounce
+            # In collection mode: wait for ALL results or max timeout
             if self.collecting:
                 elapsed = time.time() - self._collect_start
-                time_since_last = time.time() - last_result_time if last_result_time else elapsed
 
                 # Max wait exceeded — flush what we have
                 if elapsed >= MAX_WAIT_SEC:
                     log(f"max wait {MAX_WAIT_SEC}s reached, flushing")
                     self._flush_collected()
-                    last_result_time = 0.0
                     continue
 
-                # Debounce: all results in, or N seconds of silence
+                # All results in — flush immediately
                 all_in = self._collected and not (self._pending_ids - {r["id"] for r in self._collected})
                 if all_in:
                     log("all expected results collected, flushing")
                     self._flush_collected()
-                    last_result_time = 0.0
                     continue
 
-                if self._collected and time_since_last >= DEBOUNCE_SEC:
-                    log(f"debounce {DEBOUNCE_SEC}s reached, flushing")
-                    self._flush_collected()
-                    last_result_time = 0.0
-                    continue
-
-                # Poll with short timeout
-                timeout = min(DEBOUNCE_SEC, MAX_WAIT_SEC - elapsed, 1.0)
+                # Poll with timeout
+                timeout = min(MAX_WAIT_SEC - elapsed, 5.0)
             else:
                 timeout = None  # block forever
 
@@ -441,10 +489,7 @@ class Driver:
             if msg_type == "init":
                 self.handle_init(msg)
             elif msg_type == "message":
-                was_collecting = self.collecting
                 self.handle_message(msg)
-                if was_collecting and self.collecting:
-                    last_result_time = time.time()
             elif msg_type == "tool_result":
                 self.handle_tool_result(msg)
             elif msg_type == "error":

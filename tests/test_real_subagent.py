@@ -87,8 +87,8 @@ def main():
 
     log("test", C, "connected as test-gateway")
 
-    # Send test prompt
-    prompt = "проведи исследование, что такое openclaw"
+    # Send test prompt — explicitly request subagents
+    prompt = "Запусти 3 субагента параллельно: первый должен выполнить `echo agent1_done`, второй `echo agent2_done`, третий `echo agent3_done`. Собери результаты и ответь."
     log("test", C, f"sending: {prompt}")
     gw.send(json.dumps({"type": "message", "text": prompt}))
 
@@ -102,7 +102,7 @@ def main():
 
     gw.settimeout(2)
     while time.time() - start < TIMEOUT:
-        if done_count >= 2 and time.time() - last_activity > IDLE_EXIT:
+        if done_count >= 1 and time.time() - last_activity > IDLE_EXIT:
             log("test", C, f"idle for {IDLE_EXIT}s after done #{done_count}, finishing")
             break
 

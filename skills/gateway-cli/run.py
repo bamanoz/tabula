@@ -308,6 +308,8 @@ class Gateway:
                         done_event.wait(timeout=0.08)
 
                     # Streaming — may alternate with spinner between streams
+                    last_render_text = ""
+                    last_render_time = 0.0
                     while not done_event.is_set() and self.alive:
                         # Flush finished streams
                         while not self._finished_streams.empty():
@@ -327,11 +329,16 @@ class Gateway:
 
                         with stream_lock:
                             cur_text = self.stream_text
-                        if cur_text:
-                            try:
-                                live.update(Padding(Markdown(cur_text), (0, 0, 0, 4)))
-                            except Exception:
-                                live.update(Padding(Text(cur_text), (0, 0, 0, 4)))
+                        if cur_text and cur_text != last_render_text:
+                            now = time.time()
+                            # Throttle markdown rendering: at most every 0.3s for large text
+                            if len(cur_text) < 2000 or (now - last_render_time) >= 0.3:
+                                try:
+                                    live.update(Padding(Markdown(cur_text), (0, 0, 0, 4)))
+                                except Exception:
+                                    live.update(Padding(Text(cur_text), (0, 0, 0, 4)))
+                                last_render_text = cur_text
+                                last_render_time = now
                         if self._error_text:
                             live.update(
                                 Text(f"  error: {self._error_text}",

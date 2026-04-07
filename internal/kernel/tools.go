@@ -13,6 +13,11 @@ import (
 
 const maxExecOutput = 16 * 1024 // 16KB
 
+const (
+	maxSpawnDepth         = 3 // 0=main, 1=subagent, 2=sub-subagent, 3=max
+	maxChildrenPerSession = 10 // max alive spawned processes per session
+)
+
 // SpawnedProcess tracks a background process started via SPAWN.
 type SpawnedProcess struct {
 	Cmd     *exec.Cmd
@@ -69,7 +74,23 @@ func (h *Hub) handleToolUse(sender *Client, msg *Message) {
 			h.sendToolResult(session, toolID, "ERROR: missing or invalid command")
 			return
 		}
-		pid, err := h.spawnProcess(input.Command, session)
+		// Enforce spawn depth limit
+		if sender.depth >= maxSpawnDepth {
+			h.sendToolResult(session, toolID, fmt.Sprintf("ERROR: max spawn depth reached (%d)", maxSpawnDepth))
+			return
+		}
+		// Enforce max children per session
+		alive := 0
+		for _, p := range h.spawned {
+			if p.Alive && p.Session == session {
+				alive++
+			}
+		}
+		if alive >= maxChildrenPerSession {
+			h.sendToolResult(session, toolID, fmt.Sprintf("ERROR: too many active subagents (%d)", maxChildrenPerSession))
+			return
+		}
+		pid, err := h.spawnProcess(input.Command, session, sender.depth+1)
 		if err != nil {
 			h.sendToolResult(session, toolID, fmt.Sprintf("ERROR: %v", err))
 			return
@@ -89,12 +110,19 @@ func (h *Hub) handleToolUse(sender *Client, msg *Message) {
 			h.sendToolResult(session, toolID, "ERROR: unknown PID")
 			return
 		}
+		if proc.Session != session {
+			h.sendToolResult(session, toolID, "ERROR: not your process")
+			return
+		}
 		proc.Kill()
 		h.sendToolResult(session, toolID, "OK")
 
 	case "LIST":
 		var parts []string
 		for pid, proc := range h.spawned {
+			if proc.Session != session {
+				continue
+			}
 			parts = append(parts, fmt.Sprintf("PID %d %s alive=%v", pid, proc.Command, proc.Alive))
 		}
 		result := "(empty)"
@@ -156,17 +184,29 @@ func (h *Hub) execAsync(session, toolID, command string) {
 
 // spawnProcess starts a background process.
 // Caller must hold h.mu.
-func (h *Hub) spawnProcess(command, session string) (int, error) {
+func (h *Hub) spawnProcess(command, session string, childDepth int) (int, error) {
 	cmd := exec.Command("sh", "-c", command)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Spawned processes communicate via WebSocket, not stdout/stderr.
+	// Discard their output to prevent leaking into the kernel's terminal.
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		return 0, fmt.Errorf("open /dev/null: %w", err)
+	}
+	cmd.Stdout = devNull
+	cmd.Stderr = devNull
 
-	// Build environment: inherit current + TABULA_URL + TABULA_HOME
-	cmd.Env = os.Environ()
+	// Generate one-time spawn token for child to authenticate and receive depth
+	token := h.generateSpawnToken(childDepth)
+
+	env := os.Environ()
+	env = append(env, "TABULA_SPAWN_TOKEN="+token)
+	cmd.Env = env
 
 	if err := cmd.Start(); err != nil {
+		devNull.Close()
 		return 0, err
 	}
+	devNull.Close() // child inherited the fd, parent can close
 
 	pid := cmd.Process.Pid
 	proc := &SpawnedProcess{

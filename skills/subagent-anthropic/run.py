@@ -21,7 +21,9 @@ BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
 API_URL = f"{BASE_URL}/v1/messages"
 API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
+TABULA_SPAWN_TOKEN = os.environ.get("TABULA_SPAWN_TOKEN", "")
 DEFAULT_IDLE_TIMEOUT = 0  # 0 = oneshot (exit after task), >0 = wait for follow-ups
+TOOL_RESULT_TIMEOUT = 120  # max seconds to wait for a single tool_result
 
 
 VERBOSE = os.environ.get("TABULA_VERBOSE", "") == "1"
@@ -126,9 +128,8 @@ def extract_tool_uses(content: list[dict]) -> list[dict]:
     return [b for b in content if b.get("type") == "tool_use"]
 
 
-def process_turn(conn, model, system_prompt, tools, messages, parent_session, agent_id):
+def process_turn(conn, model, system_prompt, tools, messages, parent_session, agent_id, max_turns=20):
     """Run LLM turns until a text response (no tool calls). Returns the result text."""
-    max_turns = 20
 
     for _ in range(max_turns):
         log(f"calling API: model={model}, messages={len(messages)}, tools={len(tools)}")
@@ -158,7 +159,16 @@ def process_turn(conn, model, system_prompt, tools, messages, parent_session, ag
                 "input": tool["input"],
             })
             log(f"waiting for tool_result {i+1}/{len(tool_uses)}...")
-            result_msg = conn.recv()
+            try:
+                result_msg = conn.recv(timeout=TOOL_RESULT_TIMEOUT)
+            except TimeoutError:
+                log(f"tool_result timeout after {TOOL_RESULT_TIMEOUT}s for {tool['name']} id={tool['id']}")
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool["id"],
+                    "content": f"ERROR: tool_result timeout after {TOOL_RESULT_TIMEOUT}s",
+                })
+                continue
             if result_msg is None:
                 log(f"kernel disconnected while waiting for tool_result {i+1}")
                 return "[kernel disconnected]"
@@ -182,7 +192,11 @@ def main():
     parser.add_argument("--model", default=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6"))
     parser.add_argument("--timeout", type=int, default=DEFAULT_IDLE_TIMEOUT,
                         help=f"Idle timeout in seconds (default: {DEFAULT_IDLE_TIMEOUT})")
+    parser.add_argument("--max-turns", type=int, default=20,
+                        help="Max LLM tool-use turns per task (default: 20, max: 50)")
     args = parser.parse_args()
+
+    args.max_turns = min(args.max_turns, 50)
 
     log(f"main() starting: id={args.id}, API_KEY={'set' if API_KEY else 'EMPTY'}, URL={TABULA_URL}")
 
@@ -194,12 +208,15 @@ def main():
 
     # Connect to kernel
     conn = KernelConnection(TABULA_URL)
-    conn.send({
+    connect_msg = {
         "type": "connect",
         "name": session_name,
         "sends": ["message", "tool_use", "done"],
         "receives": ["message", "tool_result", "init"],
-    })
+    }
+    if TABULA_SPAWN_TOKEN:
+        connect_msg["token"] = TABULA_SPAWN_TOKEN
+    conn.send(connect_msg)
     conn.recv()  # connected
 
     conn.send({"type": "join", "session": session_name})
@@ -214,15 +231,16 @@ def main():
 
     system_prompt = init_msg.get("prompt", "")
     kernel_tools = init_msg.get("tools", [])
-    # Subagents only get EXEC — no SPAWN/KILL/LIST to prevent recursive spawning
-    kernel_tools = [t for t in kernel_tools if t.get("name") == "EXEC"]
     tools = kernel_to_anthropic_tools(kernel_tools)
 
-    log(f"started: id={args.id}, timeout={args.timeout}s")
+    # Inject turns budget so the LLM can plan accordingly
+    system_prompt += f"\n\nYou have a budget of {args.max_turns} tool-use turns. Plan your work to finish within this limit."
+
+    log(f"started: id={args.id}, timeout={args.timeout}s, max_turns={args.max_turns}")
 
     # Process initial task
     messages = [{"role": "user", "content": args.task}]
-    result = process_turn(conn, args.model, system_prompt, tools, messages, args.parent_session, args.id)
+    result = process_turn(conn, args.model, system_prompt, tools, messages, args.parent_session, args.id, args.max_turns)
 
     conn.send({
         "type": "message",
@@ -259,7 +277,7 @@ def main():
 
         log(f"follow-up: {text[:80]}")
         messages.append({"role": "user", "content": text})
-        result = process_turn(conn, args.model, system_prompt, tools, messages, args.parent_session, args.id)
+        result = process_turn(conn, args.model, system_prompt, tools, messages, args.parent_session, args.id, args.max_turns)
 
         conn.send({
             "type": "message",

@@ -40,6 +40,7 @@ def build_system_prompt(skills: list[str]) -> str:
     lines = []
     lines.append("You are Tabula, an AI agent.")
     lines.append("You have kernel tools: SPAWN, EXEC, KILL, LIST. Use them via tool calls.")
+    lines.append("When using tools, do not repeat your previous response. Only present the final result once.")
     lines.append("")
 
     if skills:
