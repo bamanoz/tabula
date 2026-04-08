@@ -1,3 +1,7 @@
+---
+inject: summary
+summary: "Autonomous LLM sub-agent for parallel tasks. Usage: `SPAWN python3 skills/subagent-anthropic/run.py --id <unique_id> --parent-session main --task \"<task description>\"`. Optional: `--timeout N` (stay alive for follow-ups, default: 0=oneshot). Full docs: `EXEC cat skills/subagent-anthropic/SKILL.md`"
+---
 # Subagent (Anthropic)
 
 Spawn a long-running subagent powered by Anthropic Claude. The subagent runs in its own session with its own LLM context, executes the task using available tools, and sends the result back to your session. It stays alive for follow-up messages until idle timeout.
@@ -76,7 +80,7 @@ SPAWN python3 skills/subagent-anthropic/run.py --id long_task --parent-session m
 
 - By default, subagents are oneshot — they complete the task, send the result, and exit.
 - To keep a subagent alive for follow-ups, pass `--timeout N`.
-- Each subagent uses its own LLM conversation loop (may use multiple turns for tool use).
+- Each subagent uses its own LLM conversation loop with batched tool-result handling.
 - Subagents have access to the same kernel tools (EXEC, SPAWN, KILL, LIST).
 - Subagents do not see your conversation history — provide full context in the task.
 - Results are delivered as messages, not streamed.

@@ -1,8 +1,12 @@
+---
+inject: none
+summary: "Interactive CLI gateway for terminal use"
+---
 # gateway-cli
 
 Interactive CLI gateway for terminal use.
 
-Connects to the kernel via Unix socket (`TABULA_SOCKET` env var), reads user
+Connects to the kernel via WebSocket (`TABULA_URL`), reads user
 input from `/dev/tty`, and displays streaming responses on stdout.
 
 ## Usage
@@ -22,11 +26,11 @@ Configured in `tabula.yaml` under `spawn`:
 
 ## Environment variables
 
-- `TABULA_SOCKET` — kernel socket path (default: /tmp/tabula.sock)
+- `TABULA_URL` — kernel WebSocket URL
 
 ## Notes
 
 - Reads input from `/dev/tty` directly — works when spawned with piped stdin
-- Ctrl+C during streaming sends `cancel` to kernel
+- Renders one coherent turn even when the driver alternates between waiting, tool use, and streamed output
 - Ctrl+C at prompt or Ctrl+D exits the gateway
 - Requires an interactive terminal

@@ -1,3 +1,7 @@
+---
+inject: summary
+summary: "Skill format spec. Use `EXEC cat skills/skill-contract/SKILL.md` to read. To discover skills: `EXEC ls skills/`"
+---
 # Tabula Skill Format
 
 This document defines how skills work in Tabula. Read it to understand how to

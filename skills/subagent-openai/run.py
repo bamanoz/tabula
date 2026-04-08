@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tabula subagent backed by Anthropic."""
+"""Tabula subagent backed by OpenAI Responses API."""
 
 from __future__ import annotations
 
@@ -12,12 +12,12 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from skills.lib.providers import AnthropicSession
+from skills.lib.providers import OpenAISession
 from skills.lib.subagent_runtime import SubagentConfig, SubagentRuntime
 
 
-BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
-API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com")
+API_KEY = os.environ.get("OPENAI_API_KEY", "")
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
 TABULA_SPAWN_TOKEN = os.environ.get("TABULA_SPAWN_TOKEN", "")
 DEFAULT_IDLE_TIMEOUT = 0
@@ -27,7 +27,7 @@ LOG_FILE = os.path.join(os.environ.get("TABULA_HOME", os.path.expanduser("~/.tab
 
 def log(msg: str):
     if VERBOSE:
-        sys.stderr.write(f"[subagent:anthropic] {msg}\n")
+        sys.stderr.write(f"[subagent:openai] {msg}\n")
         sys.stderr.flush()
         try:
             with open(LOG_FILE, "a") as handle:
@@ -37,17 +37,17 @@ def log(msg: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Tabula subagent (Anthropic)")
+    parser = argparse.ArgumentParser(description="Tabula subagent (OpenAI)")
     parser.add_argument("--id", required=True)
     parser.add_argument("--parent-session", required=True)
     parser.add_argument("--task", required=True)
-    parser.add_argument("--model", default=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6"))
+    parser.add_argument("--model", default=os.environ.get("OPENAI_MODEL", "gpt-5"))
     parser.add_argument("--timeout", type=int, default=DEFAULT_IDLE_TIMEOUT)
     parser.add_argument("--max-turns", type=int, default=20)
     args = parser.parse_args()
 
     if not API_KEY:
-        log("ERROR: ANTHROPIC_API_KEY not set")
+        log("ERROR: OPENAI_API_KEY not set")
         sys.exit(1)
 
     max_turns = min(args.max_turns, 50)
@@ -65,7 +65,7 @@ def main():
             max_turns=max_turns,
             spawn_token=TABULA_SPAWN_TOKEN,
         ),
-        provider_factory=lambda prompt, tools: AnthropicSession(
+        provider_factory=lambda prompt, tools: OpenAISession(
             system_prompt=prompt + f"\n\nYou have a budget of {max_turns} llm turns. Plan your work to finish within this limit.",
             model=args.model,
             api_key=API_KEY,

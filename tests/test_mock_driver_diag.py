@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lightweight diagnostic runner for the current WebSocket-based subagent flow."""
+"""Diagnostic runner for the mock driver E2E flow."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
-    proc = subprocess.run([sys.executable, str(ROOT / "tests" / "test_subagent_e2e.py")], cwd=ROOT)
+    proc = subprocess.run([sys.executable, str(ROOT / "tests" / "test_mock_driver_e2e.py")], cwd=ROOT)
     raise SystemExit(proc.returncode)
 
 

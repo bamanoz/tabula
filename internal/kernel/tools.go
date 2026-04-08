@@ -13,11 +13,6 @@ import (
 
 const maxExecOutput = 16 * 1024 // 16KB
 
-const (
-	maxSpawnDepth         = 3 // 0=main, 1=subagent, 2=sub-subagent, 3=max
-	maxChildrenPerSession = 10 // max alive spawned processes per session
-)
-
 // SpawnedProcess tracks a background process started via SPAWN.
 type SpawnedProcess struct {
 	Cmd     *exec.Cmd
@@ -75,8 +70,8 @@ func (h *Hub) handleToolUse(sender *Client, msg *Message) {
 			return
 		}
 		// Enforce spawn depth limit
-		if sender.depth >= maxSpawnDepth {
-			h.sendToolResult(session, toolID, fmt.Sprintf("ERROR: max spawn depth reached (%d)", maxSpawnDepth))
+		if sender.depth >= h.MaxSpawnDepth {
+			h.sendToolResult(session, toolID, fmt.Sprintf("ERROR: max spawn depth reached (%d)", h.MaxSpawnDepth))
 			return
 		}
 		// Enforce max children per session
@@ -86,8 +81,8 @@ func (h *Hub) handleToolUse(sender *Client, msg *Message) {
 				alive++
 			}
 		}
-		if alive >= maxChildrenPerSession {
-			h.sendToolResult(session, toolID, fmt.Sprintf("ERROR: too many active subagents (%d)", maxChildrenPerSession))
+		if alive >= h.MaxChildren {
+			h.sendToolResult(session, toolID, fmt.Sprintf("ERROR: too many active subagents (%d)", h.MaxChildren))
 			return
 		}
 		pid, err := h.spawnProcess(input.Command, session, sender.depth+1)

@@ -19,11 +19,13 @@ type Hub struct {
 	nextClientID int
 	systemPrompt string
 	toolsJSON    json.RawMessage
+	MaxSpawnDepth int
+	MaxChildren   int
 	Verbose      bool
 }
 
 // NewHub creates a new Hub.
-func NewHub(systemPrompt string, toolsJSON json.RawMessage, verbose bool) *Hub {
+func NewHub(systemPrompt string, toolsJSON json.RawMessage, maxSpawnDepth int, maxChildren int, verbose bool) *Hub {
 	return &Hub{
 		clients:      make(map[*Client]bool),
 		spawned:      make(map[int]*SpawnedProcess),
@@ -31,6 +33,8 @@ func NewHub(systemPrompt string, toolsJSON json.RawMessage, verbose bool) *Hub {
 		nextClientID: 1,
 		systemPrompt: systemPrompt,
 		toolsJSON:    toolsJSON,
+		MaxSpawnDepth: maxSpawnDepth,
+		MaxChildren:   maxChildren,
 		Verbose:      verbose,
 	}
 }

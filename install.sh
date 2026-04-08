@@ -18,6 +18,8 @@ rsync -a --delete \
   --exclude '__pycache__' \
   --exclude '*.pyc' \
   --exclude '.venv' \
+  --exclude 'llm-mock' \
+  --exclude 'subagent-mock' \
   skills/ "$TABULA_HOME/skills/"
 
 # Memory directory (don't overwrite existing data)
@@ -29,7 +31,7 @@ if [ ! -d "$VENV" ]; then
   echo "Creating Python venv..."
   python3 -m venv "$VENV"
 fi
-"$VENV/bin/pip" install -q websocket-client rich prompt_toolkit
+"$VENV/bin/pip" install -q websocket-client rich prompt_toolkit pytest
 echo "Python dependencies installed"
 
 # Go binary

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""E2E tests for subagents over the current WebSocket kernel protocol."""
+"""E2E tests for OpenAI-backed subagents over the WebSocket kernel protocol."""
 
 from __future__ import annotations
 
@@ -21,39 +21,69 @@ import websocket as ws_client
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class MockAnthropicHandler(BaseHTTPRequestHandler):
+class MockOpenAIHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
 
-        messages = body.get("messages", [])
+        input_items = body.get("input", [])
         last_user = ""
-        for message in reversed(messages):
-            if message.get("role") == "user":
-                content = message.get("content")
+        for item in reversed(input_items):
+            if item.get("role") == "user":
+                content = item.get("content")
                 if isinstance(content, str):
                     last_user = content
                     break
 
-        text = f"mock result for: {last_user[:80]}"
+        text = f"mock openai result for: {last_user[:80]}"
+        response_id = "resp-mock-1"
+        item_id = "msg-mock-1"
         events = [
             {
-                "type": "message_start",
-                "message": {"id": "mock-1", "type": "message", "role": "assistant", "content": []},
+                "type": "response.created",
+                "response": {"id": response_id, "output": []},
             },
             {
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "text", "text": ""},
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {
+                    "id": item_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                },
             },
             {
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "text_delta", "text": text},
+                "type": "response.output_text.delta",
+                "item_id": item_id,
+                "output_index": 0,
+                "content_index": 0,
+                "delta": text,
             },
-            {"type": "content_block_stop", "index": 0},
-            {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}},
-            {"type": "message_stop"},
+            {
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {
+                    "id": item_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": text}],
+                },
+            },
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": response_id,
+                    "output": [
+                        {
+                            "id": item_id,
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": text}],
+                        }
+                    ],
+                },
+            },
         ]
         payload = "".join(f"data: {json.dumps(event)}\n\n" for event in events).encode()
         self.send_response(200)
@@ -70,7 +100,7 @@ def start_mock_api():
     with closing(__import__("socket").socket()) as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
-    server = HTTPServer(("127.0.0.1", port), MockAnthropicHandler)
+    server = HTTPServer(("127.0.0.1", port), MockOpenAIHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, port
@@ -83,12 +113,12 @@ def get_free_port() -> int:
 
 
 def setup_test_home(tabula_port: int) -> str:
-    home = tempfile.mkdtemp(prefix="tabula-e2e-")
+    home = tempfile.mkdtemp(prefix="tabula-openai-e2e-")
     shutil.copytree(ROOT / "skills", Path(home) / "skills")
     shutil.copytree(ROOT / ".venv", Path(home) / ".venv", dirs_exist_ok=True)
     (Path(home) / "tabula.yaml").write_text("boot: python3 boot.py\n")
     (Path(home) / "boot.py").write_text(
-        "import json, os, sys\n"
+        "import json, sys\n"
         "json.dump({\n"
         f"  'url': 'ws://127.0.0.1:{tabula_port}/ws',\n"
         "  'system_prompt': 'test system prompt',\n"
@@ -102,9 +132,9 @@ def start_kernel(home: str, api_port: int, tabula_port: int) -> subprocess.Popen
     env = os.environ.copy()
     env["TABULA_HOME"] = home
     env["TABULA_URL"] = f"ws://127.0.0.1:{tabula_port}/ws"
-    env["ANTHROPIC_API_KEY"] = "mock-key"
-    env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{api_port}"
-    env["TABULA_PROVIDER"] = "anthropic"
+    env["OPENAI_API_KEY"] = "mock-key"
+    env["OPENAI_BASE_URL"] = f"http://127.0.0.1:{api_port}"
+    env["TABULA_PROVIDER"] = "openai"
     env["TABULA_VERBOSE"] = "1"
 
     proc = subprocess.Popen(
@@ -159,7 +189,7 @@ def recv_json(conn, timeout=10):
     return json.loads(conn.recv())
 
 
-def test_subagent_initial_task():
+def test_openai_subagent_initial_task():
     mock, api_port = start_mock_api()
     tabula_port = get_free_port()
     home = setup_test_home(tabula_port)
@@ -175,7 +205,7 @@ def test_subagent_initial_task():
                     "id": "spawn-1",
                     "name": "SPAWN",
                     "input": {
-                        "command": "python3 skills/subagent-anthropic/run.py --id task_42 --parent-session main --task 'List files in /tmp' --timeout 5"
+                        "command": "python3 skills/subagent-openai/run.py --id task_42 --parent-session main --task 'List files in /tmp' --timeout 5"
                     },
                 }
             )
@@ -188,7 +218,7 @@ def test_subagent_initial_task():
         msg = recv_json(conn, 10)
         assert msg["type"] == "message", msg
         assert msg["id"] == "task_42"
-        assert "mock result for:" in msg["text"]
+        assert "mock openai result for:" in msg["text"]
     finally:
         if conn is not None:
             conn.close()
@@ -200,7 +230,7 @@ def test_subagent_initial_task():
         shutil.rmtree(home, ignore_errors=True)
 
 
-def test_subagent_followup():
+def test_openai_subagent_followup():
     mock, api_port = start_mock_api()
     tabula_port = get_free_port()
     home = setup_test_home(tabula_port)
@@ -216,7 +246,7 @@ def test_subagent_followup():
                     "id": "spawn-2",
                     "name": "SPAWN",
                     "input": {
-                        "command": "python3 skills/subagent-anthropic/run.py --id followup_1 --parent-session main --task 'Initial task' --timeout 10"
+                        "command": "python3 skills/subagent-openai/run.py --id followup_1 --parent-session main --task 'Initial task' --timeout 10"
                     },
                 }
             )
@@ -230,7 +260,7 @@ def test_subagent_followup():
         msg2 = recv_json(conn, 10)
         assert msg2["type"] == "message"
         assert msg2["id"] == "followup_1"
-        assert "mock result for:" in msg2["text"]
+        assert "mock openai result for:" in msg2["text"]
     finally:
         if conn is not None:
             conn.close()
@@ -244,8 +274,8 @@ def test_subagent_followup():
 
 if __name__ == "__main__":
     try:
-        test_subagent_initial_task()
-        test_subagent_followup()
+        test_openai_subagent_initial_task()
+        test_openai_subagent_followup()
     except Exception as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
         sys.exit(1)

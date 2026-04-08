@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -115,7 +116,9 @@ func main() {
 
 	// 9. Init kernel hub
 	logv(*verbose, "[main] initializing kernel...")
-	hub := kernel.NewHub(bootConfig.SystemPrompt, toolsJSON, *verbose)
+	maxSpawnDepth := envInt("TABULA_MAX_SPAWN_DEPTH", 3)
+	maxChildren := envInt("TABULA_MAX_CHILDREN_PER_SESSION", 5)
+	hub := kernel.NewHub(bootConfig.SystemPrompt, toolsJSON, maxSpawnDepth, maxChildren, *verbose)
 	hub.StartReaper()
 
 	// 9. Start HTTP/WebSocket server
@@ -173,6 +176,18 @@ func logv(verbose bool, format string, args ...any) {
 	if verbose {
 		log.Printf(format, args...)
 	}
+}
+
+func envInt(name string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n
 }
 
 // readBootCmd reads the boot command from tabula.yaml.

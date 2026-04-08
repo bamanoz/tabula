@@ -31,7 +31,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 
 	toolsJSON := json.RawMessage(`[{"name":"EXEC","description":"run cmd","params":{"command":{"type":"string","description":"cmd"}},"required":["command"]},{"name":"SPAWN","description":"spawn","params":{"command":{"type":"string","description":"cmd"}},"required":["command"]},{"name":"KILL","description":"kill","params":{"pid":{"type":"integer","description":"pid"}},"required":["pid"]},{"name":"LIST","description":"list","params":{},"required":[]}]`)
-	hub := NewHub("test system prompt", toolsJSON, false)
+	hub := NewHub("test system prompt", toolsJSON, 3, 5, false)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
@@ -1102,7 +1102,7 @@ func TestSpawnDeniedAtMaxDepth(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Client at depth=maxSpawnDepth should be denied SPAWN
-	conn := env.connectAndJoinWithDepth("deep-agent", "sub-deep", maxSpawnDepth,
+	conn := env.connectAndJoinWithDepth("deep-agent", "sub-deep", env.Hub.MaxSpawnDepth,
 		[]string{"tool_use"}, []string{"init", "tool_result"})
 	readMsg(t, conn) // init
 
@@ -1156,9 +1156,9 @@ func TestSpawnDeniedAtMaxChildren(t *testing.T) {
 		[]string{"tool_use"}, []string{"init", "tool_result"})
 	readMsg(t, conn) // init
 
-	// Spawn maxChildrenPerSession processes
+	// Spawn MaxChildren processes
 	var pids []int
-	for i := range maxChildrenPerSession {
+	for i := range env.Hub.MaxChildren {
 		writeJSON(t, conn, Message{
 			Type:  "tool_use",
 			ID:    fmt.Sprintf("s%d", i),
@@ -1291,7 +1291,7 @@ func TestSpawnChildrenCountedPerSession(t *testing.T) {
 	readMsg(t, connB) // init
 
 	// Fill session A to max
-	for i := range maxChildrenPerSession {
+	for i := range env.Hub.MaxChildren {
 		writeJSON(t, connA, Message{
 			Type:  "tool_use",
 			ID:    fmt.Sprintf("a%d", i),

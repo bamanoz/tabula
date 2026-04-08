@@ -1,3 +1,7 @@
+---
+inject: summary
+summary: "Persistent memory. Save: `EXEC python3 skills/memory/run.py save --category <cat> --title \"<title>\" \"<text>\"`. Add `--long-term` to inject into system prompt. Search: `EXEC python3 skills/memory/run.py search \"<query>\"`. Also: `list --category <cat>`, `get <id>`, `delete <id>`. Full docs: `EXEC cat skills/memory/SKILL.md`"
+---
 # Memory
 
 Persistent memory system. Save facts, preferences, decisions, and notes across sessions.

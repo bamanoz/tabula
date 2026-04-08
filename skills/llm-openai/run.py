@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tabula LLM driver backed by Anthropic."""
+"""Tabula LLM driver backed by OpenAI Responses API."""
 
 from __future__ import annotations
 
@@ -12,30 +12,30 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from skills.lib.driver_runtime import DriverConfig, DriverRuntime
-from skills.lib.providers import AnthropicSession
+from skills.lib.providers import OpenAISession
 
 
-BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
-API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+API_KEY = os.environ.get("OPENAI_API_KEY", "")
+MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4")
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
 VERBOSE = os.environ.get("TABULA_VERBOSE", "") == "1"
 
 
 def log(msg: str):
     if VERBOSE:
-        sys.stderr.write(f"[driver:anthropic] {msg}\n")
+        sys.stderr.write(f"[driver:openai] {msg}\n")
         sys.stderr.flush()
 
 
 def main():
     if not API_KEY:
-        log("ERROR: ANTHROPIC_API_KEY not set")
+        log("ERROR: OPENAI_API_KEY not set")
         sys.exit(1)
 
     runtime = DriverRuntime(
-        DriverConfig(name="anthropic", url=TABULA_URL),
-        provider_factory=lambda prompt, tools: AnthropicSession(
+        DriverConfig(name="openai", url=TABULA_URL),
+        provider_factory=lambda prompt, tools: OpenAISession(
             system_prompt=prompt,
             model=MODEL,
             api_key=API_KEY,

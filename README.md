@@ -45,6 +45,14 @@ export ANTHROPIC_API_KEY=sk-...
 tabula
 ```
 
+Use OpenAI instead:
+
+```bash
+export TABULA_PROVIDER=openai
+export OPENAI_API_KEY=sk-...
+tabula
+```
+
 Verbose mode (logs to `~/.tabula/kernel.log`):
 
 ```bash
@@ -110,9 +118,12 @@ Sessions isolate message routing. The main conversation uses session `main`. Eac
 
 | Skill | Description |
 |-------|-------------|
+| `lib` | Shared runtime library: `KernelConnection`, `DriverRuntime`, `SubagentRuntime`, provider adapters |
 | `llm-anthropic` | Claude API driver with streaming, tool use, and subagent result collection |
+| `llm-openai` | OpenAI Responses API driver with the same protocol and multi-agent behavior |
 | `gateway-cli` | Interactive terminal UI (Rich markdown, shimmer spinner) |
 | `subagent-anthropic` | Autonomous LLM sub-agent spawned for parallel tasks |
+| `subagent-openai` | OpenAI-backed autonomous sub-agent for parallel tasks |
 | `memory` | Persistent memory — save, search, list, get, delete |
 
 ### Subagents
@@ -127,9 +138,11 @@ Parent LLM ──SPAWN──▶ Kernel ──fork──▶ Subagent process
 
 Key design:
 - Subagents only get `EXEC` — no `SPAWN`/`KILL`/`LIST` (prevents recursive spawning)
+- Max spawn depth (`TABULA_MAX_SPAWN_DEPTH`, default 3) and max children per session (`TABULA_MAX_CHILDREN_PER_SESSION`, default 5)
 - Parent detects subagent IDs via `--id` argument in SPAWN commands
 - Results collected with debounce batching (5s) and max wait (300s)
 - Multiple subagents run in parallel, results aggregated into one LLM turn
+- Spawn failures (exceeding limits) are detected and recorded as failed results
 - Subagents can stay alive for follow-up messages with `--timeout`
 
 Spawn command:
@@ -161,6 +174,23 @@ EXEC python3 skills/memory/run.py delete <entry-id>
 
 Supports semantic search via OpenAI embeddings when `OPENAI_API_KEY` is set. Falls back to keyword search otherwise.
 
+## Provider Selection
+
+`boot.py` selects the active driver and subagent pair from `TABULA_PROVIDER`.
+
+Supported values:
+- `anthropic` (default)
+- `claude` → alias for `anthropic`
+- `openai`
+- `gpt` → alias for `openai`
+
+Selection rules:
+- if the requested provider skill exists, it is used;
+- if it does not exist but another provider exists locally, `boot.py` falls back to it and prints a warning to stderr;
+- if no provider skills exist, boot fails immediately.
+
+The boot script also warns when the expected API key for the chosen provider is missing.
+
 ## Configuration
 
 `~/.tabula/tabula.yaml`:
@@ -177,10 +207,18 @@ The boot script handles everything else: skill discovery, system prompt assembly
 |----------|-------------|---------|
 | `TABULA_HOME` | Workspace directory | `~/.tabula` |
 | `TABULA_URL` | Kernel WebSocket URL | `ws://localhost:8089/ws` |
-| `ANTHROPIC_API_KEY` | Claude API key | required |
+| `TABULA_PROVIDER` | Active LLM provider (`anthropic`, `claude`, `openai`, `gpt`) | `anthropic` |
+| `TABULA_VERBOSE` | Enable verbose logging in skill processes (`1` to enable) | unset |
+| `TABULA_MAX_SPAWN_DEPTH` | Max nesting depth for SPAWN (prevents recursive spawning) | `3` |
+| `TABULA_MAX_CHILDREN_PER_SESSION` | Max active subagent processes per session | `5` |
+| `ANTHROPIC_API_KEY` | Claude API key | required for `anthropic` provider |
 | `ANTHROPIC_MODEL` | Model name | `claude-sonnet-4-6` |
 | `ANTHROPIC_BASE_URL` | API endpoint override | `https://api.anthropic.com` |
-| `OPENAI_API_KEY` | For memory embeddings | optional |
+| `OPENAI_API_KEY` | OpenAI API key | required for `openai` provider |
+| `OPENAI_MODEL` | OpenAI model name | `gpt-5` |
+| `OPENAI_BASE_URL` | OpenAI API endpoint override | `https://api.openai.com` |
+
+Set `TABULA_PROVIDER=openai` to spawn `skills/llm-openai/run.py` instead of `skills/llm-anthropic/run.py`.
 
 ## Adding skills
 

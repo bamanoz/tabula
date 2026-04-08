@@ -1,0 +1,85 @@
+19:13:40.823093 [main] working directory: /Users/mak/src/tabula
+19:13:40.823356 [main] running boot: .venv/bin/python3 boot.py
+19:13:40.849892 [main] url: ws://127.0.0.1:18090/ws, prompt: 10507 bytes, spawn: 2 processes
+19:13:40.849961 [main] initializing kernel...
+19:13:40.850043 [main] listening on 127.0.0.1:18090
+19:13:40.850055 [main] spawning: /Users/mak/src/tabula/.venv/bin/python3 skills/llm-anthropic/run.py
+19:13:40.850705 [kernel] registered spawned PID 27972: /Users/mak/src/tabula/.venv/bin/python3 skills/llm-anthropic/run.py
+19:13:40.850718 [main] spawned PID 27972: /Users/mak/src/tabula/.venv/bin/python3 skills/llm-anthropic/run.py
+19:13:40.850722 [main] spawning: /Users/mak/src/tabula/.venv/bin/python3 skills/gateway-cli/run.py
+19:13:40.851146 [kernel] client connected: test-gateway (id c1)
+19:13:40.851324 [kernel] registered spawned PID 27973: /Users/mak/src/tabula/.venv/bin/python3 skills/gateway-cli/run.py
+19:13:40.851335 [main] spawned PID 27973: /Users/mak/src/tabula/.venv/bin/python3 skills/gateway-cli/run.py
+19:13:40.851338 [main] ready
+19:13:40.851360 [kernel] client test-gateway joined session main
+19:13:40.851418 [kernel] sent init to client test-gateway
+19:13:40.853311 [kernel] broadcast message to session main: delivered to 0 clients
+19:13:40.914251 [kernel] client connected: anthropic (id c2)
+19:13:40.914402 [kernel] client anthropic joined session main
+19:13:40.914452 [kernel] sent init to client anthropic
+19:13:40.968971 [kernel] client connected: cli (id c3)
+19:13:40.969093 [kernel] client cli joined session main
+19:13:40.971929 [kernel] client disconnected: cli (id c3)
+19:13:41.351230 [kernel] process 27973 crashed (exit 1): /Users/mak/src/tabula/.venv/bin/python3 skills/gateway-cli/run.py
+19:13:41.351437 [kernel] broadcast error to session main: delivered to 2 clients
+19:13:44.960146 [kernel] broadcast stream_start to session main: delivered to 1 clients
+19:13:44.960239 [kernel] broadcast stream_delta to session main: delivered to 1 clients
+19:13:44.960276 [kernel] broadcast stream_delta to session main: delivered to 1 clients
+19:13:44.960306 [kernel] broadcast stream_delta to session main: delivered to 1 clients
+19:13:45.041137 [kernel] broadcast stream_delta to session main: delivered to 1 clients
+19:13:45.041308 [kernel] broadcast stream_delta to session main: delivered to 1 clients
+19:13:45.041350 [kernel] broadcast stream_delta to session main: delivered to 1 clients
+19:13:45.041375 [kernel] broadcast stream_delta to session main: delivered to 1 clients
+19:13:45.041446 [kernel] broadcast stream_delta to session main: delivered to 1 clients
+19:13:45.051941 [kernel] broadcast stream_delta to session main: delivered to 1 clients
+19:13:45.058954 [kernel] broadcast stream_delta to session main: delivered to 1 clients
+19:13:45.067918 [kernel] broadcast stream_delta to session main: delivered to 1 clients
+19:13:45.076977 [kernel] broadcast stream_delta to session main: delivered to 1 clients
+19:13:45.085628 [kernel] broadcast stream_delta to session main: delivered to 1 clients
+19:13:45.090009 [kernel] broadcast stream_delta to session main: delivered to 1 clients
+19:13:45.527403 [kernel] broadcast stream_end to session main: delivered to 1 clients
+19:13:45.527603 [kernel] handleToolUse: LIST from session main, id=toolu_bdrk_01GoDrYqXkyJoELgjGKPX1gD
+19:13:45.527730 [kernel] broadcast tool_result to session main: delivered to 2 clients
+19:13:49.202954 [kernel] handleToolUse: SPAWN from session main, id=toolu_bdrk_01XJRW1TKPFRAMmCKwUmH1Pt
+19:13:49.206427 [kernel] spawned PID 27995: .venv/bin/python3 skills/gateway-cli/run.py (session main)
+19:13:49.206605 [kernel] broadcast tool_result to session main: delivered to 2 clients
+19:13:49.329329 [kernel] client connected: cli (id c4)
+19:13:49.329475 [kernel] client cli joined session main
+19:13:49.332310 [kernel] client disconnected: cli (id c4)
+19:13:49.368112 [kernel] process 27995 crashed (exit 1): .venv/bin/python3 skills/gateway-cli/run.py
+19:13:49.368160 [kernel] broadcast error to session main: delivered to 2 clients
+19:13:54.377937 [kernel] broadcast stream_start to session main: delivered to 1 clients
+19:13:54.378046 [kernel] broadcast stream_delta to session main: delivered to 1 clients
+19:13:54.378072 [kernel] broadcast stream_end to session main: delivered to 1 clients
+19:13:54.378098 [kernel] broadcast done to session main: delivered to 1 clients
+19:13:54.378535 [kernel] client disconnected: test-gateway (id c1)
+19:13:56.839244 [kernel] broadcast stream_start to session main: delivered to 0 clients
+19:13:56.839331 [kernel] broadcast stream_delta to session main: delivered to 0 clients
+19:13:56.839370 [kernel] broadcast stream_delta to session main: delivered to 0 clients
+19:13:56.840099 [kernel] broadcast stream_delta to session main: delivered to 0 clients
+19:13:56.982330 [kernel] broadcast stream_delta to session main: delivered to 0 clients
+19:13:56.982437 [kernel] broadcast stream_delta to session main: delivered to 0 clients
+19:13:57.001573 [kernel] broadcast stream_delta to session main: delivered to 0 clients
+19:13:57.148179 [kernel] broadcast stream_delta to session main: delivered to 0 clients
+19:13:57.148286 [kernel] broadcast stream_delta to session main: delivered to 0 clients
+19:13:57.176439 [kernel] broadcast stream_delta to session main: delivered to 0 clients
+19:13:57.318226 [kernel] broadcast stream_delta to session main: delivered to 0 clients
+19:13:57.318328 [kernel] broadcast stream_delta to session main: delivered to 0 clients
+19:13:57.351374 [kernel] broadcast stream_delta to session main: delivered to 0 clients
+19:13:57.379862 [kernel] broadcast stream_delta to session main: delivered to 0 clients
+19:13:57.438579 [kernel] broadcast stream_delta to session main: delivered to 0 clients
+19:13:57.494726 [kernel] broadcast stream_delta to session main: delivered to 0 clients
+19:13:58.387636 [kernel] broadcast stream_end to session main: delivered to 0 clients
+19:13:58.387750 [kernel] handleToolUse: EXEC from session main, id=toolu_bdrk_016aMXjyrfTodA4RD5JWZ2zK
+19:13:58.387806 [kernel] handleToolUse: EXEC from session main, id=toolu_bdrk_01TAfbca7hjvtPXxxdSQH3NY
+19:13:58.405212 [kernel] exec completed: cat skills/gateway-cli/run.py (session main, 11340 bytes)
+19:13:58.405422 [kernel] broadcast tool_result to session main: delivered to 1 clients
+19:13:58.407866 [kernel] exec completed: ls -la skills/gateway-cli/ (session main, 334 bytes)
+19:13:58.407909 [kernel] broadcast tool_result to session main: delivered to 1 clients
+19:14:04.728707 [kernel] handleToolUse: EXEC from session main, id=toolu_bdrk_01Jum2ksFsHsgpRZeMz6HtuG
+19:14:04.780483 [kernel] exec completed: ls -la /dev/tty 2>&1; python3 -c "open('/dev/tty','r')" 2>&1 (session main, 235 bytes)
+19:14:04.780537 [kernel] broadcast tool_result to session main: delivered to 1 clients
+19:14:12.347632 [kernel] broadcast stream_start to session main: delivered to 0 clients
+19:14:12.347801 [kernel] broadcast stream_delta to session main: delivered to 0 clients
+19:14:12.347843 [kernel] broadcast stream_end to session main: delivered to 0 clients
+19:14:12.347863 [kernel] broadcast done to session main: delivered to 0 clients

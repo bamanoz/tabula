@@ -1,26 +1,32 @@
 #!/usr/bin/env python3
-"""
-Tabula CLI Gateway.
+"""Interactive CLI gateway for Tabula."""
 
-Connects to kernel via Unix socket. Rich terminal UI inspired by openclaw:
-- Streaming markdown rendering via rich.Live
-- Shimmer spinner with fun phrases
-- Ctrl+C to exit
-"""
+from __future__ import annotations
 
-import json
 import os
 import queue
 import random
+import signal
 import sys
 import threading
 import time
+from dataclasses import dataclass
 
-import websocket as ws_client
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from rich.console import Console
+from rich.live import Live
+from rich.markdown import Markdown
+from rich.padding import Padding
+from rich.text import Text
+from rich.theme import Theme
+
+from skills.lib.kernel_client import KernelConnection
+
 
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
-
-# --- Theme ---
 
 ACCENT = "#F6C453"
 ACCENT_SOFT = "#F2A65A"
@@ -29,30 +35,30 @@ USER_TEXT = "#F3EEE0"
 ERROR_COLOR = "#F97066"
 LINK_COLOR = "#7DD3A5"
 CODE_COLOR = "#F0C987"
-TOOL_COLOR = "#7DD3A5"
 
 WAITING_PHRASES = [
-    "pondering", "conjuring", "noodling", "moseying",
-    "kerfuffling", "dillydallying", "bamboozling",
-    "hobnobbing", "flibbertigibbeting", "twiddling thumbs",
-    "ruminating", "percolating", "cogitating", "gallivanting",
+    "pondering",
+    "conjuring",
+    "noodling",
+    "moseying",
+    "kerfuffling",
+    "dillydallying",
+    "ruminating",
+    "percolating",
+    "cogitating",
 ]
 
 GREETING_PHRASES = [
     "ready to mass-produce miracles",
-    "all systems nominal, awaiting orders",
     "kernel is humming, skills are loaded",
-    "here to automate the boring stuff",
-    "standing by for world domination",
-    "neurons warmed up, let's go",
     "one socket to rule them all",
     "the microkernel awakens",
-    "your personal agent, at your service",
     "skills loaded, imagination required",
-    "built different, thinks different",
 ]
 
 SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+MOVE_UP = "\033[A"
+CLEAR_LINE = "\033[2K\r"
 
 LOGO_LINES = [
     "████████╗ █████╗ ██████╗ ██╗   ██╗██╗      █████╗ ",
@@ -63,307 +69,263 @@ LOGO_LINES = [
     "   ╚═╝   ╚═╝  ╚═╝╚═════╝  ╚═════╝ ╚══════╝╚═╝  ╚═╝",
 ]
 
-MOVE_UP = "\033[A"
-CLEAR_LINE = "\033[2K\r"
 
+@dataclass
+class TurnState:
+    waiting: bool = False
+    streaming: bool = False
+    started_at: float = 0.0
+    current_text: str = ""
+    rendered_text: str = ""
+    waiting_phrase: str = ""
+    error_text: str = ""
+    finished_blocks: list[str] | None = None
 
-class KernelConnection:
-    """WebSocket connection to kernel."""
+    def __post_init__(self):
+        if self.finished_blocks is None:
+            self.finished_blocks = []
 
-    def __init__(self, url: str):
-        self.ws = ws_client.create_connection(url)
-        self._lock = threading.Lock()
-
-    def send(self, msg: dict):
-        data = json.dumps(msg, ensure_ascii=False)
-        with self._lock:
-            self.ws.send(data)
-
-    def recv(self) -> dict | None:
-        try:
-            data = self.ws.recv()
-            if not data:
-                return None
-            return json.loads(data)
-        except (ws_client.WebSocketConnectionClosedException, ConnectionError):
-            return None
-        except OSError:
-            return None
-
-    def close(self):
-        try:
-            self.ws.close()
-        except Exception:
-            pass
+    def reset(self):
+        self.waiting = False
+        self.streaming = False
+        self.started_at = 0.0
+        self.current_text = ""
+        self.rendered_text = ""
+        self.waiting_phrase = ""
+        self.error_text = ""
+        self.finished_blocks = []
 
 
 class Gateway:
     def __init__(self):
         self.conn = KernelConnection(TABULA_URL)
-        self.streaming = False
-        self.waiting = False
+        self.console = Console(
+            theme=Theme(
+                {
+                    "markdown.heading": f"bold {ACCENT}",
+                    "markdown.link": LINK_COLOR,
+                    "markdown.link_url": DIM,
+                    "markdown.code": CODE_COLOR,
+                    "markdown.item.bullet": ACCENT_SOFT,
+                }
+            )
+        )
+        self.state = TurnState()
         self.alive = True
-        self.turn_start = 0.0
-        self.stream_text = ""
-        self._waiting_phrase = ""
-        self._error_text = ""
         self._tty = None
-        self._input_queue: queue.Queue[str | None] = queue.Queue()
-        self._stream_started = threading.Event()
-        self._finished_streams: queue.Queue[str] = queue.Queue()
+        self._events: queue.Queue[tuple[str, str]] = queue.Queue()
+        self._inputs: queue.Queue[str | None] = queue.Queue()
 
     def connect(self):
-        self.conn.send({
-            "type": "connect",
-            "name": "cli",
-            "sends": ["message"],
-            "receives": ["stream_start", "stream_delta", "stream_end", "done", "error"],
-        })
+        self.conn.send(
+            {
+                "type": "connect",
+                "name": "cli",
+                "sends": ["message", "cancel"],
+                "receives": ["stream_start", "stream_delta", "stream_end", "done", "error"],
+            }
+        )
         self.conn.recv()
         self.conn.send({"type": "join", "session": "main"})
         self.conn.recv()
 
-    def _pick_phrase(self):
-        self._waiting_phrase = random.choice(WAITING_PHRASES)
+    def _pick_phrase(self) -> str:
+        return random.choice(WAITING_PHRASES)
+
+    def _render_spinner(self) -> Text:
+        elapsed = max(time.time() - self.state.started_at, 0.0)
+        tick = int(elapsed * 10)
+        frame = SPINNER_FRAMES[tick % len(SPINNER_FRAMES)]
+        phrase = self.state.waiting_phrase or "thinking"
+        return Text.assemble(
+            (f"  {frame} ", f"bold {ACCENT}"),
+            (phrase, ACCENT_SOFT),
+            ("…", ACCENT_SOFT),
+            (f"  {elapsed:.0f}s", DIM),
+        )
+
+    def _render_markdown(self, text: str):
+        try:
+            return Padding(Markdown(text), (0, 0, 0, 4))
+        except Exception:
+            return Padding(Text(text), (0, 0, 0, 4))
+
+    def _receiver(self):
+        while self.alive:
+            msg = self.conn.recv()
+            if msg is None:
+                self._events.put(("disconnect", ""))
+                return
+
+            msg_type = msg.get("type")
+            if msg_type == "stream_start":
+                self._events.put(("stream_start", ""))
+            elif msg_type == "stream_delta":
+                self._events.put(("stream_delta", msg.get("text", "")))
+            elif msg_type == "stream_end":
+                self._events.put(("stream_end", ""))
+            elif msg_type == "done":
+                self._events.put(("done", ""))
+            elif msg_type == "error":
+                self._events.put(("error", msg.get("text", "unknown error")))
+
+    def _input_reader(self):
+        try:
+            while self.alive:
+                line = self._tty.readline()
+                if not line:
+                    self._inputs.put(None)
+                    return
+                self._inputs.put(line.rstrip("\n"))
+        except (OSError, ValueError):
+            self._inputs.put(None)
+
+    def _start_turn(self):
+        self.state.waiting = True
+        self.state.streaming = False
+        self.state.started_at = time.time()
+        self.state.current_text = ""
+        self.state.rendered_text = ""
+        self.state.error_text = ""
+        self.state.finished_blocks = []
+        self.state.waiting_phrase = self._pick_phrase()
+
+    def _apply_event(self, kind: str, payload: str):
+        if kind == "stream_start":
+            self.state.streaming = True
+            self.state.waiting = False
+        elif kind == "stream_delta":
+            self.state.current_text += payload
+        elif kind == "stream_end":
+            self.state.streaming = False
+            if self.state.current_text.strip():
+                self.state.finished_blocks.append(self.state.current_text)
+                self.state.current_text = ""
+                self.state.rendered_text = ""
+        elif kind == "done":
+            self.state.waiting = False
+            self.state.streaming = False
+        elif kind == "error":
+            self.state.error_text = payload
+        elif kind == "disconnect":
+            self.alive = False
+
+    def _print_finished_blocks(self):
+        while self.state.finished_blocks:
+            block = self.state.finished_blocks.pop(0)
+            if block.strip():
+                self.console.print(self._render_markdown(block))
+                self.console.print()
+
+    def _render_active(self, live: Live):
+        if self.state.error_text:
+            live.update(Text(f"  error: {self.state.error_text}", style=f"bold {ERROR_COLOR}"))
+            self.state.error_text = ""
+            return
+        if self.state.current_text:
+            if self.state.current_text != self.state.rendered_text:
+                live.update(self._render_markdown(self.state.current_text))
+                self.state.rendered_text = self.state.current_text
+            return
+        live.update(self._render_spinner())
 
     def run(self):
-        from rich.console import Console
-        from rich.markdown import Markdown
-        from rich.text import Text
-        from rich.live import Live
-        from rich.theme import Theme
-        from rich.padding import Padding
+        def handle_sigint(sig, frame):
+            if self.state.waiting or self.state.streaming:
+                self.conn.send({"type": "cancel"})
+                return
+            self.alive = False
 
-        custom_theme = Theme({
-            "markdown.heading": f"bold {ACCENT}",
-            "markdown.link": LINK_COLOR,
-            "markdown.link_url": DIM,
-            "markdown.code": CODE_COLOR,
-            "markdown.item.bullet": ACCENT_SOFT,
-        })
-
-        console = Console(theme=custom_theme)
+        signal.signal(signal.SIGINT, handle_sigint)
 
         try:
             self._tty = open("/dev/tty", "r")
         except OSError:
             sys.exit(1)
 
-        done_event = threading.Event()
-        stream_lock = threading.Lock()
-
-        def render_spinner():
-            phrase = self._waiting_phrase
-            elapsed = time.time() - self.turn_start
-            tick = int(elapsed * 10)
-            frame = SPINNER_FRAMES[tick % len(SPINNER_FRAMES)]
-            window = 6
-            pos = tick % (len(phrase) + window)
-            parts = [(f"  {frame} ", f"bold {ACCENT}")]
-            for i, ch in enumerate(phrase):
-                if pos - window <= i < pos:
-                    parts.append((ch, f"bold {ACCENT}"))
-                else:
-                    parts.append((ch, ACCENT_SOFT))
-            parts.append(("…", ACCENT_SOFT))
-            parts.append((f"  {elapsed:.0f}s", DIM))
-            return Text.assemble(*parts)
-
-        def receiver():
-            while self.alive:
-                msg = self.conn.recv()
-                if msg is None:
-                    self.alive = False
-                    done_event.set()
-                    break
-
-                msg_type = msg.get("type")
-
-                if msg_type == "stream_start":
-                    self.streaming = True
-                    self.waiting = False
-                    with stream_lock:
-                        if self.stream_text.strip():
-                            self._finished_streams.put(self.stream_text)
-                        self.stream_text = ""
-                    self._stream_started.set()
-
-                elif msg_type == "stream_delta":
-                    text = msg.get("text", "")
-                    with stream_lock:
-                        self.stream_text += text
-
-                elif msg_type == "stream_end":
-                    self.streaming = False
-                    with stream_lock:
-                        if self.stream_text.strip():
-                            self._finished_streams.put(self.stream_text)
-                        self.stream_text = ""
-
-                elif msg_type == "done":
-                    self.waiting = False
-                    done_event.set()
-
-                elif msg_type == "error":
-                    self._error_text = msg.get("text", "unknown error")
-
-        recv_thread = threading.Thread(target=receiver, daemon=True)
+        recv_thread = threading.Thread(target=self._receiver, daemon=True)
         recv_thread.start()
 
-        # Input reader thread — non-blocking readline via queue
-        def input_reader():
-            try:
-                while self.alive:
-                    line = self._tty.readline()
-                    if not line:
-                        self._input_queue.put(None)
-                        break
-                    self._input_queue.put(line)
-            except (OSError, ValueError):
-                self._input_queue.put(None)
-
-        input_thread = threading.Thread(target=input_reader, daemon=True)
+        input_thread = threading.Thread(target=self._input_reader, daemon=True)
         input_thread.start()
 
-        # --- Startup banner ---
-        console.print()
+        self.console.print()
         for line in LOGO_LINES:
-            console.print(Text(f"  {line}", style=f"bold {ACCENT}"))
-
-        greeting = random.choice(GREETING_PHRASES)
-        console.print()
-        console.print(Text.assemble(
-            ("  ✦ ", f"bold {ACCENT}"),
-            (greeting, f"italic {ACCENT_SOFT}"),
-        ))
-        console.print()
+            self.console.print(Text(f"  {line}", style=f"bold {ACCENT}"))
+        self.console.print()
+        self.console.print(
+            Text.assemble(("  ✦ ", f"bold {ACCENT}"), (random.choice(GREETING_PHRASES), f"italic {ACCENT_SOFT}"))
+        )
+        self.console.print()
 
         while self.alive:
-            try:
-                # === IDLE: show prompt, poll for input or unsolicited stream ===
-                console.print(f"[bold {ACCENT}]  ❯[/] ", end="")
-                sys.stdout.flush()
+            self.console.print(f"[bold {ACCENT}]  ❯[/] ", end="")
+            sys.stdout.flush()
 
-                self._stream_started.clear()
-                user_input = None
-
-                while self.alive:
-                    if self._stream_started.is_set():
+            user_input = None
+            while self.alive and user_input is None:
+                try:
+                    event = self._events.get_nowait()
+                    self._apply_event(*event)
+                    if event[0] == "stream_start":
                         sys.stdout.write(CLEAR_LINE)
                         sys.stdout.flush()
                         break
+                except queue.Empty:
+                    pass
 
-                    try:
-                        raw = self._input_queue.get(timeout=0.1)
-                        if raw is None:
-                            self.alive = False
-                            break
-                        user_input = raw.rstrip("\n")
-                        break
-                    except queue.Empty:
-                        continue
+                try:
+                    raw = self._inputs.get(timeout=0.1)
+                except queue.Empty:
+                    continue
 
-                if not self.alive:
+                if raw is None:
+                    self.alive = False
                     break
+                user_input = raw
 
-                # === ACTIVE: handle whichever event arrived ===
-                if user_input is not None:
-                    if not user_input.strip():
-                        continue
-
-                    sys.stdout.write(MOVE_UP + CLEAR_LINE)
-                    sys.stdout.flush()
-                    console.print(
-                        Text.assemble(
-                            ("  ❯ ", DIM),
-                            (user_input, USER_TEXT),
-                        )
-                    )
-                    console.print()
-
-                    done_event.clear()
-                    self._stream_started.clear()
-                    self.turn_start = time.time()
-                    self.waiting = True
-                    self.stream_text = ""
-                    self._error_text = ""
-                    self._pick_phrase()
-                    self.conn.send({"type": "message", "text": user_input})
-                else:
-                    done_event.clear()
-                    self.turn_start = time.time()
-                    self._error_text = ""
-                    self._pick_phrase()
-
-                # === RENDER: spinner + streaming ===
-                with Live(
-                    render_spinner(),
-                    console=console,
-                    refresh_per_second=12,
-                    transient=True,
-                ) as live:
-                    # Spinner while waiting for stream_start
-                    while self.waiting and self.alive and not done_event.is_set():
-                        live.update(render_spinner())
-                        done_event.wait(timeout=0.08)
-
-                    # Streaming — may alternate with spinner between streams
-                    last_render_text = ""
-                    last_render_time = 0.0
-                    while not done_event.is_set() and self.alive:
-                        # Flush finished streams
-                        while not self._finished_streams.empty():
-                            try:
-                                finished = self._finished_streams.get_nowait()
-                                if finished.strip():
-                                    live.update(Text(""))
-                                    console.print(Padding(Markdown(finished), (0, 0, 0, 4)))
-                                    console.print()
-                            except queue.Empty:
-                                break
-
-                        if not self.streaming and not self.waiting:
-                            live.update(render_spinner())
-                            done_event.wait(timeout=0.08)
-                            continue
-
-                        with stream_lock:
-                            cur_text = self.stream_text
-                        if cur_text and cur_text != last_render_text:
-                            now = time.time()
-                            # Throttle markdown rendering: at most every 0.3s for large text
-                            if len(cur_text) < 2000 or (now - last_render_time) >= 0.3:
-                                try:
-                                    live.update(Padding(Markdown(cur_text), (0, 0, 0, 4)))
-                                except Exception:
-                                    live.update(Padding(Text(cur_text), (0, 0, 0, 4)))
-                                last_render_text = cur_text
-                                last_render_time = now
-                        if self._error_text:
-                            live.update(
-                                Text(f"  error: {self._error_text}",
-                                     style=f"bold {ERROR_COLOR}")
-                            )
-                            self._error_text = ""
-                        done_event.wait(timeout=0.08)
-
-                # Flush remaining finished streams
-                while not self._finished_streams.empty():
-                    try:
-                        finished = self._finished_streams.get_nowait()
-                        if finished.strip():
-                            console.print(Padding(Markdown(finished), (0, 0, 0, 4)))
-                            console.print()
-                    except queue.Empty:
-                        break
-
-                elapsed = time.time() - self.turn_start
-                console.print()
-                console.print(Text(f"    {elapsed:.1f}s", style=DIM))
-                console.print()
-
-            except (EOFError, KeyboardInterrupt):
+            if not self.alive:
                 break
+
+            unsolicited = user_input is None
+            if not unsolicited:
+                if not user_input.strip():
+                    continue
+                sys.stdout.write(MOVE_UP + CLEAR_LINE)
+                sys.stdout.flush()
+                self.console.print(Text.assemble(("  ❯ ", DIM), (user_input, USER_TEXT)))
+                self.console.print()
+                self._start_turn()
+                self.conn.send({"type": "message", "text": user_input})
+            else:
+                self._start_turn()
+                self.state.streaming = True
+                self.state.waiting = False
+
+            with Live(self._render_spinner(), console=self.console, refresh_per_second=12, transient=True) as live:
+                turn_done = False
+                while self.alive and not turn_done:
+                    self._render_active(live)
+                    self._print_finished_blocks()
+                    try:
+                        event = self._events.get(timeout=0.08)
+                    except queue.Empty:
+                        continue
+                    self._apply_event(*event)
+                    if event[0] == "done":
+                        turn_done = True
+                    elif event[0] == "disconnect":
+                        turn_done = True
+
+            self._print_finished_blocks()
+            if not self.alive:
+                break
+
+            elapsed = time.time() - self.state.started_at if self.state.started_at else 0.0
+            self.console.print()
+            self.console.print(Text(f"    {elapsed:.1f}s", style=DIM))
+            self.console.print()
+            self.state.reset()
 
         self.alive = False
         self.conn.close()
@@ -372,9 +334,9 @@ class Gateway:
 
 
 def main():
-    gw = Gateway()
-    gw.connect()
-    gw.run()
+    gateway = Gateway()
+    gateway.connect()
+    gateway.run()
 
 
 if __name__ == "__main__":

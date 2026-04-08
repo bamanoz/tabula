@@ -1,3 +1,7 @@
+---
+inject: none
+summary: "Test gateway for automated testing"
+---
 # gateway-test
 
 Test gateway for automated testing. Sends a single hardcoded message after 2
