@@ -1,0 +1,15 @@
+#!/bin/bash
+# Launch Tabula kernel + interactive CLI gateway.
+# This is the main entry point for interactive use.
+# Configuration via environment variables:
+#   TABULA_HOME             — workspace directory (default: ~/.tabula)
+#   TABULA_PROVIDER         — LLM provider: anthropic, openai, etc. (default: anthropic)
+#   TABULA_VERBOSE          — set to "1" for verbose logging to kernel.log
+#   TABULA_RESUME_SESSION   — session ID to resume
+#   TABULA_API_PORT         — also start API gateway on this port
+set -e
+
+TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
+export TABULA_HOME
+
+exec "$TABULA_HOME/bin/tabula"

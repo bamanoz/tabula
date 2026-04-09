@@ -1,0 +1,22 @@
+#!/bin/bash
+# Launch Tabula API gateway (connects to a running kernel).
+# Start the kernel first with tabula-headless or tabula-main.
+# Configuration via environment variables:
+#   TABULA_HOME       — workspace directory (default: ~/.tabula)
+#   TABULA_PROVIDER   — LLM provider for the driver (default: anthropic)
+#   TABULA_API_PORT   — HTTP port (default: 8090)
+#   TABULA_API_AUTH   — bearer token for authentication (optional)
+set -e
+
+TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
+VENV_PYTHON="$TABULA_HOME/.venv/bin/python3"
+
+if [ ! -f "$VENV_PYTHON" ]; then
+  echo "error: venv not found at $TABULA_HOME/.venv" >&2
+  echo "Run install.sh first." >&2
+  exit 1
+fi
+
+PORT="${TABULA_API_PORT:-8090}"
+
+exec "$VENV_PYTHON" "$TABULA_HOME/skills/gateway-api/run.py" --port "$PORT"

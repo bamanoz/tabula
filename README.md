@@ -8,10 +8,10 @@ Microkernel AI agent. Go kernel connects skills over WebSocket using a JSON pub/
 │ Gateway  │◀────│  Go Kernel   │◀────│ (Anthropic)  │
 └──────────┘     │              │     └──────────────┘
                  │  WebSocket   │
-                 │  Pub/Sub     │     ┌──────────────┐
-                 │  Tool Exec   │────▶│ Subagent     │
-                 │              │     └──────────────┘
-                 │              │
+┌──────────┐     │  Pub/Sub     │     ┌──────────────┐
+│ API      │────▶│  Tool Exec   │────▶│ Subagent     │
+│ Gateway  │◀────│              │     └──────────────┘
+└──────────┘     │              │
                  │              │     ┌──────────────┐
                  │              │────▶│ Memory       │
                  └──────────────┘     └──────────────┘
@@ -30,7 +30,12 @@ Installs to `~/.tabula/` (override with `TABULA_HOME`):
 
 ```
 ~/.tabula/
-├── bin/tabula          # Go binary
+├── bin/
+│   ├── tabula           # Go binary (kernel)
+│   ├── tabula-main      # launch script: kernel + CLI
+│   ├── tabula-headless  # launch script: kernel only
+│   ├── tabula-api       # launch script: API gateway (connects to kernel)
+│   └── tabula-cli       # launch script: CLI session (connects to kernel)
 ├── tabula.yaml         # config (boot command)
 ├── boot.py             # skill discovery & prompt assembly
 ├── skills/             # installed skills
@@ -42,7 +47,7 @@ Installs to `~/.tabula/` (override with `TABULA_HOME`):
 
 ```bash
 export ANTHROPIC_API_KEY=sk-...
-tabula
+tabula-main
 ```
 
 Use OpenAI instead:
@@ -50,13 +55,69 @@ Use OpenAI instead:
 ```bash
 export TABULA_PROVIDER=openai
 export OPENAI_API_KEY=sk-...
-tabula
+tabula-main
 ```
 
 Verbose mode (logs to `~/.tabula/kernel.log`):
 
 ```bash
-tabula -v
+TABULA_VERBOSE=1 tabula-main
+```
+
+Resume a previous session:
+
+```bash
+TABULA_RESUME_SESSION=sess-xxx tabula-main
+```
+
+### Headless mode
+
+Run just the kernel (no CLI, no API). Connect later with `tabula-cli` or `tabula-api`:
+
+```bash
+tabula-headless
+```
+
+### API Gateway
+
+Start the API gateway (requires a running kernel):
+
+```bash
+tabula-api
+```
+
+Or enable alongside the CLI in one command:
+
+```bash
+TABULA_API_PORT=8090 tabula-main
+```
+
+Exposes two endpoints:
+- `POST /v1/chat/completions` — Chat Completions API
+- `POST /v1/responses` — Responses API
+
+Both support streaming (SSE) and non-streaming modes. Any OpenAI-compatible client or SDK can connect.
+
+```bash
+# Chat Completions
+curl http://localhost:8090/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"tabula","messages":[{"role":"user","content":"hello"}]}'
+
+# Responses API
+curl http://localhost:8090/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"tabula","input":"hello","stream":true}'
+```
+
+Optional auth: set `TABULA_API_AUTH` to require a Bearer token.
+
+### Additional CLI sessions
+
+Connect another CLI to a running kernel:
+
+```bash
+tabula-cli
 ```
 
 ## Architecture
@@ -90,6 +151,7 @@ JSON messages over WebSocket. Each message has a `type` field:
 | `connected` | kernel → skill | Acknowledge with client ID |
 | `join` | skill → kernel | Join a session |
 | `joined` | kernel → skill | Acknowledge session join |
+| `member_joined` | kernel → session | Broadcast when a new client joins the session |
 | `init` | kernel → skill | System prompt + tools (sent after join) |
 | `message` | any → any | Text message (user input, subagent results) |
 | `stream_start` | driver → gateway | LLM response begins |
@@ -122,6 +184,7 @@ Sessions isolate message routing. The main conversation uses session `main`. Eac
 | `driver-anthropic` | Claude API driver with streaming, tool use, and subagent result collection |
 | `driver-openai` | OpenAI Responses API driver with the same protocol and multi-agent behavior |
 | `gateway-cli` | Interactive terminal UI (Rich markdown, shimmer spinner) |
+| `gateway-api` | OpenAI-compatible HTTP API (`/v1/chat/completions`, `/v1/responses`, SSE streaming) |
 | `subagent-anthropic` | Autonomous LLM sub-agent spawned for parallel tasks |
 | `subagent-openai` | OpenAI-backed autonomous sub-agent for parallel tasks |
 | `memory` | Persistent memory — save, search, list, get, delete |
@@ -183,6 +246,7 @@ Supported values:
 - `claude` → alias for `anthropic`
 - `openai`
 - `gpt` → alias for `openai`
+- `openclaw` → alias for `openai`
 
 Selection rules:
 - if the requested provider skill exists, it is used;
@@ -209,6 +273,8 @@ The boot script handles everything else: skill discovery, system prompt assembly
 | `TABULA_URL` | Kernel WebSocket URL | `ws://localhost:8089/ws` |
 | `TABULA_PROVIDER` | Active LLM provider (`anthropic`, `claude`, `openai`, `gpt`) | `anthropic` |
 | `TABULA_VERBOSE` | Enable verbose logging in skill processes (`1` to enable) | unset |
+| `TABULA_HEADLESS` | Skip CLI gateway, for API-only mode (`1` to enable) | unset |
+| `TABULA_RESUME_SESSION` | Session ID to resume | unset |
 | `TABULA_MAX_SPAWN_DEPTH` | Max nesting depth for SPAWN (prevents recursive spawning) | `3` |
 | `TABULA_MAX_CHILDREN_PER_SESSION` | Max active subagent processes per session | `5` |
 | `ANTHROPIC_API_KEY` | Claude API key | required for `anthropic` provider |
@@ -216,6 +282,8 @@ The boot script handles everything else: skill discovery, system prompt assembly
 | `ANTHROPIC_BASE_URL` | API endpoint override | `https://api.anthropic.com` |
 | `OPENAI_API_KEY` | OpenAI API key | required for `openai` provider |
 | `OPENAI_MODEL` | OpenAI model name | `gpt-5` |
+| `TABULA_API_PORT` | HTTP port for OpenAI-compatible API gateway (enables `gateway-api` when set) | unset |
+| `TABULA_API_AUTH` | Bearer token for API gateway authentication | unset |
 | `OPENAI_BASE_URL` | OpenAI API endpoint override | `https://api.openai.com` |
 
 Set `TABULA_PROVIDER=openai` to spawn `skills/driver-openai/run.py` instead of `skills/driver-anthropic/run.py`.

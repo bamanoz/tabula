@@ -147,6 +147,14 @@ func (h *Hub) handleJoin(c *Client, msg *Message) {
 	c.SendMsg(resp)
 	h.log("client %s joined session %s", c.name, c.session)
 
+	// Notify other clients in the session
+	joinedNotify := &Message{
+		Type:    "member_joined",
+		Name:    c.name,
+		Session: c.session,
+	}
+	h.broadcastToSession(c.session, "member_joined", joinedNotify, c)
+
 	if c.canReceive("init") {
 		h.sendInit(c)
 	}

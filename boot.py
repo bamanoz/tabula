@@ -30,6 +30,7 @@ PROVIDER_ALIASES = {
     "claude": "anthropic",
     "openai": "openai",
     "gpt": "openai",
+    "openclaw": "openai",
     "mock": "mock",
 }
 PROVIDER_API_KEYS = {
@@ -236,13 +237,15 @@ def build_spawn() -> list[str]:
             file=sys.stderr,
         )
     driver = f"{VENV_PYTHON} skills/driver-{ACTIVE_PROVIDER}/run.py"
-    gateway_cmd = f"{VENV_PYTHON} skills/gateway-cli/run.py --driver '{driver}'"
-    resume_session = os.environ.get("TABULA_RESUME_SESSION", "")
-    if resume_session:
-        gateway_cmd += f" --resume {resume_session}"
-    procs = [
-        gateway_cmd,
-    ]
+    procs = []
+    # CLI gateway (skip in headless mode, e.g. API-only)
+    headless = os.environ.get("TABULA_HEADLESS", "") == "1"
+    if not headless:
+        gateway_cmd = f"{VENV_PYTHON} skills/gateway-cli/run.py --driver '{driver}'"
+        resume_session = os.environ.get("TABULA_RESUME_SESSION", "")
+        if resume_session:
+            gateway_cmd += f" --resume {resume_session}"
+        procs.append(gateway_cmd)
     # Spawn cron daemon only when OS crontab is unavailable
     cron_skill = os.path.join(SKILLS_DIR, "cron", "run.py")
     if os.path.isfile(cron_skill) and not has_crontab():
@@ -253,6 +256,12 @@ def build_spawn() -> list[str]:
     if os.path.isfile(mcp_skill) and os.path.isfile(MCP_CONFIG):
         procs.append(f"{VENV_PYTHON} skills/mcp/run.py pool")
         print("info: MCP servers configured, spawning mcp-pool", file=sys.stderr)
+    # Spawn OpenAI-compatible API gateway when port is configured
+    api_port = os.environ.get("TABULA_API_PORT", "")
+    api_skill = os.path.join(SKILLS_DIR, "gateway-api", "run.py")
+    if api_port and os.path.isfile(api_skill):
+        procs.append(f"{VENV_PYTHON} skills/gateway-api/run.py --port {api_port}")
+        print(f"info: spawning gateway-api on port {api_port}", file=sys.stderr)
     # Spawn session registry daemon
     sessions_skill = os.path.join(SKILLS_DIR, "sessions", "run.py")
     if os.path.isfile(sessions_skill):

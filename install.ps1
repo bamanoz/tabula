@@ -42,6 +42,28 @@ Write-Host "Building Go binary..."
 $BinPath = Join-Path $BinDir "tabula.exe"
 go build -o $BinPath ./cmd/tabula/
 
+# Launch scripts (PowerShell wrappers)
+@"
+# Launch Tabula (kernel + interactive CLI)
+`$env:TABULA_HOME = if (`$env:TABULA_HOME) { `$env:TABULA_HOME } else { Join-Path `$HOME ".tabula" }
+& "`$env:TABULA_HOME\bin\tabula.exe"
+"@ | Set-Content (Join-Path $BinDir "tabula-main.ps1")
+
+@"
+# Launch Tabula kernel only (headless)
+`$env:TABULA_HOME = if (`$env:TABULA_HOME) { `$env:TABULA_HOME } else { Join-Path `$HOME ".tabula" }
+`$env:TABULA_HEADLESS = "1"
+& "`$env:TABULA_HOME\bin\tabula.exe"
+"@ | Set-Content (Join-Path $BinDir "tabula-headless.ps1")
+
+@"
+# Launch Tabula API gateway (connects to running kernel)
+`$env:TABULA_HOME = if (`$env:TABULA_HOME) { `$env:TABULA_HOME } else { Join-Path `$HOME ".tabula" }
+`$Venv = Join-Path `$env:TABULA_HOME ".venv" "Scripts" "python.exe"
+`$Port = if (`$env:TABULA_API_PORT) { `$env:TABULA_API_PORT } else { "8090" }
+& `$Venv (Join-Path `$env:TABULA_HOME "skills" "gateway-api" "run.py") --port `$Port
+"@ | Set-Content (Join-Path $BinDir "tabula-api.ps1")
+
 # Add to PATH
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if ($UserPath -notlike "*$BinDir*") {
@@ -64,4 +86,4 @@ $env:Path = "$BinDir;$env:Path"
 Write-Host "Environment updated for current session"
 
 Write-Host ""
-Write-Host "Installed. Run: tabula"
+Write-Host "Installed. Run: tabula-main"

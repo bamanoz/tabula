@@ -1,0 +1,14 @@
+#!/bin/bash
+# Launch Tabula kernel only (headless, no CLI or API gateway).
+# Use tabula-cli or tabula-api to connect afterwards.
+# Configuration via environment variables:
+#   TABULA_HOME     — workspace directory (default: ~/.tabula)
+#   TABULA_PROVIDER — LLM provider: anthropic, openai, etc. (default: anthropic)
+#   TABULA_VERBOSE  — set to "1" for verbose logging to kernel.log
+set -e
+
+TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
+export TABULA_HOME
+export TABULA_HEADLESS=1
+
+exec "$TABULA_HOME/bin/tabula"

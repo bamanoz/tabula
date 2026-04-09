@@ -1,6 +1,9 @@
 #!/bin/bash
-# Launch an additional Tabula CLI gateway session.
-# Usage: tabula-cli [--driver 'command'] [--resume SESSION]
+# Launch an additional Tabula CLI gateway session (connects to a running kernel).
+# Configuration via environment variables:
+#   TABULA_HOME             — workspace directory (default: ~/.tabula)
+#   TABULA_PROVIDER         — LLM provider for the driver (default: anthropic)
+#   TABULA_RESUME_SESSION   — session ID to resume
 set -e
 
 TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
@@ -13,24 +16,12 @@ if [ ! -f "$VENV_PYTHON" ]; then
   exit 1
 fi
 
-# Default driver from TABULA_PROVIDER
 PROVIDER="${TABULA_PROVIDER:-anthropic}"
-DEFAULT_DRIVER="$VENV_PYTHON skills/driver-${PROVIDER}/run.py"
-
-# Parse arguments
-DRIVER="$DEFAULT_DRIVER"
-RESUME=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --driver) DRIVER="$2"; shift 2;;
-    --resume) RESUME="$2"; shift 2;;
-    *) echo "unknown argument: $1" >&2; exit 1;;
-  esac
-done
+DRIVER="$VENV_PYTHON skills/driver-${PROVIDER}/run.py"
 
 ARGS=(--driver "$DRIVER")
-if [ -n "$RESUME" ]; then
-  ARGS+=(--resume "$RESUME")
+if [ -n "$TABULA_RESUME_SESSION" ]; then
+  ARGS+=(--resume "$TABULA_RESUME_SESSION")
 fi
 
 exec "$VENV_PYTHON" "$TABULA_HOME/skills/gateway-cli/run.py" "${ARGS[@]}"

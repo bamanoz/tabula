@@ -4,7 +4,6 @@ import (
 	"bufio"
 	_ "embed"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -28,10 +27,7 @@ var upgrader = websocket.Upgrader{
 }
 
 func main() {
-	verbose := flag.Bool("v", false, "verbose logging")
-	flag.BoolVar(verbose, "verbose", false, "verbose logging")
-	resume := flag.String("resume", "", "resume an existing session by ID")
-	flag.Parse()
+	verbose := os.Getenv("TABULA_VERBOSE") == "1"
 
 	// 1. Resolve TABULA_HOME
 	tabulaHome := os.Getenv("TABULA_HOME")
@@ -45,7 +41,7 @@ func main() {
 	}
 
 	// 2. Redirect log to file in verbose mode
-	if *verbose {
+	if verbose {
 		logPath := filepath.Join(tabulaHome, "kernel.log")
 		f, err := os.Create(logPath)
 		if err != nil {
@@ -64,7 +60,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: cannot chdir to %s: %v\n", tabulaHome, err)
 		os.Exit(1)
 	}
-	logv(*verbose, "[main] working directory: %s", tabulaHome)
+	logv(verbose, "[main] working directory: %s", tabulaHome)
 
 	// 4. Read tabula.yaml → boot command
 	configPath := filepath.Join(tabulaHome, "tabula.yaml")
@@ -73,12 +69,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	logv(*verbose, "[main] running boot: %s", bootCmd)
-
-	// Set resume session env before boot so it's available to boot.py
-	if *resume != "" {
-		os.Setenv("TABULA_RESUME_SESSION", *resume)
-	}
+	logv(verbose, "[main] running boot: %s", bootCmd)
 
 	// 5. Run boot script → get config
 	bootConfig, err := runBoot(bootCmd)
@@ -86,7 +77,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: boot failed: %v\n", err)
 		os.Exit(1)
 	}
-	logv(*verbose, "[main] url: %s, prompt: %d bytes, spawn: %d processes",
+	logv(verbose, "[main] url: %s, prompt: %d bytes, spawn: %d processes",
 		bootConfig.URL, len(bootConfig.SystemPrompt), len(bootConfig.Spawn))
 
 	// 6. Load tools (embedded)
@@ -118,10 +109,10 @@ func main() {
 	}
 
 	// 9. Init kernel hub
-	logv(*verbose, "[main] initializing kernel...")
+	logv(verbose, "[main] initializing kernel...")
 	maxSpawnDepth := envInt("TABULA_MAX_SPAWN_DEPTH", 3)
 	maxChildren := envInt("TABULA_MAX_CHILDREN_PER_SESSION", 5)
-	hub := kernel.NewHub(bootConfig.SystemPrompt, toolsJSON, maxSpawnDepth, maxChildren, *verbose)
+	hub := kernel.NewHub(bootConfig.SystemPrompt, toolsJSON, maxSpawnDepth, maxChildren, verbose)
 	hub.StartReaper()
 
 	// 9. Start HTTP/WebSocket server
@@ -144,7 +135,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: cannot listen on %s: %v\n", listenAddr, err)
 		os.Exit(1)
 	}
-	logv(*verbose, "[main] listening on %s", listenAddr)
+	logv(verbose, "[main] listening on %s", listenAddr)
 
 	server := &http.Server{Handler: mux}
 	go func() {
@@ -155,24 +146,24 @@ func main() {
 
 	// 11. Spawn processes from boot config
 	for _, cmd := range bootConfig.Spawn {
-		logv(*verbose, "[main] spawning: %s", cmd)
+		logv(verbose, "[main] spawning: %s", cmd)
 		c := mainShellCommand(cmd)
 		c.Stdout = os.Stdout
 		c.Stderr = os.Stderr
 		if err := c.Start(); err != nil {
-			logv(*verbose, "[main] error spawning %q: %v", cmd, err)
+			logv(verbose, "[main] error spawning %q: %v", cmd, err)
 			continue
 		}
 		hub.RegisterSpawn(c, cmd, "main")
-		logv(*verbose, "[main] spawned PID %d: %s", c.Process.Pid, cmd)
+		logv(verbose, "[main] spawned PID %d: %s", c.Process.Pid, cmd)
 	}
 
-	logv(*verbose, "[main] ready")
+	logv(verbose, "[main] ready")
 
 	// 11. Wait for signal
 	waitForShutdownSignal()
 
-	logv(*verbose, "[main] shutting down...")
+	logv(verbose, "[main] shutting down...")
 	hub.Shutdown()
 	server.Close()
 }

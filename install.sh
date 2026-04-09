@@ -41,9 +41,11 @@ if [ "$(uname)" = "Darwin" ]; then
   codesign --force --sign - "$BIN_DIR/tabula" 2>/dev/null || true
 fi
 
-# CLI launcher script
-cp bin/tabula-cli "$BIN_DIR/tabula-cli"
-chmod +x "$BIN_DIR/tabula-cli"
+# Launch scripts
+for script in tabula-main tabula-headless tabula-api tabula-cli; do
+  cp "bin/$script" "$BIN_DIR/$script"
+  chmod +x "$BIN_DIR/$script"
+done
 
 # Add to PATH
 SHELL_RC=""
@@ -80,4 +82,4 @@ else
 fi
 
 echo ""
-echo "Installed. Run: tabula"
+echo "Installed. Run: tabula-main"
