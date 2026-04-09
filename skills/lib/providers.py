@@ -145,6 +145,13 @@ class ProviderSession(ABC):
     def record_aborted_turn(self):
         """Keep provider state coherent after a cancelled turn."""
 
+    def restore_history(self, entries: list[dict]):
+        """Replay history entries to rebuild conversation state.
+
+        Each entry has 'role' and one of: 'text', 'tool_use', 'output'/'tool_use_id'.
+        Default implementation is a no-op (provider loses context on restart).
+        """
+
 
 class AnthropicSession(ProviderSession):
     def __init__(self, *, system_prompt: str, model: str, api_key: str, base_url: str, tools: list[dict]):
@@ -181,6 +188,25 @@ class AnthropicSession(ProviderSession):
                 "content": [{"type": "text", "text": "[cancelled]"}],
             }
         )
+
+    def restore_history(self, entries: list[dict]):
+        for entry in entries:
+            role = entry.get("role")
+            if role == "user":
+                self.messages.append({"role": "user", "content": entry["text"]})
+            elif role == "assistant" and "text" in entry:
+                self.messages.append({"role": "assistant", "content": [{"type": "text", "text": entry["text"]}]})
+            elif role == "assistant" and "tool_use" in entry:
+                tu = entry["tool_use"]
+                self.messages.append({
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": tu["id"], "name": tu["name"], "input": tu.get("input", {})}],
+                })
+            elif role == "tool":
+                self.messages.append({
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": entry["tool_use_id"], "content": entry.get("output", "")}],
+                })
 
     def generate(self, on_text_delta) -> TurnOutcome:
         body = {
@@ -304,6 +330,28 @@ class OpenAISession(ProviderSession):
     def record_aborted_turn(self):
         self.pending_input = []
         self.last_response_output = []
+
+    def restore_history(self, entries: list[dict]):
+        for entry in entries:
+            role = entry.get("role")
+            if role == "user":
+                self.pending_input.append({"role": "user", "content": entry["text"]})
+            elif role == "assistant" and "text" in entry:
+                self.pending_input.append({"role": "assistant", "content": entry["text"]})
+            elif role == "assistant" and "tool_use" in entry:
+                tu = entry["tool_use"]
+                self.pending_input.append({
+                    "type": "function_call",
+                    "id": tu["id"],
+                    "name": tu["name"],
+                    "arguments": json.dumps(tu.get("input", {})),
+                })
+            elif role == "tool":
+                self.pending_input.append({
+                    "type": "function_call_output",
+                    "call_id": entry["tool_use_id"],
+                    "output": entry.get("output", ""),
+                })
 
     def generate(self, on_text_delta) -> TurnOutcome:
         body = {
@@ -555,10 +603,10 @@ class MockProvider(ProviderSession):
         return "\n".join(lines) + "\n"
 
     def add_user_text(self, text: str):
-        # Flushed subagent results from DriverRuntime contain "[Result from subagent X]:"
-        if self._active and "[Result from subagent " in text:
-            for line in text.split("\n\n---\n\n"):
-                m = re.match(r"\[Result from subagent ([^\]]+)\]:\n(.*)", line, re.DOTALL)
+        # Flushed subagent results from DriverRuntime in XML format
+        if self._active and "<subagent_result " in text:
+            for part in text.split("\n\n---\n\n"):
+                m = re.match(r'<subagent_result id="([^"]+)">\n(.*)\n</subagent_result>', part, re.DOTALL)
                 if m:
                     agent_id, result_text = m.group(1), m.group(2)
                     self._all_results[agent_id] = result_text

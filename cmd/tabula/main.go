@@ -30,6 +30,7 @@ var upgrader = websocket.Upgrader{
 func main() {
 	verbose := flag.Bool("v", false, "verbose logging")
 	flag.BoolVar(verbose, "verbose", false, "verbose logging")
+	resume := flag.String("resume", "", "resume an existing session by ID")
 	flag.Parse()
 
 	// 1. Resolve TABULA_HOME
@@ -105,6 +106,9 @@ func main() {
 	// 8. Set environment for all child processes
 	os.Setenv("TABULA_URL", bootConfig.URL)
 	os.Setenv("TABULA_HOME", tabulaHome)
+	if *resume != "" {
+		os.Setenv("TABULA_RESUME_SESSION", *resume)
+	}
 	// Prepend venv bin to PATH so "python3" resolves to the venv
 	venvBin := venvBinDir(tabulaHome)
 	if _, err := os.Stat(venvBin); err == nil {
@@ -127,6 +131,10 @@ func main() {
 			return
 		}
 		kernel.NewClient(hub, conn)
+	})
+	mux.HandleFunc("/sessions", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(hub.SnapshotSessions())
 	})
 
 	listener, err := net.Listen("tcp", listenAddr)

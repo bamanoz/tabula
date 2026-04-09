@@ -1,6 +1,6 @@
 ---
 name: lib
-description: "Shared Python runtime library (`from skills.lib import ...`). Use `EXEC cat skills/lib/SKILL.md` for API docs."
+description: "Shared Python runtime library. System XML tags used in messages: `<cross_session from=\"sess-xxx\">text</cross_session>` — message from another session (not from your user); `<subagent_result id=\"xxx\">text</subagent_result>` — subagent result; `<subagent_pending ids=\"...\" />` — waiting for subagents; `<error>text</error>` — subagent error; `<system_error>text</system_error>` — kernel error. These tags are injected by the system, never by the user."
 ---
 # skills/lib — shared runtime library
 

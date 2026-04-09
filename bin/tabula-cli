@@ -1,6 +1,6 @@
 #!/bin/bash
 # Launch an additional Tabula CLI gateway session.
-# Usage: tabula-cli [--driver 'command']
+# Usage: tabula-cli [--driver 'command'] [--resume SESSION]
 set -e
 
 TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
@@ -17,5 +17,20 @@ fi
 PROVIDER="${TABULA_PROVIDER:-anthropic}"
 DEFAULT_DRIVER="$VENV_PYTHON skills/llm-${PROVIDER}/run.py"
 
-exec "$VENV_PYTHON" "$TABULA_HOME/skills/gateway-cli/run.py" \
-  --driver "${1:-$DEFAULT_DRIVER}"
+# Parse arguments
+DRIVER="$DEFAULT_DRIVER"
+RESUME=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --driver) DRIVER="$2"; shift 2;;
+    --resume) RESUME="$2"; shift 2;;
+    *) echo "unknown argument: $1" >&2; exit 1;;
+  esac
+done
+
+ARGS=(--driver "$DRIVER")
+if [ -n "$RESUME" ]; then
+  ARGS+=(--resume "$RESUME")
+fi
+
+exec "$VENV_PYTHON" "$TABULA_HOME/skills/gateway-cli/run.py" "${ARGS[@]}"

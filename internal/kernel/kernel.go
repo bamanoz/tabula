@@ -243,3 +243,53 @@ func (h *Hub) Shutdown() {
 		}
 	}
 }
+
+// SnapshotSessions returns a JSON snapshot of all sessions grouped by session name.
+func (h *Hub) SnapshotSessions() []byte {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	type processInfo struct {
+		PID     int    `json:"pid"`
+		Command string `json:"command"`
+		Alive   bool   `json:"alive"`
+	}
+	type sessionInfo struct {
+		Clients   []string      `json:"clients"`
+		Processes []processInfo `json:"processes"`
+	}
+
+	sessions := make(map[string]*sessionInfo)
+
+	ensure := func(name string) *sessionInfo {
+		if s, ok := sessions[name]; ok {
+			return s
+		}
+		s := &sessionInfo{
+			Clients:   []string{},
+			Processes: []processInfo{},
+		}
+		sessions[name] = s
+		return s
+	}
+
+	for c := range h.clients {
+		if c.connected && c.session != "" {
+			s := ensure(c.session)
+			s.Clients = append(s.Clients, c.name)
+		}
+	}
+	for pid, proc := range h.spawned {
+		if proc.Session != "" {
+			s := ensure(proc.Session)
+			s.Processes = append(s.Processes, processInfo{
+				PID:     pid,
+				Command: proc.Command,
+				Alive:   proc.Alive,
+			})
+		}
+	}
+
+	data, _ := json.Marshal(sessions)
+	return data
+}

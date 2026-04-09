@@ -101,10 +101,10 @@ class TurnState:
 
 
 class Gateway:
-    def __init__(self, driver_cmd: str | None = None):
+    def __init__(self, driver_cmd: str | None = None, resume_session: str | None = None):
         self.conn = KernelConnection(TABULA_URL)
         self.driver_cmd = driver_cmd
-        self.session_id = f"sess-{uuid4().hex[:8]}"
+        self.session_id = resume_session or f"sess-{uuid4().hex[:8]}"
         self.driver_pid: int | None = None
         self.console = Console(
             theme=Theme(
@@ -283,6 +283,7 @@ class Gateway:
             if self.state.waiting or self.state.streaming:
                 self.conn.send({"type": "cancel"})
                 return
+            self._print_resume_hint()
             self.alive = False
 
         signal.signal(signal.SIGINT, handle_sigint)
@@ -381,17 +382,32 @@ class Gateway:
 
         self.alive = False
         self._kill_driver()
+        self._print_resume_hint()
         self.conn.close()
         if self._tty:
             self._tty.close()
+
+    def _print_resume_hint(self):
+        """Print how to reconnect to this session."""
+        self.console.print()
+        self.console.print(
+            Text.assemble(
+                ("  session ", DIM),
+                (self.session_id, f"bold {ACCENT}"),
+                (". reconnect with:", DIM),
+            )
+        )
+        self.console.print(Text(f"  --resume {self.session_id}", style=f"bold {ACCENT_SOFT}"))
+        self.console.print()
 
 
 def main():
     parser = argparse.ArgumentParser(description="Tabula CLI gateway")
     parser.add_argument("--driver", default=None, help="Driver command to spawn for this session")
+    parser.add_argument("--resume", default=None, metavar="SESSION", help="Resume an existing session by ID")
     args = parser.parse_args()
 
-    gateway = Gateway(driver_cmd=args.driver)
+    gateway = Gateway(driver_cmd=args.driver, resume_session=args.resume)
     gateway.connect()
     gateway.run()
 

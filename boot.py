@@ -236,8 +236,12 @@ def build_spawn() -> list[str]:
             file=sys.stderr,
         )
     driver = f"{VENV_PYTHON} skills/llm-{ACTIVE_PROVIDER}/run.py"
+    gateway_cmd = f"{VENV_PYTHON} skills/gateway-cli/run.py --driver '{driver}'"
+    resume_session = os.environ.get("TABULA_RESUME_SESSION", "")
+    if resume_session:
+        gateway_cmd += f" --resume {resume_session}"
     procs = [
-        f"{VENV_PYTHON} skills/gateway-cli/run.py --driver '{driver}'",
+        gateway_cmd,
     ]
     # Spawn cron daemon only when OS crontab is unavailable
     cron_skill = os.path.join(SKILLS_DIR, "cron", "run.py")
@@ -249,6 +253,10 @@ def build_spawn() -> list[str]:
     if os.path.isfile(mcp_skill) and os.path.isfile(MCP_CONFIG):
         procs.append(f"{VENV_PYTHON} skills/mcp/run.py pool")
         print("info: MCP servers configured, spawning mcp-pool", file=sys.stderr)
+    # Spawn session registry daemon
+    sessions_skill = os.path.join(SKILLS_DIR, "sessions", "run.py")
+    if os.path.isfile(sessions_skill):
+        procs.append(f"{VENV_PYTHON} skills/sessions/run.py daemon")
     return procs
 
 

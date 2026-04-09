@@ -55,7 +55,7 @@ class SubagentRuntime:
 
     def _run_active_task(self, text: str) -> str:
         if not self.provider:
-            return "[subagent not initialized]"
+            return "<error>subagent not initialized</error>"
 
         self.provider.add_user_text(text)
         for _ in range(self.config.max_turns):
@@ -90,7 +90,7 @@ class SubagentRuntime:
                     break
 
                 if msg is None:
-                    return "[kernel disconnected]"
+                    return "<error>kernel disconnected</error>"
 
                 msg_type = msg.get("type")
                 if msg_type == "tool_result" and msg.get("id") in pending:
@@ -103,7 +103,7 @@ class SubagentRuntime:
 
             self.provider.add_tool_results(tool_results)
 
-        return "[subagent: max turns reached]"
+        return "<error>subagent max turns reached</error>"
 
     def _send_result(self, text: str):
         self.conn.send(
