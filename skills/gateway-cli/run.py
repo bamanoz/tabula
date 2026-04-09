@@ -20,7 +20,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.padding import Padding
@@ -39,6 +39,10 @@ USER_TEXT = "#F3EEE0"
 ERROR_COLOR = "#F97066"
 LINK_COLOR = "#7DD3A5"
 CODE_COLOR = "#F0C987"
+
+# ANSI 256-color approximation of ACCENT (#F6C453) for raw terminal output
+ANSI_ACCENT = "\033[38;2;246;196;83m"
+ANSI_RESET = "\033[0m"
 
 WAITING_PHRASES = [
     "pondering",
@@ -60,18 +64,20 @@ GREETING_PHRASES = [
     "skills loaded, imagination required",
 ]
 
-SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+ELAPSED_PHRASES = [
+    "the runes have spoken",
+    "the vision is clear",
+    "the stars aligned",
+    "the circle is complete",
+    "the spell is cast",
+    "the sigil burns bright",
+    "the ink has dried",
+    "the tablet is carved",
+]
+
+SPINNER_FRAMES = "🌑🌒🌓🌔🌕🌖🌗🌘"
 MOVE_UP = "\033[A"
 CLEAR_LINE = "\033[2K\r"
-
-LOGO_LINES = [
-    "████████╗ █████╗ ██████╗ ██╗   ██╗██╗      █████╗ ",
-    "╚══██╔══╝██╔══██╗██╔══██╗██║   ██║██║     ██╔══██╗",
-    "   ██║   ███████║██████╔╝██║   ██║██║     ███████║",
-    "   ██║   ██╔══██║██╔══██╗██║   ██║██║     ██╔══██║",
-    "   ██║   ██║  ██║██████╔╝╚██████╔╝███████╗██║  ██║",
-    "   ╚═╝   ╚═╝  ╚═╝╚═════╝  ╚═════╝ ╚══════╝╚═╝  ╚═╝",
-]
 
 
 @dataclass
@@ -83,6 +89,7 @@ class TurnState:
     rendered_text: str = ""
     waiting_phrase: str = ""
     error_text: str = ""
+    response_started: bool = False
     finished_blocks: list[str] | None = None
 
     def __post_init__(self):
@@ -97,6 +104,7 @@ class TurnState:
         self.rendered_text = ""
         self.waiting_phrase = ""
         self.error_text = ""
+        self.response_started = False
         self.finished_blocks = []
 
 
@@ -177,16 +185,32 @@ class Gateway:
         except Exception:
             pass
 
+    # ── UI helpers ──────────────────────────────────────────────
+
+    def _rule_with_session(self):
+        width = self.console.width or 80
+        label = f" {self.session_id} "
+        left = max(1, width - len(label) - 2)
+        line = Text()
+        line.append("─" * left, style=ACCENT)
+        line.append(label, style=f"bold #3D3220 on {ACCENT}")
+        line.append("──", style=ACCENT)
+        self.console.print(line)
+
+    def _rule(self):
+        width = self.console.width or 80
+        self.console.print(Text("─" * width, style=ACCENT))
+
     def _pick_phrase(self) -> str:
         return random.choice(WAITING_PHRASES)
 
     def _render_spinner(self) -> Text:
         elapsed = max(time.time() - self.state.started_at, 0.0)
-        tick = int(elapsed * 10)
+        tick = int(elapsed * 2)
         frame = SPINNER_FRAMES[tick % len(SPINNER_FRAMES)]
         phrase = self.state.waiting_phrase or "thinking"
         return Text.assemble(
-            (f"  {frame} ", f"bold {ACCENT}"),
+            (f"{frame} ", f"bold {ACCENT}"),
             (phrase, ACCENT_SOFT),
             ("…", ACCENT_SOFT),
             (f"  {elapsed:.0f}s", DIM),
@@ -194,9 +218,11 @@ class Gateway:
 
     def _render_markdown(self, text: str):
         try:
-            return Padding(Markdown(text), (0, 0, 0, 4))
+            return Padding(Markdown(text), (0, 0, 0, 2))
         except Exception:
-            return Padding(Text(text), (0, 0, 0, 4))
+            return Padding(Text(text), (0, 0, 0, 2))
+
+    # ── Network threads ────────────────────────────────────────
 
     def _receiver(self):
         while self.alive:
@@ -229,6 +255,8 @@ class Gateway:
         except (OSError, ValueError):
             self._inputs.put(None)
 
+    # ── Turn management ────────────────────────────────────────
+
     def _start_turn(self):
         self.state.waiting = True
         self.state.streaming = False
@@ -237,6 +265,7 @@ class Gateway:
         self.state.rendered_text = ""
         self.state.error_text = ""
         self.state.finished_blocks = []
+        self.state.response_started = False
         self.state.waiting_phrase = self._pick_phrase()
 
     def _apply_event(self, kind: str, payload: str):
@@ -263,20 +292,40 @@ class Gateway:
         while self.state.finished_blocks:
             block = self.state.finished_blocks.pop(0)
             if block.strip():
-                self.console.print(self._render_markdown(block))
+                if not self.state.response_started:
+                    self.state.response_started = True
+                    lines = block.strip().split("\n", 1)
+                    self.console.print(
+                        Text.assemble(("✦ ", f"bold {ACCENT}"), (lines[0], ""))
+                    )
+                    if len(lines) > 1:
+                        self.console.print(self._render_markdown(lines[1]))
+                else:
+                    self.console.print(self._render_markdown(block))
                 self.console.print()
 
     def _render_active(self, live: Live):
         if self.state.error_text:
-            live.update(Text(f"  error: {self.state.error_text}", style=f"bold {ERROR_COLOR}"))
+            live.update(Text(f"error: {self.state.error_text}", style=f"bold {ERROR_COLOR}"))
             self.state.error_text = ""
             return
         if self.state.current_text:
             if self.state.current_text != self.state.rendered_text:
-                live.update(self._render_markdown(self.state.current_text))
+                if not self.state.response_started:
+                    lines = self.state.current_text.strip().split("\n", 1)
+                    first = Text.assemble(("✦ ", f"bold {ACCENT}"), (lines[0], ""))
+                    if len(lines) > 1:
+                        rest = self._render_markdown(lines[1])
+                        live.update(Group(first, rest))
+                    else:
+                        live.update(first)
+                else:
+                    live.update(self._render_markdown(self.state.current_text))
                 self.state.rendered_text = self.state.current_text
             return
         live.update(self._render_spinner())
+
+    # ── Main loop ──────────────────────────────────────────────
 
     def run(self):
         def handle_sigint(sig, frame):
@@ -303,16 +352,18 @@ class Gateway:
         input_thread.start()
 
         self.console.print()
-        for line in LOGO_LINES:
-            self.console.print(Text(f"  {line}", style=f"bold {ACCENT}"))
-        self.console.print()
         self.console.print(
-            Text.assemble(("  ✦ ", f"bold {ACCENT}"), (random.choice(GREETING_PHRASES), f"italic {ACCENT_SOFT}"))
+            Text.assemble(("✦ ", f"bold {ACCENT}"), (random.choice(GREETING_PHRASES), f"italic {ACCENT_SOFT}"))
         )
         self.console.print()
 
         while self.alive:
-            self.console.print(f"[bold {ACCENT}]  ❯[/] ", end="")
+            self._rule_with_session()
+            # Print prompt, then bottom rule below, cursor back on prompt line
+            width = self.console.width or 80
+            sys.stdout.write(f"{ANSI_ACCENT}❯{ANSI_RESET} ")
+            sys.stdout.write(f"\n{ANSI_ACCENT}{'─' * width}{ANSI_RESET}")
+            sys.stdout.write(f"{MOVE_UP}\r\033[2C")  # back to prompt line, col 3
             sys.stdout.flush()
 
             user_input = None
@@ -321,7 +372,8 @@ class Gateway:
                     event = self._events.get_nowait()
                     self._apply_event(*event)
                     if event[0] == "stream_start":
-                        sys.stdout.write(CLEAR_LINE)
+                        # Clear prompt + bottom rule + top rule
+                        sys.stdout.write(f"{CLEAR_LINE}{MOVE_UP}{CLEAR_LINE}{MOVE_UP}{CLEAR_LINE}")
                         sys.stdout.flush()
                         break
                 except queue.Empty:
@@ -335,6 +387,13 @@ class Gateway:
                 if raw is None:
                     self.alive = False
                     break
+                if raw == "\x03":  # Ctrl+C from raw mode
+                    if self.state.waiting or self.state.streaming:
+                        self.conn.send({"type": "cancel"})
+                    else:
+                        self._print_resume_hint()
+                        self.alive = False
+                    break
                 user_input = raw
 
             if not self.alive:
@@ -343,10 +402,23 @@ class Gateway:
             unsolicited = user_input is None
             if not unsolicited:
                 if not user_input.strip():
+                    # Clear frame and redraw
+                    sys.stdout.write(f"{CLEAR_LINE}{MOVE_UP}{CLEAR_LINE}{MOVE_UP}{CLEAR_LINE}")
+                    sys.stdout.flush()
                     continue
-                sys.stdout.write(MOVE_UP + CLEAR_LINE)
+                # After enter, cursor is on bottom rule line
+                # Clear bottom rule, go up, clear top rule, redraw just the user text
+                sys.stdout.write(f"{CLEAR_LINE}{MOVE_UP}{CLEAR_LINE}")  # clear bottom rule + prompt
+                sys.stdout.write(f"{MOVE_UP}{CLEAR_LINE}")  # clear top rule
                 sys.stdout.flush()
-                self.console.print(Text.assemble(("  ❯ ", DIM), (user_input, USER_TEXT)))
+                # Print user input with subtle background highlight
+                width = self.console.width or 80
+                padding = " " * max(0, width - 2 - len(user_input))
+                prompt_text = Text.assemble(
+                    ("❯ ", f"{DIM} on #333333"),
+                    (user_input + padding, f"{USER_TEXT} on #333333"),
+                )
+                self.console.print(prompt_text)
                 self.console.print()
                 self._start_turn()
                 self.conn.send({"type": "message", "text": user_input})
@@ -375,8 +447,16 @@ class Gateway:
                 break
 
             elapsed = time.time() - self.state.started_at if self.state.started_at else 0.0
-            self.console.print()
-            self.console.print(Text(f"    {elapsed:.1f}s", style=DIM))
+            if elapsed >= 60:
+                mins = int(elapsed // 60)
+                secs = int(elapsed % 60)
+                elapsed_str = f"{mins}m {secs}s"
+            else:
+                elapsed_str = f"{elapsed:.1f}s"
+            phrase = random.choice(ELAPSED_PHRASES)
+            self.console.print(
+                Text.assemble(("✧ ", DIM), (f"{phrase} · {elapsed_str}", DIM))
+            )
             self.console.print()
             self.state.reset()
 
@@ -388,16 +468,13 @@ class Gateway:
             self._tty.close()
 
     def _print_resume_hint(self):
-        """Print how to reconnect to this session."""
         self.console.print()
         self.console.print(
             Text.assemble(
-                ("  session ", DIM),
+                ("  --resume ", f"bold {ACCENT_SOFT}"),
                 (self.session_id, f"bold {ACCENT}"),
-                (". reconnect with:", DIM),
             )
         )
-        self.console.print(Text(f"  --resume {self.session_id}", style=f"bold {ACCENT_SOFT}"))
         self.console.print()
 
 

@@ -156,7 +156,7 @@ def discover_mcp_tools() -> dict[str, list[dict]]:
         )
         if result.returncode == 0 and result.stdout.strip():
             return json.loads(result.stdout)
-    except Exception as e:
+    except (Exception, KeyboardInterrupt) as e:
         print(f"warning: MCP discover failed: {e}", file=sys.stderr)
     return {}
 
@@ -273,4 +273,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(1)

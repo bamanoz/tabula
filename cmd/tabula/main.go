@@ -75,6 +75,11 @@ func main() {
 	}
 	logv(*verbose, "[main] running boot: %s", bootCmd)
 
+	// Set resume session env before boot so it's available to boot.py
+	if *resume != "" {
+		os.Setenv("TABULA_RESUME_SESSION", *resume)
+	}
+
 	// 5. Run boot script → get config
 	bootConfig, err := runBoot(bootCmd)
 	if err != nil {
@@ -106,9 +111,6 @@ func main() {
 	// 8. Set environment for all child processes
 	os.Setenv("TABULA_URL", bootConfig.URL)
 	os.Setenv("TABULA_HOME", tabulaHome)
-	if *resume != "" {
-		os.Setenv("TABULA_RESUME_SESSION", *resume)
-	}
 	// Prepend venv bin to PATH so "python3" resolves to the venv
 	venvBin := venvBinDir(tabulaHome)
 	if _, err := os.Stat(venvBin); err == nil {
