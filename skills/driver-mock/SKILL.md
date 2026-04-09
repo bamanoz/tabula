@@ -1,11 +1,11 @@
 ---
-name: llm-mock
+name: driver-mock
 description: "Deterministic mock LLM driver for testing multi-agent orchestration"
 inject: none
 ---
-# llm-mock
+# driver-mock
 
-Deterministic mock LLM driver for testing multi-agent orchestration.
+Deterministic mock driver for testing multi-agent orchestration.
 
 On every user `message`, it launches multiple `subagent-mock` processes in
 parallel via `SPAWN`, waits for their `message` results, aggregates them, and
@@ -28,7 +28,7 @@ TABULA_PROVIDER=mock
 The boot script will spawn:
 
 ```
-python3 skills/llm-mock/run.py
+python3 skills/driver-mock/run.py
 ```
 
 ## Environment variables

@@ -15,7 +15,7 @@ fi
 
 # Default driver from TABULA_PROVIDER
 PROVIDER="${TABULA_PROVIDER:-anthropic}"
-DEFAULT_DRIVER="$VENV_PYTHON skills/llm-${PROVIDER}/run.py"
+DEFAULT_DRIVER="$VENV_PYTHON skills/driver-${PROVIDER}/run.py"
 
 # Parse arguments
 DRIVER="$DEFAULT_DRIVER"

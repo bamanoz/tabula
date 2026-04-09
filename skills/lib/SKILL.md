@@ -110,13 +110,13 @@ runtime.run()
 
 ## Writing a new LLM driver
 
-1. Create `skills/llm-<name>/run.py` (~60 lines)
+1. Create `skills/driver-<name>/run.py` (~60 lines)
 2. Implement `ProviderSession` subclass (or use existing one)
 3. Wire up: `DriverRuntime(config, provider_factory, logger)` → `.connect()` → `.run()`
-4. Create `skills/llm-<name>/SKILL.md`
+4. Create `skills/driver-<name>/SKILL.md`
 5. Add provider to `boot.py` aliases if needed
 
-See `skills/llm-anthropic/run.py` and `skills/llm-mock/run.py` as examples.
+See `skills/driver-anthropic/run.py` and `skills/driver-mock/run.py` as examples.
 
 ## Writing a new subagent
 

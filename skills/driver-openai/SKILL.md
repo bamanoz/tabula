@@ -1,11 +1,11 @@
 ---
-name: llm-openai
+name: driver-openai
 description: "OpenAI Responses API driver with streaming, tool use, and subagent result collection"
 inject: none
 ---
-# llm-openai
+# driver-openai
 
-LLM driver using the OpenAI Responses API with streaming, tool use, and subagent result collection.
+Driver using the OpenAI Responses API with streaming, tool use, and subagent result collection.
 
 Connects to the kernel via WebSocket (`TABULA_URL`), receives messages,
 calls the OpenAI Responses API, and translates responses back to the
@@ -15,7 +15,7 @@ kernel protocol.
 
 Configured automatically when `TABULA_PROVIDER=openai`:
 
-    python3 skills/llm-openai/run.py
+    python3 skills/driver-openai/run.py
 
 ## Protocol
 
@@ -33,4 +33,4 @@ Configured automatically when `TABULA_PROVIDER=openai`:
 
 - Uses the Responses API with streaming enabled
 - Supports parallel tool calls and the same subagent collection loop as the Anthropic driver
-- Intended to be behaviorally compatible with `llm-anthropic`
+- Intended to be behaviorally compatible with `driver-anthropic`

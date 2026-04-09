@@ -119,8 +119,8 @@ Sessions isolate message routing. The main conversation uses session `main`. Eac
 | Skill | Description |
 |-------|-------------|
 | `lib` | Shared runtime library: `KernelConnection`, `DriverRuntime`, `SubagentRuntime`, provider adapters |
-| `llm-anthropic` | Claude API driver with streaming, tool use, and subagent result collection |
-| `llm-openai` | OpenAI Responses API driver with the same protocol and multi-agent behavior |
+| `driver-anthropic` | Claude API driver with streaming, tool use, and subagent result collection |
+| `driver-openai` | OpenAI Responses API driver with the same protocol and multi-agent behavior |
 | `gateway-cli` | Interactive terminal UI (Rich markdown, shimmer spinner) |
 | `subagent-anthropic` | Autonomous LLM sub-agent spawned for parallel tasks |
 | `subagent-openai` | OpenAI-backed autonomous sub-agent for parallel tasks |
@@ -218,7 +218,7 @@ The boot script handles everything else: skill discovery, system prompt assembly
 | `OPENAI_MODEL` | OpenAI model name | `gpt-5` |
 | `OPENAI_BASE_URL` | OpenAI API endpoint override | `https://api.openai.com` |
 
-Set `TABULA_PROVIDER=openai` to spawn `skills/llm-openai/run.py` instead of `skills/llm-anthropic/run.py`.
+Set `TABULA_PROVIDER=openai` to spawn `skills/driver-openai/run.py` instead of `skills/driver-anthropic/run.py`.
 
 ## Adding skills
 

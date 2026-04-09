@@ -43,9 +43,9 @@ def available_providers() -> list[str]:
     if not os.path.isdir(SKILLS_DIR):
         return providers
     for name in sorted(os.listdir(SKILLS_DIR)):
-        if not name.startswith("llm-"):
+        if not name.startswith("driver-"):
             continue
-        provider = name[len("llm-"):]
+        provider = name[len("driver-"):]
         if os.path.isfile(os.path.join(SKILLS_DIR, name, "run.py")):
             providers.append(provider)
     return providers
@@ -69,15 +69,15 @@ def resolve_provider() -> str:
             )
             return provider
 
-    raise SystemExit("No LLM provider skills found. Expected skills/llm-anthropic or skills/llm-openai.")
+    raise SystemExit("No LLM provider skills found. Expected skills/driver-anthropic or skills/driver-openai.")
 
 
 ACTIVE_PROVIDER = resolve_provider()
 
 
 def include_skill(name: str) -> bool:
-    if name.startswith("llm-"):
-        return name == f"llm-{ACTIVE_PROVIDER}"
+    if name.startswith("driver-"):
+        return name == f"driver-{ACTIVE_PROVIDER}"
     if name.startswith("subagent-"):
         return name == f"subagent-{ACTIVE_PROVIDER}"
     return True
@@ -232,10 +232,10 @@ def build_spawn() -> list[str]:
     key_env = PROVIDER_API_KEYS.get(ACTIVE_PROVIDER)
     if key_env and not os.environ.get(key_env):
         print(
-            f"warning: {key_env} is not set; skills/llm-{ACTIVE_PROVIDER}/run.py may exit on startup",
+            f"warning: {key_env} is not set; skills/driver-{ACTIVE_PROVIDER}/run.py may exit on startup",
             file=sys.stderr,
         )
-    driver = f"{VENV_PYTHON} skills/llm-{ACTIVE_PROVIDER}/run.py"
+    driver = f"{VENV_PYTHON} skills/driver-{ACTIVE_PROVIDER}/run.py"
     gateway_cmd = f"{VENV_PYTHON} skills/gateway-cli/run.py --driver '{driver}'"
     resume_session = os.environ.get("TABULA_RESUME_SESSION", "")
     if resume_session:

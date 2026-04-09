@@ -19,7 +19,7 @@ $SkillsDest = Join-Path $TabulaHome "skills"
 if (Test-Path $SkillsDest) { Remove-Item -Recurse -Force $SkillsDest }
 Copy-Item "skills" -Destination $SkillsDest -Recurse -Force
 # Remove mock skills
-Remove-Item -Recurse -Force (Join-Path $SkillsDest "llm-mock") -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force (Join-Path $SkillsDest "driver-mock") -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force (Join-Path $SkillsDest "subagent-mock") -ErrorAction SilentlyContinue
 # Clean pycache
 Get-ChildItem -Path $SkillsDest -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force

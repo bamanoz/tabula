@@ -18,7 +18,7 @@ rsync -a --delete \
   --exclude '__pycache__' \
   --exclude '*.pyc' \
   --exclude '.venv' \
-  --exclude 'llm-mock' \
+  --exclude 'driver-mock' \
   --exclude 'subagent-mock' \
   skills/ "$TABULA_HOME/skills/"
 

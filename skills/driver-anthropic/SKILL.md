@@ -1,11 +1,11 @@
 ---
-name: llm-anthropic
+name: driver-anthropic
 description: "Claude API driver with streaming, tool use, and subagent result collection"
 inject: none
 ---
-# llm-anthropic
+# driver-anthropic
 
-LLM driver using the Anthropic Claude API with streaming, tool use, and subagent result collection.
+Driver using the Anthropic Claude API with streaming, tool use, and subagent result collection.
 
 Connects to the kernel via WebSocket (`TABULA_URL`), receives
 messages, calls the Claude streaming API, and translates responses back to
@@ -15,7 +15,7 @@ kernel protocol.
 
 Configured in `tabula.yaml` under `spawn`:
 
-    python3 skills/llm-anthropic/run.py
+    python3 skills/driver-anthropic/run.py
 
 ## Protocol
 

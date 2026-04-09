@@ -35,7 +35,7 @@ def setup_test_home(tabula_port: int) -> str:
         "json.dump({\n"
         f"  'url': 'ws://127.0.0.1:{tabula_port}/ws',\n"
         "  'system_prompt': 'mock test prompt',\n"
-        "  'spawn': ['.venv/bin/python3 skills/llm-mock/run.py']\n"
+        "  'spawn': ['.venv/bin/python3 skills/driver-mock/run.py']\n"
         "}, sys.stdout)\n"
     )
     return home
