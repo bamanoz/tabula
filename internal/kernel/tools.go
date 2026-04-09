@@ -7,8 +7,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"syscall"
-	"time"
 )
 
 const maxExecOutput = 16 * 1024 // 16KB
@@ -22,20 +20,13 @@ type SpawnedProcess struct {
 	mu      sync.Mutex
 }
 
-func (p *SpawnedProcess) Signal() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.Cmd.Process != nil {
-		p.Cmd.Process.Signal(syscall.SIGINT)
-	}
-}
-
+// Kill forcefully terminates the process.
 func (p *SpawnedProcess) Kill() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.Cmd.Process != nil {
-		p.Cmd.Process.Kill()
-		p.Cmd.Wait()
+		_ = p.Cmd.Process.Kill()
+		_ = p.Cmd.Wait()
 		p.Alive = false
 	}
 }
@@ -132,7 +123,6 @@ func (h *Hub) handleToolUse(sender *Client, msg *Message) {
 }
 
 // sendToolResult sends a tool_result to a session.
-// Caller must hold h.mu (or be called from a goroutine that acquires it).
 func (h *Hub) sendToolResult(session, toolID, output string) {
 	msg := &Message{
 		Type:   "tool_result",
@@ -148,7 +138,7 @@ func (h *Hub) sendToolResult(session, toolID, output string) {
 
 // execAsync runs a command in a goroutine and sends the result to the session.
 func (h *Hub) execAsync(session, toolID, command string) {
-	cmd := exec.Command("sh", "-c", command+" 2>&1")
+	cmd := shellCommand(command + " 2>&1")
 	out, err := cmd.Output()
 
 	// Truncate output
@@ -180,12 +170,11 @@ func (h *Hub) execAsync(session, toolID, command string) {
 // spawnProcess starts a background process.
 // Caller must hold h.mu.
 func (h *Hub) spawnProcess(command, session string, childDepth int) (int, error) {
-	cmd := exec.Command("sh", "-c", command)
+	cmd := shellCommand(command)
 	// Spawned processes communicate via WebSocket, not stdout/stderr.
-	// Discard their output to prevent leaking into the kernel's terminal.
 	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 	if err != nil {
-		return 0, fmt.Errorf("open /dev/null: %w", err)
+		return 0, fmt.Errorf("open %s: %w", os.DevNull, err)
 	}
 	cmd.Stdout = devNull
 	cmd.Stderr = devNull
@@ -212,64 +201,30 @@ func (h *Hub) spawnProcess(command, session string, childDepth int) (int, error)
 	}
 	h.spawned[pid] = proc
 	h.log("spawned PID %d: %s (session %s)", pid, command, session)
+
+	// Platform-specific: start process watcher (goroutine on Windows, reaper on Unix)
+	h.afterSpawn(pid, proc)
+
 	return pid, nil
 }
 
-// StartReaper starts a goroutine that reaps zombie processes.
-func (h *Hub) StartReaper() {
-	go func() {
-		for {
-			time.Sleep(500 * time.Millisecond)
-			h.reapZombies()
-		}
-	}()
-}
-
-func (h *Hub) reapZombies() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	for pid, proc := range h.spawned {
-		if !proc.Alive {
-			continue
-		}
-
-		var status syscall.WaitStatus
-		wpid, err := syscall.Wait4(pid, &status, syscall.WNOHANG, nil)
-		if err != nil || wpid == 0 {
-			continue
-		}
-
-		proc.Alive = false
-
-		exitCode := 0
-		if status.Exited() {
-			exitCode = status.ExitStatus()
-		} else {
-			exitCode = 1
-		}
-
-		if exitCode == 0 {
-			h.log("process %d exited OK: %s", pid, proc.Command)
-		} else {
-			h.log("process %d crashed (exit %d): %s", pid, exitCode, proc.Command)
-			errMsg := &Message{
-				Type: "error",
-				Text: fmt.Sprintf("process %d crashed (exit %d)", pid, exitCode),
-			}
-			data, err := json.Marshal(errMsg)
-			if err != nil {
-				continue
-			}
-			if proc.Session != "" {
-				h.broadcastToSessionRaw(proc.Session, "error", data)
-			} else {
-				// Broadcast to all clients that receive errors
-				for c := range h.clients {
-					if c.connected && c.canReceive("error") {
-						c.SendRaw(data)
-					}
-				}
+// broadcastProcessError sends an error message about a crashed process.
+func (h *Hub) broadcastProcessError(session string, pid int, command string, exitCode int) {
+	h.log("process %d crashed (exit %d): %s", pid, exitCode, command)
+	errMsg := &Message{
+		Type: "error",
+		Text: fmt.Sprintf("process %d crashed (exit %d)", pid, exitCode),
+	}
+	data, err := json.Marshal(errMsg)
+	if err != nil {
+		return
+	}
+	if session != "" {
+		h.broadcastToSessionRaw(session, "error", data)
+	} else {
+		for c := range h.clients {
+			if c.connected && c.canReceive("error") {
+				c.SendRaw(data)
 			}
 		}
 	}

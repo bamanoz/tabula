@@ -3,14 +3,18 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import os
 import queue
 import random
+import re
 import signal
 import sys
 import threading
 import time
 from dataclasses import dataclass
+from uuid import uuid4
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if ROOT not in sys.path:
@@ -97,8 +101,11 @@ class TurnState:
 
 
 class Gateway:
-    def __init__(self):
+    def __init__(self, driver_cmd: str | None = None):
         self.conn = KernelConnection(TABULA_URL)
+        self.driver_cmd = driver_cmd
+        self.session_id = f"sess-{uuid4().hex[:8]}"
+        self.driver_pid: int | None = None
         self.console = Console(
             theme=Theme(
                 {
@@ -120,14 +127,55 @@ class Gateway:
         self.conn.send(
             {
                 "type": "connect",
-                "name": "cli",
-                "sends": ["message", "cancel"],
-                "receives": ["stream_start", "stream_delta", "stream_end", "done", "error"],
+                "name": f"cli-{self.session_id}",
+                "sends": ["message", "cancel", "tool_use"],
+                "receives": ["stream_start", "stream_delta", "stream_end", "done", "error", "tool_result"],
             }
         )
         self.conn.recv()
-        self.conn.send({"type": "join", "session": "main"})
+        self.conn.send({"type": "join", "session": self.session_id})
         self.conn.recv()
+
+        if self.driver_cmd:
+            self._spawn_driver()
+
+    def _spawn_driver(self):
+        """SPAWN a dedicated LLM driver for this session."""
+        spawn_cmd = f"{self.driver_cmd} --session {self.session_id}"
+        self.conn.send({
+            "type": "tool_use",
+            "id": "spawn-driver",
+            "name": "SPAWN",
+            "input": {"command": spawn_cmd},
+        })
+        # Wait for tool_result
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            msg = self.conn.recv(timeout=15)
+            if msg is None:
+                raise RuntimeError("lost connection while spawning driver")
+            if msg.get("type") == "tool_result" and msg.get("id") == "spawn-driver":
+                output = msg.get("output", "")
+                m = re.match(r"PID (\d+)", output)
+                if m:
+                    self.driver_pid = int(m.group(1))
+                    return
+                raise RuntimeError(f"driver spawn failed: {output}")
+        raise RuntimeError("timeout waiting for driver spawn")
+
+    def _kill_driver(self):
+        """KILL the driver process if we spawned one."""
+        if self.driver_pid is None:
+            return
+        try:
+            self.conn.send({
+                "type": "tool_use",
+                "id": "kill-driver",
+                "name": "KILL",
+                "input": {"pid": self.driver_pid},
+            })
+        except Exception:
+            pass
 
     def _pick_phrase(self) -> str:
         return random.choice(WAITING_PHRASES)
@@ -168,6 +216,7 @@ class Gateway:
                 self._events.put(("done", ""))
             elif msg_type == "error":
                 self._events.put(("error", msg.get("text", "unknown error")))
+            # tool_result is handled only during spawn/kill, ignore here
 
     def _input_reader(self):
         try:
@@ -239,7 +288,10 @@ class Gateway:
         signal.signal(signal.SIGINT, handle_sigint)
 
         try:
-            self._tty = open("/dev/tty", "r")
+            if sys.platform == "win32":
+                self._tty = sys.stdin
+            else:
+                self._tty = open("/dev/tty", "r")
         except OSError:
             sys.exit(1)
 
@@ -328,13 +380,18 @@ class Gateway:
             self.state.reset()
 
         self.alive = False
+        self._kill_driver()
         self.conn.close()
         if self._tty:
             self._tty.close()
 
 
 def main():
-    gateway = Gateway()
+    parser = argparse.ArgumentParser(description="Tabula CLI gateway")
+    parser.add_argument("--driver", default=None, help="Driver command to spawn for this session")
+    args = parser.parse_args()
+
+    gateway = Gateway(driver_cmd=args.driver)
     gateway.connect()
     gateway.run()
 

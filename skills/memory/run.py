@@ -8,7 +8,6 @@ Storage: Markdown files + JSON index with optional embeddings.
 
 import argparse
 import datetime
-import fcntl
 import json
 import os
 import re
@@ -20,8 +19,11 @@ TABULA_HOME = os.environ.get("TABULA_HOME", os.path.join(os.path.expanduser("~")
 DATA_DIR = os.path.join(TABULA_HOME, "memory")
 
 # Ensure sibling modules are importable regardless of cwd
-if SKILL_DIR not in sys.path:
-    sys.path.insert(0, SKILL_DIR)
+SKILLS_ROOT = os.path.dirname(SKILL_DIR)
+if SKILLS_ROOT not in sys.path:
+    sys.path.insert(0, SKILLS_ROOT)
+
+from lib.filelock import lock_file, unlock_file
 INDEX_PATH = os.path.join(DATA_DIR, "index.json")
 MEMORY_PATH = os.path.join(DATA_DIR, "MEMORY.md")
 
@@ -42,11 +44,11 @@ def save_index(index: dict):
     os.makedirs(DATA_DIR, exist_ok=True)
     tmp = INDEX_PATH + ".tmp"
     with open(tmp, "w") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+        lock_file(f)
         json.dump(index, f, indent=2, ensure_ascii=False)
         f.flush()
         os.fsync(f.fileno())
-        fcntl.flock(f, fcntl.LOCK_UN)
+        unlock_file(f)
     os.replace(tmp, INDEX_PATH)
 
 
@@ -73,9 +75,9 @@ def append_to_markdown(filepath: str, entry_id: str, category: str, title: str,
     block = f"\n## [{category}] {title}\n{meta}\n\n{content}\n"
 
     with open(filepath, "a") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+        lock_file(f)
         f.write(block)
-        fcntl.flock(f, fcntl.LOCK_UN)
+        unlock_file(f)
 
 
 def read_entry_from_file(filepath: str, entry_id: str) -> str | None:
@@ -109,9 +111,9 @@ def delete_entry_from_file(filepath: str, entry_id: str) -> bool:
         return False
 
     with open(filepath, "w") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+        lock_file(f)
         f.write(new_text)
-        fcntl.flock(f, fcntl.LOCK_UN)
+        unlock_file(f)
     return True
 
 

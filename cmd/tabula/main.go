@@ -11,12 +11,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/bamanoz/tabula/internal/kernel"
 
@@ -109,9 +106,9 @@ func main() {
 	os.Setenv("TABULA_URL", bootConfig.URL)
 	os.Setenv("TABULA_HOME", tabulaHome)
 	// Prepend venv bin to PATH so "python3" resolves to the venv
-	venvBin := filepath.Join(tabulaHome, ".venv", "bin")
+	venvBin := venvBinDir(tabulaHome)
 	if _, err := os.Stat(venvBin); err == nil {
-		os.Setenv("PATH", venvBin+":"+os.Getenv("PATH"))
+		os.Setenv("PATH", venvBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	}
 
 	// 9. Init kernel hub
@@ -149,7 +146,7 @@ func main() {
 	// 11. Spawn processes from boot config
 	for _, cmd := range bootConfig.Spawn {
 		logv(*verbose, "[main] spawning: %s", cmd)
-		c := exec.Command("sh", "-c", cmd)
+		c := mainShellCommand(cmd)
 		c.Stdout = os.Stdout
 		c.Stderr = os.Stderr
 		if err := c.Start(); err != nil {
@@ -163,9 +160,7 @@ func main() {
 	logv(*verbose, "[main] ready")
 
 	// 11. Wait for signal
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
+	waitForShutdownSignal()
 
 	logv(*verbose, "[main] shutting down...")
 	hub.Shutdown()
@@ -223,7 +218,7 @@ type BootConfig struct {
 
 // runBoot executes the boot command and parses its JSON output.
 func runBoot(cmd string) (*BootConfig, error) {
-	c := exec.Command("sh", "-c", cmd)
+	c := mainShellCommand(cmd)
 	c.Stderr = os.Stderr
 	out, err := c.Output()
 	if err != nil {

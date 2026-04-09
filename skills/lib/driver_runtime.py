@@ -18,6 +18,7 @@ MAX_WAIT_SEC = 300
 class DriverConfig:
     name: str
     url: str
+    session: str = "main"
 
 
 def extract_spawn_id(command: str) -> str | None:
@@ -67,7 +68,7 @@ class DriverRuntime:
             }
         )
         self.conn.recv()
-        self.conn.send({"type": "join", "session": "main"})
+        self.conn.send({"type": "join", "session": self.config.session})
         self.conn.recv()
 
     def process_turn(self, suppress_stream: bool = False):
@@ -193,7 +194,10 @@ class DriverRuntime:
         self._needs_turn = True
 
     def handle_init(self, msg: dict):
-        self.provider = self.provider_factory(msg.get("prompt", ""), msg.get("tools", []))
+        prompt = msg.get("prompt", "")
+        # Inject session identity so LLM uses correct --parent-session
+        prompt += f"\n\nYour session name is `{self.config.session}`. When spawning subagents, use `--parent-session {self.config.session}`."
+        self.provider = self.provider_factory(prompt, msg.get("tools", []))
         self.log("provider initialized")
 
     def handle_message(self, msg: dict):

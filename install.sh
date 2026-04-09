@@ -41,6 +41,10 @@ if [ "$(uname)" = "Darwin" ]; then
   codesign --force --sign - "$BIN_DIR/tabula" 2>/dev/null || true
 fi
 
+# CLI launcher script
+cp bin/tabula-cli "$BIN_DIR/tabula-cli"
+chmod +x "$BIN_DIR/tabula-cli"
+
 # Add to PATH
 SHELL_RC=""
 if [ -n "$ZSH_VERSION" ] || [ -f "$HOME/.zshrc" ]; then

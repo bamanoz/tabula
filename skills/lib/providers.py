@@ -471,6 +471,10 @@ class MockProvider(ProviderSession):
         self.config = config
         self.tools_spec = tools
 
+        # Extract session name from system prompt (injected by driver_runtime)
+        session_match = re.search(r"Your session name is `([^`]+)`", system_prompt)
+        self._session = session_match.group(1) if session_match else "main"
+
         self._state = _MockState.IDLE
         self._turn_no = 0
         self._wave_no = 0
@@ -514,7 +518,7 @@ class MockProvider(ProviderSession):
             command = " ".join([
                 "python3", "skills/subagent-mock/run.py",
                 "--id", shlex.quote(agent_id),
-                "--parent-session", "main",
+                "--parent-session", self._session,
                 "--task", shlex.quote(self._user_text),
                 "--index", str(index),
                 "--max-turns", str(self.config.mock_turns),

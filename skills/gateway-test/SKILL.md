@@ -1,6 +1,7 @@
 ---
+name: gateway-test
+description: "Test gateway for automated testing"
 inject: none
-summary: "Test gateway for automated testing"
 ---
 # gateway-test
 

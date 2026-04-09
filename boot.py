@@ -19,7 +19,10 @@ import sys
 TABULA_HOME = os.environ.get("TABULA_HOME", os.path.join(os.path.expanduser("~"), ".tabula"))
 SKILLS_DIR = os.path.join(TABULA_HOME, "skills")
 MEMORY_FILE = os.path.join(TABULA_HOME, "memory", "MEMORY.md")
-VENV_PYTHON = os.path.join(TABULA_HOME, ".venv", "bin", "python3")
+if sys.platform == "win32":
+    VENV_PYTHON = os.path.join(TABULA_HOME, ".venv", "Scripts", "python.exe")
+else:
+    VENV_PYTHON = os.path.join(TABULA_HOME, ".venv", "bin", "python3")
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
 TABULA_PROVIDER = os.environ.get("TABULA_PROVIDER", "anthropic").strip().lower() or "anthropic"
 PROVIDER_ALIASES = {
@@ -99,7 +102,16 @@ def parse_skill_md(text: str) -> tuple[dict, str]:
 
 
 def scan_skills() -> list[str]:
-    """Read SKILL.md from each skill subdirectory, respecting inject metadata."""
+    """Read SKILL.md from each skill subdirectory.
+
+    Frontmatter format (OpenClaw-compatible):
+      name: skill-name
+      description: "short description"
+
+    Hidden skills (not injected into system prompt) are marked via:
+      metadata: { "tabula": { "inject": "none" } }
+    If no description, the full body is injected.
+    """
     skills = []
     if not os.path.isdir(SKILLS_DIR):
         return skills
@@ -112,19 +124,61 @@ def scan_skills() -> list[str]:
         with open(skill_md) as f:
             raw = f.read().strip()
         meta, body = parse_skill_md(raw)
-        inject = meta.get("inject", "full")
-        if inject == "none":
+
+        # Hidden skills (internal drivers, gateways, etc.)
+        if meta.get("inject") == "none":
             continue
-        if inject == "summary":
-            summary = meta.get("summary", "")
-            if summary:
-                skills.append(f"**{name}**: {summary}")
-            continue
-        skills.append(body)
+
+        description = meta.get("description", "")
+        if description:
+            skill_name = meta.get("name", name)
+            skills.append(f"**{skill_name}**: {description}")
+        else:
+            skills.append(body)
     return skills
 
 
-def build_system_prompt(skills: list[str]) -> str:
+MCP_CONFIG = os.path.join(TABULA_HOME, "mcp", "servers.json")
+
+
+def discover_mcp_tools() -> dict[str, list[dict]]:
+    """Run MCP discover to get tools from all configured servers."""
+    if not os.path.isfile(MCP_CONFIG):
+        return {}
+    mcp_script = os.path.join(SKILLS_DIR, "mcp", "run.py")
+    if not os.path.isfile(mcp_script):
+        return {}
+    try:
+        result = subprocess.run(
+            [VENV_PYTHON, mcp_script, "discover"],
+            capture_output=True, text=True, timeout=30,
+            env={**os.environ, "TABULA_HOME": TABULA_HOME},
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return json.loads(result.stdout)
+    except Exception as e:
+        print(f"warning: MCP discover failed: {e}", file=sys.stderr)
+    return {}
+
+
+def format_mcp_tools(tools_by_server: dict[str, list[dict]]) -> str:
+    """Format discovered MCP tools for the system prompt."""
+    lines = ["## MCP Tools", ""]
+    lines.append("To call an MCP tool: `EXEC python3 skills/mcp/run.py call <server> <tool> '<json_args>'`")
+    lines.append("")
+    for server, tools in sorted(tools_by_server.items()):
+        lines.append(f"**{server}** (MCP server):")
+        for tool in tools:
+            schema = tool.get("inputSchema", {})
+            params = schema.get("properties", {})
+            param_str = ", ".join(f"{k}: {v.get('type', 'any')}" for k, v in params.items())
+            desc = tool.get("description", "")
+            lines.append(f"- `{tool['name']}({param_str})` — {desc}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def build_system_prompt(skills: list[str], mcp_tools: dict[str, list[dict]] | None = None) -> str:
     """Assemble system prompt from skills and memory."""
     lines = []
     lines.append("You are Tabula, an AI agent.")
@@ -156,6 +210,10 @@ def build_system_prompt(skills: list[str]) -> str:
             lines.append(memory)
             lines.append("")
 
+    # Inject MCP tools
+    if mcp_tools:
+        lines.append(format_mcp_tools(mcp_tools))
+
     lines.append("Be helpful, concise, and respond in Russian.")
     return "\n".join(lines)
 
@@ -177,24 +235,29 @@ def build_spawn() -> list[str]:
             f"warning: {key_env} is not set; skills/llm-{ACTIVE_PROVIDER}/run.py may exit on startup",
             file=sys.stderr,
         )
-    driver = f"skills/llm-{ACTIVE_PROVIDER}/run.py"
+    driver = f"{VENV_PYTHON} skills/llm-{ACTIVE_PROVIDER}/run.py"
     procs = [
-        f"{VENV_PYTHON} {driver}",
-        f"{VENV_PYTHON} skills/gateway-cli/run.py",
+        f"{VENV_PYTHON} skills/gateway-cli/run.py --driver '{driver}'",
     ]
     # Spawn cron daemon only when OS crontab is unavailable
     cron_skill = os.path.join(SKILLS_DIR, "cron", "run.py")
     if os.path.isfile(cron_skill) and not has_crontab():
         procs.append(f"{VENV_PYTHON} skills/cron/run.py daemon")
         print("info: OS crontab unavailable, spawning cron daemon", file=sys.stderr)
+    # Spawn MCP pool when MCP servers are configured
+    mcp_skill = os.path.join(SKILLS_DIR, "mcp", "run.py")
+    if os.path.isfile(mcp_skill) and os.path.isfile(MCP_CONFIG):
+        procs.append(f"{VENV_PYTHON} skills/mcp/run.py pool")
+        print("info: MCP servers configured, spawning mcp-pool", file=sys.stderr)
     return procs
 
 
 def main():
     skills = scan_skills()
+    mcp_tools = discover_mcp_tools()
     config = {
         "url": TABULA_URL,
-        "system_prompt": build_system_prompt(skills),
+        "system_prompt": build_system_prompt(skills, mcp_tools),
         "spawn": build_spawn(),
     }
     json.dump(config, sys.stdout, ensure_ascii=False)

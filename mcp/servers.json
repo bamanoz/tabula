@@ -1,0 +1,8 @@
+{
+  "servers": {
+    "filesystem": {
+      "transport": "stdio",
+      "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    }
+  }
+}

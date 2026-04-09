@@ -1,1 +1,1 @@
-boot: .venv/bin/python3 boot.py
+boot: python3 boot.py

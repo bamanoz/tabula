@@ -1,6 +1,6 @@
 ---
-inject: summary
-summary: "OpenAI-backed sub-agent for parallel tasks. Usage: `SPAWN python3 skills/subagent-openai/run.py --id <unique_id> --parent-session main --task \"<task description>\"`. Optional: `--timeout N`. Full docs: `EXEC cat skills/subagent-openai/SKILL.md`"
+name: subagent-openai
+description: "OpenAI-backed sub-agent for parallel tasks. Usage: `SPAWN python3 skills/subagent-openai/run.py --id <unique_id> --parent-session <your_session> --task \"<task description>\"`. Optional: `--timeout N`. Full docs: `EXEC cat skills/subagent-openai/SKILL.md`"
 ---
 # Subagent (OpenAI)
 

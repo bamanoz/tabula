@@ -1,6 +1,6 @@
 ---
-inject: summary
-summary: "Shared Python runtime library (`from skills.lib import ...`). Use `EXEC cat skills/lib/SKILL.md` for API docs."
+name: lib
+description: "Shared Python runtime library (`from skills.lib import ...`). Use `EXEC cat skills/lib/SKILL.md` for API docs."
 ---
 # skills/lib — shared runtime library
 

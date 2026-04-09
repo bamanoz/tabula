@@ -41,7 +41,7 @@ func NewHub(systemPrompt string, toolsJSON json.RawMessage, maxSpawnDepth int, m
 
 func (h *Hub) generateSpawnToken(childDepth int) string {
 	b := make([]byte, 16)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 	token := hex.EncodeToString(b)
 	h.spawnTokens[token] = childDepth
 	return token

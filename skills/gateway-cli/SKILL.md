@@ -1,6 +1,7 @@
 ---
+name: gateway-cli
+description: "Interactive CLI gateway for terminal use"
 inject: none
-summary: "Interactive CLI gateway for terminal use"
 ---
 # gateway-cli
 

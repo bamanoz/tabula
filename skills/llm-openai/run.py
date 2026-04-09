@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import signal
 import sys
@@ -29,12 +30,16 @@ def log(msg: str):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Tabula LLM driver (OpenAI)")
+    parser.add_argument("--session", default="main", help="Session to join")
+    args = parser.parse_args()
+
     if not API_KEY:
         log("ERROR: OPENAI_API_KEY not set")
         sys.exit(1)
 
     runtime = DriverRuntime(
-        DriverConfig(name="openai", url=TABULA_URL),
+        DriverConfig(name="openai", url=TABULA_URL, session=args.session),
         provider_factory=lambda prompt, tools: OpenAISession(
             system_prompt=prompt,
             model=MODEL,

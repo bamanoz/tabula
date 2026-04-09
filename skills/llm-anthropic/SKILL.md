@@ -1,6 +1,7 @@
 ---
+name: llm-anthropic
+description: "Claude API driver with streaming, tool use, and subagent result collection"
 inject: none
-summary: "Claude API driver with streaming, tool use, and subagent result collection"
 ---
 # llm-anthropic
 

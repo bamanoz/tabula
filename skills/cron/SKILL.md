@@ -1,6 +1,6 @@
 ---
-inject: summary
-summary: "Scheduled tasks. Add: `EXEC python3 skills/cron/run.py add --cron \"<expr>\" --task \"<prompt>\"`. One-shot: add `--once`. List: `EXEC python3 skills/cron/run.py list`. Remove: `EXEC python3 skills/cron/run.py remove <id>`. Cron: 5-field (minute hour dom month dow)."
+name: cron
+description: "Scheduled tasks. Add: `EXEC python3 skills/cron/run.py add --cron \"<expr>\" --task \"<prompt>\"`. One-shot: add `--once`. List: `EXEC python3 skills/cron/run.py list`. Remove: `EXEC python3 skills/cron/run.py remove <id>`. Cron: 5-field (minute hour dom month dow)."
 ---
 # Cron
 

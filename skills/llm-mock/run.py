@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 
@@ -34,6 +35,10 @@ def log(msg: str):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Tabula LLM driver (mock)")
+    parser.add_argument("--session", default="main", help="Session to join")
+    args = parser.parse_args()
+
     mock_config = MockConfig(
         subagent_count=SUBAGENT_COUNT,
         mock_turns=MOCK_TURNS,
@@ -43,7 +48,7 @@ def main():
     )
 
     runtime = DriverRuntime(
-        DriverConfig(name="mock", url=TABULA_URL),
+        DriverConfig(name="mock", url=TABULA_URL, session=args.session),
         provider_factory=lambda prompt, tools: MockProvider(
             system_prompt=prompt,
             tools=tools,

@@ -1,6 +1,6 @@
 ---
-inject: summary
-summary: "Skill format spec. Use `EXEC cat skills/skill-contract/SKILL.md` to read. To discover skills: `EXEC ls skills/`"
+name: skill-contract
+description: "Skill format spec. Use `EXEC cat skills/skill-contract/SKILL.md` to read. To discover skills: `EXEC ls skills/`"
 ---
 # Tabula Skill Format
 

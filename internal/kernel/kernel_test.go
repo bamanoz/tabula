@@ -106,7 +106,7 @@ func writeJSON(t *testing.T, conn *websocket.Conn, v any) {
 // readMsg reads one JSON message with a timeout.
 func readMsg(t *testing.T, conn *websocket.Conn) Message {
 	t.Helper()
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	var msg Message
 	if err := conn.ReadJSON(&msg); err != nil {
 		t.Fatalf("readMsg failed: %v", err)
@@ -117,7 +117,7 @@ func readMsg(t *testing.T, conn *websocket.Conn) Message {
 // readMsgTimeout reads one JSON message with a custom timeout. Returns nil on timeout.
 func readMsgTimeout(t *testing.T, conn *websocket.Conn, d time.Duration) *Message {
 	t.Helper()
-	conn.SetReadDeadline(time.Now().Add(d))
+	_ = conn.SetReadDeadline(time.Now().Add(d))
 	var msg Message
 	if err := conn.ReadJSON(&msg); err != nil {
 		return nil
@@ -526,7 +526,7 @@ func TestSpawnListKill(t *testing.T) {
 
 	// Extract PID from spawn output
 	var pid int
-	fmt.Sscanf(spawnMsg.Output, "PID %d", &pid)
+	_, _ = fmt.Sscanf(spawnMsg.Output, "PID %d", &pid)
 
 	// KILL
 	writeJSON(t, conn, Message{
@@ -783,7 +783,7 @@ func TestCancel(t *testing.T) {
 	}
 
 	var pid int
-	fmt.Sscanf(spawnMsg.Output, "PID %d", &pid)
+	_, _ = fmt.Sscanf(spawnMsg.Output, "PID %d", &pid)
 
 	// Send cancel
 	writeJSON(t, conn, Message{Type: "cancel"})
@@ -997,7 +997,7 @@ func TestParallelSpawnAndExec(t *testing.T) {
 	// Cleanup spawned processes
 	for _, id := range []string{"spawn-1", "spawn-2"} {
 		var pid int
-		fmt.Sscanf(results[id], "PID %d", &pid)
+		_, _ = fmt.Sscanf(results[id], "PID %d", &pid)
 		writeJSON(t, conn, Message{
 			Type:  "tool_use",
 			ID:    "kill-" + id,
@@ -1139,7 +1139,7 @@ func TestSpawnAllowedBelowMaxDepth(t *testing.T) {
 
 	// Cleanup
 	var pid int
-	fmt.Sscanf(msg.Output, "PID %d", &pid)
+	_, _ = fmt.Sscanf(msg.Output, "PID %d", &pid)
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "k1",
@@ -1170,7 +1170,7 @@ func TestSpawnDeniedAtMaxChildren(t *testing.T) {
 			t.Fatalf("spawn %d: expected PID, got %q", i, msg.Output)
 		}
 		var pid int
-		fmt.Sscanf(msg.Output, "PID %d", &pid)
+		_, _ = fmt.Sscanf(msg.Output, "PID %d", &pid)
 		pids = append(pids, pid)
 	}
 
@@ -1208,7 +1208,7 @@ func TestSpawnDeniedAtMaxChildren(t *testing.T) {
 
 	// Cleanup all
 	var retryPid int
-	fmt.Sscanf(retryMsg.Output, "PID %d", &retryPid)
+	_, _ = fmt.Sscanf(retryMsg.Output, "PID %d", &retryPid)
 	allPids := append(pids[1:], retryPid)
 	for i, pid := range allPids {
 		writeJSON(t, conn, Message{
@@ -1426,7 +1426,7 @@ func TestKillScopedToSession(t *testing.T) {
 	})
 	spawnMsg := readMsg(t, connA)
 	var pid int
-	fmt.Sscanf(spawnMsg.Output, "PID %d", &pid)
+	_, _ = fmt.Sscanf(spawnMsg.Output, "PID %d", &pid)
 
 	// Session B tries to kill A's process — should fail
 	connB := env.connectAndJoin("driver-b", "sess-b",

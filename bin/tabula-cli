@@ -1,0 +1,21 @@
+#!/bin/bash
+# Launch an additional Tabula CLI gateway session.
+# Usage: tabula-cli [--driver 'command']
+set -e
+
+TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
+VENV_PYTHON="$TABULA_HOME/.venv/bin/python3"
+TABULA_URL="${TABULA_URL:-ws://localhost:8089/ws}"
+
+if [ ! -f "$VENV_PYTHON" ]; then
+  echo "error: venv not found at $TABULA_HOME/.venv" >&2
+  echo "Run install.sh first." >&2
+  exit 1
+fi
+
+# Default driver from TABULA_PROVIDER
+PROVIDER="${TABULA_PROVIDER:-anthropic}"
+DEFAULT_DRIVER="$VENV_PYTHON skills/llm-${PROVIDER}/run.py"
+
+exec "$VENV_PYTHON" "$TABULA_HOME/skills/gateway-cli/run.py" \
+  --driver "${1:-$DEFAULT_DRIVER}"
