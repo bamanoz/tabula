@@ -177,7 +177,11 @@ func (h *Hub) spawnProcess(command, session string, childDepth int) (int, error)
 		return 0, fmt.Errorf("open %s: %w", os.DevNull, err)
 	}
 	cmd.Stdout = devNull
-	cmd.Stderr = devNull
+	if h.Verbose && h.LogFile != nil {
+		cmd.Stderr = h.LogFile
+	} else {
+		cmd.Stderr = devNull
+	}
 
 	// Generate one-time spawn token for child to authenticate and receive depth
 	token := h.generateSpawnToken(childDepth)

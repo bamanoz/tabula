@@ -27,6 +27,7 @@ class ToolResult:
 class TurnOutcome:
     final_text: str
     tool_calls: list[ToolCall]
+    usage: dict | None = None
 
 
 def iter_sse_events(resp):
@@ -146,11 +147,15 @@ class ProviderSession(ABC):
         """Keep provider state coherent after a cancelled turn."""
 
     def restore_history(self, entries: list[dict]):
-        """Replay history entries to rebuild conversation state.
+        """Replay history entries to rebuild conversation state."""
 
-        Each entry has 'role' and one of: 'text', 'tool_use', 'output'/'tool_use_id'.
-        Default implementation is a no-op (provider loses context on restart).
-        """
+    def needs_compact(self) -> bool:
+        """Check if compaction is needed (without performing it)."""
+        return False
+
+    def compact(self, logger=None) -> str:
+        """Compact conversation history if needed. Returns summary text or empty string."""
+        return ""
 
 
 class AnthropicSession(ProviderSession):
@@ -208,6 +213,26 @@ class AnthropicSession(ProviderSession):
                     "content": [{"type": "tool_result", "tool_use_id": entry["tool_use_id"], "content": entry.get("output", "")}],
                 })
 
+    def needs_compact(self) -> bool:
+        from .compaction import should_compact
+        return should_compact(self.messages, self.model, self.system_prompt)
+
+    def compact(self, logger=None) -> str:
+        from .compaction import should_compact, compact_messages_anthropic
+        if not should_compact(self.messages, self.model, self.system_prompt):
+            return ""
+        new_messages, summary = compact_messages_anthropic(
+            api_key=self.api_key,
+            api_url=self.api_url,
+            model=self.model,
+            system_prompt=self.system_prompt,
+            messages=self.messages,
+            logger=logger,
+        )
+        if summary:
+            self.messages = new_messages
+        return summary
+
     def generate(self, on_text_delta) -> TurnOutcome:
         body = {
             "model": self.model,
@@ -240,12 +265,26 @@ class AnthropicSession(ProviderSession):
         text_parts: list[str] = []
         current_text = ""
         current_tool = None
+        usage: dict = {"input_tokens": 0, "output_tokens": 0}
 
         try:
             for data in iter_sse_events(resp):
                 event_type = data.get("type")
 
-                if event_type == "content_block_start":
+                if event_type == "message_start":
+                    msg_usage = data.get("message", {}).get("usage", {})
+                    usage["input_tokens"] = (
+                        msg_usage.get("input_tokens", 0)
+                        + msg_usage.get("cache_creation_input_tokens", 0)
+                        + msg_usage.get("cache_read_input_tokens", 0)
+                    )
+
+                elif event_type == "message_delta":
+                    delta_usage = data.get("usage", {})
+                    if delta_usage.get("output_tokens"):
+                        usage["output_tokens"] = delta_usage["output_tokens"]
+
+                elif event_type == "content_block_start":
                     block = data["content_block"]
                     if block["type"] == "text":
                         current_text = ""
@@ -295,7 +334,7 @@ class AnthropicSession(ProviderSession):
             content_blocks.append({"type": "text", "text": "".join(text_parts)})
 
         self.messages.append({"role": "assistant", "content": content_blocks})
-        return TurnOutcome(final_text="".join(text_parts), tool_calls=tool_calls)
+        return TurnOutcome(final_text="".join(text_parts), tool_calls=tool_calls, usage=usage)
 
 
 class OpenAISession(ProviderSession):
@@ -353,6 +392,26 @@ class OpenAISession(ProviderSession):
                     "output": entry.get("output", ""),
                 })
 
+    def needs_compact(self) -> bool:
+        from .compaction import should_compact
+        return should_compact(self.pending_input, self.model, self.system_prompt)
+
+    def compact(self, logger=None) -> str:
+        from .compaction import should_compact, compact_messages_openai
+        if not should_compact(self.pending_input, self.model, self.system_prompt):
+            return ""
+        new_input, summary = compact_messages_openai(
+            api_key=self.api_key,
+            api_url=self.api_url,
+            model=self.model,
+            system_prompt=self.system_prompt,
+            pending_input=self.pending_input,
+            logger=logger,
+        )
+        if summary:
+            self.pending_input = new_input
+        return summary
+
     def generate(self, on_text_delta) -> TurnOutcome:
         body = {
             "model": self.model,
@@ -386,6 +445,7 @@ class OpenAISession(ProviderSession):
         text_parts: list[str] = []
         tool_state: dict[str, dict] = {}
         tool_order: list[str] = []
+        usage: dict = {"input_tokens": 0, "output_tokens": 0}
 
         try:
             for data in iter_sse_events(resp):
@@ -435,6 +495,10 @@ class OpenAISession(ProviderSession):
                     response = data.get("response", {})
                     response_id = response.get("id", response_id)
                     completed_output = response.get("output", [])
+                    resp_usage = response.get("usage", {})
+                    if resp_usage:
+                        usage["input_tokens"] = resp_usage.get("input_tokens", 0)
+                        usage["output_tokens"] = resp_usage.get("output_tokens", 0)
                     for item in completed_output:
                         if item.get("type") == "function_call":
                             item_id = item.get("id") or item.get("call_id")
@@ -481,7 +545,7 @@ class OpenAISession(ProviderSession):
                 )
             )
 
-        return TurnOutcome(final_text="".join(text_parts), tool_calls=tool_calls)
+        return TurnOutcome(final_text="".join(text_parts), tool_calls=tool_calls, usage=usage)
 
 
 # ---------------------------------------------------------------------------

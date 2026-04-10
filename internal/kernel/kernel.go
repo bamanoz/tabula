@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"sync"
 )
@@ -22,6 +23,7 @@ type Hub struct {
 	MaxSpawnDepth int
 	MaxChildren   int
 	Verbose      bool
+	LogFile      *os.File
 }
 
 // NewHub creates a new Hub.

@@ -85,7 +85,7 @@ class DriverRuntime:
             {
                 "type": "connect",
                 "name": self.config.name,
-                "sends": ["stream_start", "stream_delta", "stream_end", "tool_use", "done"],
+                "sends": ["stream_start", "stream_delta", "stream_end", "tool_use", "done", "status"],
                 "receives": ["message", "tool_result", "init", "error"],
             }
         )
@@ -99,6 +99,22 @@ class DriverRuntime:
 
         self.aborted = False
         stream_started = False
+
+        # Check if compaction is needed before calling the API
+        from .compaction import estimate_tokens, get_context_window, COMPACT_THRESHOLD
+        messages = getattr(self.provider, 'messages', None) or getattr(self.provider, 'pending_input', [])
+        sys_prompt = getattr(self.provider, 'system_prompt', '')
+        est = estimate_tokens(messages) + len(sys_prompt) // 4
+        model = getattr(self.provider, 'model', '')
+        window = get_context_window(model) if model else 0
+        self.log(f"compact check: {len(messages)} msgs, ~{est} est tokens, threshold={int(window * COMPACT_THRESHOLD)}")
+        if self.provider.needs_compact():
+            self.conn.send({"type": "status", "text": "compacting conversation"})
+        summary = self.provider.compact(logger=self.log)
+        if summary:
+            self.conn.send({"type": "status", "text": ""})
+            self.log("conversation compacted")
+            self._write_history({"role": "system", "type": "compaction", "summary": summary})
 
         def on_text_delta(text: str):
             nonlocal stream_started
@@ -183,6 +199,15 @@ class DriverRuntime:
             self.conn.send({"type": "stream_delta", "text": outcome.final_text})
             self.conn.send({"type": "stream_end"})
 
+        if outcome.usage:
+            from .compaction import get_context_window, COMPACT_THRESHOLD
+            inp = outcome.usage.get('input_tokens', 0)
+            out = outcome.usage.get('output_tokens', 0)
+            ctx = get_context_window(self.provider.model) if hasattr(self.provider, 'model') else 0
+            threshold = int(ctx * COMPACT_THRESHOLD) if ctx else 0
+            pct = f"{inp / ctx * 100:.1f}%" if ctx else "?"
+            self.log(f"usage: input={inp} output={out} context={pct} (compaction at {threshold})")
+
         self.conn.send({"type": "done"})
 
     def _flush_collected(self):
@@ -230,25 +255,49 @@ class DriverRuntime:
         self.log("provider initialized")
 
     def _restore_history(self):
-        """Load history.jsonl and replay into provider for session resume."""
+        """Load history.jsonl and replay into provider for session resume.
+
+        If the history contains compaction markers, only replay from the
+        last compaction (summary + messages after it), not the full log.
+        """
         if not self.provider or not self._history_file:
             return
         history_path = self._history_file.name
         if not os.path.isfile(history_path):
             return
-        entries = []
+        all_entries = []
         try:
             with open(history_path) as f:
                 for line in f:
                     line = line.strip()
                     if line:
-                        entries.append(json.loads(line))
+                        all_entries.append(json.loads(line))
         except (OSError, json.JSONDecodeError) as e:
             self.log(f"failed to read history: {e}")
             return
-        if entries:
-            self.provider.restore_history(entries)
-            self.log(f"restored {len(entries)} history entries")
+
+        if not all_entries:
+            return
+
+        # Find last compaction marker — everything before it is already summarized
+        last_compaction_idx = -1
+        for i, entry in enumerate(all_entries):
+            if entry.get("type") == "compaction":
+                last_compaction_idx = i
+
+        if last_compaction_idx >= 0:
+            summary = all_entries[last_compaction_idx].get("summary", "")
+            entries = all_entries[last_compaction_idx + 1:]
+            # Inject the summary as a synthetic user+assistant exchange
+            summary_entries = [
+                {"role": "user", "text": f"<conversation_summary>\n{summary}\n</conversation_summary>"},
+                {"role": "assistant", "text": "I have the full context from our previous conversation. I'll continue from where we left off."},
+            ]
+            self.provider.restore_history(summary_entries + entries)
+            self.log(f"restored from compaction: summary + {len(entries)} entries (skipped {last_compaction_idx} old entries)")
+        else:
+            self.provider.restore_history(all_entries)
+            self.log(f"restored {len(all_entries)} history entries")
 
     def handle_message(self, msg: dict):
         if not self.provider:

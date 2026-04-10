@@ -137,7 +137,7 @@ class Gateway:
                 "type": "connect",
                 "name": f"cli-{self.session_id}",
                 "sends": ["message", "cancel", "tool_use"],
-                "receives": ["stream_start", "stream_delta", "stream_end", "done", "error", "tool_result"],
+                "receives": ["stream_start", "stream_delta", "stream_end", "done", "error", "tool_result", "status"],
             }
         )
         self.conn.recv()
@@ -242,6 +242,8 @@ class Gateway:
                 self._events.put(("done", ""))
             elif msg_type == "error":
                 self._events.put(("error", msg.get("text", "unknown error")))
+            elif msg_type == "status":
+                self._events.put(("status", msg.get("text", "")))
             # tool_result is handled only during spawn/kill, ignore here
 
     def _input_reader(self):
@@ -285,6 +287,12 @@ class Gateway:
             self.state.streaming = False
         elif kind == "error":
             self.state.error_text = payload
+        elif kind == "status":
+            if payload:
+                self.state.waiting_phrase = payload
+                self.state.waiting = True
+            else:
+                self.state.waiting_phrase = self._pick_phrase()
         elif kind == "disconnect":
             self.alive = False
 
@@ -407,11 +415,12 @@ class Gateway:
                     sys.stdout.flush()
                     continue
                 # After enter, cursor is on bottom rule line
-                # Clear bottom rule, go up, clear top rule, redraw just the user text
-                sys.stdout.write(f"{CLEAR_LINE}{MOVE_UP}{CLEAR_LINE}")  # clear bottom rule + prompt
-                sys.stdout.write(f"{MOVE_UP}{CLEAR_LINE}")  # clear top rule
+                # Clear bottom rule, go up, clear prompt, clear top rule
+                sys.stdout.write(f"{CLEAR_LINE}{MOVE_UP}{CLEAR_LINE}")
+                sys.stdout.write(f"{MOVE_UP}{CLEAR_LINE}")
                 sys.stdout.flush()
                 # Print user input with subtle background highlight
+                self.console.print()
                 width = self.console.width or 80
                 padding = " " * max(0, width - 2 - len(user_input))
                 prompt_text = Text.assemble(
@@ -454,6 +463,7 @@ class Gateway:
             else:
                 elapsed_str = f"{elapsed:.1f}s"
             phrase = random.choice(ELAPSED_PHRASES)
+
             self.console.print(
                 Text.assemble(("✧ ", DIM), (f"{phrase} · {elapsed_str}", DIM))
             )

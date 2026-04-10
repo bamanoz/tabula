@@ -41,6 +41,7 @@ func main() {
 	}
 
 	// 2. Redirect log to file in verbose mode
+	var logFile *os.File
 	if verbose {
 		logPath := filepath.Join(tabulaHome, "kernel.log")
 		f, err := os.Create(logPath)
@@ -49,6 +50,7 @@ func main() {
 			os.Exit(1)
 		}
 		defer f.Close()
+		logFile = f
 		log.SetOutput(f)
 		log.SetFlags(log.Ltime | log.Lmicroseconds)
 	} else {
@@ -113,6 +115,7 @@ func main() {
 	maxSpawnDepth := envInt("TABULA_MAX_SPAWN_DEPTH", 3)
 	maxChildren := envInt("TABULA_MAX_CHILDREN_PER_SESSION", 5)
 	hub := kernel.NewHub(bootConfig.SystemPrompt, toolsJSON, maxSpawnDepth, maxChildren, verbose)
+	hub.LogFile = logFile
 	hub.StartReaper()
 
 	// 9. Start HTTP/WebSocket server
