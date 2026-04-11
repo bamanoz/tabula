@@ -86,7 +86,13 @@ def include_skill(name: str) -> bool:
 
 def parse_skill_md(text: str) -> tuple[dict, str]:
     """Parse optional YAML frontmatter from SKILL.md.
-    Returns (metadata dict, body text)."""
+    Returns (metadata dict, body text).
+
+    Supports multi-line values: lines that start with whitespace or don't
+    contain a top-level ':' are appended to the previous key's value.
+    Values that look like JSON (start with '[' or '{') are parsed as JSON.
+    Other values have surrounding quotes stripped.
+    """
     if not text.startswith("---"):
         return {}, text
     end = text.find("\n---", 3)
@@ -94,11 +100,32 @@ def parse_skill_md(text: str) -> tuple[dict, str]:
         return {}, text
     front = text[3:end].strip()
     body = text[end + 4:].strip()
-    meta = {}
+
+    # Collect key-value pairs, joining continuation lines.
+    entries: list[tuple[str, str]] = []
     for line in front.split("\n"):
-        if ":" in line:
-            key, _, value = line.partition(":")
-            meta[key.strip()] = value.strip().strip('"').strip("'")
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Continuation line: starts with whitespace or has no bare ':'
+        if line[0] in (" ", "\t") or ":" not in stripped:
+            if entries:
+                k, v = entries[-1]
+                entries[-1] = (k, v + "\n" + stripped)
+            continue
+        key, _, value = stripped.partition(":")
+        entries.append((key.strip(), value.strip()))
+
+    meta = {}
+    for key, raw in entries:
+        raw = raw.strip()
+        if raw and raw[0] in ("[", "{"):
+            try:
+                meta[key] = json.loads(raw)
+            except json.JSONDecodeError:
+                meta[key] = raw
+        else:
+            meta[key] = raw.strip('"').strip("'")
     return meta, body
 
 
@@ -137,6 +164,46 @@ def scan_skills() -> list[str]:
         else:
             skills.append(body)
     return skills
+
+
+KERNEL_TOOLS = {"EXEC", "SPAWN", "KILL", "LIST"}
+
+
+def discover_skill_tools() -> list[dict]:
+    """Scan SKILL.md frontmatter for tool definitions.
+
+    Returns tools in kernel format, with an added 'exec' field for dispatch.
+    """
+    tools = []
+    seen = set()
+    if not os.path.isdir(SKILLS_DIR):
+        return tools
+    for name in sorted(os.listdir(SKILLS_DIR)):
+        if not include_skill(name):
+            continue
+        skill_md = os.path.join(SKILLS_DIR, name, "SKILL.md")
+        if not os.path.isfile(skill_md):
+            continue
+        with open(skill_md) as f:
+            raw = f.read().strip()
+        meta, _ = parse_skill_md(raw)
+        skill_tools = meta.get("tools")
+        if not skill_tools or not isinstance(skill_tools, list):
+            continue
+        for tool in skill_tools:
+            tool_name = tool.get("name", "")
+            if not tool_name:
+                continue
+            if tool_name in KERNEL_TOOLS:
+                print(f"error: tool {tool_name!r} in skill {name!r} collides with kernel tool", file=sys.stderr)
+                sys.exit(1)
+            if tool_name in seen:
+                print(f"error: duplicate tool {tool_name!r} in skill {name!r}", file=sys.stderr)
+                sys.exit(1)
+            seen.add(tool_name)
+            tool["exec"] = f"{VENV_PYTHON} skills/{name}/run.py tool {tool_name}"
+            tools.append(tool)
+    return tools
 
 
 MCP_CONFIG = os.path.join(TABULA_HOME, "mcp", "servers.json")
@@ -243,16 +310,22 @@ def build_spawn() -> list[str]:
     sessions_skill = os.path.join(SKILLS_DIR, "sessions", "run.py")
     if os.path.isfile(sessions_skill):
         procs.append(f"{VENV_PYTHON} skills/sessions/run.py daemon")
+    # Spawn hook skills
+    hook_logger = os.path.join(SKILLS_DIR, "hook-logger", "run.py")
+    if os.path.isfile(hook_logger):
+        procs.append(f"{VENV_PYTHON} skills/hook-logger/run.py")
     return procs
 
 
 def main():
     skills = scan_skills()
     mcp_tools = discover_mcp_tools()
+    skill_tools = discover_skill_tools()
     config = {
         "url": TABULA_URL,
         "system_prompt": build_system_prompt(skills, mcp_tools),
         "spawn": build_spawn(),
+        "tools": skill_tools,
     }
     json.dump(config, sys.stdout, ensure_ascii=False)
     sys.stdout.write("\n")

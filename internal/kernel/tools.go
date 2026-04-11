@@ -51,6 +51,20 @@ func (h *Hub) handleToolUse(sender *Client, msg *Message) {
 			h.sendToolResult(session, toolID, "ERROR: missing or invalid command")
 			return
 		}
+		// before_tool_call hook
+		hookPayload, _ := json.Marshal(map[string]string{
+			"tool": "EXEC", "id": toolID, "command": input.Command,
+		})
+		result, ok := h.dispatchHook("before_tool_call", hookPayload, session)
+		if !ok {
+			h.sendToolResult(session, toolID, "ERROR: blocked by hook")
+			return
+		}
+		// Apply modifications from hook.
+		var mod struct{ Command string }
+		if json.Unmarshal(result, &mod) == nil && mod.Command != "" {
+			input.Command = mod.Command
+		}
 		// Run async — release lock, execute in goroutine
 		go h.execAsync(session, toolID, input.Command)
 
@@ -60,6 +74,14 @@ func (h *Hub) handleToolUse(sender *Client, msg *Message) {
 		}
 		if err := json.Unmarshal(msg.Input, &input); err != nil || input.Command == "" {
 			h.sendToolResult(session, toolID, "ERROR: missing or invalid command")
+			return
+		}
+		// before_spawn hook
+		hookPayload, _ := json.Marshal(map[string]string{
+			"tool": "SPAWN", "id": toolID, "command": input.Command,
+		})
+		if _, ok := h.dispatchHook("before_spawn", hookPayload, session); !ok {
+			h.sendToolResult(session, toolID, "ERROR: blocked by hook")
 			return
 		}
 		// Enforce spawn depth limit
@@ -84,6 +106,11 @@ func (h *Hub) handleToolUse(sender *Client, msg *Message) {
 			return
 		}
 		h.sendToolResult(session, toolID, fmt.Sprintf("PID %d", pid))
+		// after_spawn hook (void)
+		spawnHookPayload, _ := json.Marshal(map[string]interface{}{
+			"tool": "SPAWN", "id": toolID, "command": input.Command, "pid": pid,
+		})
+		h.dispatchHook("after_spawn", spawnHookPayload, session)
 
 	case "KILL":
 		var input struct {
@@ -121,7 +148,11 @@ func (h *Hub) handleToolUse(sender *Client, msg *Message) {
 		h.sendToolResult(session, toolID, result)
 
 	default:
-		h.sendToolResult(session, toolID, fmt.Sprintf("ERROR: unknown tool %s", toolName))
+		if execCmd, ok := h.toolExec[toolName]; ok {
+			go h.execSkillTool(session, toolID, toolName, execCmd, msg.Input)
+		} else {
+			h.sendToolResult(session, toolID, fmt.Sprintf("ERROR: unknown tool %s", toolName))
+		}
 	}
 }
 
@@ -154,6 +185,11 @@ func (h *Hub) execAsync(session, toolID, command string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.sendToolResult(session, toolID, result)
+	// after_tool_call hook (void)
+	hookPayload, _ := json.Marshal(map[string]string{
+		"tool": "EXEC", "id": toolID, "command": command, "output": result,
+	})
+	h.dispatchHook("after_tool_call", hookPayload, session)
 }
 
 // spawnProcess starts a background process.
@@ -200,4 +236,35 @@ func (h *Hub) spawnProcess(command, session string, childDepth int) (int, error)
 	h.afterSpawn(pid, proc)
 
 	return pid, nil
+}
+
+// execSkillTool runs a skill tool's exec command with JSON input on stdin.
+func (h *Hub) execSkillTool(session, toolID, toolName, execCmd string, input json.RawMessage) {
+	cmd := shell.Command(execCmd)
+	cmd.Stdin = strings.NewReader(string(input))
+	out, err := cmd.CombinedOutput()
+
+	if len(out) > maxExecOutput {
+		out = append(out[:maxExecOutput], []byte("\n[truncated]")...)
+	}
+
+	result := strings.TrimSpace(string(out))
+	if err != nil {
+		if result == "" {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				result = fmt.Sprintf("ERROR: exit code %d", exitErr.ExitCode())
+			} else {
+				result = fmt.Sprintf("ERROR: %v", err)
+			}
+		}
+	}
+	if result == "" {
+		result = "OK"
+	}
+
+	h.Logger.Debug("skill tool completed", "tool", toolName, "session", session, "bytes", len(result))
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.sendToolResult(session, toolID, result)
 }

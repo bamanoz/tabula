@@ -72,13 +72,40 @@ func main() {
 	}
 	slog.Info("boot config loaded", "url", bootConfig.URL, "prompt_bytes", len(bootConfig.SystemPrompt), "spawn_count", len(bootConfig.Spawn))
 
-	// 6. Load tools (embedded)
-	var compacted json.RawMessage
-	if err := json.Unmarshal(embeddedToolsJSON, &compacted); err != nil {
+	// 6. Load and merge tools (embedded kernel tools + boot skill tools)
+	var kernelTools []json.RawMessage
+	if err := json.Unmarshal(embeddedToolsJSON, &kernelTools); err != nil {
 		fmt.Fprintf(os.Stderr, "error: invalid embedded kernel.tools.json: %v\n", err)
 		os.Exit(1)
 	}
-	toolsJSON, _ := json.Marshal(compacted)
+	allTools := make([]json.RawMessage, len(kernelTools))
+	copy(allTools, kernelTools)
+
+	// Merge skill tools from boot config
+	skillExec := make(map[string]string)
+	if len(bootConfig.Tools) > 0 {
+		var bootTools []json.RawMessage
+		if err := json.Unmarshal(bootConfig.Tools, &bootTools); err != nil {
+			fmt.Fprintf(os.Stderr, "error: invalid boot tools: %v\n", err)
+			os.Exit(1)
+		}
+		allTools = append(allTools, bootTools...)
+
+		// Build exec dispatch map
+		var parsed []struct {
+			Name string `json:"name"`
+			Exec string `json:"exec"`
+		}
+		json.Unmarshal(bootConfig.Tools, &parsed)
+		for _, t := range parsed {
+			if t.Exec != "" {
+				skillExec[t.Name] = t.Exec
+			}
+		}
+		slog.Info("merged skill tools", "count", len(bootTools))
+	}
+
+	toolsJSON, _ := json.Marshal(allTools)
 
 	// 7. Parse URL to get listen address
 	u, err := url.Parse(bootConfig.URL)
@@ -104,7 +131,7 @@ func main() {
 	slog.Info("initializing kernel")
 	maxSpawnDepth := envInt("TABULA_MAX_SPAWN_DEPTH", 3)
 	maxChildren := envInt("TABULA_MAX_CHILDREN_PER_SESSION", 5)
-	hub := kernel.NewHub(bootConfig.SystemPrompt, toolsJSON, maxSpawnDepth, maxChildren, logger.Logger)
+	hub := kernel.NewHub(bootConfig.SystemPrompt, toolsJSON, skillExec, maxSpawnDepth, maxChildren, logger.Logger)
 	hub.StartReaper()
 
 	// 10. Start HTTP/WebSocket server
@@ -198,9 +225,10 @@ func readBootCmd(path string) (string, error) {
 
 // BootConfig holds the parsed output of the boot script.
 type BootConfig struct {
-	URL          string   `json:"url"`
-	SystemPrompt string   `json:"system_prompt"`
-	Spawn        []string `json:"spawn"`
+	URL          string          `json:"url"`
+	SystemPrompt string          `json:"system_prompt"`
+	Spawn        []string        `json:"spawn"`
+	Tools        json.RawMessage `json:"tools"`
 }
 
 // runBoot executes the boot command and parses its JSON output.

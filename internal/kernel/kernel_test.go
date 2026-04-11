@@ -31,7 +31,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 
 	toolsJSON := json.RawMessage(`[{"name":"EXEC","description":"run cmd","params":{"command":{"type":"string","description":"cmd"}},"required":["command"]},{"name":"SPAWN","description":"spawn","params":{"command":{"type":"string","description":"cmd"}},"required":["command"]},{"name":"KILL","description":"kill","params":{"pid":{"type":"integer","description":"pid"}},"required":["pid"]},{"name":"LIST","description":"list","params":{},"required":[]}]`)
-	hub := NewHub("test system prompt", toolsJSON, 3, 5, nil)
+	hub := NewHub("test system prompt", toolsJSON, nil, 3, 5, nil)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {

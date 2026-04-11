@@ -18,6 +18,7 @@ type Client struct {
 	depth     int
 	sends     map[string]bool
 	receives  map[string]bool
+	hooks     []HookSubscription
 	sendCh    chan []byte
 	connected bool
 }

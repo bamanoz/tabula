@@ -1,25 +1,18 @@
 ---
 name: weather
-description: "Get current weather and forecasts via wttr.in or Open-Meteo. Use when: user asks about weather, temperature, or forecasts for any location. NOT for: historical weather data, severe weather alerts, or detailed meteorological analysis. No API key needed."
-homepage: https://wttr.in/:help
-metadata:
-  {
-    "openclaw":
-      {
-        "emoji": "☔",
-        "requires": { "bins": ["curl"] },
-        "install":
-          [
-            {
-              "id": "brew",
-              "kind": "brew",
-              "formula": "curl",
-              "bins": ["curl"],
-              "label": "Install curl (brew)",
-            },
-          ],
+description: "Get current weather and forecasts via wttr.in. No API key needed."
+tools:
+  [
+    {
+      "name": "get_weather",
+      "description": "Get current weather and short forecast for a location via wttr.in",
+      "params": {
+        "location": { "type": "string", "description": "City name, e.g. 'Berlin' or 'New York'" },
+        "format": { "type": "string", "description": "Output format: 'summary' (one-line), 'today' (current day), 'forecast' (3-day). Default: summary" }
       },
-  }
+      "required": ["location"]
+    }
+  ]
 ---
 
 # Weather Skill

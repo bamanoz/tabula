@@ -3,6 +3,7 @@ package kernel
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -29,6 +30,9 @@ func (h *Hub) handleConnect(c *Client, msg *Message) {
 	}
 	h.nextClientID++
 	c.connected = true
+	// Hook subscriptions
+	c.hooks = msg.Hooks
+	h.rebuildHookIndex()
 
 	resp := &Message{
 		Type: "connected",
@@ -58,6 +62,13 @@ func (h *Hub) handleJoin(c *Client, msg *Message) {
 	if c.canReceive("init") {
 		h.sendInit(c)
 	}
+
+	// Fire session_start hook (void — non-blocking).
+	payload, _ := json.Marshal(map[string]string{
+		"session": c.session,
+		"client":  c.name,
+	})
+	h.dispatchHook("session_start", payload, c.session)
 }
 
 func (h *Hub) sendInit(c *Client) {
