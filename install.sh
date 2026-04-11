@@ -31,7 +31,7 @@ if [ ! -d "$VENV" ]; then
   echo "Creating Python venv..."
   python3 -m venv "$VENV"
 fi
-"$VENV/bin/pip" install -q websocket-client rich prompt_toolkit pytest
+"$VENV/bin/pip" install -q websocket-client pytest
 echo "Python dependencies installed"
 
 # Go binary
@@ -42,7 +42,7 @@ if [ "$(uname)" = "Darwin" ]; then
 fi
 
 # Launch scripts
-for script in tabula-main tabula-headless tabula-api tabula-cli; do
+for script in tabula-headless tabula-api tabula-cli; do
   cp "bin/$script" "$BIN_DIR/$script"
   chmod +x "$BIN_DIR/$script"
 done
@@ -82,4 +82,4 @@ else
 fi
 
 echo ""
-echo "Installed. Run: tabula-main"
+echo "Installed. Ready to assist!"

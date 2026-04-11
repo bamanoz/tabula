@@ -34,7 +34,7 @@ if (-not (Test-Path $Venv)) {
     python -m venv $Venv
 }
 $Pip = Join-Path $Venv "Scripts" "pip.exe"
-& $Pip install -q websocket-client rich prompt_toolkit pytest
+& $Pip install -q websocket-client pytest
 Write-Host "Python dependencies installed"
 
 # Go binary
@@ -42,27 +42,10 @@ Write-Host "Building Go binary..."
 $BinPath = Join-Path $BinDir "tabula.exe"
 go build -o $BinPath ./cmd/tabula/
 
-# Launch scripts (PowerShell wrappers)
-@"
-# Launch Tabula (kernel + interactive CLI)
-`$env:TABULA_HOME = if (`$env:TABULA_HOME) { `$env:TABULA_HOME } else { Join-Path `$HOME ".tabula" }
-& "`$env:TABULA_HOME\bin\tabula.exe"
-"@ | Set-Content (Join-Path $BinDir "tabula-main.ps1")
-
-@"
-# Launch Tabula kernel only (headless)
-`$env:TABULA_HOME = if (`$env:TABULA_HOME) { `$env:TABULA_HOME } else { Join-Path `$HOME ".tabula" }
-`$env:TABULA_HEADLESS = "1"
-& "`$env:TABULA_HOME\bin\tabula.exe"
-"@ | Set-Content (Join-Path $BinDir "tabula-headless.ps1")
-
-@"
-# Launch Tabula API gateway (connects to running kernel)
-`$env:TABULA_HOME = if (`$env:TABULA_HOME) { `$env:TABULA_HOME } else { Join-Path `$HOME ".tabula" }
-`$Venv = Join-Path `$env:TABULA_HOME ".venv" "Scripts" "python.exe"
-`$Port = if (`$env:TABULA_API_PORT) { `$env:TABULA_API_PORT } else { "8090" }
-& `$Venv (Join-Path `$env:TABULA_HOME "skills" "gateway-api" "run.py") --port `$Port
-"@ | Set-Content (Join-Path $BinDir "tabula-api.ps1")
+# Launch scripts
+foreach ($script in @("tabula-headless.ps1", "tabula-cli.ps1", "tabula-api.ps1")) {
+    Copy-Item (Join-Path "bin" $script) -Destination (Join-Path $BinDir $script) -Force
+}
 
 # Add to PATH
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -86,4 +69,4 @@ $env:Path = "$BinDir;$env:Path"
 Write-Host "Environment updated for current session"
 
 Write-Host ""
-Write-Host "Installed. Run: tabula-main"
+Write-Host "Installed. Ready to assist!"

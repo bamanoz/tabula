@@ -1,65 +1,68 @@
 package kernel
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
-	"log"
-	"os"
+	"log/slog"
 	"os/exec"
 	"sync"
+	"time"
 )
+
+// spawnTokenEntry tracks a one-time spawn token with its creation time.
+type spawnTokenEntry struct {
+	depth     int
+	createdAt time.Time
+}
+
+const spawnTokenTTL = 60 * time.Second
 
 // Hub manages all connected clients, sessions, and spawned processes.
 type Hub struct {
 	mu           sync.Mutex
 	clients      map[*Client]bool
 	spawned      map[int]*SpawnedProcess
-	spawnTokens  map[string]int // token → child depth (one-time use)
+	spawnTokens  map[string]spawnTokenEntry
 	nextClientID int
 	systemPrompt string
 	toolsJSON    json.RawMessage
-	MaxSpawnDepth int
-	MaxChildren   int
-	Verbose      bool
-	LogFile      *os.File
+	Logger          *slog.Logger
+	MaxSpawnDepth   int
+	MaxChildren     int
+	MaxClients      int           // max concurrent clients (default 100)
+	ShutdownTimeout time.Duration // grace period before SIGKILL (default 3s)
 }
 
 // NewHub creates a new Hub.
-func NewHub(systemPrompt string, toolsJSON json.RawMessage, maxSpawnDepth int, maxChildren int, verbose bool) *Hub {
-	return &Hub{
-		clients:      make(map[*Client]bool),
-		spawned:      make(map[int]*SpawnedProcess),
-		spawnTokens:  make(map[string]int),
-		nextClientID: 1,
-		systemPrompt: systemPrompt,
-		toolsJSON:    toolsJSON,
-		MaxSpawnDepth: maxSpawnDepth,
-		MaxChildren:   maxChildren,
-		Verbose:      verbose,
+func NewHub(systemPrompt string, toolsJSON json.RawMessage, maxSpawnDepth int, maxChildren int, logger *slog.Logger) *Hub {
+	if logger == nil {
+		logger = slog.Default()
 	}
-}
-
-func (h *Hub) generateSpawnToken(childDepth int) string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	token := hex.EncodeToString(b)
-	h.spawnTokens[token] = childDepth
-	return token
-}
-
-func (h *Hub) log(format string, args ...any) {
-	if h.Verbose {
-		log.Printf("[kernel] "+format, args...)
+	return &Hub{
+		clients:         make(map[*Client]bool),
+		spawned:         make(map[int]*SpawnedProcess),
+		spawnTokens:     make(map[string]spawnTokenEntry),
+		nextClientID:    1,
+		systemPrompt:    systemPrompt,
+		toolsJSON:       toolsJSON,
+		Logger:          logger,
+		MaxSpawnDepth:   maxSpawnDepth,
+		MaxChildren:     maxChildren,
+		MaxClients:      100,
+		ShutdownTimeout: 3 * time.Second,
 	}
 }
 
 // Register adds a client to the hub.
-func (h *Hub) Register(c *Client) {
+// Returns false if the hub is at capacity (MaxClients).
+func (h *Hub) Register(c *Client) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.MaxClients > 0 && len(h.clients) >= h.MaxClients {
+		h.Logger.Error("rejecting client: max clients reached", "max", h.MaxClients)
+		return false
+	}
 	h.clients[c] = true
+	return true
 }
 
 // Unregister removes a client from the hub.
@@ -67,7 +70,7 @@ func (h *Hub) Unregister(c *Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.clients, c)
-	h.log("client disconnected: %s (id c%d)", c.name, c.id)
+	h.Logger.Info("client disconnected", "name", c.name, "id", c.id)
 }
 
 // HandleMessage processes an incoming message from a client.
@@ -86,11 +89,11 @@ func (h *Hub) HandleMessage(sender *Client, msg *Message) {
 			return
 		}
 		if !sender.canSend(msg.Type) {
-			h.log("client %s not allowed to send %s", sender.name, msg.Type)
+			h.Logger.Warn("client not allowed to send", "name", sender.name, "type", msg.Type)
 			return
 		}
 		if sender.session == "" {
-			h.log("client %s not in a session", sender.name)
+			h.Logger.Warn("client not in a session", "name", sender.name)
 			return
 		}
 
@@ -98,7 +101,7 @@ func (h *Hub) HandleMessage(sender *Client, msg *Message) {
 		case "tool_use":
 			h.handleToolUse(sender, msg)
 		case "cancel":
-			h.handleCancel()
+			h.handleCancel(sender.session)
 		default:
 			target := sender.session
 			if msg.Session != "" {
@@ -109,148 +112,77 @@ func (h *Hub) HandleMessage(sender *Client, msg *Message) {
 	}
 }
 
-func (h *Hub) handleConnect(c *Client, msg *Message) {
-	c.name = msg.Name
-	c.sends = make(map[string]bool)
-	for _, s := range msg.Sends {
-		c.sends[s] = true
-	}
-	c.receives = make(map[string]bool)
-	for _, r := range msg.Receives {
-		c.receives[r] = true
-	}
-	c.id = h.nextClientID
-	// Resolve depth from spawn token (one-time use)
-	if msg.Token != "" {
-		if depth, ok := h.spawnTokens[msg.Token]; ok {
-			c.depth = depth
-			delete(h.spawnTokens, msg.Token)
-		} else {
-			h.log("invalid spawn token from %s", msg.Name)
-		}
-	}
-	h.nextClientID++
-	c.connected = true
-
-	resp := &Message{
-		Type: "connected",
-		ID:   fmt.Sprintf("c%d", c.id),
-	}
-	c.SendMsg(resp)
-	h.log("client connected: %s (id c%d)", c.name, c.id)
-}
-
-func (h *Hub) handleJoin(c *Client, msg *Message) {
-	c.session = msg.Session
-	resp := &Message{
-		Type:    "joined",
-		Session: c.session,
-	}
-	c.SendMsg(resp)
-	h.log("client %s joined session %s", c.name, c.session)
-
-	// Notify other clients in the session
-	joinedNotify := &Message{
-		Type:    "member_joined",
-		Name:    c.name,
-		Session: c.session,
-	}
-	h.broadcastToSession(c.session, "member_joined", joinedNotify, c)
-
-	if c.canReceive("init") {
-		h.sendInit(c)
-	}
-}
-
-func (h *Hub) sendInit(c *Client) {
-	resp := &Message{
-		Type:   "init",
-		Prompt: h.systemPrompt,
-		Tools:  h.toolsJSON,
-	}
-	c.SendMsg(resp)
-	h.log("sent init to client %s", c.name)
-}
-
-func (h *Hub) handleCancel() {
-	for pid, proc := range h.spawned {
-		if proc.Alive {
-			h.log("sending SIGINT to PID %d", pid)
-			proc.Signal()
-		}
-	}
-}
-
-// broadcastToSession sends a message to all clients in a session that can receive the given type.
-// Caller must hold h.mu.
-func (h *Hub) broadcastToSession(session, msgType string, msg *Message, exclude *Client) {
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return
-	}
-	delivered := 0
-	for c := range h.clients {
-		if c == exclude {
-			continue
-		}
-		if !c.connected || c.session == "" {
-			continue
-		}
-		if c.session != session {
-			continue
-		}
-		if !c.canReceive(msgType) {
-			continue
-		}
-		c.SendRaw(data)
-		delivered++
-	}
-	h.log("broadcast %s to session %s: delivered to %d clients", msgType, session, delivered)
-}
-
-// broadcastToSessionRaw sends raw JSON bytes to a session.
-// Caller must hold h.mu.
-func (h *Hub) broadcastToSessionRaw(session, msgType string, data []byte) {
-	delivered := 0
-	for c := range h.clients {
-		if !c.connected || c.session == "" {
-			continue
-		}
-		if c.session != session {
-			continue
-		}
-		if !c.canReceive(msgType) {
-			continue
-		}
-		c.SendRaw(data)
-		delivered++
-	}
-	h.log("broadcast %s to session %s: delivered to %d clients", msgType, session, delivered)
-}
-
 // RegisterSpawn registers an externally started process in the spawned map.
 func (h *Hub) RegisterSpawn(cmd *exec.Cmd, command, session string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	pid := cmd.Process.Pid
-	h.spawned[pid] = &SpawnedProcess{
+	proc := &SpawnedProcess{
 		Cmd:     cmd,
 		Command: command,
 		Alive:   true,
 		Session: session,
+		done:    make(chan struct{}),
 	}
-	h.log("registered spawned PID %d: %s", pid, command)
+	h.spawned[pid] = proc
+	h.Logger.Info("registered spawned process", "pid", pid, "command", command)
+	h.afterSpawn(pid, proc)
 }
 
-// Shutdown cleans up all spawned processes.
+// Shutdown gracefully stops all spawned processes.
+// Sends interrupt signal first, waits up to ShutdownTimeout, then force-kills remaining.
 func (h *Hub) Shutdown() {
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	var alive []*SpawnedProcess
 	for pid, proc := range h.spawned {
 		if proc.Alive {
-			h.log("killing PID %d on shutdown", pid)
-			proc.Kill()
+			h.Logger.Info("sending interrupt on shutdown", "pid", pid)
+			proc.Signal()
+			alive = append(alive, proc)
 		}
+	}
+	h.mu.Unlock()
+
+	if len(alive) == 0 {
+		return
+	}
+
+	timeout := h.ShutdownTimeout
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	done := make(chan struct{})
+	go func() {
+		for _, proc := range alive {
+			<-proc.done
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		h.Logger.Info("all processes exited gracefully")
+		return
+	case <-timer.C:
+		h.Logger.Warn("shutdown timeout, force-killing remaining processes")
+	}
+
+	h.mu.Lock()
+	var stillAlive []*SpawnedProcess
+	for pid, proc := range h.spawned {
+		if proc.Alive {
+			h.Logger.Warn("force-killing process on shutdown", "pid", pid)
+			proc.Kill()
+			stillAlive = append(stillAlive, proc)
+		}
+	}
+	h.mu.Unlock()
+
+	for _, proc := range stillAlive {
+		<-proc.done
 	}
 }
 

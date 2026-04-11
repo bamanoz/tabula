@@ -5,7 +5,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/bamanoz/tabula/internal/kernel"
+	"github.com/bamanoz/tabula/internal/logging"
 
 	"github.com/gorilla/websocket"
 )
@@ -27,8 +28,6 @@ var upgrader = websocket.Upgrader{
 }
 
 func main() {
-	verbose := os.Getenv("TABULA_VERBOSE") == "1"
-
 	// 1. Resolve TABULA_HOME
 	tabulaHome := os.Getenv("TABULA_HOME")
 	if tabulaHome == "" {
@@ -40,29 +39,21 @@ func main() {
 		tabulaHome = filepath.Join(home, ".tabula")
 	}
 
-	// 2. Redirect log to file in verbose mode
-	var logFile *os.File
-	if verbose {
-		logPath := filepath.Join(tabulaHome, "kernel.log")
-		f, err := os.Create(logPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: cannot create log file %s: %v\n", logPath, err)
-			os.Exit(1)
-		}
-		defer f.Close()
-		logFile = f
-		log.SetOutput(f)
-		log.SetFlags(log.Ltime | log.Lmicroseconds)
-	} else {
-		log.SetOutput(os.Stderr)
-	}
+	// 2. Setup structured logging
+	logger := logging.Setup(logging.Config{
+		ConsoleLevel: os.Getenv("TABULA_LOG_LEVEL"),
+		FileLevel:    os.Getenv("TABULA_FILE_LOG_LEVEL"),
+		FilePath:     os.Getenv("TABULA_LOG_FILE"),
+		Compress:     true,
+	})
+	defer logger.Close()
 
 	// 3. chdir to TABULA_HOME
 	if err := os.Chdir(tabulaHome); err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot chdir to %s: %v\n", tabulaHome, err)
 		os.Exit(1)
 	}
-	logv(verbose, "[main] working directory: %s", tabulaHome)
+	slog.Info("working directory", "path", tabulaHome)
 
 	// 4. Read tabula.yaml → boot command
 	configPath := filepath.Join(tabulaHome, "tabula.yaml")
@@ -71,7 +62,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	logv(verbose, "[main] running boot: %s", bootCmd)
+	slog.Info("running boot", "command", bootCmd)
 
 	// 5. Run boot script → get config
 	bootConfig, err := runBoot(bootCmd)
@@ -79,8 +70,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: boot failed: %v\n", err)
 		os.Exit(1)
 	}
-	logv(verbose, "[main] url: %s, prompt: %d bytes, spawn: %d processes",
-		bootConfig.URL, len(bootConfig.SystemPrompt), len(bootConfig.Spawn))
+	slog.Info("boot config loaded", "url", bootConfig.URL, "prompt_bytes", len(bootConfig.SystemPrompt), "spawn_count", len(bootConfig.Spawn))
 
 	// 6. Load tools (embedded)
 	var compacted json.RawMessage
@@ -111,19 +101,18 @@ func main() {
 	}
 
 	// 9. Init kernel hub
-	logv(verbose, "[main] initializing kernel...")
+	slog.Info("initializing kernel")
 	maxSpawnDepth := envInt("TABULA_MAX_SPAWN_DEPTH", 3)
 	maxChildren := envInt("TABULA_MAX_CHILDREN_PER_SESSION", 5)
-	hub := kernel.NewHub(bootConfig.SystemPrompt, toolsJSON, maxSpawnDepth, maxChildren, verbose)
-	hub.LogFile = logFile
+	hub := kernel.NewHub(bootConfig.SystemPrompt, toolsJSON, maxSpawnDepth, maxChildren, logger.Logger)
 	hub.StartReaper()
 
-	// 9. Start HTTP/WebSocket server
+	// 10. Start HTTP/WebSocket server
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			log.Printf("[main] upgrade error: %v", err)
+			slog.Error("websocket upgrade failed", "error", err)
 			return
 		}
 		kernel.NewClient(hub, conn)
@@ -138,43 +127,37 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: cannot listen on %s: %v\n", listenAddr, err)
 		os.Exit(1)
 	}
-	logv(verbose, "[main] listening on %s", listenAddr)
+	slog.Info("listening", "addr", listenAddr)
 
 	server := &http.Server{Handler: mux}
 	go func() {
 		if err := server.Serve(listener); err != http.ErrServerClosed {
-			log.Printf("[main] server error: %v", err)
+			slog.Error("server error", "error", err)
 		}
 	}()
 
 	// 11. Spawn processes from boot config
 	for _, cmd := range bootConfig.Spawn {
-		logv(verbose, "[main] spawning: %s", cmd)
+		slog.Info("spawning boot process", "command", cmd)
 		c := mainShellCommand(cmd)
-		c.Stdout = os.Stdout
-		c.Stderr = os.Stderr
+		c.Stdout = nil
+		c.Stderr = nil
 		if err := c.Start(); err != nil {
-			logv(verbose, "[main] error spawning %q: %v", cmd, err)
+			slog.Error("failed to spawn boot process", "command", cmd, "error", err)
 			continue
 		}
 		hub.RegisterSpawn(c, cmd, "main")
-		logv(verbose, "[main] spawned PID %d: %s", c.Process.Pid, cmd)
+		slog.Info("spawned boot process", "pid", c.Process.Pid, "command", cmd)
 	}
 
-	logv(verbose, "[main] ready")
+	slog.Info("ready")
 
-	// 11. Wait for signal
+	// 12. Wait for signal
 	waitForShutdownSignal()
 
-	logv(verbose, "[main] shutting down...")
+	slog.Info("shutting down")
 	hub.Shutdown()
 	server.Close()
-}
-
-func logv(verbose bool, format string, args ...any) {
-	if verbose {
-		log.Printf(format, args...)
-	}
 }
 
 func envInt(name string, fallback int) int {

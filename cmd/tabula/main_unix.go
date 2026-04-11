@@ -8,6 +8,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+
+	"github.com/bamanoz/tabula/internal/shell"
 )
 
 // venvBinDir returns the platform-specific venv binary directory.
@@ -17,7 +19,7 @@ func venvBinDir(tabulaHome string) string {
 
 // mainShellCommand creates a platform-appropriate shell command.
 func mainShellCommand(command string) *exec.Cmd {
-	return exec.Command("sh", "-c", command)
+	return shell.Command(command)
 }
 
 // waitForShutdownSignal blocks until SIGINT or SIGTERM is received.

@@ -12,7 +12,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from skills.lib.driver_runtime import DriverConfig, DriverRuntime
+from skills.lib.driver_runtime import AbortError, DriverConfig, DriverRuntime
 from skills.lib.providers import AnthropicSession
 
 
@@ -53,6 +53,7 @@ def main():
     def handle_sigint(sig, frame):
         log("SIGINT received, aborting active request")
         runtime.abort()
+        raise AbortError("cancelled")
 
     signal.signal(signal.SIGINT, handle_sigint)
 

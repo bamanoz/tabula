@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+
+	"github.com/bamanoz/tabula/internal/shell"
 )
 
 const maxExecOutput = 16 * 1024 // 16KB
@@ -17,17 +19,17 @@ type SpawnedProcess struct {
 	Command string
 	Alive   bool
 	Session string
+	done    chan struct{} // closed when process exits
 	mu      sync.Mutex
 }
 
-// Kill forcefully terminates the process.
+// Kill forcefully terminates the process. The watcher goroutine will
+// set Alive=false and close the done channel asynchronously.
 func (p *SpawnedProcess) Kill() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.Cmd.Process != nil {
+	if p.Cmd.Process != nil && p.Alive {
 		_ = p.Cmd.Process.Kill()
-		_ = p.Cmd.Wait()
-		p.Alive = false
 	}
 }
 
@@ -38,7 +40,7 @@ func (h *Hub) handleToolUse(sender *Client, msg *Message) {
 	toolID := msg.ID
 	session := sender.session
 
-	h.log("handleToolUse: %s from session %s, id=%s", toolName, session, toolID)
+	h.Logger.Debug("tool_use", "tool", toolName, "session", session, "id", toolID)
 
 	switch toolName {
 	case "EXEC":
@@ -101,6 +103,7 @@ func (h *Hub) handleToolUse(sender *Client, msg *Message) {
 			return
 		}
 		proc.Kill()
+		proc.Alive = false // immediate update under h.mu so SPAWN count is accurate
 		h.sendToolResult(session, toolID, "OK")
 
 	case "LIST":
@@ -122,28 +125,14 @@ func (h *Hub) handleToolUse(sender *Client, msg *Message) {
 	}
 }
 
-// sendToolResult sends a tool_result to a session.
-func (h *Hub) sendToolResult(session, toolID, output string) {
-	msg := &Message{
-		Type:   "tool_result",
-		ID:     toolID,
-		Output: output,
-	}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return
-	}
-	h.broadcastToSessionRaw(session, "tool_result", data)
-}
-
 // execAsync runs a command in a goroutine and sends the result to the session.
 func (h *Hub) execAsync(session, toolID, command string) {
-	cmd := shellCommand(command + " 2>&1")
+	cmd := shell.Command(command + " 2>&1")
 	out, err := cmd.Output()
 
 	// Truncate output
 	if len(out) > maxExecOutput {
-		out = out[:maxExecOutput]
+		out = append(out[:maxExecOutput], []byte("\n[truncated]")...)
 	}
 
 	result := strings.TrimSpace(string(out))
@@ -160,7 +149,7 @@ func (h *Hub) execAsync(session, toolID, command string) {
 		result = "OK"
 	}
 
-	h.log("exec completed: %s (session %s, %d bytes)", command, session, len(result))
+	h.Logger.Debug("exec completed", "command", command, "session", session, "bytes", len(result))
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -170,21 +159,21 @@ func (h *Hub) execAsync(session, toolID, command string) {
 // spawnProcess starts a background process.
 // Caller must hold h.mu.
 func (h *Hub) spawnProcess(command, session string, childDepth int) (int, error) {
-	cmd := shellCommand(command)
+	cmd := shell.Command(command)
 	// Spawned processes communicate via WebSocket, not stdout/stderr.
 	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 	if err != nil {
 		return 0, fmt.Errorf("open %s: %w", os.DevNull, err)
 	}
 	cmd.Stdout = devNull
-	if h.Verbose && h.LogFile != nil {
-		cmd.Stderr = h.LogFile
-	} else {
-		cmd.Stderr = devNull
-	}
+	cmd.Stderr = devNull
 
 	// Generate one-time spawn token for child to authenticate and receive depth
-	token := h.generateSpawnToken(childDepth)
+	token, err := h.generateSpawnToken(childDepth)
+	if err != nil {
+		devNull.Close()
+		return 0, err
+	}
 
 	env := os.Environ()
 	env = append(env, "TABULA_SPAWN_TOKEN="+token)
@@ -202,34 +191,13 @@ func (h *Hub) spawnProcess(command, session string, childDepth int) (int, error)
 		Command: command,
 		Alive:   true,
 		Session: session,
+		done:    make(chan struct{}),
 	}
 	h.spawned[pid] = proc
-	h.log("spawned PID %d: %s (session %s)", pid, command, session)
+	h.Logger.Info("spawned process", "pid", pid, "command", command, "session", session)
 
-	// Platform-specific: start process watcher (goroutine on Windows, reaper on Unix)
+	// Start per-process watcher goroutine
 	h.afterSpawn(pid, proc)
 
 	return pid, nil
-}
-
-// broadcastProcessError sends an error message about a crashed process.
-func (h *Hub) broadcastProcessError(session string, pid int, command string, exitCode int) {
-	h.log("process %d crashed (exit %d): %s", pid, exitCode, command)
-	errMsg := &Message{
-		Type: "error",
-		Text: fmt.Sprintf("process %d crashed (exit %d)", pid, exitCode),
-	}
-	data, err := json.Marshal(errMsg)
-	if err != nil {
-		return
-	}
-	if session != "" {
-		h.broadcastToSessionRaw(session, "error", data)
-	} else {
-		for c := range h.clients {
-			if c.connected && c.canReceive("error") {
-				c.SendRaw(data)
-			}
-		}
-	}
 }

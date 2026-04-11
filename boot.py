@@ -230,38 +230,15 @@ def has_crontab() -> bool:
 
 def build_spawn() -> list[str]:
     """Determine which processes to spawn."""
-    key_env = PROVIDER_API_KEYS.get(ACTIVE_PROVIDER)
-    if key_env and not os.environ.get(key_env):
-        print(
-            f"warning: {key_env} is not set; skills/driver-{ACTIVE_PROVIDER}/run.py may exit on startup",
-            file=sys.stderr,
-        )
-    driver = f"{VENV_PYTHON} skills/driver-{ACTIVE_PROVIDER}/run.py"
     procs = []
-    # CLI gateway (skip in headless mode, e.g. API-only)
-    headless = os.environ.get("TABULA_HEADLESS", "") == "1"
-    if not headless:
-        gateway_cmd = f"{VENV_PYTHON} skills/gateway-cli/run.py --driver '{driver}'"
-        resume_session = os.environ.get("TABULA_RESUME_SESSION", "")
-        if resume_session:
-            gateway_cmd += f" --resume {resume_session}"
-        procs.append(gateway_cmd)
     # Spawn cron daemon only when OS crontab is unavailable
     cron_skill = os.path.join(SKILLS_DIR, "cron", "run.py")
     if os.path.isfile(cron_skill) and not has_crontab():
         procs.append(f"{VENV_PYTHON} skills/cron/run.py daemon")
-        print("info: OS crontab unavailable, spawning cron daemon", file=sys.stderr)
     # Spawn MCP pool when MCP servers are configured
     mcp_skill = os.path.join(SKILLS_DIR, "mcp", "run.py")
     if os.path.isfile(mcp_skill) and os.path.isfile(MCP_CONFIG):
         procs.append(f"{VENV_PYTHON} skills/mcp/run.py pool")
-        print("info: MCP servers configured, spawning mcp-pool", file=sys.stderr)
-    # Spawn OpenAI-compatible API gateway when port is configured
-    api_port = os.environ.get("TABULA_API_PORT", "")
-    api_skill = os.path.join(SKILLS_DIR, "gateway-api", "run.py")
-    if api_port and os.path.isfile(api_skill):
-        procs.append(f"{VENV_PYTHON} skills/gateway-api/run.py --port {api_port}")
-        print(f"info: spawning gateway-api on port {api_port}", file=sys.stderr)
     # Spawn session registry daemon
     sessions_skill = os.path.join(SKILLS_DIR, "sessions", "run.py")
     if os.path.isfile(sessions_skill):

@@ -31,7 +31,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 
 	toolsJSON := json.RawMessage(`[{"name":"EXEC","description":"run cmd","params":{"command":{"type":"string","description":"cmd"}},"required":["command"]},{"name":"SPAWN","description":"spawn","params":{"command":{"type":"string","description":"cmd"}},"required":["command"]},{"name":"KILL","description":"kill","params":{"pid":{"type":"integer","description":"pid"}},"required":["pid"]},{"name":"LIST","description":"list","params":{},"required":[]}]`)
-	hub := NewHub("test system prompt", toolsJSON, 3, 5, false)
+	hub := NewHub("test system prompt", toolsJSON, 3, 5, nil)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
@@ -130,8 +130,11 @@ func (e *testEnv) connectWithDepth(name string, depth int, sends, receives []str
 	e.t.Helper()
 	// Generate a spawn token in the hub (simulates kernel-issued token)
 	e.Hub.mu.Lock()
-	token := e.Hub.generateSpawnToken(depth)
+	token, err := e.Hub.generateSpawnToken(depth)
 	e.Hub.mu.Unlock()
+	if err != nil {
+		e.t.Fatalf("generateSpawnToken: %v", err)
+	}
 
 	conn := e.dial()
 	writeJSON(e.t, conn, Message{
@@ -419,6 +422,9 @@ func TestExecOutputTruncation(t *testing.T) {
 	msg := readMsg(t, conn)
 	if len(msg.Output) > maxExecOutput+100 { // some slack for trimming
 		t.Errorf("output should be truncated to ~%d bytes, got %d", maxExecOutput, len(msg.Output))
+	}
+	if !strings.HasSuffix(msg.Output, "[truncated]") {
+		t.Errorf("truncated output should end with [truncated], got suffix %q", msg.Output[len(msg.Output)-20:])
 	}
 }
 
@@ -812,6 +818,65 @@ func TestCancel(t *testing.T) {
 
 	// At minimum, verify no panic occurred and cancel was processed
 	_ = alive
+}
+
+func TestCancelScopedToSession(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Session A spawns a process
+	connA := env.connectAndJoin("driverA", "sessA",
+		[]string{"tool_use", "cancel"},
+		[]string{"init", "tool_result"})
+	readMsg(t, connA) // init
+
+	writeJSON(t, connA, Message{
+		Type:  "tool_use",
+		ID:    "s1",
+		Name:  "SPAWN",
+		Input: json.RawMessage(`{"command":"sleep 60"}`),
+	})
+	spawnA := readMsg(t, connA)
+	var pidA int
+	fmt.Sscanf(spawnA.Output, "PID %d", &pidA)
+
+	// Session B spawns a process
+	connB := env.connectAndJoin("driverB", "sessB",
+		[]string{"tool_use", "cancel"},
+		[]string{"init", "tool_result"})
+	readMsg(t, connB) // init
+
+	writeJSON(t, connB, Message{
+		Type:  "tool_use",
+		ID:    "s2",
+		Name:  "SPAWN",
+		Input: json.RawMessage(`{"command":"sleep 60"}`),
+	})
+	spawnB := readMsg(t, connB)
+	var pidB int
+	fmt.Sscanf(spawnB.Output, "PID %d", &pidB)
+
+	// Session A sends cancel — should NOT affect session B's process
+	writeJSON(t, connA, Message{Type: "cancel"})
+	time.Sleep(500 * time.Millisecond)
+
+	env.Hub.mu.Lock()
+	procB, ok := env.Hub.spawned[pidB]
+	bAlive := ok && procB.Alive
+	env.Hub.mu.Unlock()
+
+	if !bAlive {
+		t.Error("cancel from sessA should not kill sessB's process")
+	}
+
+	// Clean up
+	env.Hub.mu.Lock()
+	if p, ok := env.Hub.spawned[pidA]; ok && p.Alive {
+		p.Kill()
+	}
+	if p, ok := env.Hub.spawned[pidB]; ok && p.Alive {
+		p.Kill()
+	}
+	env.Hub.mu.Unlock()
 }
 
 func TestExecWithSpecialCharacters(t *testing.T) {
@@ -1259,12 +1324,12 @@ func TestSpawnTokenPropagatedInEnv(t *testing.T) {
 
 	// Verify the token resolves to depth=2 in hub
 	env.Hub.mu.Lock()
-	depth, ok := env.Hub.spawnTokens[token]
+	entry, ok := env.Hub.spawnTokens[token]
 	env.Hub.mu.Unlock()
 	if !ok {
 		t.Errorf("token %q not found in hub spawnTokens", token)
-	} else if depth != 2 {
-		t.Errorf("expected depth 2, got %d", depth)
+	} else if entry.depth != 2 {
+		t.Errorf("expected depth 2, got %d", entry.depth)
 	}
 
 	// Cleanup
@@ -1319,8 +1384,11 @@ func TestSpawnTokenOneTimeUse(t *testing.T) {
 
 	// Create a token for depth=1
 	env.Hub.mu.Lock()
-	token := env.Hub.generateSpawnToken(1)
+	token, err := env.Hub.generateSpawnToken(1)
 	env.Hub.mu.Unlock()
+	if err != nil {
+		t.Fatalf("generateSpawnToken: %v", err)
+	}
 
 	// First connect with token — should get depth=1
 	conn1 := env.dial()
@@ -1514,5 +1582,94 @@ func TestListScopedToSession(t *testing.T) {
 	}
 	if strings.Contains(listB.Output, "sleep 60") {
 		t.Errorf("B should NOT see A's process, got %q", listB.Output)
+	}
+}
+
+func TestShutdownGraceful(t *testing.T) {
+	env := newTestEnv(t)
+	env.Hub.ShutdownTimeout = 5 * time.Second
+
+	conn := env.connectAndJoin("driver", "main",
+		[]string{"tool_use"}, []string{"init", "tool_result"})
+	readMsg(t, conn) // init
+
+	// Spawn a process that exits quickly on SIGINT
+	writeJSON(t, conn, Message{
+		Type:  "tool_use",
+		ID:    "s1",
+		Name:  "SPAWN",
+		Input: json.RawMessage(`{"command":"sleep 60"}`),
+	})
+	msg := readMsg(t, conn)
+	if !strings.HasPrefix(msg.Output, "PID ") {
+		t.Fatalf("expected PID, got %q", msg.Output)
+	}
+
+	// Shutdown should complete (process gets killed after grace period or immediately)
+	done := make(chan struct{})
+	go func() {
+		env.Hub.Shutdown()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// ok
+	case <-time.After(10 * time.Second):
+		t.Fatal("Shutdown did not complete in time")
+	}
+
+	// Verify process is no longer alive
+	env.Hub.mu.Lock()
+	for _, proc := range env.Hub.spawned {
+		if proc.Alive {
+			t.Error("process still alive after shutdown")
+		}
+	}
+	env.Hub.mu.Unlock()
+}
+
+func TestSpawnTokenExpiry(t *testing.T) {
+	env := newTestEnv(t)
+
+	env.Hub.mu.Lock()
+	// Insert an expired token manually
+	env.Hub.spawnTokens["expired-token"] = spawnTokenEntry{
+		depth:     1,
+		createdAt: time.Now().Add(-2 * spawnTokenTTL),
+	}
+	// Generate a fresh token (should prune the expired one)
+	token, err := env.Hub.generateSpawnToken(3)
+	if err != nil {
+		env.Hub.mu.Unlock()
+		t.Fatalf("generateSpawnToken: %v", err)
+	}
+	_, expiredExists := env.Hub.spawnTokens["expired-token"]
+	_, freshExists := env.Hub.spawnTokens[token]
+	env.Hub.mu.Unlock()
+
+	if expiredExists {
+		t.Error("expired token should have been pruned")
+	}
+	if !freshExists {
+		t.Error("fresh token should exist")
+	}
+}
+
+func TestMaxClients(t *testing.T) {
+	env := newTestEnv(t)
+	env.Hub.MaxClients = 2
+
+	// First two clients should succeed
+	conn1 := env.dial()
+	NewClient(env.Hub, conn1)
+	conn2 := env.dial()
+	NewClient(env.Hub, conn2)
+
+	// Third should be rejected (connection closed by server)
+	conn3 := env.dial()
+	c := NewClient(env.Hub, conn3)
+	if c != nil {
+		t.Error("expected nil client when at capacity")
 	}
 }

@@ -1,14 +1,13 @@
 #!/bin/bash
-# Launch an additional Tabula CLI gateway session (connects to a running kernel).
+# Launch Tabula CLI gateway (connects to a running kernel).
+# Usage: tabula-cli [--resume SESSION_ID]
 # Configuration via environment variables:
-#   TABULA_HOME             — workspace directory (default: ~/.tabula)
-#   TABULA_PROVIDER         — LLM provider for the driver (default: anthropic)
-#   TABULA_RESUME_SESSION   — session ID to resume
+#   TABULA_HOME     — workspace directory (default: ~/.tabula)
+#   TABULA_PROVIDER — LLM provider for the driver (default: anthropic)
 set -e
 
 TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
 VENV_PYTHON="$TABULA_HOME/.venv/bin/python3"
-TABULA_URL="${TABULA_URL:-ws://localhost:8089/ws}"
 
 if [ ! -f "$VENV_PYTHON" ]; then
   echo "error: venv not found at $TABULA_HOME/.venv" >&2
@@ -19,9 +18,4 @@ fi
 PROVIDER="${TABULA_PROVIDER:-anthropic}"
 DRIVER="$VENV_PYTHON skills/driver-${PROVIDER}/run.py"
 
-ARGS=(--driver "$DRIVER")
-if [ -n "$TABULA_RESUME_SESSION" ]; then
-  ARGS+=(--resume "$TABULA_RESUME_SESSION")
-fi
-
-exec "$VENV_PYTHON" "$TABULA_HOME/skills/gateway-cli/run.py" "${ARGS[@]}"
+exec "$VENV_PYTHON" "$TABULA_HOME/skills/gateway-cli/run.py" --driver "$DRIVER" "$@"

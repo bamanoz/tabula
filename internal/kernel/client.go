@@ -2,7 +2,6 @@ package kernel
 
 import (
 	"encoding/json"
-	"log"
 
 	"github.com/gorilla/websocket"
 )
@@ -24,13 +23,17 @@ type Client struct {
 }
 
 // NewClient creates a client and starts its pumps.
+// Returns nil if the hub is at capacity.
 func NewClient(hub *Hub, conn *websocket.Conn) *Client {
 	c := &Client{
 		hub:    hub,
 		conn:   conn,
 		sendCh: make(chan []byte, sendBufSize),
 	}
-	hub.Register(c)
+	if !hub.Register(c) {
+		conn.Close()
+		return nil
+	}
 	go c.writePump()
 	go c.readPump()
 	return c
@@ -58,10 +61,7 @@ func (c *Client) SendRaw(data []byte) {
 	select {
 	case c.sendCh <- data:
 	default:
-		// Drop message if buffer is full (slow client)
-		if c.hub.Verbose {
-			log.Printf("[kernel] dropping message to slow client %s", c.name)
-		}
+		c.hub.Logger.Warn("dropping message to slow client", "client", c.name)
 	}
 }
 
@@ -81,9 +81,7 @@ func (c *Client) readPump() {
 
 		var msg Message
 		if err := json.Unmarshal(data, &msg); err != nil {
-			if c.hub.Verbose {
-				log.Printf("[kernel] bad JSON from %s: %v", c.name, err)
-			}
+			c.hub.Logger.Warn("bad JSON from client", "client", c.name, "error", err)
 			continue
 		}
 

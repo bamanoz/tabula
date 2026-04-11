@@ -28,6 +28,15 @@ def extract_spawn_id(command: str) -> str | None:
     return match.group(1) if match else None
 
 
+class AbortError(BaseException):
+    """Raised by SIGINT handler to interrupt the current API call.
+
+    Inherits from BaseException (not Exception) so that generic
+    ``except Exception`` clauses in provider code don't swallow it.
+    """
+    pass
+
+
 class DriverRuntime:
     def __init__(self, config: DriverConfig, provider_factory, logger):
         self.config = config
@@ -86,7 +95,7 @@ class DriverRuntime:
                 "type": "connect",
                 "name": self.config.name,
                 "sends": ["stream_start", "stream_delta", "stream_end", "tool_use", "done", "status"],
-                "receives": ["message", "tool_result", "init", "error"],
+                "receives": ["message", "tool_result", "init", "error", "cancel"],
             }
         )
         self.conn.recv()
@@ -98,6 +107,16 @@ class DriverRuntime:
             return
 
         self.aborted = False
+        stream_started = False
+
+        try:
+            self._do_process_turn(suppress_stream)
+        except AbortError:
+            self.log("turn aborted")
+            self.provider.record_aborted_turn()
+            self.conn.send({"type": "done"})
+
+    def _do_process_turn(self, suppress_stream: bool):
         stream_started = False
 
         # Check if compaction is needed before calling the API
@@ -146,6 +165,7 @@ class DriverRuntime:
 
         if self.aborted:
             self.provider.record_aborted_turn()
+            self.conn.send({"type": "done"})
             return
 
         # Record assistant output to history
@@ -406,3 +426,5 @@ class DriverRuntime:
                 self.handle_tool_result(msg)
             elif msg_type == "error":
                 self.handle_error(msg)
+            elif msg_type == "cancel":
+                self.abort()

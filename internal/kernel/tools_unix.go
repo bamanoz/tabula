@@ -5,13 +5,7 @@ package kernel
 import (
 	"os/exec"
 	"syscall"
-	"time"
 )
-
-// shellCommand creates a platform-appropriate shell command.
-func shellCommand(command string) *exec.Cmd {
-	return exec.Command("sh", "-c", command)
-}
 
 // signalProcess sends an interrupt signal to a process.
 func (p *SpawnedProcess) Signal() {
@@ -22,48 +16,32 @@ func (p *SpawnedProcess) Signal() {
 	}
 }
 
-// afterSpawn is a no-op on Unix — reapZombies handles process reaping.
-func (h *Hub) afterSpawn(pid int, proc *SpawnedProcess) {}
-
-// reapZombies uses Wait4 to detect exited child processes.
-func (h *Hub) reapZombies() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	for pid, proc := range h.spawned {
-		if !proc.Alive {
-			continue
-		}
-
-		var status syscall.WaitStatus
-		wpid, err := syscall.Wait4(pid, &status, syscall.WNOHANG, nil)
-		if err != nil || wpid == 0 {
-			continue
-		}
-
-		proc.Alive = false
-
-		exitCode := 0
-		if status.Exited() {
-			exitCode = status.ExitStatus()
-		} else {
-			exitCode = 1
-		}
-
-		if exitCode == 0 {
-			h.log("process %d exited OK: %s", pid, proc.Command)
-		} else {
-			h.broadcastProcessError(proc.Session, pid, proc.Command, exitCode)
-		}
-	}
-}
-
-// StartReaper starts a goroutine that periodically reaps zombie processes.
-func (h *Hub) StartReaper() {
+// afterSpawn starts a goroutine that waits for the process to exit.
+func (h *Hub) afterSpawn(pid int, proc *SpawnedProcess) {
 	go func() {
-		for {
-			time.Sleep(500 * time.Millisecond)
-			h.reapZombies()
+		err := proc.Cmd.Wait()
+
+		h.mu.Lock()
+		proc.Alive = false
+		close(proc.done)
+
+		if err != nil {
+			exitCode := 1
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				exitCode = exitErr.ExitCode()
+			}
+			if exitCode < 0 {
+				// Killed by signal (e.g. SIGINT, SIGKILL during shutdown) — not a crash
+				h.Logger.Info("process killed by signal", "pid", pid, "signal", -exitCode, "command", proc.Command)
+			} else {
+				h.broadcastProcessError(proc.Session, pid, proc.Command, exitCode)
+			}
+		} else {
+			h.Logger.Info("process exited", "pid", pid, "command", proc.Command)
 		}
+		h.mu.Unlock()
 	}()
 }
+
+// StartReaper is a no-op — afterSpawn handles process lifecycle via per-process goroutines.
+func (h *Hub) StartReaper() {}

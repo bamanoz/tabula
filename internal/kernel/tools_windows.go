@@ -7,13 +7,8 @@ import (
 	"os/exec"
 )
 
-// shellCommand creates a platform-appropriate shell command.
-func shellCommand(command string) *exec.Cmd {
-	return exec.Command("cmd", "/c", command)
-}
-
 // signalProcess on Windows cannot send SIGINT to child processes.
-// Falls back to killing the process.
+// Falls back to sending os.Interrupt.
 func (p *SpawnedProcess) Signal() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -23,27 +18,30 @@ func (p *SpawnedProcess) Signal() {
 }
 
 // afterSpawn starts a goroutine that waits for the process to exit.
-// On Windows we can't use Wait4/WNOHANG, so each process gets its own watcher.
 func (h *Hub) afterSpawn(pid int, proc *SpawnedProcess) {
 	go func() {
 		err := proc.Cmd.Wait()
 
 		h.mu.Lock()
-		defer h.mu.Unlock()
-
 		proc.Alive = false
+		close(proc.done)
 
 		if err != nil {
 			exitCode := 1
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				exitCode = exitErr.ExitCode()
 			}
-			h.broadcastProcessError(proc.Session, pid, proc.Command, exitCode)
+			if exitCode < 0 {
+				h.Logger.Info("process killed by signal", "pid", pid, "signal", -exitCode, "command", proc.Command)
+			} else {
+				h.broadcastProcessError(proc.Session, pid, proc.Command, exitCode)
+			}
 		} else {
-			h.log("process %d exited OK: %s", pid, proc.Command)
+			h.Logger.Info("process exited", "pid", pid, "command", proc.Command)
 		}
+		h.mu.Unlock()
 	}()
 }
 
-// StartReaper is a no-op on Windows — afterSpawn handles process lifecycle.
+// StartReaper is a no-op — afterSpawn handles process lifecycle via per-process goroutines.
 func (h *Hub) StartReaper() {}
