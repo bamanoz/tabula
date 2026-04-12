@@ -230,9 +230,21 @@ main() {
   fi
   ok "Binary installed"
 
+  # Back up user config before tar overwrites it
+  local had_config=false
+  if [ -f "$TABULA_HOME/tabula.yaml" ]; then
+    cp "$TABULA_HOME/tabula.yaml" "$tmp/tabula.yaml.bak"
+    had_config=true
+  fi
+
   tar -xzf "$tmp/$skills_archive" -C "$TABULA_HOME"
   chmod +x "$BIN_DIR/tabula-headless" "$BIN_DIR/tabula-cli" "$BIN_DIR/tabula-api" 2>/dev/null || true
   ok "Skills and config installed"
+
+  # Restore user config if it existed
+  if [ "$had_config" = true ]; then
+    cp "$tmp/tabula.yaml.bak" "$TABULA_HOME/tabula.yaml"
+  fi
 
   # Python
   check_python
@@ -253,22 +265,10 @@ main() {
   # Service
   install_service
 
-  # Env file for API keys
-  local env_file="$TABULA_HOME/env"
-  if [ ! -f "$env_file" ]; then
-    printf 'ANTHROPIC_API_KEY=\n# OPENAI_API_KEY=\n# TABULA_PROVIDER=anthropic\n' > "$env_file"
-    chmod 600 "$env_file"
-  fi
-
   printf '\n\033[1;32mTabula %s installed!\033[0m\n\n' "$VERSION"
-  printf 'Add your API key to %s:\n' "$env_file"
-  printf '  echo "ANTHROPIC_API_KEY=sk-..." > %s\n\n' "$env_file"
-  printf 'Then restart the kernel and connect:\n'
-  if [ "$PLATFORM_OS" = "darwin" ]; then
-    printf '  launchctl kickstart -k gui/%s/com.tabula.kernel\n' "$(id -u)"
-  else
-    printf '  systemctl --user restart tabula\n'
-  fi
+  printf 'Set your API key:\n'
+  printf '  export ANTHROPIC_API_KEY=sk-...\n\n'
+  printf 'Then connect:\n'
   printf '  tabula-cli\n\n'
 }
 

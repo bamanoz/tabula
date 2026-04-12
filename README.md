@@ -57,7 +57,7 @@ Requires Go 1.26+ and Python 3.11+.
 
 ```bash
 export ANTHROPIC_API_KEY=sk-...
-tabula-cli         # connect to kernel (already running as a service)
+tabula-cli
 ```
 
 Or use OpenAI:

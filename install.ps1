@@ -54,6 +54,49 @@ function Check-Python {
     return $py
 }
 
+# ── Service install ─────────────────────────────────────────────
+
+function Install-Service {
+    $LogDir = Join-Path $TabulaHome "logs"
+    New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+
+    $TaskName = "TabulaKernel"
+
+    # Remove existing task if present
+    $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($existing) {
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    }
+
+    $TabulaExe = Join-Path $BinDir "tabula.exe"
+    $OutLog = Join-Path $LogDir "kernel.out.log"
+    $ErrLog = Join-Path $LogDir "kernel.err.log"
+
+    $Action = New-ScheduledTaskAction `
+        -Execute "cmd.exe" `
+        -Argument "/c `"set TABULA_HOME=$TabulaHome && `"$TabulaExe`" > `"$OutLog`" 2> `"$ErrLog`"`"" `
+        -WorkingDirectory $TabulaHome
+
+    $Trigger = New-ScheduledTaskTrigger -AtLogOn
+
+    $Settings = New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -RestartInterval (New-TimeSpan -Seconds 5) `
+        -RestartCount 999 `
+        -ExecutionTimeLimit 0
+
+    Register-ScheduledTask `
+        -TaskName $TaskName `
+        -Action $Action `
+        -Trigger $Trigger `
+        -Settings $Settings `
+        -Description "Tabula kernel" | Out-Null
+
+    Start-ScheduledTask -TaskName $TaskName
+    Ok "Kernel service installed (Task Scheduler)"
+}
+
 # ── Main ────────────────────────────────────────────────────────
 
 $Version = Resolve-Version
@@ -83,9 +126,22 @@ try {
     Copy-Item (Join-Path $TmpDir "tabula.exe") -Destination (Join-Path $BinDir "tabula.exe") -Force
     Ok "Binary installed"
 
+    # Back up user config before tar overwrites it
+    $UserConfig = Join-Path $TabulaHome "tabula.yaml"
+    $ConfigBackup = Join-Path $TmpDir "tabula.yaml.bak"
+    $HadConfig = Test-Path $UserConfig
+    if ($HadConfig) {
+        Copy-Item $UserConfig $ConfigBackup
+    }
+
     # Extract skills tarball
     tar -xzf (Join-Path $TmpDir $SkillsArchive) -C $TabulaHome
     Ok "Skills and config installed"
+
+    # Restore user config if it existed
+    if ($HadConfig) {
+        Copy-Item $ConfigBackup $UserConfig
+    }
 
     # Python
     $Python = Check-Python
@@ -128,12 +184,17 @@ try {
     $env:TABULA_HOME = $TabulaHome
     $env:Path = "$BinDir;$env:Path"
 
+    # Service
+    Install-Service
+
     Write-Host ""
     Write-Host "Tabula $Version installed!" -ForegroundColor Green
     Write-Host ""
+    Write-Host 'Set your API key:'
     Write-Host '  $env:ANTHROPIC_API_KEY = "sk-..."'
-    Write-Host "  tabula-headless    # start kernel"
-    Write-Host "  tabula-cli         # connect CLI"
+    Write-Host ""
+    Write-Host "Then connect:"
+    Write-Host "  tabula-cli"
     Write-Host ""
 
 } finally {
