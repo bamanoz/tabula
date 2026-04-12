@@ -53,7 +53,7 @@ release:
   draft: false
   prerelease: auto
   extra_files:
-    - glob: /tmp/tabula-release/tabula-skills-*.tar.gz
+    - glob: extra/tabula-skills-*.tar.gz
 
 changelog:
   sort: asc
