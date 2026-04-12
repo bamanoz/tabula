@@ -10,6 +10,12 @@ TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
 BIN_DIR="$TABULA_HOME/bin"
 VENV="$TABULA_HOME/.venv"
 
+# Auth header for private repos (optional)
+AUTH_HEADER=()
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+  AUTH_HEADER=(-H "Authorization: token $GITHUB_TOKEN")
+fi
+
 # ── helpers ──────────────────────────────────────────────────────
 
 info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
@@ -46,6 +52,7 @@ resolve_version() {
 
   info "Fetching latest release..."
   VERSION=$(curl -fsSL \
+    "${AUTH_HEADER[@]}" \
     -H "Accept: application/vnd.github+json" \
     "https://api.github.com/repos/${REPO}/releases/latest" \
     | grep '"tag_name"' | head -1 \
@@ -125,14 +132,36 @@ main() {
 
   local tmp
   tmp=$(mktemp -d)
-  trap 'rm -rf "$tmp"' EXIT
+  trap 'rm -rf "${tmp:-}"' EXIT
 
   # Download
-  info "Downloading binary..."
-  curl -fsSL --progress-bar -o "$tmp/$binary_archive" "$base_url/$binary_archive"
+  if [ ${#AUTH_HEADER[@]} -gt 0 ]; then
+    # Private repo: download via GitHub API
+    local api_url="https://api.github.com/repos/${REPO}/releases/tags/${VERSION}"
+    local release_json
+    release_json=$(curl -fsSL "${AUTH_HEADER[@]}" -H "Accept: application/vnd.github+json" "$api_url")
 
-  info "Downloading skills..."
-  curl -fsSL --progress-bar -o "$tmp/$skills_archive" "$base_url/$skills_archive"
+    download_asset() {
+      local name="$1" dest="$2"
+      # Extract asset API URL by finding the name line, then reading the url line before it
+      local asset_id
+      asset_id=$(printf '%s' "$release_json" | grep -B5 "\"name\": \"${name}\"" | grep '"url":' | tail -1 \
+        | sed 's/.*"url": *"\([^"]*\)".*/\1/')
+      [ -n "$asset_id" ] || die "Asset $name not found in release"
+      info "Downloading $name..."
+      curl -fsSL "${AUTH_HEADER[@]}" -H "Accept: application/octet-stream" -L -o "$dest" "$asset_id"
+    }
+
+    download_asset "$binary_archive" "$tmp/$binary_archive"
+    download_asset "$skills_archive" "$tmp/$skills_archive"
+  else
+    # Public repo: direct download
+    info "Downloading binary..."
+    curl -fsSL -L --progress-bar -o "$tmp/$binary_archive" "$base_url/$binary_archive"
+
+    info "Downloading skills..."
+    curl -fsSL -L --progress-bar -o "$tmp/$skills_archive" "$base_url/$skills_archive"
+  fi
 
   # Install
   info "Installing to $TABULA_HOME..."
