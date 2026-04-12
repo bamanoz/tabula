@@ -123,6 +123,57 @@ def test_yes_variant():
         assert len(cmds) == 1
 
 
+# ── Unit tests for scan_skills (system prompt injection) ───────
+
+
+def run_scan(skills_dir: str) -> list[str]:
+    """Run scan_skills with a custom SKILLS_DIR."""
+    import boot
+    original = boot.SKILLS_DIR
+    boot.SKILLS_DIR = skills_dir
+    try:
+        return boot.scan_skills()
+    finally:
+        boot.SKILLS_DIR = original
+
+
+def test_scan_skills_with_description():
+    """Skills with description are injected as one-liner."""
+    with tempfile.TemporaryDirectory() as tmp:
+        make_skill(tmp, "weather", 'name: weather\ndescription: "Get weather"')
+        result = run_scan(tmp)
+        assert len(result) == 1
+        assert result[0] == "**weather**: Get weather"
+
+
+def test_scan_skills_without_description_excluded():
+    """Skills without description are not injected into system prompt."""
+    with tempfile.TemporaryDirectory() as tmp:
+        make_skill(tmp, "internal", 'name: internal', body="Some internal docs.")
+        result = run_scan(tmp)
+        assert len(result) == 0
+
+
+def test_scan_skills_no_inject_none():
+    """inject: none is no longer used — description controls visibility."""
+    with tempfile.TemporaryDirectory() as tmp:
+        # Has description but also inject: none — should still appear (inject: none is ignored)
+        make_skill(tmp, "driver", 'name: driver\ndescription: "LLM driver"\ninject: none')
+        result = run_scan(tmp)
+        assert len(result) == 1
+        assert "LLM driver" in result[0]
+
+
+def test_scan_skills_all_with_description():
+    """All skills with description appear in system prompt."""
+    with tempfile.TemporaryDirectory() as tmp:
+        make_skill(tmp, "weather", 'name: weather\ndescription: "Weather"')
+        make_skill(tmp, "gateway-cli", 'name: gateway-cli\ndescription: "CLI gateway"')
+        make_skill(tmp, "hook-logger", 'name: hook-logger\ndescription: "Audit logger"')
+        result = run_scan(tmp)
+        assert len(result) == 3
+
+
 # ── Unit tests for gateway slash dispatch ──────────────────────
 
 
@@ -241,6 +292,93 @@ def test_config_includes_commands():
             assert config["commands"][0]["name"] == "weather"
         finally:
             boot.SKILLS_DIR = original
+
+
+# ── Tests for tabula-guide skill ───────────────────────────────
+
+
+def test_tabula_guide_exists():
+    """tabula-guide/SKILL.md should exist."""
+    guide_path = ROOT / "skills" / "tabula-guide" / "SKILL.md"
+    assert guide_path.is_file(), f"tabula-guide/SKILL.md not found at {guide_path}"
+
+
+def test_tabula_guide_has_description():
+    """tabula-guide should have description in frontmatter (appears in system prompt)."""
+    import boot
+    guide_path = ROOT / "skills" / "tabula-guide" / "SKILL.md"
+    meta, body = boot.parse_skill_md(guide_path.read_text().strip())
+    assert meta.get("description"), "tabula-guide must have description"
+    assert meta.get("name") == "tabula-guide"
+
+
+def test_tabula_guide_in_scan_skills():
+    """tabula-guide should appear in scan_skills output."""
+    import boot
+    original = boot.SKILLS_DIR
+    boot.SKILLS_DIR = str(ROOT / "skills")
+    try:
+        skills = boot.scan_skills()
+        guide_entries = [s for s in skills if "tabula-guide" in s]
+        assert len(guide_entries) == 1
+    finally:
+        boot.SKILLS_DIR = original
+
+
+def test_tabula_guide_not_user_invocable():
+    """tabula-guide should NOT be a slash command."""
+    import boot
+    original = boot.SKILLS_DIR
+    boot.SKILLS_DIR = str(ROOT / "skills")
+    try:
+        cmds = boot.discover_slash_commands()
+        names = [c["name"] for c in cmds]
+        assert "tabula-guide" not in names
+    finally:
+        boot.SKILLS_DIR = original
+
+
+def test_tabula_guide_covers_key_sections():
+    """tabula-guide body should cover all major architecture sections."""
+    guide_path = ROOT / "skills" / "tabula-guide" / "SKILL.md"
+    content = guide_path.read_text()
+    required_sections = [
+        "## Overview",
+        "## Boot System",
+        "## Kernel",
+        "## Hook System",
+        "## Tool System",
+        "## Skills Reference",
+        "## SKILL.md Format",
+        "## Slash Commands",
+        "## Wire Protocol",
+        "## Limits",
+        "## Creating a New Skill",
+    ]
+    for section in required_sections:
+        assert section in content, f"Missing section: {section}"
+
+
+def test_tabula_guide_documents_all_hook_events():
+    """tabula-guide should document all hook events."""
+    guide_path = ROOT / "skills" / "tabula-guide" / "SKILL.md"
+    content = guide_path.read_text()
+    hook_events = [
+        "before_message", "after_message",
+        "before_tool_call", "after_tool_call",
+        "session_start", "session_end",
+        "before_spawn", "after_spawn",
+    ]
+    for event in hook_events:
+        assert event in content, f"Missing hook event: {event}"
+
+
+def test_tabula_guide_documents_kernel_tools():
+    """tabula-guide should document all kernel tools."""
+    guide_path = ROOT / "skills" / "tabula-guide" / "SKILL.md"
+    content = guide_path.read_text()
+    for tool in ["EXEC", "SPAWN", "KILL", "LIST"]:
+        assert f"**{tool}**" in content, f"Missing kernel tool: {tool}"
 
 
 if __name__ == "__main__":

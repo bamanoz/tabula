@@ -1,7 +1,6 @@
 ---
 name: mcp
 description: "MCP bridge — connects to external MCP servers (filesystem, APIs, databases). Call: `EXEC python3 skills/mcp/run.py call <server> <tool> '<json_args>'`. List: `EXEC python3 skills/mcp/run.py list <server>`. Config: ~/.tabula/mcp/servers.json"
-inject: none
 ---
 # MCP Bridge
 

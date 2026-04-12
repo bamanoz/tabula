@@ -1,7 +1,6 @@
 ---
 name: driver-mock
 description: "Deterministic mock LLM driver for testing multi-agent orchestration"
-inject: none
 ---
 # driver-mock
 

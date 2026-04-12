@@ -1,7 +1,6 @@
 ---
 name: subagent-mock
 description: "Deterministic mock subagent for testing"
-inject: none
 ---
 # subagent-mock
 

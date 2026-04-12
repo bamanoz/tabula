@@ -14,6 +14,11 @@ New-Item -ItemType Directory -Force -Path $TabulaHome, $BinDir | Out-Null
 Copy-Item "tabula.yaml" -Destination $TabulaHome -Force
 Copy-Item "boot.py" -Destination $TabulaHome -Force
 
+# Templates
+$TemplatesDest = Join-Path $TabulaHome "templates"
+if (Test-Path $TemplatesDest) { Remove-Item -Recurse -Force $TemplatesDest }
+Copy-Item "templates" -Destination $TemplatesDest -Recurse -Force
+
 # Skills (mirror directory, exclude test/mock skills)
 $SkillsDest = Join-Path $TabulaHome "skills"
 if (Test-Path $SkillsDest) { Remove-Item -Recurse -Force $SkillsDest }

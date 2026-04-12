@@ -1,7 +1,6 @@
 ---
 name: hook-logger
 description: "Audit logger — logs all hook events to JSONL file"
-inject: none
 ---
 # hook-logger
 

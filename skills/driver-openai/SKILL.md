@@ -1,7 +1,6 @@
 ---
 name: driver-openai
 description: "OpenAI Responses API driver with streaming, tool use, and subagent result collection"
-inject: none
 ---
 # driver-openai
 

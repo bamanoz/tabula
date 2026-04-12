@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from collections import deque
 from dataclasses import dataclass
 
@@ -51,7 +52,20 @@ class SubagentRuntime:
         init_msg = self.conn.recv()
         if init_msg is None or init_msg.get("type") != "init":
             raise RuntimeError("did not receive init")
-        self.provider = self.provider_factory(init_msg.get("prompt", ""), init_msg.get("tools", []))
+        prompt = self._load_subagent_prompt() or init_msg.get("prompt", "")
+        self.provider = self.provider_factory(prompt, init_msg.get("tools", []))
+
+    def _load_subagent_prompt(self) -> str:
+        """Read subagent prompt from TABULA_HOME/.subagent_prompt if it exists."""
+        home = os.environ.get("TABULA_HOME", "")
+        if not home:
+            return ""
+        path = os.path.join(home, ".subagent_prompt")
+        try:
+            with open(path) as f:
+                return f.read().strip()
+        except FileNotFoundError:
+            return ""
 
     def _run_active_task(self, text: str) -> str:
         if not self.provider:

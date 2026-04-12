@@ -1,7 +1,6 @@
 ---
 name: driver-anthropic
 description: "Claude API driver with streaming, tool use, and subagent result collection"
-inject: none
 ---
 # driver-anthropic
 

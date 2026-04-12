@@ -24,7 +24,7 @@ Every skill directory must have a `SKILL.md` with optional YAML frontmatter:
 ---
 name: skill-name
 description: "Short description shown in system prompt"
-inject: none
+user-invocable: true
 tools:
   [{"name": "tool_name", "description": "What the tool does",
     "params": {"arg": {"type": "string", "description": "Argument"}},
@@ -33,7 +33,7 @@ tools:
 
 # Skill Name
 
-Full documentation body. Injected into system prompt unless inject: none.
+Full documentation body (not injected into system prompt).
 
 ## Usage
 
@@ -43,9 +43,10 @@ How to run this skill.
 ### Frontmatter fields
 
 - `name` — skill identifier (defaults to directory name)
-- `description` — short description injected into system prompt
-- `inject: none` — hides skill from system prompt (for internal skills like
-  drivers, gateways, hooks)
+- `description` — short description injected into system prompt as a one-liner.
+  Skills without description are hidden from the system prompt.
+- `user-invocable: true` — exposes skill as a `/name` slash command in gateway CLI.
+  Only explicit `true` counts; absent = not invocable.
 - `tools` — JSON array of tool definitions (see Tool-Skills below)
 
 ## Discovering skills
@@ -118,8 +119,10 @@ Hook events: `before_message`, `after_message`, `before_tool_call`,
 `after_tool_call`, `session_start`, `before_spawn`, `after_spawn`.
 
 Strategies:
-- **void**: fire-and-forget (after_*, session_start). No response needed.
-- **modifying**: sequential by priority (before_*). Can pass, modify, or block.
+- **void**: fire-and-forget (after_*). No response needed.
+- **modifying**: sequential by priority (before_*, session_start). Can pass,
+  modify, or block. `session_start` hooks can inject context into the init
+  message via `{"context": "extra text"}` in the modify payload.
 
 ### Tool-skills
 
@@ -166,6 +169,41 @@ Tool definitions use kernel format:
 - `params` — object of `{name: {type, description}}`
 - `required` — list of required parameter names
 
+## Slash commands (user-invocable skills)
+
+Skills with `user-invocable: true` in frontmatter are exposed as `/name` slash
+commands in the gateway CLI.
+
+```
+---
+name: weather
+description: "Get weather"
+user-invocable: true
+---
+
+# Weather
+
+Instructions for the LLM when this command is invoked...
+```
+
+When user types `/weather москва`, the gateway:
+
+1. Reads the SKILL.md body (everything after frontmatter)
+2. Appends user arguments: `"{body}\n\nUser request: москва"`
+3. Sends the combined text as a regular message to the kernel
+4. LLM receives the skill instructions + user request and acts accordingly
+
+Gateway also provides builtin commands (`/help`, `/exit`) that are handled
+locally without sending to the kernel.
+
+Tab autocomplete is supported: typing `/we` + Tab completes to `/weather `.
+
+### Discovery
+
+`boot.py` provides `discover_slash_commands()` which scans all SKILL.md files
+for `user-invocable: true` and returns `[{name, description, body}]`. Gateway
+loads this at startup.
+
 ## Shared library
 
 `skills/lib/` provides Python helpers:
@@ -174,6 +212,17 @@ Tool definitions use kernel format:
 - `driver_runtime.py` — base class for LLM drivers
 - `subagent_runtime.py` — base class for subagents
 - `providers.py` — LLM provider adapters (Anthropic, OpenAI)
+
+## Project files
+
+User-editable files in `~/.tabula/` are injected into the system prompt:
+
+- `SOUL.md` — personality, tone, style (main agent only)
+- `USER.md` — user context: name, timezone, preferences (main agent only)
+- `AGENTS.md` — workspace instructions and behavioral rules (main + subagents)
+
+Subagents receive a minimal prompt (no skills, memory, SOUL, or USER).
+The subagent runtime reads `~/.tabula/.subagent_prompt` written by boot.py at startup.
 
 ## Creating new skills
 

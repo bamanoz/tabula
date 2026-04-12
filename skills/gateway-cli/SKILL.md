@@ -1,7 +1,6 @@
 ---
 name: gateway-cli
 description: "Interactive CLI gateway for terminal use"
-inject: none
 ---
 # gateway-cli
 

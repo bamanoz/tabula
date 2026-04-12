@@ -1,7 +1,6 @@
 ---
 name: gateway-api
 description: "OpenAI-compatible HTTP API gateway"
-inject: none
 ---
 
 # Gateway API

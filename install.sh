@@ -13,6 +13,9 @@ mkdir -p "$TABULA_HOME" "$BIN_DIR"
 cp tabula.yaml "$TABULA_HOME/"
 cp boot.py "$TABULA_HOME/"
 
+# Templates
+rsync -a --delete templates/ "$TABULA_HOME/templates/"
+
 # Skills
 rsync -a --delete \
   --exclude '__pycache__' \
