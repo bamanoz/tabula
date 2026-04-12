@@ -1,147 +1,134 @@
 # Tabula
 
-Microkernel AI agent. Go kernel connects skills over WebSocket using a JSON pub/sub protocol.
+A modular AI agent. Small Go kernel, pluggable everything — LLM providers, gateways, tools, personality.
 
-```
-┌──────────┐     ┌──────────────┐     ┌──────────────┐
-│ CLI      │────▶│              │────▶│ LLM Driver   │
-│ Gateway  │◀────│  Go Kernel   │◀────│ (Anthropic)  │
-└──────────┘     │              │     └──────────────┘
-                 │  WebSocket   │
-┌──────────┐     │  Pub/Sub     │     ┌──────────────┐
-│ API      │────▶│  Tool Exec   │────▶│ Subagent     │
-│ Gateway  │◀────│              │     └──────────────┘
-└──────────┘     │              │
-                 │              │     ┌──────────────┐
-                 │              │────▶│ Memory       │
-                 └──────────────┘     └──────────────┘
-```
 
 ## Install
 
 ```bash
-git clone <repo> && cd tabula
+git clone https://github.com/bamanoz/tabula.git && cd tabula
 ./install.sh
 ```
 
-Requires: Go 1.26+, Python 3.11+
+Requires Go 1.26+ and Python 3.11+. Installs to `~/.tabula/` (override with `TABULA_HOME`).
 
-Installs to `~/.tabula/` (override with `TABULA_HOME`):
+<details>
+<summary>Windows</summary>
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+</details>
+
+<details>
+<summary>What gets installed</summary>
 
 ```
 ~/.tabula/
-├── bin/
-│   ├── tabula           # Go binary (kernel)
-│   ├── tabula-main      # launch script: kernel + CLI
-│   ├── tabula-headless  # launch script: kernel only
-│   ├── tabula-api       # launch script: API gateway (connects to kernel)
-│   └── tabula-cli       # launch script: CLI session (connects to kernel)
-├── tabula.yaml         # config (boot command)
-├── boot.py             # skill discovery & prompt assembly
-├── skills/             # installed skills
-├── memory/             # persistent memory
-└── .venv/              # Python dependencies
+├── bin/tabula              # Go kernel binary
+├── bin/tabula-headless     # Launch: kernel only
+├── bin/tabula-cli          # Launch: CLI session
+├── bin/tabula-api          # Launch: API gateway
+├── tabula.yaml             # Config
+├── boot.py                 # Skill discovery & prompt assembly
+├── templates/              # System prompt templates
+├── skills/                 # Installed skills
+├── memory/                 # Persistent memory
+├── IDENTITY.md             # Agent identity (created on first run)
+├── SOUL.md                 # Personality & tone
+├── USER.md                 # User context
+├── AGENTS.md               # Workspace rules
+└── .venv/                  # Python dependencies
 ```
+</details>
 
-## Usage
+## Quick start
 
 ```bash
 export ANTHROPIC_API_KEY=sk-...
-tabula-main
+tabula-headless    # start kernel
+tabula-cli         # connect CLI in another terminal
 ```
 
-Use OpenAI instead:
+Or use OpenAI:
 
 ```bash
 export TABULA_PROVIDER=openai
 export OPENAI_API_KEY=sk-...
-tabula-main
-```
-
-Verbose mode (logs to `~/.tabula/kernel.log`):
-
-```bash
-TABULA_VERBOSE=1 tabula-main
-```
-
-Resume a previous session:
-
-```bash
-TABULA_RESUME_SESSION=sess-xxx tabula-main
-```
-
-### Headless mode
-
-Run just the kernel (no CLI, no API). Connect later with `tabula-cli` or `tabula-api`:
-
-```bash
 tabula-headless
 ```
 
-### API Gateway
+On first launch, Tabula will introduce itself and ask you to set up its identity together.
 
-Start the API gateway (requires a running kernel):
+## Features
 
-```bash
-tabula-api
-```
-
-Or enable alongside the CLI in one command:
-
-```bash
-TABULA_API_PORT=8090 tabula-main
-```
-
-Exposes two endpoints:
-- `POST /v1/chat/completions` — Chat Completions API
-- `POST /v1/responses` — Responses API
-
-Both support streaming (SSE) and non-streaming modes. Any OpenAI-compatible client or SDK can connect.
-
-```bash
-# Chat Completions
-curl http://localhost:8090/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"tabula","messages":[{"role":"user","content":"hello"}]}'
-
-# Responses API
-curl http://localhost:8090/v1/responses \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"tabula","input":"hello","stream":true}'
-```
-
-Optional auth: set `TABULA_API_AUTH` to require a Bearer token.
-
-### Additional CLI sessions
-
-Connect another CLI to a running kernel:
-
-```bash
-tabula-cli
-```
+- **Multi-provider** — Anthropic (Claude) and OpenAI out of the box, switchable via env var
+- **Parallel subagents** — LLM spawns independent sub-agents for concurrent tasks
+- **OpenAI-compatible API** — Drop-in `/v1/chat/completions` and `/v1/responses` endpoints with SSE streaming
+- **Skill system** — Modular Python skills that connect via WebSocket, auto-discovered at boot
+- **MCP bridge** — Connect any Model Context Protocol server as a tool source
+- **Persistent memory** — Save, search, and recall facts across sessions
+- **Hooks** — Before/after events for messages, tool calls, spawns, and sessions
+- **Cron & timers** — Scheduled tasks and reminders
+- **Project files** — Editable identity, personality, and workspace rules (`IDENTITY.md`, `SOUL.md`, `USER.md`, `AGENTS.md`)
+- **Session isolation** — Each conversation and subagent runs in its own session scope
 
 ## Architecture
 
-The kernel is a Go binary (WebSocket server) that:
+The kernel is a Go binary — a WebSocket server that routes messages between skills via session-scoped pub/sub.
 
-1. Runs the boot script (`boot.py`) to discover skills and assemble a system prompt
-2. Starts an HTTP/WebSocket server (default `localhost:8089`)
-3. Spawns skill processes (LLM driver, CLI gateway)
-4. Routes messages between them via session-scoped pub/sub
-5. Intercepts and executes tool calls (EXEC, SPAWN, KILL, LIST)
-6. Monitors child processes with a reaper goroutine
+**Boot sequence:**
+1. Kernel reads `tabula.yaml`, runs `boot.py`
+2. Boot scans `skills/` for `SKILL.md` files, assembles system prompt, discovers tools
+3. Boot outputs JSON config → kernel starts WebSocket server, spawns skill processes
+4. Skills connect, join sessions, begin message exchange
 
-Skills connect to the kernel via WebSocket, declare what message types they send/receive, and join a session. The kernel handles routing — skills don't know about each other.
+**Skills are processes.** Each skill connects via WebSocket, declares its message types, and joins a session. The kernel routes messages — skills don't know about each other. Drivers talk to LLMs, gateways talk to users, tool skills execute commands.
 
-### Boot sequence
+**Subagents are autonomous.** The LLM driver spawns sub-agent processes that run their own LLM loop in separate sessions. Multiple subagents run in parallel; results are collected and aggregated back into the parent conversation.
 
-1. Kernel reads `tabula.yaml` to find the boot command
-2. Boot script scans `skills/` for `SKILL.md` files, reads long-term memory, assembles system prompt
-3. Boot outputs JSON config: `{url, system_prompt, spawn[]}`
-4. Kernel starts WebSocket server, spawns listed processes
-5. Processes connect, join sessions, begin message exchange
+### Skills
 
-### Protocol
+| Skill | Description |
+|-------|-------------|
+| `driver-anthropic` | Claude API — streaming, tool use, subagent orchestration |
+| `driver-openai` | OpenAI Responses API — same protocol, same capabilities |
+| `gateway-cli` | Interactive terminal UI with markdown rendering |
+| `gateway-api` | OpenAI-compatible HTTP API with SSE streaming |
+| `subagent-anthropic` | Autonomous Claude sub-agent for parallel tasks |
+| `subagent-openai` | Autonomous OpenAI sub-agent for parallel tasks |
+| `memory` | Persistent memory — save, search, list, delete |
+| `sessions` | Cross-session messaging |
+| `mcp` | Model Context Protocol bridge |
+| `cron` | Scheduled task execution |
+| `hook-logger` | Audit logger (JSONL) |
+
+### Kernel tools
+
+| Tool | Description |
+|------|-------------|
+| `EXEC` | Run a command, return stdout (capped at 16KB) |
+| `SPAWN` | Start a background process, return PID |
+| `KILL` | Stop a process by PID |
+| `LIST` | List spawned processes |
+
+### API gateway
+
+Start alongside the kernel or connect to a running one:
+
+```bash
+TABULA_API_PORT=8090 tabula-headless   # kernel + API
+tabula-api                              # connect to running kernel
+```
+
+```bash
+curl http://localhost:8090/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"tabula","messages":[{"role":"user","content":"hello"}]}'
+```
+
+<details>
+<summary>Protocol reference</summary>
 
 JSON messages over WebSocket. Each message has a `type` field:
 
@@ -151,150 +138,51 @@ JSON messages over WebSocket. Each message has a `type` field:
 | `connected` | kernel → skill | Acknowledge with client ID |
 | `join` | skill → kernel | Join a session |
 | `joined` | kernel → skill | Acknowledge session join |
-| `member_joined` | kernel → session | Broadcast when a new client joins the session |
-| `init` | kernel → skill | System prompt + tools (sent after join) |
-| `message` | any → any | Text message (user input, subagent results) |
+| `member_joined` | kernel → session | Broadcast: new client in session |
+| `init` | kernel → skill | System prompt + tools |
+| `message` | any → any | Text message |
 | `stream_start` | driver → gateway | LLM response begins |
 | `stream_delta` | driver → gateway | Token chunk |
 | `stream_end` | driver → gateway | LLM response complete |
-| `tool_use` | driver → kernel | LLM wants to call a tool |
+| `tool_use` | driver → kernel | LLM requests tool call |
 | `tool_result` | kernel → driver | Tool execution result |
 | `done` | driver → gateway | Turn complete |
 | `cancel` | gateway → kernel | Abort current operation |
-| `error` | kernel → session | Process crash notification |
+| `error` | kernel → session | Error notification |
 
-### Sessions
+</details>
 
-Sessions isolate message routing. The main conversation uses session `main`. Each subagent joins its own session (`subagent-<id>`). Cross-session messaging is supported by setting the `session` field explicitly in a message.
+## Adding skills
 
-### Kernel tools
+Create a directory in `skills/` with a `SKILL.md` (frontmatter + docs) and a `run.py` entry point. The skill connects to the kernel via WebSocket, declares its message types, and joins a session.
 
-| Tool | Description |
-|------|-------------|
-| `EXEC` | Run a command synchronously, return stdout (truncated to 16KB) |
-| `SPAWN` | Start a background process, return PID |
-| `KILL` | Stop a process by PID |
-| `LIST` | List all spawned processes with PID, command, alive status |
-
-## Skills
-
-| Skill | Description |
-|-------|-------------|
-| `lib` | Shared runtime library: `KernelConnection`, `DriverRuntime`, `SubagentRuntime`, provider adapters |
-| `driver-anthropic` | Claude API driver with streaming, tool use, and subagent result collection |
-| `driver-openai` | OpenAI Responses API driver with the same protocol and multi-agent behavior |
-| `gateway-cli` | Interactive terminal UI (Rich markdown, shimmer spinner) |
-| `gateway-api` | OpenAI-compatible HTTP API (`/v1/chat/completions`, `/v1/responses`, SSE streaming) |
-| `subagent-anthropic` | Autonomous LLM sub-agent spawned for parallel tasks |
-| `subagent-openai` | OpenAI-backed autonomous sub-agent for parallel tasks |
-| `memory` | Persistent memory — save, search, list, get, delete |
-
-### Subagents
-
-The LLM driver can spawn sub-agents via the `SPAWN` tool. Each subagent is an independent process running its own LLM loop in a separate session.
-
-```
-Parent LLM ──SPAWN──▶ Kernel ──fork──▶ Subagent process
-     │                                      │
-     │◀─── message (result) ───────────────│
-```
-
-Key design:
-- Subagents only get `EXEC` — no `SPAWN`/`KILL`/`LIST` (prevents recursive spawning)
-- Max spawn depth (`TABULA_MAX_SPAWN_DEPTH`, default 3) and max children per session (`TABULA_MAX_CHILDREN_PER_SESSION`, default 5)
-- Parent detects subagent IDs via `--id` argument in SPAWN commands
-- Results collected with debounce batching (5s) and max wait (300s)
-- Multiple subagents run in parallel, results aggregated into one LLM turn
-- Spawn failures (exceeding limits) are detected and recorded as failed results
-- Subagents can stay alive for follow-up messages with `--timeout`
-
-Spawn command:
-```bash
-SPAWN python3 skills/subagent-anthropic/run.py \
-  --id research_1 \
-  --parent-session main \
-  --task "Research topic X" \
-  --timeout 30
-```
-
-### Memory
-
-```bash
-# Save (short-term, daily file)
-EXEC python3 skills/memory/run.py save --category fact --title "Uses Go" "Kernel written in Go"
-
-# Save (long-term, injected into system prompt)
-EXEC python3 skills/memory/run.py save --category fact --title "Uses Go" --long-term "Kernel written in Go"
-
-# Search (semantic + keyword)
-EXEC python3 skills/memory/run.py search "what language"
-
-# List, get, delete
-EXEC python3 skills/memory/run.py list --category fact
-EXEC python3 skills/memory/run.py get <entry-id>
-EXEC python3 skills/memory/run.py delete <entry-id>
-```
-
-Supports semantic search via OpenAI embeddings when `OPENAI_API_KEY` is set. Falls back to keyword search otherwise.
-
-## Provider Selection
-
-`boot.py` selects the active driver and subagent pair from `TABULA_PROVIDER`.
-
-Supported values:
-- `anthropic` (default)
-- `claude` → alias for `anthropic`
-- `openai`
-- `gpt` → alias for `openai`
-- `openclaw` → alias for `openai`
-
-Selection rules:
-- if the requested provider skill exists, it is used;
-- if it does not exist but another provider exists locally, `boot.py` falls back to it and prints a warning to stderr;
-- if no provider skills exist, boot fails immediately.
-
-The boot script also warns when the expected API key for the chosen provider is missing.
+See `skills/skill-contract/SKILL.md` for the full specification.
 
 ## Configuration
 
-`~/.tabula/tabula.yaml`:
-
-```yaml
-boot: .venv/bin/python3 boot.py
-```
-
-The boot script handles everything else: skill discovery, system prompt assembly, and process list.
-
-### Environment variables
+<details>
+<summary>Environment variables</summary>
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `TABULA_HOME` | Workspace directory | `~/.tabula` |
 | `TABULA_URL` | Kernel WebSocket URL | `ws://localhost:8089/ws` |
-| `TABULA_PROVIDER` | Active LLM provider (`anthropic`, `claude`, `openai`, `gpt`) | `anthropic` |
-| `TABULA_VERBOSE` | Enable verbose logging in skill processes (`1` to enable) | unset |
-| `TABULA_HEADLESS` | Skip CLI gateway, for API-only mode (`1` to enable) | unset |
+| `TABULA_PROVIDER` | LLM provider (`anthropic`, `openai`) | `anthropic` |
+| `TABULA_VERBOSE` | Verbose logging (`1` to enable) | unset |
+| `TABULA_HEADLESS` | Skip CLI gateway | unset |
 | `TABULA_RESUME_SESSION` | Session ID to resume | unset |
-| `TABULA_MAX_SPAWN_DEPTH` | Max nesting depth for SPAWN (prevents recursive spawning) | `3` |
-| `TABULA_MAX_CHILDREN_PER_SESSION` | Max active subagent processes per session | `5` |
-| `ANTHROPIC_API_KEY` | Claude API key | required for `anthropic` provider |
-| `ANTHROPIC_MODEL` | Model name | `claude-sonnet-4-6` |
-| `ANTHROPIC_BASE_URL` | API endpoint override | `https://api.anthropic.com` |
-| `OPENAI_API_KEY` | OpenAI API key | required for `openai` provider |
-| `OPENAI_MODEL` | OpenAI model name | `gpt-5` |
-| `TABULA_API_PORT` | HTTP port for OpenAI-compatible API gateway (enables `gateway-api` when set) | unset |
-| `TABULA_API_AUTH` | Bearer token for API gateway authentication | unset |
-| `OPENAI_BASE_URL` | OpenAI API endpoint override | `https://api.openai.com` |
+| `TABULA_API_PORT` | API gateway port | unset |
+| `TABULA_API_AUTH` | API Bearer token | unset |
+| `TABULA_MAX_SPAWN_DEPTH` | Max subagent nesting depth | `3` |
+| `TABULA_MAX_CHILDREN_PER_SESSION` | Max subagents per session | `5` |
+| `ANTHROPIC_API_KEY` | Claude API key | required for `anthropic` |
+| `ANTHROPIC_MODEL` | Claude model | `claude-sonnet-4-6` |
+| `ANTHROPIC_BASE_URL` | Claude API endpoint | `https://api.anthropic.com` |
+| `OPENAI_API_KEY` | OpenAI API key | required for `openai` |
+| `OPENAI_MODEL` | OpenAI model | `gpt-5` |
+| `OPENAI_BASE_URL` | OpenAI API endpoint | `https://api.openai.com` |
 
-Set `TABULA_PROVIDER=openai` to spawn `skills/driver-openai/run.py` instead of `skills/driver-anthropic/run.py`.
-
-## Adding skills
-
-Create a directory in `skills/` with:
-- `SKILL.md` — documentation (injected into system prompt)
-- `run.py` — entry point (or any executable)
-
-The skill connects to the kernel via WebSocket (`TABULA_URL`), sends a `connect` message declaring its message types, joins a session, and starts communicating.
+</details>
 
 ## License
 
