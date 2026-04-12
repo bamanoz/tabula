@@ -242,6 +242,7 @@ func (h *Hub) spawnProcess(command, session string, childDepth int) (int, error)
 func (h *Hub) execSkillTool(session, toolID, toolName, execCmd string, input json.RawMessage) {
 	cmd := shell.Command(execCmd)
 	cmd.Stdin = strings.NewReader(string(input))
+	cmd.Env = append(os.Environ(), "TABULA_SESSION="+session)
 	out, err := cmd.CombinedOutput()
 
 	if len(out) > maxExecOutput {
