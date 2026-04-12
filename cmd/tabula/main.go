@@ -66,7 +66,13 @@ func main() {
 	}
 	slog.Info("working directory", "path", tabulaHome)
 
-	// 4. Read tabula.yaml → boot command
+	// 4. Prepend venv bin to PATH so "python3" resolves to the venv
+	venvBin := venvBinDir(tabulaHome)
+	if _, err := os.Stat(venvBin); err == nil {
+		os.Setenv("PATH", venvBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	}
+
+	// 5. Read tabula.yaml → boot command
 	configPath := filepath.Join(tabulaHome, "tabula.yaml")
 	bootCmd, err := readBootCmd(configPath)
 	if err != nil {
@@ -132,11 +138,6 @@ func main() {
 	// 8. Set environment for all child processes
 	os.Setenv("TABULA_URL", bootConfig.URL)
 	os.Setenv("TABULA_HOME", tabulaHome)
-	// Prepend venv bin to PATH so "python3" resolves to the venv
-	venvBin := venvBinDir(tabulaHome)
-	if _, err := os.Stat(venvBin); err == nil {
-		os.Setenv("PATH", venvBin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	}
 
 	// 9. Init kernel hub
 	slog.Info("initializing kernel")
