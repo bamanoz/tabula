@@ -59,22 +59,29 @@ func (h *Hub) handleJoin(c *Client, msg *Message) {
 	}
 	h.broadcastToSession(c.session, "member_joined", joinedNotify, c)
 
-	if c.canReceive("init") {
-		h.sendInit(c)
-	}
-
-	// Fire session_start hook (void — non-blocking).
-	payload, _ := json.Marshal(map[string]string{
+	// Fire session_start hook (modifying) before sending init.
+	// Hooks can inject extra context via payload.context field.
+	hookPayload, _ := json.Marshal(map[string]string{
 		"session": c.session,
 		"client":  c.name,
 	})
-	h.dispatchHook("session_start", payload, c.session)
+	result, _ := h.dispatchHook("session_start", hookPayload, c.session)
+
+	if c.canReceive("init") {
+		prompt := h.systemPrompt
+		// Apply context injection from session_start hooks.
+		var hookData struct{ Context string }
+		if json.Unmarshal(result, &hookData) == nil && hookData.Context != "" {
+			prompt = prompt + "\n\n" + hookData.Context
+		}
+		h.sendInitWithPrompt(c, prompt)
+	}
 }
 
-func (h *Hub) sendInit(c *Client) {
+func (h *Hub) sendInitWithPrompt(c *Client, prompt string) {
 	resp := &Message{
 		Type:   "init",
-		Prompt: h.systemPrompt,
+		Prompt: prompt,
 		Tools:  h.toolsJSON,
 	}
 	c.SendMsg(resp)

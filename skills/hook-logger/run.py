@@ -24,6 +24,9 @@ HOOK_EVENTS = [
     {"event": "session_start", "priority": 0},
 ]
 
+# Modifying hooks require a hook_result response.
+MODIFYING_EVENTS = {"session_start"}
+
 
 def run(log_file: str, url: str = TABULA_URL):
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
@@ -57,6 +60,14 @@ def run(log_file: str, url: str = TABULA_URL):
             line = json.dumps(entry, ensure_ascii=False)
             with open(log_file, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
+
+            # Modifying hooks require a response.
+            if msg.get("name", "") in MODIFYING_EVENTS:
+                conn.send({
+                    "type": "hook_result",
+                    "id": msg["id"],
+                    "action": "pass",
+                })
     except KeyboardInterrupt:
         pass
     finally:

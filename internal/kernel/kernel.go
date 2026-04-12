@@ -121,7 +121,7 @@ func (h *Hub) HandleMessage(sender *Client, msg *Message) {
 			h.handleCancel(sender.session)
 		case "message":
 			// before_message hook (modifying): can alter or block.
-			payload, _ := json.Marshal(map[string]string{"text": msg.Text})
+			payload, _ := json.Marshal(map[string]string{"text": msg.Text, "sender": sender.name})
 			result, ok := h.dispatchHook("before_message", payload, sender.session)
 			if !ok {
 				sender.SendMsg(&Message{Type: "error", Text: "message blocked by hook"})
@@ -145,7 +145,11 @@ func (h *Hub) HandleMessage(sender *Client, msg *Message) {
 			h.broadcastToSession(target, msg.Type, msg, sender)
 			// Fire after_message hook on turn completion.
 			if msg.Type == "done" {
-				payload, _ := json.Marshal(map[string]string{"session": target})
+				payload, _ := json.Marshal(map[string]string{
+					"session": target,
+					"sender":  sender.name,
+					"type":    "done",
+				})
 				h.dispatchHook("after_message", payload, target)
 			}
 		}

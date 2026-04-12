@@ -44,7 +44,7 @@ var eventStrategies = map[string]hookStrategy{
 	"after_message":    strategyVoid,
 	"before_tool_call": strategyModifying,
 	"after_tool_call":  strategyVoid,
-	"session_start":    strategyVoid,
+	"session_start":    strategyModifying,
 	"session_end":      strategyVoid,
 	"cancel":           strategyVoid,
 	"before_spawn":     strategyModifying,
