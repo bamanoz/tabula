@@ -51,10 +51,14 @@ func main() {
 	}
 
 	// 2. Setup structured logging
+	logFile := os.Getenv("TABULA_LOG_FILE")
+	if logFile == "" {
+		logFile = filepath.Join(tabulaHome, "logs", "kernel.log")
+	}
 	logger := logging.Setup(logging.Config{
 		ConsoleLevel: os.Getenv("TABULA_LOG_LEVEL"),
 		FileLevel:    os.Getenv("TABULA_FILE_LOG_LEVEL"),
-		FilePath:     os.Getenv("TABULA_LOG_FILE"),
+		FilePath:     logFile,
 		Compress:     true,
 	})
 	defer logger.Close()
@@ -66,10 +70,13 @@ func main() {
 	}
 	slog.Info("working directory", "path", tabulaHome)
 
-	// 4. Prepend venv bin to PATH so "python3" resolves to the venv
-	venvBin := venvBinDir(tabulaHome)
-	if _, err := os.Stat(venvBin); err == nil {
-		os.Setenv("PATH", venvBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// 4. Restore full PATH from install-time snapshot
+	// launchd/systemd start with minimal PATH (/usr/bin:/bin).
+	// install.sh saves the user's login PATH as TABULA_PATH in .env.
+	savedPath := readEnvKey(filepath.Join(tabulaHome, ".env"), "TABULA_PATH")
+	if savedPath != "" {
+		os.Setenv("PATH", savedPath)
+		slog.Info("PATH restored from TABULA_PATH", "path", savedPath)
 	}
 
 	// 5. Read tabula.yaml → boot command
@@ -209,6 +216,24 @@ func envInt(name string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// readEnvKey reads a single KEY=VALUE from a .env file.
+func readEnvKey(path, key string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	prefix := key + "="
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, prefix) {
+			return line[len(prefix):]
+		}
+	}
+	return ""
 }
 
 // readBootCmd reads the boot command from tabula.yaml.

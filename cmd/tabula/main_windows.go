@@ -6,15 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 
 	"github.com/bamanoz/tabula/internal/shell"
 )
-
-// venvBinDir returns the platform-specific venv binary directory.
-func venvBinDir(tabulaHome string) string {
-	return filepath.Join(tabulaHome, ".venv", "Scripts")
-}
 
 // mainShellCommand creates a platform-appropriate shell command.
 func mainShellCommand(command string) *exec.Cmd {

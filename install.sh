@@ -87,6 +87,26 @@ check_python() {
   ok "Python ${major}.${minor}"
 }
 
+# ── save PATH ────────────────────────────────────────────────────
+
+save_path_to_env() {
+  local env_file="$1"
+  # Include venv bin so kernel children can find skill Python
+  local full_path="$VENV/bin:$PATH"
+  local path_line="TABULA_PATH=$full_path"
+
+  if [ -f "$env_file" ]; then
+    # Remove old TABULA_PATH line, then append new one
+    local tmp="${env_file}.tmp"
+    grep -v '^TABULA_PATH=' "$env_file" > "$tmp" || true
+    printf '%s\n' "$path_line" >> "$tmp"
+    mv "$tmp" "$env_file"
+  else
+    printf '%s\n' "$path_line" > "$env_file"
+  fi
+  ok "Saved login PATH to .env"
+}
+
 # ── service install ──────────────────────────────────────────────
 
 install_service() {
@@ -271,10 +291,14 @@ main() {
   # Service
   install_service
 
-  # Env file for API keys (skills read it at startup, no kernel restart needed)
+  # Save full login shell PATH for the kernel service
+  # (launchd/systemd start with minimal PATH like /usr/bin:/bin)
   local env_file="$TABULA_HOME/.env"
+  save_path_to_env "$env_file"
+
+  # Env file for API keys (skills read it at startup, no kernel restart needed)
   if [ ! -f "$env_file" ]; then
-    printf '# API keys — loaded by skills at startup.\nANTHROPIC_API_KEY=\n# OPENAI_API_KEY=\n# TABULA_PROVIDER=anthropic\n' > "$env_file"
+    printf '# API keys — loaded by skills at startup.\nANTHROPIC_API_KEY=\n# OPENAI_API_KEY=\n# TABULA_PROVIDER=anthropic\n' >> "$env_file"
     chmod 600 "$env_file"
   fi
 

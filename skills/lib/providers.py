@@ -258,7 +258,7 @@ class AnthropicSession(ProviderSession):
         self._current_resp = resp
         sock = resp.fp.raw._sock if hasattr(resp.fp, "raw") and hasattr(resp.fp.raw, "_sock") else None
         if sock:
-            sock.settimeout(120)
+            sock.settimeout(600)
 
         content_blocks: list[dict] = []
         tool_calls: list[ToolCall] = []
@@ -438,7 +438,7 @@ class OpenAISession(ProviderSession):
         self._current_resp = resp
         sock = resp.fp.raw._sock if hasattr(resp.fp, "raw") and hasattr(resp.fp.raw, "_sock") else None
         if sock:
-            sock.settimeout(120)
+            sock.settimeout(600)
 
         response_id = None
         completed_output: list[dict] = []
