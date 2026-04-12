@@ -265,9 +265,16 @@ main() {
   # Service
   install_service
 
+  # Env file for API keys (skills read it at startup, no kernel restart needed)
+  local env_file="$TABULA_HOME/.env"
+  if [ ! -f "$env_file" ]; then
+    printf '# API keys — loaded by skills at startup.\nANTHROPIC_API_KEY=\n# OPENAI_API_KEY=\n# TABULA_PROVIDER=anthropic\n' > "$env_file"
+    chmod 600 "$env_file"
+  fi
+
   printf '\n\033[1;32mTabula %s installed!\033[0m\n\n' "$VERSION"
-  printf 'Set your API key:\n'
-  printf '  export ANTHROPIC_API_KEY=sk-...\n\n'
+  printf 'Add your API key:\n'
+  printf '  echo "ANTHROPIC_API_KEY=sk-..." >> %s\n\n' "$env_file"
   printf 'Then connect:\n'
   printf '  tabula-cli\n\n'
 }

@@ -12,8 +12,11 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from skills.lib import load_env
 from skills.lib.providers import AnthropicSession
 from skills.lib.subagent_runtime import SubagentConfig, SubagentRuntime
+
+load_env()
 
 
 BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")

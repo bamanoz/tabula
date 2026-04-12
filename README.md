@@ -55,16 +55,10 @@ Requires Go 1.26+ and Python 3.11+.
 
 ## Quick start
 
-```bash
-export ANTHROPIC_API_KEY=sk-...
-tabula-cli
-```
-
-Or use OpenAI:
+Add your API key to `~/.tabula/.env` and connect:
 
 ```bash
-export TABULA_PROVIDER=openai
-export OPENAI_API_KEY=sk-...
+echo "ANTHROPIC_API_KEY=sk-..." >> ~/.tabula/.env
 tabula-cli
 ```
 

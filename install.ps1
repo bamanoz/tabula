@@ -68,13 +68,13 @@ function Install-Service {
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
     }
 
-    $TabulaExe = Join-Path $BinDir "tabula.exe"
+    $HeadlessScript = Join-Path $BinDir "tabula-headless.ps1"
     $OutLog = Join-Path $LogDir "kernel.out.log"
     $ErrLog = Join-Path $LogDir "kernel.err.log"
 
     $Action = New-ScheduledTaskAction `
-        -Execute "cmd.exe" `
-        -Argument "/c `"set TABULA_HOME=$TabulaHome && `"$TabulaExe`" > `"$OutLog`" 2> `"$ErrLog`"`"" `
+        -Execute "powershell.exe" `
+        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$HeadlessScript`" > `"$OutLog`" 2> `"$ErrLog`"" `
         -WorkingDirectory $TabulaHome
 
     $Trigger = New-ScheduledTaskTrigger -AtLogOn
@@ -187,11 +187,17 @@ try {
     # Service
     Install-Service
 
+    # Env file for API keys
+    $EnvFile = Join-Path $TabulaHome ".env"
+    if (-not (Test-Path $EnvFile)) {
+        Set-Content -Path $EnvFile -Value "ANTHROPIC_API_KEY=`n# OPENAI_API_KEY=`n# TABULA_PROVIDER=anthropic"
+    }
+
     Write-Host ""
     Write-Host "Tabula $Version installed!" -ForegroundColor Green
     Write-Host ""
-    Write-Host 'Set your API key:'
-    Write-Host '  $env:ANTHROPIC_API_KEY = "sk-..."'
+    Write-Host "Add your API key to $EnvFile :"
+    Write-Host "  echo ANTHROPIC_API_KEY=sk-... >> $EnvFile"
     Write-Host ""
     Write-Host "Then connect:"
     Write-Host "  tabula-cli"

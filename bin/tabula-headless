@@ -1,7 +1,5 @@
 #!/bin/bash
 # Launch Tabula kernel.
-# Configuration via environment variables:
-#   TABULA_HOME — workspace directory (default: ~/.tabula)
 set -e
 
 TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"

@@ -12,8 +12,11 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from skills.lib import load_env
 from skills.lib.driver_runtime import AbortError, DriverConfig, DriverRuntime
 from skills.lib.providers import OpenAISession
+
+load_env()
 
 
 BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
