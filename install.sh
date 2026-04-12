@@ -108,8 +108,14 @@ install_launchd() {
     return
   fi
 
-  # Stop existing service if loaded
-  launchctl bootout "gui/$(id -u)/com.tabula.kernel" 2>/dev/null || true
+  # Stop existing service if loaded, wait for it to fully unload
+  if launchctl print "gui/$(id -u)/com.tabula.kernel" &>/dev/null; then
+    launchctl bootout "gui/$(id -u)/com.tabula.kernel" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+      launchctl print "gui/$(id -u)/com.tabula.kernel" &>/dev/null || break
+      sleep 1
+    done
+  fi
 
   # Replace placeholders and install
   sed "s|__TABULA_HOME__|${TABULA_HOME}|g" "$plist_src" > "$plist_dest"
