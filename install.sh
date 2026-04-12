@@ -1,88 +1,174 @@
 #!/bin/bash
-# Install Tabula to ~/.tabula/
-set -e
+# Tabula installer — downloads pre-built binary and skills from GitHub Releases.
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/install.sh | bash
+#   VERSION=v1.0.0 curl -fsSL ... | bash
+set -euo pipefail
 
+REPO="bamanoz/tabula"
 TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
 BIN_DIR="$TABULA_HOME/bin"
-
-echo "Installing Tabula to $TABULA_HOME..."
-
-mkdir -p "$TABULA_HOME" "$BIN_DIR"
-
-# Config
-cp tabula.yaml "$TABULA_HOME/"
-cp boot.py "$TABULA_HOME/"
-
-# Templates
-rsync -a --delete templates/ "$TABULA_HOME/templates/"
-
-# Skills
-rsync -a --delete \
-  --exclude '__pycache__' \
-  --exclude '*.pyc' \
-  --exclude '.venv' \
-  --exclude 'driver-mock' \
-  --exclude 'subagent-mock' \
-  skills/ "$TABULA_HOME/skills/"
-
-# Memory directory (don't overwrite existing data)
-mkdir -p "$TABULA_HOME/memory"
-
-# Python venv with dependencies
 VENV="$TABULA_HOME/.venv"
-if [ ! -d "$VENV" ]; then
-  echo "Creating Python venv..."
-  python3 -m venv "$VENV"
-fi
-"$VENV/bin/pip" install -q websocket-client pytest
-echo "Python dependencies installed"
 
-# Go binary
-echo "Building Go binary..."
-go build -o "$BIN_DIR/tabula" ./cmd/tabula/
-if [ "$(uname)" = "Darwin" ]; then
-  codesign --force --sign - "$BIN_DIR/tabula" 2>/dev/null || true
-fi
+# ── helpers ──────────────────────────────────────────────────────
 
-# Launch scripts
-for script in tabula-headless tabula-api tabula-cli; do
-  cp "bin/$script" "$BIN_DIR/$script"
-  chmod +x "$BIN_DIR/$script"
-done
+info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
+ok()   { printf '\033[1;32m  ✓\033[0m %s\n' "$*"; }
+die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
-# Add to PATH
-SHELL_RC=""
-if [ -n "$ZSH_VERSION" ] || [ -f "$HOME/.zshrc" ]; then
-  SHELL_RC="$HOME/.zshrc"
-elif [ -f "$HOME/.bashrc" ]; then
-  SHELL_RC="$HOME/.bashrc"
-elif [ -f "$HOME/.bash_profile" ]; then
-  SHELL_RC="$HOME/.bash_profile"
-fi
+need() {
+  command -v "$1" &>/dev/null || die "required tool not found: $1"
+}
 
-PATH_LINE="export PATH=\"$TABULA_HOME/bin:\$PATH\""
-HOME_LINE="export TABULA_HOME=\"$TABULA_HOME\""
+# ── detect platform ─────────────────────────────────────────────
 
-if [ -n "$SHELL_RC" ]; then
-  if ! grep -qF 'TABULA_HOME' "$SHELL_RC"; then
-    echo "" >> "$SHELL_RC"
-    echo "# Tabula" >> "$SHELL_RC"
-    echo "$HOME_LINE" >> "$SHELL_RC"
-    echo "$PATH_LINE" >> "$SHELL_RC"
-    echo "Added to $SHELL_RC"
-  else
-    echo "Already configured in $SHELL_RC"
+detect_platform() {
+  case "$(uname -s)" in
+    Darwin) PLATFORM_OS="darwin" ;;
+    Linux)  PLATFORM_OS="linux"  ;;
+    *)      die "Unsupported OS: $(uname -s). Windows users: see install.ps1" ;;
+  esac
+
+  case "$(uname -m)" in
+    x86_64|amd64)  PLATFORM_ARCH="amd64" ;;
+    arm64|aarch64) PLATFORM_ARCH="arm64" ;;
+    *)             die "Unsupported architecture: $(uname -m)" ;;
+  esac
+}
+
+# ── resolve version ─────────────────────────────────────────────
+
+resolve_version() {
+  if [ -n "${VERSION:-}" ]; then
+    info "Using version: $VERSION"
+    return
   fi
 
-  # Apply in current shell
-  export TABULA_HOME="$TABULA_HOME"
-  export PATH="$TABULA_HOME/bin:$PATH"
-  echo "Environment updated for current session"
-else
-  echo "Could not detect shell rc file. Add manually:"
-  echo "  $HOME_LINE"
-  echo "  $PATH_LINE"
-fi
+  info "Fetching latest release..."
+  VERSION=$(curl -fsSL \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/${REPO}/releases/latest" \
+    | grep '"tag_name"' | head -1 \
+    | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
 
-echo ""
-echo "Installed. Ready to assist!"
+  [ -n "$VERSION" ] || die "Could not determine latest version"
+  info "Latest version: $VERSION"
+}
+
+# ── check python ─────────────────────────────────────────────────
+
+check_python() {
+  local py=""
+  for candidate in python3.13 python3.12 python3.11 python3; do
+    if command -v "$candidate" &>/dev/null; then
+      py="$candidate"
+      break
+    fi
+  done
+
+  [ -n "$py" ] || die "Python 3.11+ is required. Install from https://python.org/downloads/"
+
+  local major minor
+  major=$("$py" -c 'import sys; print(sys.version_info.major)')
+  minor=$("$py" -c 'import sys; print(sys.version_info.minor)')
+
+  if [ "$major" -lt 3 ] || { [ "$major" -eq 3 ] && [ "$minor" -lt 11 ]; }; then
+    die "Python 3.11+ required, found ${major}.${minor} at $(command -v "$py")"
+  fi
+
+  PYTHON_BIN="$py"
+  ok "Python ${major}.${minor}"
+}
+
+# ── shell config ─────────────────────────────────────────────────
+
+configure_shell() {
+  local shell_rc=""
+  if [ -n "${ZSH_VERSION:-}" ] || [ -f "$HOME/.zshrc" ]; then
+    shell_rc="$HOME/.zshrc"
+  elif [ -f "$HOME/.bashrc" ]; then
+    shell_rc="$HOME/.bashrc"
+  elif [ -f "$HOME/.bash_profile" ]; then
+    shell_rc="$HOME/.bash_profile"
+  fi
+
+  if [ -n "$shell_rc" ]; then
+    if ! grep -qF 'TABULA_HOME' "$shell_rc"; then
+      printf '\n# Tabula\nexport TABULA_HOME="%s"\nexport PATH="$TABULA_HOME/bin:$PATH"\n' \
+        "$TABULA_HOME" >> "$shell_rc"
+      ok "Added to $shell_rc"
+    else
+      ok "Already in $shell_rc"
+    fi
+  else
+    printf 'Add to your shell rc:\n  export TABULA_HOME="%s"\n  export PATH="$TABULA_HOME/bin:$PATH"\n' \
+      "$TABULA_HOME"
+  fi
+
+  export TABULA_HOME="$TABULA_HOME"
+  export PATH="$BIN_DIR:$PATH"
+}
+
+# ── main ─────────────────────────────────────────────────────────
+
+main() {
+  need curl
+  need tar
+
+  detect_platform
+  resolve_version
+
+  local ver_bare="${VERSION#v}"
+  local binary_archive="tabula_${ver_bare}_${PLATFORM_OS}_${PLATFORM_ARCH}.tar.gz"
+  local skills_archive="tabula-skills-${VERSION}.tar.gz"
+  local base_url="https://github.com/${REPO}/releases/download/${VERSION}"
+
+  local tmp
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+
+  # Download
+  info "Downloading binary..."
+  curl -fsSL --progress-bar -o "$tmp/$binary_archive" "$base_url/$binary_archive"
+
+  info "Downloading skills..."
+  curl -fsSL --progress-bar -o "$tmp/$skills_archive" "$base_url/$skills_archive"
+
+  # Install
+  info "Installing to $TABULA_HOME..."
+  mkdir -p "$BIN_DIR" "$TABULA_HOME/memory"
+
+  tar -xzf "$tmp/$binary_archive" -C "$tmp"
+  install -m 755 "$tmp/tabula" "$BIN_DIR/tabula"
+  if [ "$PLATFORM_OS" = "darwin" ]; then
+    xattr -d com.apple.quarantine "$BIN_DIR/tabula" 2>/dev/null || true
+  fi
+  ok "Binary installed"
+
+  tar -xzf "$tmp/$skills_archive" -C "$TABULA_HOME"
+  chmod +x "$BIN_DIR/tabula-headless" "$BIN_DIR/tabula-cli" "$BIN_DIR/tabula-api" 2>/dev/null || true
+  ok "Skills and config installed"
+
+  # Python
+  check_python
+
+  if [ ! -d "$VENV" ]; then
+    info "Creating Python venv..."
+    "$PYTHON_BIN" -m venv "$VENV"
+  fi
+
+  info "Installing Python dependencies..."
+  "$VENV/bin/pip" install -q --upgrade pip
+  "$VENV/bin/pip" install -q websocket-client prompt_toolkit rich
+  ok "Python dependencies installed"
+
+  # Shell
+  configure_shell
+
+  printf '\n\033[1;32mTabula %s installed!\033[0m\n\n' "$VERSION"
+  printf '  export ANTHROPIC_API_KEY=sk-...\n'
+  printf '  tabula-headless    # start kernel\n'
+  printf '  tabula-cli         # connect CLI\n\n'
+}
+
+main "$@"

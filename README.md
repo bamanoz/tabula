@@ -6,11 +6,12 @@ A modular AI agent. Small Go kernel, pluggable everything — LLM providers, gat
 ## Install
 
 ```bash
-git clone https://github.com/bamanoz/tabula.git && cd tabula
-./install.sh
+curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/install.sh | bash
 ```
 
-Requires Go 1.26+ and Python 3.11+. Installs to `~/.tabula/` (override with `TABULA_HOME`).
+Requires Python 3.11+. Installs to `~/.tabula/` (override with `TABULA_HOME`).
+
+To install a specific version: `VERSION=v1.0.0 bash install.sh`
 
 <details>
 <summary>Windows</summary>
@@ -18,6 +19,17 @@ Requires Go 1.26+ and Python 3.11+. Installs to `~/.tabula/` (override with `TAB
 ```powershell
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
+</details>
+
+<details>
+<summary>Install from source</summary>
+
+```bash
+git clone https://github.com/bamanoz/tabula.git && cd tabula
+./install-dev.sh
+```
+
+Requires Go 1.26+ and Python 3.11+.
 </details>
 
 <details>

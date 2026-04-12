@@ -23,11 +23,22 @@ import (
 //go:embed kernel.tools.json
 var embeddedToolsJSON []byte
 
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
+
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Printf("tabula %s (%s) built %s\n", version, commit, date)
+		os.Exit(0)
+	}
+
 	// 1. Resolve TABULA_HOME
 	tabulaHome := os.Getenv("TABULA_HOME")
 	if tabulaHome == "" {

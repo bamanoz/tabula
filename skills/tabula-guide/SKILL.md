@@ -210,8 +210,8 @@ Declared in SKILL.md frontmatter `tools` field. Kernel dispatches by name from
 `toolExec` map. The exec command receives JSON input on stdin, writes result to stdout.
 Each call is a separate process invocation.
 
-Example: `python3 skills/weather/run.py tool get_weather` receives
-`{"location": "Berlin"}` on stdin, outputs weather text on stdout.
+For the full skill format specification, tool definitions, slash commands, and
+wire protocol examples, see `skills/skill-contract/SKILL.md`.
 
 ## Skills Reference
 
@@ -274,62 +274,8 @@ Optional: `--timeout N` (0=oneshot, default). Results delivered as messages to p
 
 ## SKILL.md Format
 
-```yaml
----
-name: skill-name              # defaults to directory name
-description: "Short text"     # shown in system prompt; no description = hidden
-user-invocable: true          # expose as /name slash command (explicit only)
-tools:                         # tool definitions array (JSON)
-  [{"name": "...", "description": "...",
-    "params": {"arg": {"type": "string", "description": "..."}},
-    "required": ["arg"]}]
----
-
-# Skill documentation body (markdown)
-```
-
-## Slash Commands
-
-Skills with `user-invocable: true` become `/name` commands in gateway-cli.
-
-`/weather chicago` → gateway reads SKILL.md body, sends as message:
-`"{body}\n\nUser request: chicago"`. LLM receives instructions + request.
-
-Builtin gateway commands: `/help` (list commands), `/exit` (quit).
-Tab autocomplete: prefix match on all commands.
-
-Discovery: `boot.py` `discover_slash_commands()` scans for `user-invocable: true`.
-
-## Wire Protocol Examples
-
-### Driver
-
-```json
-← {"type": "init", "prompt": "You are Tabula...", "tools": [...]}
-← {"type": "message", "text": "Hello"}
-→ {"type": "stream_start"}
-→ {"type": "stream_delta", "text": "Hi "}
-→ {"type": "stream_delta", "text": "there!"}
-→ {"type": "stream_end"}
-→ {"type": "done"}
-```
-
-### Gateway
-
-```json
-→ {"type": "message", "text": "What's the weather?"}
-← {"type": "stream_start"}
-← {"type": "stream_delta", "text": "Let me check..."}
-← {"type": "stream_end"}
-← {"type": "done"}
-```
-
-### Hook subscriber
-
-```json
-← {"type": "hook", "id": "h-abc123", "name": "before_message", "payload": {"text": "hello", "sender": "cli"}}
-→ {"type": "hook_result", "id": "h-abc123", "action": "pass"}
-```
+See `skills/skill-contract/SKILL.md` for the full specification: frontmatter fields,
+tool definitions, slash commands, wire protocol, and skill creation guide.
 
 ## Limits
 
@@ -345,10 +291,4 @@ Discovery: `boot.py` `discover_slash_commands()` scans for `user-invocable: true
 
 ## Creating a New Skill
 
-1. `mkdir skills/<name>`
-2. Write `SKILL.md` with frontmatter (`name`, `description`)
-3. Write `run.py` entry point
-4. If tool-skill: add `tools` to frontmatter, implement `run.py tool <name>` subcommand
-5. If hook-skill: subscribe via `hooks` in `connect` message, handle `hook` messages
-6. If daemon: add to `build_spawn()` in `boot.py`
-7. If slash command: add `user-invocable: true` to frontmatter
+See `skills/skill-contract/SKILL.md` for step-by-step instructions.

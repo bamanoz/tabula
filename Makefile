@@ -40,7 +40,7 @@ vet:
 # Install
 
 install:
-	bash install.sh
+	bash install-dev.sh
 
 # Clean
 

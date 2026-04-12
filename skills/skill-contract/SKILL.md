@@ -81,9 +81,17 @@ declaring its message types, then joins a session via `join`.
 
 ```json
 {"type": "connect", "name": "my-skill", "sends": ["done"], "receives": ["message"]}
+{"type": "connected", "id": "c1"}
 {"type": "join", "session": "main"}
+{"type": "joined", "session": "main"}
 {"type": "message", "text": "hello from skill"}
 ```
+
+Spawned skills can include a `token` field in the `connect` message to inherit
+their parent's spawn depth (received via `TABULA_SPAWN_TOKEN` env var).
+
+When a client joins a session, the kernel broadcasts `member_joined` to other
+session members: `{"type": "member_joined", "name": "my-skill", "session": "main"}`.
 
 ## Skill categories
 
@@ -116,13 +124,26 @@ Subscribe to kernel events. Declared via `hooks` field in `connect` message:
 ```
 
 Hook events: `before_message`, `after_message`, `before_tool_call`,
-`after_tool_call`, `session_start`, `before_spawn`, `after_spawn`.
+`after_tool_call`, `session_start`, `session_end`, `before_spawn`, `after_spawn`,
+`cancel`.
+
+The kernel sends a `hook` message to subscribers:
+```json
+{"type": "hook", "id": "h-abc123", "name": "before_message", "payload": {"text": "hello", "sender": "cli"}}
+```
+
+Subscribers respond with a `hook_result`:
+```json
+{"type": "hook_result", "id": "h-abc123", "action": "pass"}
+```
 
 Strategies:
-- **void**: fire-and-forget (after_*). No response needed.
+- **void**: fire-and-forget (after_*, session_end, cancel). No response needed.
 - **modifying**: sequential by priority (before_*, session_start). Can pass,
   modify, or block. `session_start` hooks can inject context into the init
   message via `{"context": "extra text"}` in the modify payload.
+- **claiming**: sequential by priority; first `{"action": "claim"}` wins,
+  remaining subscribers are skipped.
 
 ### Tool-skills
 
@@ -212,11 +233,14 @@ loads this at startup.
 - `driver_runtime.py` — base class for LLM drivers
 - `subagent_runtime.py` — base class for subagents
 - `providers.py` — LLM provider adapters (Anthropic, OpenAI)
+- `compaction.py` — conversation compaction utilities
+- `filelock.py` — cross-process file locking
 
 ## Project files
 
 User-editable files in `~/.tabula/` are injected into the system prompt:
 
+- `IDENTITY.md` — agent identity: name, personality, language (main agent only)
 - `SOUL.md` — personality, tone, style (main agent only)
 - `USER.md` — user context: name, timezone, preferences (main agent only)
 - `AGENTS.md` — workspace instructions and behavioral rules (main + subagents)
@@ -232,3 +256,10 @@ The subagent runtime reads `~/.tabula/.subagent_prompt` written by boot.py at st
 4. If it's a tool-skill: add `tools` to frontmatter, implement `tool` subcommand
 5. If it's a hook-skill: add hook subscriptions in `connect` message
 6. If it's a daemon: add spawn entry in `boot.py`'s `build_spawn()`
+
+### Naming conventions
+
+- Skills named `driver-<provider>` or `subagent-<provider>` are filtered by
+  `TABULA_PROVIDER` — only the active provider's skills are loaded.
+- Tool names must not collide with kernel tools (`EXEC`, `SPAWN`, `KILL`, `LIST`).
+  Duplicate tool names across skills also cause a boot error.
