@@ -17,7 +17,7 @@ To install a specific version: `VERSION=v1.0.0 bash install.sh`
 <summary>Windows</summary>
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1
+irm https://raw.githubusercontent.com/bamanoz/tabula/main/install.ps1 | iex
 ```
 </details>
 
@@ -26,7 +26,9 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 
 ```bash
 git clone https://github.com/bamanoz/tabula.git && cd tabula
-./install-dev.sh
+./install-dev.sh    # macOS/Linux
+# or
+./install-dev.ps1   # Windows
 ```
 
 Requires Go 1.26+ and Python 3.11+.
