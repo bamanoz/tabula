@@ -192,11 +192,11 @@ def discover_skill_tools() -> list[dict]:
             if not tool_name:
                 continue
             if tool_name in KERNEL_TOOLS:
-                print(f"error: tool {tool_name!r} in skill {name!r} collides with kernel tool", file=sys.stderr)
-                sys.exit(1)
+                print(f"warning: tool {tool_name!r} in skill {name!r} collides with kernel tool, skipping", file=sys.stderr)
+                continue
             if tool_name in seen:
-                print(f"error: duplicate tool {tool_name!r} in skill {name!r}", file=sys.stderr)
-                sys.exit(1)
+                print(f"warning: duplicate tool {tool_name!r} in skill {name!r}, overriding previous", file=sys.stderr)
+                tools = [t for t in tools if t.get("name") != tool_name]
             seen.add(tool_name)
             tool["exec"] = f"{VENV_PYTHON} skills/{name}/run.py tool {tool_name}"
             tools.append(tool)
