@@ -9,6 +9,14 @@ set -e
 TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
 VENV_PYTHON="$TABULA_HOME/.venv/bin/python3"
 
+# Load env file (API keys, provider)
+ENV_FILE="$TABULA_HOME/env"
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  . "$ENV_FILE"
+  set +a
+fi
+
 if [ ! -f "$VENV_PYTHON" ]; then
   echo "error: venv not found at $TABULA_HOME/.venv" >&2
   echo "Run install.sh first." >&2

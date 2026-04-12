@@ -20,6 +20,7 @@ tar -czf "extra/tabula-skills-${VERSION}.tar.gz" \
   tabula.yaml \
   bin/tabula-headless \
   bin/tabula-cli \
-  bin/tabula-api
+  bin/tabula-api \
+  service/
 
 echo "Created extra/tabula-skills-${VERSION}.tar.gz"

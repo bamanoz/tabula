@@ -87,6 +87,62 @@ check_python() {
   ok "Python ${major}.${minor}"
 }
 
+# ── service install ──────────────────────────────────────────────
+
+install_service() {
+  mkdir -p "$TABULA_HOME/logs"
+
+  if [ "$PLATFORM_OS" = "darwin" ]; then
+    install_launchd
+  else
+    install_systemd
+  fi
+}
+
+install_launchd() {
+  local plist_src="$TABULA_HOME/service/com.tabula.kernel.plist"
+  local plist_dest="$HOME/Library/LaunchAgents/com.tabula.kernel.plist"
+
+  if [ ! -f "$plist_src" ]; then
+    info "Skipping service install (plist template not found)"
+    return
+  fi
+
+  # Stop existing service if loaded
+  launchctl bootout "gui/$(id -u)/com.tabula.kernel" 2>/dev/null || true
+
+  # Replace placeholders and install
+  sed "s|__TABULA_HOME__|${TABULA_HOME}|g" "$plist_src" > "$plist_dest"
+
+  launchctl bootstrap "gui/$(id -u)" "$plist_dest"
+  ok "Kernel service installed (launchd)"
+}
+
+install_systemd() {
+  local unit_src="$TABULA_HOME/service/tabula.service"
+  local unit_dir="$HOME/.config/systemd/user"
+  local unit_dest="$unit_dir/tabula.service"
+
+  if [ ! -f "$unit_src" ]; then
+    info "Skipping service install (systemd unit not found)"
+    return
+  fi
+
+  mkdir -p "$unit_dir"
+
+  # Replace placeholders and install
+  sed "s|__TABULA_HOME__|${TABULA_HOME}|g" "$unit_src" > "$unit_dest"
+
+  systemctl --user daemon-reload
+  systemctl --user enable --now tabula.service
+  ok "Kernel service installed (systemd)"
+
+  # Enable lingering so service runs without active login session
+  if command -v loginctl &>/dev/null; then
+    loginctl enable-linger "$(whoami)" 2>/dev/null || true
+  fi
+}
+
 # ── shell config ─────────────────────────────────────────────────
 
 configure_shell() {
@@ -194,10 +250,26 @@ main() {
   # Shell
   configure_shell
 
+  # Service
+  install_service
+
+  # Env file for API keys
+  local env_file="$TABULA_HOME/env"
+  if [ ! -f "$env_file" ]; then
+    printf 'ANTHROPIC_API_KEY=\n# OPENAI_API_KEY=\n# TABULA_PROVIDER=anthropic\n' > "$env_file"
+    chmod 600 "$env_file"
+  fi
+
   printf '\n\033[1;32mTabula %s installed!\033[0m\n\n' "$VERSION"
-  printf '  export ANTHROPIC_API_KEY=sk-...\n'
-  printf '  tabula-headless    # start kernel\n'
-  printf '  tabula-cli         # connect CLI\n\n'
+  printf 'Add your API key to %s:\n' "$env_file"
+  printf '  echo "ANTHROPIC_API_KEY=sk-..." > %s\n\n' "$env_file"
+  printf 'Then restart the kernel and connect:\n'
+  if [ "$PLATFORM_OS" = "darwin" ]; then
+    printf '  launchctl kickstart -k gui/%s/com.tabula.kernel\n' "$(id -u)"
+  else
+    printf '  systemctl --user restart tabula\n'
+  fi
+  printf '  tabula-cli\n\n'
 }
 
 main "$@"

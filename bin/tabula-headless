@@ -1,12 +1,17 @@
 #!/bin/bash
-# Launch Tabula kernel (background server).
-# Connect with tabula-cli afterwards.
-# Configuration via environment variables:
-#   TABULA_HOME     — workspace directory (default: ~/.tabula)
-#   TABULA_VERBOSE  — set to "1" for verbose logging to kernel.log
+# Launch Tabula kernel.
+# Configuration via environment variables or ~/.tabula/env file.
 set -e
 
 TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
 export TABULA_HOME
+
+# Load env file (API keys, provider)
+ENV_FILE="$TABULA_HOME/env"
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  . "$ENV_FILE"
+  set +a
+fi
 
 exec "$TABULA_HOME/bin/tabula"

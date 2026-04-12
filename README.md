@@ -40,18 +40,15 @@ Requires Go 1.26+ and Python 3.11+.
 ```
 ~/.tabula/
 ├── bin/tabula              # Go kernel binary
-├── bin/tabula-headless     # Launch: kernel only
 ├── bin/tabula-cli          # Launch: CLI session
 ├── bin/tabula-api          # Launch: API gateway
+├── service/                # launchd/systemd templates
 ├── tabula.yaml             # Config
 ├── boot.py                 # Skill discovery & prompt assembly
 ├── templates/              # System prompt templates
 ├── skills/                 # Installed skills
 ├── memory/                 # Persistent memory
-├── IDENTITY.md             # Agent identity (created on first run)
-├── SOUL.md                 # Personality & tone
-├── USER.md                 # User context
-├── AGENTS.md               # Workspace rules
+├── logs/                   # Kernel logs
 └── .venv/                  # Python dependencies
 ```
 </details>
@@ -60,8 +57,7 @@ Requires Go 1.26+ and Python 3.11+.
 
 ```bash
 export ANTHROPIC_API_KEY=sk-...
-tabula-headless    # start kernel
-tabula-cli         # connect CLI in another terminal
+tabula-cli         # connect to kernel (already running as a service)
 ```
 
 Or use OpenAI:
@@ -69,7 +65,7 @@ Or use OpenAI:
 ```bash
 export TABULA_PROVIDER=openai
 export OPENAI_API_KEY=sk-...
-tabula-headless
+tabula-cli
 ```
 
 On first launch, Tabula will introduce itself and ask you to set up its identity together.
