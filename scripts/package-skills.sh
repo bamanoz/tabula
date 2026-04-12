@@ -4,9 +4,9 @@
 set -euo pipefail
 
 VERSION="${1:?usage: package-skills.sh <version>}"
-mkdir -p dist
+mkdir -p /tmp/tabula-release
 
-tar -czf "dist/tabula-skills-${VERSION}.tar.gz" \
+tar -czf "/tmp/tabula-release/tabula-skills-${VERSION}.tar.gz" \
   --exclude='skills/driver-mock' \
   --exclude='skills/subagent-mock' \
   --exclude='skills/gateway-test' \
@@ -22,4 +22,4 @@ tar -czf "dist/tabula-skills-${VERSION}.tar.gz" \
   bin/tabula-cli \
   bin/tabula-api
 
-echo "Created dist/tabula-skills-${VERSION}.tar.gz"
+echo "Created /tmp/tabula-release/tabula-skills-${VERSION}.tar.gz"

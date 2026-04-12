@@ -24,6 +24,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Package skills tarball
+        run: bash scripts/package-skills.sh ${{ github.ref_name }}
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:

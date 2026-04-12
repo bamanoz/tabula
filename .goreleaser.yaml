@@ -5,7 +5,6 @@ project_name: tabula
 before:
   hooks:
     - go mod tidy
-    - bash scripts/package-skills.sh {{ .Version }}
 
 builds:
   - id: tabula
@@ -33,13 +32,15 @@ builds:
 
 archives:
   - id: tabula-binary
-    builds:
+    ids:
       - tabula
     name_template: "tabula_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    format: tar.gz
+    formats:
+      - tar.gz
     format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
 
 checksum:
   name_template: checksums.txt
@@ -52,7 +53,7 @@ release:
   draft: false
   prerelease: auto
   extra_files:
-    - glob: dist/tabula-skills-*.tar.gz
+    - glob: /tmp/tabula-release/tabula-skills-*.tar.gz
 
 changelog:
   sort: asc
