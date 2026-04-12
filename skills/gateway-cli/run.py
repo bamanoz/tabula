@@ -25,6 +25,25 @@ SPINNER = "|/-\\"
 PROMPT = "> "
 
 
+def _load_slash_commands() -> tuple[dict[str, dict], list[str], dict[str, str]]:
+    """Load user-invocable skill commands from boot.py.
+
+    Returns (skill_commands, all_command_names, command_descriptions).
+    """
+    from boot import discover_slash_commands
+
+    builtins = {"help": "Show available commands", "exit": "Exit CLI"}
+    skill_commands = {}
+    for cmd in discover_slash_commands():
+        skill_commands[cmd["name"]] = cmd
+
+    all_names = sorted(set(list(builtins.keys()) + list(skill_commands.keys())))
+    descriptions = {**builtins}
+    for name, cmd in skill_commands.items():
+        descriptions[name] = cmd.get("description", "")
+    return skill_commands, all_names, descriptions
+
+
 class RawInput:
     """Character-by-character line editor using raw terminal mode."""
 
@@ -115,6 +134,8 @@ class Gateway:
         self._events: queue.Queue[tuple[str, str]] = queue.Queue()
         self._resume_printed = False
         self._wake_w: int = -1
+        # Slash commands
+        self._skill_commands, self._all_commands, self._command_descs = _load_slash_commands()
 
     # ── Connection ─────────────────────────────────────────────
 
@@ -297,6 +318,25 @@ class Gateway:
                     while buf and buf[-1] != " ":
                         buf.pop()
                         self._write("\b \b")
+                elif ch == "\t":  # Tab: autocomplete slash commands
+                    text = "".join(buf)
+                    if text.startswith("/"):
+                        prefix = text[1:]
+                        matches = self._complete_command(prefix)
+                        if len(matches) == 1:
+                            completed = "/" + matches[0] + " "
+                            self._clear_line()
+                            self._write(PROMPT + completed)
+                            buf[:] = list(completed)
+                        elif matches:
+                            self._write("\r\n")
+                            for m in matches:
+                                desc = self._command_descs.get(m, "")
+                                if desc:
+                                    self._write(f"  /{m}  {desc}\r\n")
+                                else:
+                                    self._write(f"  /{m}\r\n")
+                            self._write(PROMPT + text)
                 elif ch >= " ":  # Printable
                     buf.append(ch)
                     self._write(ch)
@@ -446,6 +486,53 @@ class Gateway:
                 self.alive = False
                 return
 
+    # ── Slash commands ─────────────────────────────────────────
+
+    def _handle_help(self, args: str):
+        self._write("commands:\r\n")
+        for name in self._all_commands:
+            desc = self._command_descs.get(name, "")
+            line = f"  /{name}"
+            if desc:
+                line += f"  {desc}"
+            self._write(line + "\r\n")
+        self._write("\r\n")
+
+    def _handle_exit(self, args: str):
+        self.alive = False
+
+    def _dispatch_slash(self, line: str) -> bool:
+        """Handle slash command. Returns True if handled."""
+        name, _, args = line[1:].partition(" ")
+        name = name.strip().lower()
+        args = args.strip()
+
+        # Layer 1: builtin
+        builtins = {"help": self._handle_help, "exit": self._handle_exit}
+        if name in builtins:
+            builtins[name](args)
+            return True
+
+        # Layer 2: skill prompt commands
+        if name in self._skill_commands:
+            skill = self._skill_commands[name]
+            text = skill["body"]
+            if args:
+                text += f"\n\nUser request: {args}"
+            self.in_turn = True
+            self._flush_events()
+            self.conn.send({"type": "message", "text": text})
+            self._process_turn()
+            self.in_turn = False
+            return True
+
+        self._write(f"unknown command: /{name}\r\n")
+        self._write("type /help for available commands\r\n\r\n")
+        return True
+
+    def _complete_command(self, prefix: str) -> list[str]:
+        return [c for c in self._all_commands if c.startswith(prefix)]
+
     # ── Main loop ──────────────────────────────────────────────
 
     def run(self):
@@ -496,6 +583,11 @@ class Gateway:
                     continue
 
                 if not line.strip():
+                    continue
+
+                # Slash command dispatch
+                if line.startswith("/"):
+                    self._dispatch_slash(line)
                     continue
 
                 self.in_turn = True

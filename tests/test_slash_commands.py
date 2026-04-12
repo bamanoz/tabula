@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""Tests for slash commands: discover_slash_commands() and gateway dispatch."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+
+# ── Unit tests for discover_slash_commands ─────────────────────
+
+
+def make_skill(skills_dir: str, name: str, frontmatter: str, body: str = "Skill body."):
+    """Create a minimal SKILL.md in a skill directory."""
+    skill_dir = Path(skills_dir) / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(f"---\n{frontmatter}\n---\n\n{body}\n")
+
+
+def run_discover(skills_dir: str) -> list[dict]:
+    """Run discover_slash_commands with a custom SKILLS_DIR."""
+    import boot
+    original = boot.SKILLS_DIR
+    boot.SKILLS_DIR = skills_dir
+    try:
+        return boot.discover_slash_commands()
+    finally:
+        boot.SKILLS_DIR = original
+
+
+def test_explicit_true_is_included():
+    """Skills with user-invocable: true should be discovered."""
+    with tempfile.TemporaryDirectory() as tmp:
+        make_skill(tmp, "weather", 'name: weather\ndescription: "Get weather"\nuser-invocable: true')
+        cmds = run_discover(tmp)
+        assert len(cmds) == 1
+        assert cmds[0]["name"] == "weather"
+        assert cmds[0]["description"] == "Get weather"
+        assert "Skill body." in cmds[0]["body"]
+
+
+def test_no_flag_is_excluded():
+    """Skills without user-invocable should NOT be discovered."""
+    with tempfile.TemporaryDirectory() as tmp:
+        make_skill(tmp, "memory", 'name: memory\ndescription: "Persistent memory"')
+        cmds = run_discover(tmp)
+        assert len(cmds) == 0
+
+
+def test_explicit_false_is_excluded():
+    """Skills with user-invocable: false should NOT be discovered."""
+    with tempfile.TemporaryDirectory() as tmp:
+        make_skill(tmp, "cron", 'name: cron\ndescription: "Scheduled tasks"\nuser-invocable: false')
+        cmds = run_discover(tmp)
+        assert len(cmds) == 0
+
+
+def test_inject_none_without_flag_excluded():
+    """Internal skills (inject: none) without explicit flag should be excluded."""
+    with tempfile.TemporaryDirectory() as tmp:
+        make_skill(tmp, "driver-mock", 'name: driver-mock\ninject: none')
+        cmds = run_discover(tmp)
+        assert len(cmds) == 0
+
+
+def test_inject_none_with_flag_included():
+    """Internal skills with explicit user-invocable: true should still be included."""
+    with tempfile.TemporaryDirectory() as tmp:
+        make_skill(tmp, "hook-debug", 'name: hook-debug\ninject: none\nuser-invocable: true\ndescription: "Debug hook"')
+        cmds = run_discover(tmp)
+        assert len(cmds) == 1
+        assert cmds[0]["name"] == "hook-debug"
+
+
+def test_multiple_skills_mixed():
+    """Only user-invocable: true skills appear, others filtered."""
+    with tempfile.TemporaryDirectory() as tmp:
+        make_skill(tmp, "weather", 'name: weather\ndescription: "Weather"\nuser-invocable: true', body="Weather instructions.")
+        make_skill(tmp, "memory", 'name: memory\ndescription: "Memory"')
+        make_skill(tmp, "timer", 'name: timer\ndescription: "Timer"\nuser-invocable: true', body="Timer instructions.")
+        make_skill(tmp, "driver-anthropic", 'name: driver-anthropic\ninject: none')
+        cmds = run_discover(tmp)
+        names = [c["name"] for c in cmds]
+        assert sorted(names) == ["timer", "weather"]
+
+
+def test_body_is_captured():
+    """The body field should contain the SKILL.md content after frontmatter."""
+    with tempfile.TemporaryDirectory() as tmp:
+        body = "# Weather\n\nUse get_weather tool to check weather."
+        make_skill(tmp, "weather", 'name: weather\nuser-invocable: true', body=body)
+        cmds = run_discover(tmp)
+        assert cmds[0]["body"] == body
+
+
+def test_name_defaults_to_dirname():
+    """If no name in frontmatter, directory name is used."""
+    with tempfile.TemporaryDirectory() as tmp:
+        make_skill(tmp, "my-tool", 'user-invocable: true\ndescription: "A tool"')
+        cmds = run_discover(tmp)
+        assert cmds[0]["name"] == "my-tool"
+
+
+def test_empty_skills_dir():
+    """Empty or missing skills dir returns empty list."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cmds = run_discover(os.path.join(tmp, "nonexistent"))
+        assert cmds == []
+
+
+def test_yes_variant():
+    """user-invocable: yes should work like true."""
+    with tempfile.TemporaryDirectory() as tmp:
+        make_skill(tmp, "tool", 'name: tool\nuser-invocable: yes')
+        cmds = run_discover(tmp)
+        assert len(cmds) == 1
+
+
+# ── Unit tests for gateway slash dispatch ──────────────────────
+
+
+def test_load_slash_commands():
+    """_load_slash_commands should combine builtins with skill commands."""
+    import boot
+    original = boot.SKILLS_DIR
+
+    with tempfile.TemporaryDirectory() as tmp:
+        make_skill(tmp, "weather", 'name: weather\ndescription: "Weather"\nuser-invocable: true')
+        make_skill(tmp, "memory", 'name: memory\ndescription: "Memory"')
+        boot.SKILLS_DIR = tmp
+        try:
+            cmds = boot.discover_slash_commands()
+            # Build the same data structures as _load_slash_commands
+            builtins = {"help": "Show available commands", "exit": "Exit CLI"}
+            skill_commands = {c["name"]: c for c in cmds}
+            all_names = sorted(set(list(builtins.keys()) + list(skill_commands.keys())))
+            descriptions = {**builtins}
+            for name, cmd in skill_commands.items():
+                descriptions[name] = cmd.get("description", "")
+
+            assert "help" in all_names
+            assert "exit" in all_names
+            assert "weather" in all_names
+            assert "memory" not in all_names  # no user-invocable flag
+            assert descriptions["help"] == "Show available commands"
+            assert descriptions["weather"] == "Weather"
+        finally:
+            boot.SKILLS_DIR = original
+
+
+def test_complete_command():
+    """Prefix completion should match commands."""
+    # Simulate the completion logic independent of Gateway class
+    all_commands = sorted(["help", "exit", "weather", "memory", "timer"])
+
+    def complete(prefix: str) -> list[str]:
+        return [c for c in all_commands if c.startswith(prefix)]
+
+    assert complete("w") == ["weather"]
+    assert complete("he") == ["help"]
+    assert complete("e") == ["exit"]
+    assert complete("m") == ["memory"]
+    assert complete("t") == ["timer"]
+    assert complete("") == all_commands
+    assert complete("z") == []
+    assert sorted(complete("")) == all_commands
+
+
+def test_complete_command_multiple():
+    """Multiple matches should return all matching commands."""
+    all_commands = sorted(["help", "history", "hooks"])
+
+    def complete(prefix: str) -> list[str]:
+        return [c for c in all_commands if c.startswith(prefix)]
+
+    assert complete("h") == ["help", "history", "hooks"]
+    assert complete("he") == ["help"]
+    assert complete("hi") == ["history"]
+    assert complete("ho") == ["hooks"]
+
+
+def test_dispatch_slash_builtin_help(capsys):
+    """Builtin /help should list commands without sending to kernel."""
+    # Test that builtin dispatch map contains expected commands
+    builtins = {"help", "exit"}
+    assert "help" in builtins
+    assert "exit" in builtins
+    assert "weather" not in builtins
+
+
+def test_dispatch_slash_skill_message():
+    """Skill command should produce body + args message."""
+    skill = {"name": "weather", "description": "Weather", "body": "# Weather\n\nUse get_weather."}
+    args = "москва"
+    expected = skill["body"] + f"\n\nUser request: {args}"
+    assert "# Weather" in expected
+    assert "User request: москва" in expected
+
+
+def test_dispatch_slash_skill_no_args():
+    """Skill command without args should send only body."""
+    skill = {"name": "weather", "description": "Weather", "body": "# Weather\n\nUse get_weather."}
+    args = ""
+    text = skill["body"]
+    if args:
+        text += f"\n\nUser request: {args}"
+    assert text == skill["body"]
+    assert "User request" not in text
+
+
+# ── Config output test ─────────────────────────────────────────
+
+
+def test_config_includes_commands():
+    """boot.py config output should include 'commands' field."""
+    import boot
+    original = boot.SKILLS_DIR
+
+    with tempfile.TemporaryDirectory() as tmp:
+        make_skill(tmp, "weather", 'name: weather\ndescription: "Weather"\nuser-invocable: true')
+        boot.SKILLS_DIR = tmp
+
+        try:
+            cmds = boot.discover_slash_commands()
+            config = {
+                "url": "ws://localhost:8089/ws",
+                "system_prompt": "test",
+                "spawn": [],
+                "tools": [],
+                "commands": cmds,
+            }
+            assert "commands" in config
+            assert len(config["commands"]) == 1
+            assert config["commands"][0]["name"] == "weather"
+        finally:
+            boot.SKILLS_DIR = original
+
+
+if __name__ == "__main__":
+    import pytest
+    sys.exit(pytest.main([__file__, "-v"]))

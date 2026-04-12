@@ -206,6 +206,39 @@ def discover_skill_tools() -> list[dict]:
     return tools
 
 
+def discover_slash_commands() -> list[dict]:
+    """Scan SKILL.md for user-invocable skills.
+
+    Returns list of {"name", "description", "body"} for gateway slash commands.
+    Only includes skills with explicit `user-invocable: true` in frontmatter.
+    """
+    commands = []
+    if not os.path.isdir(SKILLS_DIR):
+        return commands
+    for name in sorted(os.listdir(SKILLS_DIR)):
+        if not include_skill(name):
+            continue
+        skill_md = os.path.join(SKILLS_DIR, name, "SKILL.md")
+        if not os.path.isfile(skill_md):
+            continue
+        with open(skill_md) as f:
+            raw = f.read().strip()
+        meta, body = parse_skill_md(raw)
+
+        ui = meta.get("user-invocable", "")
+        if ui.lower() not in ("true", "yes", "1"):
+            continue
+
+        skill_name = meta.get("name", name)
+        description = meta.get("description", "")
+        commands.append({
+            "name": skill_name,
+            "description": description,
+            "body": body,
+        })
+    return commands
+
+
 MCP_CONFIG = os.path.join(TABULA_HOME, "mcp", "servers.json")
 
 
@@ -321,11 +354,13 @@ def main():
     skills = scan_skills()
     mcp_tools = discover_mcp_tools()
     skill_tools = discover_skill_tools()
+    slash_commands = discover_slash_commands()
     config = {
         "url": TABULA_URL,
         "system_prompt": build_system_prompt(skills, mcp_tools),
         "spawn": build_spawn(),
         "tools": skill_tools,
+        "commands": slash_commands,
     }
     json.dump(config, sys.stdout, ensure_ascii=False)
     sys.stdout.write("\n")

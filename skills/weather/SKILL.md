@@ -1,6 +1,7 @@
 ---
 name: weather
 description: "Get current weather and forecasts via wttr.in. No API key needed."
+user-invocable: true
 tools:
   [
     {
