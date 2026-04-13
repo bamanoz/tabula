@@ -89,6 +89,7 @@ class TestParseSkillMd(unittest.TestCase):
         meta, body = boot.parse_skill_md(text)
         self.assertIn("line one", meta["description"])
         self.assertIn("line two", meta["description"])
+        self.assertNotIn(">", meta["description"])
 
 
 class TestWalkSkills(BootTestBase):

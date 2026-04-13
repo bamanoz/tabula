@@ -129,7 +129,13 @@ def parse_skill_md(text: str) -> tuple[dict, str]:
             except json.JSONDecodeError:
                 meta[key] = raw
         else:
-            meta[key] = raw.strip('"').strip("'")
+            val = raw.strip('"').strip("'")
+            # Handle YAML block scalar indicators (> and |)
+            if val.startswith((">\n", "|\n")):
+                val = val[2:]
+            elif val in (">", "|"):
+                val = ""
+            meta[key] = val.strip()
     return meta, body
 
 
