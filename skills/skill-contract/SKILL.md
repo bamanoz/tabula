@@ -262,4 +262,27 @@ The subagent runtime reads `~/.tabula/.subagent_prompt` written by boot.py at st
 - Skills named `driver-<provider>` or `subagent-<provider>` are filtered by
   `TABULA_PROVIDER` — only the active provider's skills are loaded.
 - Tool names must not collide with kernel tools (`EXEC`, `SPAWN`, `KILL`, `LIST`).
-  Duplicate tool names across skills also cause a boot error.
+  Duplicate tool names across skills trigger a warning; the last one wins.
+
+## Bundles
+
+Bundles are optional thematic skill packages stored in `bundles/<name>/` at the
+`TABULA_HOME` root. Each bundle contains sub-skill directories (same format as
+regular skills). Install scripts symlink individual sub-skills into `skills/`
+(junctions on Windows), so `boot.py` sees a flat layout:
+
+```
+bundles/caveman/               # Bundle directory
+  caveman/SKILL.md             # /caveman slash command
+  caveman-commit/SKILL.md      # /caveman-commit
+  hook-caveman/SKILL.md        # Hook skill
+
+skills/                        # After install
+  caveman -> ../bundles/caveman/caveman
+  caveman-commit -> ../bundles/caveman/caveman-commit
+  hook-caveman -> ../bundles/caveman/hook-caveman
+  weather/                     # Regular skill (not a symlink)
+```
+
+Install bundles via `BUNDLES` env var: `BUNDLES=caveman`, `BUNDLES=all`,
+or comma-separated: `BUNDLES=caveman,other`.

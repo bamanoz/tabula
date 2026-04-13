@@ -13,11 +13,14 @@ Requires Python 3.11+. Installs to `~/.tabula/` (override with `TABULA_HOME`).
 
 To install a specific version: `VERSION=v1.0.0 bash install.sh`
 
+To install with optional bundles: `BUNDLES=caveman bash install.sh`
+
 <details>
 <summary>Windows</summary>
 
 ```powershell
 irm https://raw.githubusercontent.com/bamanoz/tabula/main/install.ps1 | iex
+# With bundles: $env:BUNDLES='caveman'; irm ... | iex
 ```
 </details>
 
@@ -29,6 +32,7 @@ git clone https://github.com/bamanoz/tabula.git && cd tabula
 ./install-dev.sh    # macOS/Linux
 # or
 ./install-dev.ps1   # Windows
+# With bundles: BUNDLES=caveman ./install-dev.sh
 ```
 
 Requires Go 1.26+ and Python 3.11+.
@@ -46,7 +50,8 @@ Requires Go 1.26+ and Python 3.11+.
 ├── tabula.yaml             # Config
 ├── boot.py                 # Skill discovery & prompt assembly
 ├── templates/              # System prompt templates
-├── skills/                 # Installed skills
+├── skills/                 # Installed skills (+ symlinks to bundles)
+├── bundles/                # Optional skill bundles (if installed)
 ├── memory/                 # Persistent memory
 ├── logs/                   # Kernel logs
 └── .venv/                  # Python dependencies
@@ -83,7 +88,7 @@ The kernel is a Go binary — a WebSocket server that routes messages between sk
 
 **Boot sequence:**
 1. Kernel reads `tabula.yaml`, runs `boot.py`
-2. Boot scans `skills/` for `SKILL.md` files, assembles system prompt, discovers tools
+2. Boot scans `skills/` for `SKILL.md` files (follows symlinks for bundles), assembles system prompt, discovers tools
 3. Boot outputs JSON config → kernel starts WebSocket server, spawns skill processes
 4. Skills connect, join sessions, begin message exchange
 
@@ -99,13 +104,26 @@ The kernel is a Go binary — a WebSocket server that routes messages between sk
 | `driver-openai` | OpenAI Responses API — same protocol, same capabilities |
 | `gateway-cli` | Interactive terminal UI with markdown rendering |
 | `gateway-api` | OpenAI-compatible HTTP API with SSE streaming |
+| `gateway-telegram` | Telegram bot gateway |
 | `subagent-anthropic` | Autonomous Claude sub-agent for parallel tasks |
 | `subagent-openai` | Autonomous OpenAI sub-agent for parallel tasks |
 | `memory` | Persistent memory — save, search, list, delete |
+| `files` | Read, write, and edit files |
+| `pair` | Universal pairing for gateways (Telegram, etc.) |
 | `sessions` | Cross-session messaging |
 | `mcp` | Model Context Protocol bridge |
 | `cron` | Scheduled task execution |
 | `hook-logger` | Audit logger (JSONL) |
+
+### Bundles
+
+Bundles are optional thematic skill packages. They live in `bundles/` and are symlinked into `skills/` at install time, so the agent sees a flat layout.
+
+| Bundle | Skills | Description |
+|--------|--------|-------------|
+| `caveman` | 6 | Ultra-compressed communication — commit messages, code reviews, memory compression |
+
+Install with: `BUNDLES=caveman bash install.sh` or `BUNDLES=all` for everything.
 
 ### Kernel tools
 
@@ -172,6 +190,7 @@ See `skills/skill-contract/SKILL.md` for the full specification.
 | `TABULA_HOME` | Workspace directory | `~/.tabula` |
 | `TABULA_URL` | Kernel WebSocket URL | `ws://localhost:8089/ws` |
 | `TABULA_PROVIDER` | LLM provider (`anthropic`, `openai`) | `anthropic` |
+| `BUNDLES` | Bundles to install (`caveman`, `all`, comma-separated) | none |
 | `TABULA_VERBOSE` | Verbose logging (`1` to enable) | unset |
 | `TABULA_HEADLESS` | Skip CLI gateway | unset |
 | `TABULA_RESUME_SESSION` | Session ID to resume | unset |

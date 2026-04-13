@@ -83,7 +83,20 @@ it always sends the same system prompt to all clients.
 ### Auto-spawn
 
 `build_spawn()` starts: cron daemon (if no OS crontab), MCP pool (if configured),
-sessions daemon, hook-logger.
+sessions daemon, hook skills (including those from bundles via symlinks).
+
+### Bundles
+
+Optional thematic skill packages in `bundles/<name>/`. Install scripts symlink
+individual sub-skills into `skills/` (junctions on Windows), so `boot.py` only
+scans `skills/` with `followlinks=True`. Bundles are installed via `BUNDLES` env var
+at install time (`BUNDLES=caveman`, `BUNDLES=all`). By default, no bundles are installed.
+
+### Skill discovery
+
+`walk_skills()` scans `skills/` recursively with `followlinks=True` (for symlinked
+bundles). Returns `(rel_path, SKILL.md_path)` tuples. Provider filtering via
+`include_skill()` excludes non-active `driver-*` and `subagent-*` skills.
 
 ## Kernel
 
@@ -232,6 +245,7 @@ Send `stream_start`, `stream_delta`, `stream_end`, `tool_use`, `done`.
 |-------|-------------|
 | `gateway-cli` | Interactive terminal with raw mode input, Tab autocomplete, slash commands |
 | `gateway-api` | OpenAI-compatible HTTP API (`/v1/chat/completions`, `/v1/responses`) |
+| `gateway-telegram` | Telegram bot gateway with pairing via `/pair` |
 | `gateway-test` | Sends hardcoded message after 2s, for automated testing |
 
 ### Subagents
@@ -250,7 +264,9 @@ Optional: `--timeout N` (0=oneshot, default). Results delivered as messages to p
 | Skill | Description |
 |-------|-------------|
 | `cron` | Scheduled tasks. Uses OS crontab or built-in daemon. |
+| `files` | Read, write, and edit files. Tools: `read_file`, `write_file`, `str_replace`. |
 | `memory` | Persistent memory. Categories: fact, preference, decision, entity, note. `--long-term` injects into system prompt. |
+| `pair` | Universal pairing for gateways (Telegram, etc.). |
 | `sessions` | Cross-session messaging. Messages arrive as `<cross_session>` XML tags. |
 | `hook-logger` | JSONL audit log of all hook events to `~/.tabula/logs/hooks.jsonl`. |
 | `mcp` | MCP bridge to external servers. Config: `~/.tabula/mcp/servers.json`. |
