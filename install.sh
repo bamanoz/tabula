@@ -244,6 +244,7 @@ install_systemd() {
 
   systemctl --user daemon-reload
   systemctl --user enable --now tabula.service
+  systemctl --user restart tabula.service
   ok "Kernel service installed (systemd)"
 
   # Enable lingering so service runs without active login session
