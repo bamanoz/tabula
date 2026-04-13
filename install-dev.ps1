@@ -29,6 +29,50 @@ Remove-Item -Recurse -Force (Join-Path $SkillsDest "subagent-mock") -ErrorAction
 # Clean pycache
 Get-ChildItem -Path $SkillsDest -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
 
+# Bundles (optional thematic skill collections)
+# $env:BUNDLES = "all" for everything, "caveman,foo" for specific ones, empty = skip
+$Requested = $env:BUNDLES
+if ($Requested) {
+    $BundlesDest = Join-Path $TabulaHome "bundles"
+    if ($Requested -eq "all") {
+        if (Test-Path $BundlesDest) { Remove-Item -Recurse -Force $BundlesDest }
+        Copy-Item "bundles" -Destination $BundlesDest -Recurse -Force
+        Get-ChildItem -Path $BundlesDest -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
+        Write-Host "All bundles installed"
+    } else {
+        New-Item -ItemType Directory -Force -Path $BundlesDest | Out-Null
+        $Wanted = $Requested -split ","
+        foreach ($name in $Wanted) {
+            $src = Join-Path "bundles" $name
+            if (Test-Path $src) {
+                $dest = Join-Path $BundlesDest $name
+                if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+                Copy-Item $src -Destination $dest -Recurse -Force
+                Get-ChildItem -Path $dest -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
+                Write-Host "Bundle installed: $name"
+            } else {
+                Write-Host "warning: bundle '$name' not found, skipping"
+            }
+        }
+    }
+}
+
+# Symlink bundle skills into skills/ (junctions)
+Get-ChildItem -Path $SkillsDest -Directory | Where-Object {
+    $_.Attributes -band [IO.FileAttributes]::ReparsePoint
+} | ForEach-Object { Remove-Item $_.FullName -Force }
+$BundlesDest = Join-Path $TabulaHome "bundles"
+if (Test-Path $BundlesDest) {
+    Get-ChildItem -Path $BundlesDest -Directory | ForEach-Object {
+        Get-ChildItem -Path $_.FullName -Directory | ForEach-Object {
+            $link = Join-Path $SkillsDest $_.Name
+            if (-not (Test-Path $link)) {
+                New-Item -ItemType Junction -Path $link -Target $_.FullName | Out-Null
+            }
+        }
+    }
+}
+
 # Memory directory (don't overwrite existing data)
 New-Item -ItemType Directory -Force -Path (Join-Path $TabulaHome "memory") | Out-Null
 

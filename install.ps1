@@ -138,6 +138,49 @@ try {
     tar -xzf (Join-Path $TmpDir $SkillsArchive) -C $TabulaHome
     Ok "Skills and config installed"
 
+    # Install bundles (optional)
+    $BundlesDir = Join-Path $TabulaHome "bundles"
+    $Requested = $env:BUNDLES
+    if (-not $Requested) {
+        # No bundles requested — remove any that were unpacked
+        if (Test-Path $BundlesDir) { Remove-Item -Recurse -Force $BundlesDir }
+    } elseif ($Requested -ne "all") {
+        # Keep only requested bundles
+        $Wanted = $Requested -split ","
+        if (Test-Path $BundlesDir) {
+            Get-ChildItem -Path $BundlesDir -Directory | ForEach-Object {
+                if ($_.Name -notin $Wanted) {
+                    Remove-Item -Recurse -Force $_.FullName
+                }
+            }
+            # Remove bundles dir if empty
+            if (-not (Get-ChildItem -Path $BundlesDir -Directory)) {
+                Remove-Item -Force $BundlesDir -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    if ((Test-Path $BundlesDir) -and (Get-ChildItem -Path $BundlesDir -Directory)) {
+        $installed = (Get-ChildItem -Path $BundlesDir -Directory).Name -join ", "
+        Ok "Bundles installed: $installed"
+    }
+
+    # Symlink bundle skills into skills/ (junctions, no admin required)
+    $SkillsDir = Join-Path $TabulaHome "skills"
+    Get-ChildItem -Path $SkillsDir -Directory | Where-Object {
+        $_.Attributes -band [IO.FileAttributes]::ReparsePoint
+    } | ForEach-Object { Remove-Item $_.FullName -Force }
+    if (Test-Path $BundlesDir) {
+        Get-ChildItem -Path $BundlesDir -Directory | ForEach-Object {
+            $bundleName = $_.Name
+            Get-ChildItem -Path $_.FullName -Directory | ForEach-Object {
+                $link = Join-Path $SkillsDir $_.Name
+                if (-not (Test-Path $link)) {
+                    New-Item -ItemType Junction -Path $link -Target $_.FullName | Out-Null
+                }
+            }
+        }
+    }
+
     # Restore user config if it existed
     if ($HadConfig) {
         Copy-Item $ConfigBackup $UserConfig
@@ -199,6 +242,11 @@ try {
     Write-Host "Add your API key to $EnvFile :"
     Write-Host "  echo ANTHROPIC_API_KEY=sk-... >> $EnvFile"
     Write-Host ""
+    if (-not $env:BUNDLES) {
+        Write-Host "Optional bundles (caveman, etc.):"
+        Write-Host "  `$env:BUNDLES='caveman'; irm ... | iex"
+        Write-Host ""
+    }
     Write-Host "Then connect:"
     Write-Host "  tabula-cli"
     Write-Host ""
