@@ -159,6 +159,28 @@ install_bundles() {
   fi
 }
 
+# ── link bundles into skills/ ────────────────────────────────────
+
+link_bundles() {
+  local bundles_dir="$TABULA_HOME/bundles"
+  local skills_dir="$TABULA_HOME/skills"
+
+  # Remove stale bundle symlinks from skills/
+  for link in "$skills_dir"/*/; do
+    [ -L "${link%/}" ] && rm -f "${link%/}"
+  done
+
+  # Create symlinks for each installed bundle
+  if [ -d "$bundles_dir" ]; then
+    for dir in "$bundles_dir"/*/; do
+      [ -d "$dir" ] || continue
+      local name
+      name=$(basename "$dir")
+      ln -sfn "../bundles/$name" "$skills_dir/$name"
+    done
+  fi
+}
+
 # ── service install ──────────────────────────────────────────────
 
 install_service() {
@@ -319,8 +341,9 @@ main() {
   chmod +x "$BIN_DIR/tabula-headless" "$BIN_DIR/tabula-cli" "$BIN_DIR/tabula-api" 2>/dev/null || true
   ok "Skills and config installed"
 
-  # Install bundles (optional)
+  # Install bundles (optional) and symlink into skills/
   install_bundles
+  link_bundles
 
   # Restore user config if it existed
   if [ "$had_config" = true ]; then
