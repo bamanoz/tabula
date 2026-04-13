@@ -14,7 +14,7 @@ kernel protocol.
 
 Configured in `tabula.yaml` under `spawn`:
 
-    python3 skills/driver-anthropic/run.py
+    python3 skills/drivers/driver-anthropic/run.py
 
 ## Protocol
 

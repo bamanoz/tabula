@@ -162,7 +162,7 @@ class SessionState:
         self._thread: threading.Thread | None = None
 
     def connect(self):
-        driver_cmd = f"{VENV_PYTHON} skills/driver-{ACTIVE_PROVIDER}/run.py"
+        driver_cmd = f"{VENV_PYTHON} skills/drivers/driver-{ACTIVE_PROVIDER}/run.py"
         self.conn.send({
             "type": "connect",
             "name": f"tg-{self.session_id}",

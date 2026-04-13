@@ -14,7 +14,7 @@ kernel protocol.
 
 Configured automatically when `TABULA_PROVIDER=openai`:
 
-    python3 skills/driver-openai/run.py
+    python3 skills/drivers/driver-openai/run.py
 
 ## Protocol
 

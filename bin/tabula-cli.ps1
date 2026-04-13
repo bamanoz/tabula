@@ -9,7 +9,7 @@ if (-not (Test-Path $VenvPython)) {
 }
 
 $Provider = if ($env:TABULA_PROVIDER) { $env:TABULA_PROVIDER } else { "anthropic" }
-$Driver = "$VenvPython skills/driver-$Provider/run.py"
-$Gateway = Join-Path $env:TABULA_HOME "skills" "gateway-cli" "run.py"
+$Driver = "$VenvPython skills/drivers/driver-$Provider/run.py"
+$Gateway = Join-Path $env:TABULA_HOME "skills" "gateways" "gateway-cli" "run.py"
 
 & $VenvPython $Gateway --driver $Driver @args

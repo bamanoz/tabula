@@ -205,7 +205,7 @@ def test_openai_subagent_initial_task():
                     "id": "spawn-1",
                     "name": "SPAWN",
                     "input": {
-                        "command": "python3 skills/subagent-openai/run.py --id task_42 --parent-session main --task 'List files in /tmp' --timeout 5"
+                        "command": "python3 skills/subagents/subagent-openai/run.py --id task_42 --parent-session main --task 'List files in /tmp' --timeout 5"
                     },
                 }
             )
@@ -246,7 +246,7 @@ def test_openai_subagent_followup():
                     "id": "spawn-2",
                     "name": "SPAWN",
                     "input": {
-                        "command": "python3 skills/subagent-openai/run.py --id followup_1 --parent-session main --task 'Initial task' --timeout 10"
+                        "command": "python3 skills/subagents/subagent-openai/run.py --id followup_1 --parent-session main --task 'Initial task' --timeout 10"
                     },
                 }
             )

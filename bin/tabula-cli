@@ -16,6 +16,6 @@ if [ ! -f "$VENV_PYTHON" ]; then
 fi
 
 PROVIDER="${TABULA_PROVIDER:-anthropic}"
-DRIVER="$VENV_PYTHON skills/driver-${PROVIDER}/run.py"
+DRIVER="$VENV_PYTHON skills/drivers/driver-${PROVIDER}/run.py"
 
-exec "$VENV_PYTHON" "$TABULA_HOME/skills/gateway-cli/run.py" --driver "$DRIVER" "$@"
+exec "$VENV_PYTHON" "$TABULA_HOME/skills/gateways/gateway-cli/run.py" --driver "$DRIVER" "$@"

@@ -7,9 +7,9 @@ VERSION="${1:?usage: package-skills.sh <version>}"
 mkdir -p extra
 
 tar -czf "extra/tabula-skills-${VERSION}.tar.gz" \
-  --exclude='skills/driver-mock' \
-  --exclude='skills/subagent-mock' \
-  --exclude='skills/gateway-test' \
+  --exclude='skills/drivers/driver-mock' \
+  --exclude='skills/subagents/subagent-mock' \
+  --exclude='skills/gateways/gateway-test' \
   --exclude='skills/*/__pycache__' \
   --exclude='skills/__pycache__' \
   --exclude='skills/*/*.pyc' \

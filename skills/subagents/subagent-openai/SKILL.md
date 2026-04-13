@@ -1,6 +1,6 @@
 ---
 name: subagent-openai
-description: "OpenAI-backed sub-agent for parallel tasks. Usage: `SPAWN python3 skills/subagent-openai/run.py --id <unique_id> --parent-session <your_session> --task \"<task description>\"`. Optional: `--timeout N`. Full docs: `EXEC cat skills/subagent-openai/SKILL.md`"
+description: "OpenAI-backed sub-agent for parallel tasks. Usage: `SPAWN python3 skills/subagents/subagent-openai/run.py --id <unique_id> --parent-session <your_session> --task \"<task description>\"`. Optional: `--timeout N`. Full docs: `EXEC cat skills/subagents/subagent-openai/SKILL.md`"
 ---
 # Subagent (OpenAI)
 
@@ -11,7 +11,7 @@ result back to the parent session. It can stay alive for follow-up messages.
 ## Usage
 
 ```
-SPAWN python3 skills/subagent-openai/run.py --id <id> --parent-session <session> --task "<task>"
+SPAWN python3 skills/subagents/subagent-openai/run.py --id <id> --parent-session <session> --task "<task>"
 ```
 
 ## Arguments

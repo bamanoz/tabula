@@ -134,7 +134,7 @@ class GatewayAPI:
     def __init__(self):
         self.sessions: dict[str, SessionState] = {}
         self._lock = threading.Lock()
-        self.driver_cmd = f"{VENV_PYTHON} skills/driver-{ACTIVE_PROVIDER}/run.py"
+        self.driver_cmd = f"{VENV_PYTHON} skills/drivers/driver-{ACTIVE_PROVIDER}/run.py"
 
     def get_or_create_session(self, session_id: str) -> SessionState:
         with self._lock:

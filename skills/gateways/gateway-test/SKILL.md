@@ -9,7 +9,7 @@ seconds, prints any responses to stderr, then waits 30 seconds and exits.
 
 ## Usage
 
-    SPAWN python3 skills/gateway-test/run.py
+    SPAWN python3 skills/gateways/gateway-test/run.py
 
 ## Output
 

@@ -73,7 +73,7 @@ def resolve_provider() -> str:
             )
             return provider
 
-    raise SystemExit("No LLM provider skills found. Expected skills/driver-anthropic or skills/driver-openai.")
+    raise SystemExit("No LLM provider skills found. Expected skills/drivers/driver-anthropic or skills/drivers/driver-openai.")
 
 
 ACTIVE_PROVIDER = resolve_provider()

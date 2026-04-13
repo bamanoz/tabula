@@ -628,7 +628,7 @@ class MockProvider(ProviderSession):
         for index, agent_id in enumerate(sorted(agent_ids), start=1):
             tool_id = f"spawn_{agent_id}"
             command = " ".join([
-                "python3", "skills/subagent-mock/run.py",
+                "python3", "skills/subagents/subagent-mock/run.py",
                 "--id", shlex.quote(agent_id),
                 "--parent-session", self._session,
                 "--task", shlex.quote(self._user_text),

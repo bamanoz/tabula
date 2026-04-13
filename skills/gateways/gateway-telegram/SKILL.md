@@ -25,7 +25,7 @@ Telegram bot gateway for Tabula. Users go through a pairing flow before they can
 ## Run
 
 ```bash
-python3 skills/gateway-telegram/run.py
+python3 skills/gateways/gateway-telegram/run.py
 ```
 
 Or via service (see service files in this directory).
@@ -34,7 +34,7 @@ Or via service (see service files in this directory).
 
 1. User writes `/start` to the bot
 2. Bot generates a token (`PRX-XXXXXX-YYYYYY`) and sends it to the user
-3. Admin approves: `python3 skills/gateway-telegram/pair.py approve PRX-XXXXXX-YYYYYY`
+3. Admin approves: `python3 skills/gateways/gateway-telegram/pair.py approve PRX-XXXXXX-YYYYYY`
 4. User can now chat with the bot
 
 Auth state is stored in `~/.tabula/telegram_auth.json`.
@@ -43,13 +43,13 @@ Auth state is stored in `~/.tabula/telegram_auth.json`.
 
 ```bash
 # List authorized users and pending requests
-python3 skills/gateway-telegram/pair.py list
+python3 skills/gateways/gateway-telegram/pair.py list
 
 # Approve a pairing request
-python3 skills/gateway-telegram/pair.py approve PRX-XXXXXX-YYYYYY
+python3 skills/gateways/gateway-telegram/pair.py approve PRX-XXXXXX-YYYYYY
 
 # Revoke access
-python3 skills/gateway-telegram/pair.py revoke <chat_id>
+python3 skills/gateways/gateway-telegram/pair.py revoke <chat_id>
 ```
 
 ## Sessions
@@ -69,7 +69,7 @@ Sessions are not persisted across gateway restarts (in-memory).
 ### macOS (launchd)
 
 ```bash
-sed "s|__TABULA_HOME__|$HOME/.tabula|g" skills/gateway-telegram/com.tabula.gateway-telegram.plist \
+sed "s|__TABULA_HOME__|$HOME/.tabula|g" skills/gateways/gateway-telegram/com.tabula.gateway-telegram.plist \
   > ~/Library/LaunchAgents/com.tabula.gateway-telegram.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tabula.gateway-telegram.plist
 ```
@@ -78,7 +78,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tabula.gateway-teleg
 
 ```bash
 sed "s|__TABULA_HOME__|$HOME/.tabula|g; s|__USER__|$(whoami)|g" \
-  skills/gateway-telegram/gateway-telegram.service \
+  skills/gateways/gateway-telegram/gateway-telegram.service \
   > ~/.config/systemd/user/gateway-telegram.service
 systemctl --user daemon-reload
 systemctl --user enable --now gateway-telegram

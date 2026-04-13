@@ -1,6 +1,6 @@
 ---
 name: subagent-anthropic
-description: "Autonomous LLM sub-agent for parallel tasks. Usage: `SPAWN python3 skills/subagent-anthropic/run.py --id <unique_id> --parent-session <your_session> --task \"<task description>\"`. Optional: `--timeout N` (stay alive for follow-ups, default: 0=oneshot). Full docs: `EXEC cat skills/subagent-anthropic/SKILL.md`"
+description: "Autonomous LLM sub-agent for parallel tasks. Usage: `SPAWN python3 skills/subagents/subagent-anthropic/run.py --id <unique_id> --parent-session <your_session> --task \"<task description>\"`. Optional: `--timeout N` (stay alive for follow-ups, default: 0=oneshot). Full docs: `EXEC cat skills/subagents/subagent-anthropic/SKILL.md`"
 ---
 # Subagent (Anthropic)
 
@@ -23,7 +23,7 @@ Do NOT use a subagent when:
 ## Usage
 
 ```
-SPAWN python3 skills/subagent-anthropic/run.py --id <id> --parent-session <session> --task "<task description>"
+SPAWN python3 skills/subagents/subagent-anthropic/run.py --id <id> --parent-session <session> --task "<task description>"
 ```
 
 ## Arguments
@@ -62,18 +62,18 @@ The subagent maintains full conversation history, so follow-ups have full contex
 
 Single subagent:
 ```
-SPAWN python3 skills/subagent-anthropic/run.py --id search_1 --parent-session <your_session> --task "Find all Python files that import socket"
+SPAWN python3 skills/subagents/subagent-anthropic/run.py --id search_1 --parent-session <your_session> --task "Find all Python files that import socket"
 ```
 
 Parallel subagents:
 ```
-SPAWN python3 skills/subagent-anthropic/run.py --id research --parent-session <your_session> --task "Research how WebSocket protocols work"
-SPAWN python3 skills/subagent-anthropic/run.py --id code --parent-session <your_session> --task "Write a simple HTTP server in Python"
+SPAWN python3 skills/subagents/subagent-anthropic/run.py --id research --parent-session <your_session> --task "Research how WebSocket protocols work"
+SPAWN python3 skills/subagents/subagent-anthropic/run.py --id code --parent-session <your_session> --task "Write a simple HTTP server in Python"
 ```
 
 With follow-up support (stays alive 10 minutes):
 ```
-SPAWN python3 skills/subagent-anthropic/run.py --id long_task --parent-session <your_session> --task "Refactor the auth module" --timeout 600
+SPAWN python3 skills/subagents/subagent-anthropic/run.py --id long_task --parent-session <your_session> --task "Refactor the auth module" --timeout 600
 ```
 
 ## Notes

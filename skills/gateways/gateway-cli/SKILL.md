@@ -13,7 +13,7 @@ input from `/dev/tty`, and displays streaming responses on stdout.
 
 Configured in `tabula.yaml` under `spawn`:
 
-    .venv/bin/python3 skills/gateway-cli/run.py
+    .venv/bin/python3 skills/gateways/gateway-cli/run.py
 
 ## Protocol
 

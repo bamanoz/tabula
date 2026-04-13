@@ -13,7 +13,7 @@ and sends a mock result back to the parent session.
 ## Usage
 
 ```
-SPAWN python3 skills/subagent-mock/run.py --id <id> --parent-session <your_session> --task "task" --max-turns 5
+SPAWN python3 skills/subagents/subagent-mock/run.py --id <id> --parent-session <your_session> --task "task" --max-turns 5
 ```
 
 ## Arguments

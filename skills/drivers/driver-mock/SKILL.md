@@ -27,7 +27,7 @@ TABULA_PROVIDER=mock
 The boot script will spawn:
 
 ```
-python3 skills/driver-mock/run.py
+python3 skills/drivers/driver-mock/run.py
 ```
 
 ## Environment variables

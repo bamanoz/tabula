@@ -8,7 +8,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>__TABULA_HOME__/skills/gateway-telegram/start.sh</string>
+        <string>__TABULA_HOME__/skills/gateways/gateway-telegram/start.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
