@@ -34,7 +34,6 @@ class BootTestBase(unittest.TestCase):
         If bundle=True, writes under bundles/ and creates a symlink in skills/
         for the leaf skill directory (flat layout).
         e.g. rel_path="caveman/caveman-commit" -> skills/caveman-commit symlink.
-        Top-level bundle paths (no /) don't get symlinked — they're bundle metadata.
         """
         if bundle:
             base = self.bundles_dir
@@ -43,13 +42,12 @@ class BootTestBase(unittest.TestCase):
             os.makedirs(os.path.dirname(full), exist_ok=True)
             with open(full, "w") as f:
                 f.write(content)
-            # Only symlink sub-skills, not the bundle root
-            if os.sep in rel_path or "/" in rel_path:
-                leaf = os.path.basename(rel_path)
-                link = os.path.join(self.skills_dir, leaf)
-                target = os.path.join(self.bundles_dir, rel_path)
-                if not os.path.exists(link):
-                    os.symlink(target, link)
+            # Create symlink: skills/<leaf> -> bundles/<bundle>/<leaf>
+            leaf = os.path.basename(rel_path)
+            link = os.path.join(self.skills_dir, leaf)
+            target = os.path.join(self.bundles_dir, rel_path)
+            if not os.path.exists(link):
+                os.symlink(target, link)
         else:
             full = os.path.join(self.skills_dir, rel_path, "SKILL.md")
             os.makedirs(os.path.dirname(full), exist_ok=True)
@@ -271,8 +269,8 @@ class TestFullDiscovery(BootTestBase):
                           '---\nname: weather\ndescription: "Weather"\nuser-invocable: true\ntools: [{"name": "get_weather"}]\n---\nWeather body')
         self._write_file("weather/run.py", "")
 
-        # Bundle (symlinked into skills/)
-        self._write_skill("caveman",
+        # Bundle (each sub-skill symlinked flat into skills/)
+        self._write_skill("caveman/caveman",
                           '---\nname: caveman\ndescription: "Caveman mode"\nuser-invocable: true\n---\nBody',
                           bundle=True)
         self._write_skill("caveman/caveman-commit",
@@ -303,9 +301,10 @@ class TestFullDiscovery(BootTestBase):
         self.assertIn("skills/caveman-compress/run.py", tool_map["caveman_compress"]["exec"])
         self.assertIn("skills/weather/run.py", tool_map["get_weather"]["exec"])
 
-        # Verify slash commands (only sub-skills are symlinked, not bundle root)
+        # Verify slash commands
         cmds = boot.discover_slash_commands()
         cmd_names = [c["name"] for c in cmds]
+        self.assertIn("caveman", cmd_names)
         self.assertIn("caveman-commit", cmd_names)
         self.assertIn("weather", cmd_names)
 
