@@ -242,7 +242,7 @@ Send `stream_start`, `stream_delta`, `stream_end`, `tool_use`, `done`.
 | `subagent-openai` | OpenAI |
 | `subagent-mock` | Mock (testing) |
 
-Usage: `SPAWN python3 skills/subagents/subagent-anthropic/run.py --id <id> --parent-session <session> --task "<task>"`
+Usage: `SPAWN python3 skills/subagent-anthropic/run.py --id <id> --parent-session <session> --task "<task>"`
 Optional: `--timeout N` (0=oneshot, default). Results delivered as messages to parent session.
 
 ### Infrastructure

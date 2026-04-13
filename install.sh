@@ -3,6 +3,8 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/install.sh | bash
 #   VERSION=v1.0.0 curl -fsSL ... | bash
+#   BUNDLES=caveman curl -fsSL ... | bash
+#   BUNDLES=all curl -fsSL ... | bash
 set -euo pipefail
 
 REPO="bamanoz/tabula"
@@ -105,6 +107,56 @@ save_path_to_env() {
     printf '%s\n' "$path_line" > "$env_file"
   fi
   ok "Saved login PATH to .env"
+}
+
+# ── bundles ──────────────────────────────────────────────────────
+
+install_bundles() {
+  local bundles_dir="$TABULA_HOME/bundles"
+  local requested="${BUNDLES:-}"
+
+  if [ -z "$requested" ]; then
+    # No bundles requested — remove any that were unpacked from tar
+    rm -rf "$bundles_dir"
+    return
+  fi
+
+  if [ "$requested" = "all" ]; then
+    ok "All bundles installed"
+    return
+  fi
+
+  # Keep only requested bundles, remove the rest
+  IFS=',' read -ra wanted <<< "$requested"
+  for dir in "$bundles_dir"/*/; do
+    [ -d "$dir" ] || continue
+    local name
+    name=$(basename "$dir")
+    local keep=false
+    for w in "${wanted[@]}"; do
+      if [ "$w" = "$name" ]; then
+        keep=true
+        break
+      fi
+    done
+    if [ "$keep" = false ]; then
+      rm -rf "$dir"
+    fi
+  done
+
+  # Remove bundles dir if empty
+  rmdir "$bundles_dir" 2>/dev/null || true
+
+  # List what was installed
+  if [ -d "$bundles_dir" ]; then
+    local installed=()
+    for dir in "$bundles_dir"/*/; do
+      [ -d "$dir" ] && installed+=("$(basename "$dir")")
+    done
+    if [ ${#installed[@]} -gt 0 ]; then
+      ok "Bundles installed: ${installed[*]}"
+    fi
+  fi
 }
 
 # ── service install ──────────────────────────────────────────────
@@ -267,6 +319,9 @@ main() {
   chmod +x "$BIN_DIR/tabula-headless" "$BIN_DIR/tabula-cli" "$BIN_DIR/tabula-api" 2>/dev/null || true
   ok "Skills and config installed"
 
+  # Install bundles (optional)
+  install_bundles
+
   # Restore user config if it existed
   if [ "$had_config" = true ]; then
     cp "$tmp/tabula.yaml.bak" "$TABULA_HOME/tabula.yaml"
@@ -305,6 +360,10 @@ main() {
   printf '\n\033[1;32mTabula %s installed!\033[0m\n\n' "$VERSION"
   printf 'Add your API key:\n'
   printf '  echo "ANTHROPIC_API_KEY=sk-..." >> %s\n\n' "$env_file"
+  if [ -z "${BUNDLES:-}" ]; then
+    printf 'Optional bundles (caveman, etc.):\n'
+    printf '  BUNDLES=caveman %s\n\n' "$0"
+  fi
   printf 'Then connect:\n'
   printf '  tabula-cli\n\n'
 }

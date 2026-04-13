@@ -12,7 +12,7 @@ import time
 
 # Resolve skills/ directory relative to this script's location
 SKILL_DIR = os.path.dirname(os.path.abspath(__file__))
-SKILLS_ROOT = os.path.dirname(SKILL_DIR)
+SKILLS_ROOT = os.path.join(os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula")), "skills")
 if SKILLS_ROOT not in sys.path:
     sys.path.insert(0, SKILLS_ROOT)
 

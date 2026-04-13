@@ -31,7 +31,7 @@ DATA_DIR = os.path.join(TABULA_HOME, "cron")
 JOBS_PATH = os.path.join(DATA_DIR, "jobs.json")
 CRONTAB_MARKER = "# tabula:"
 
-SKILLS_ROOT = os.path.dirname(SKILL_DIR)
+SKILLS_ROOT = os.path.join(os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula")), "skills")
 if SKILLS_ROOT not in sys.path:
     sys.path.insert(0, SKILLS_ROOT)
 

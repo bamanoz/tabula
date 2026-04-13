@@ -138,7 +138,7 @@ def create_mock_mcp_home(tabula_port: int | None = None) -> str:
             "json.dump({\n"
             f"  'url': 'ws://127.0.0.1:{tabula_port}/ws',\n"
             "  'system_prompt': 'mcp test prompt',\n"
-            "  'spawn': ['.venv/bin/python3 skills/drivers/driver-mock/run.py']\n"
+            "  'spawn': ['.venv/bin/python3 skills/driver-mock/run.py']\n"
             "}, sys.stdout)\n"
         )
 

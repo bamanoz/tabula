@@ -25,6 +25,33 @@ rsync -a --delete \
   --exclude 'subagent-mock' \
   skills/ "$TABULA_HOME/skills/"
 
+# Bundles (optional thematic skill collections)
+# BUNDLES=all for everything, BUNDLES=caveman,foo for specific ones, empty = skip
+BUNDLES="${BUNDLES:-}"
+if [ -n "$BUNDLES" ]; then
+  if [ "$BUNDLES" = "all" ]; then
+    rsync -a --delete \
+      --exclude '__pycache__' \
+      --exclude '*.pyc' \
+      bundles/ "$TABULA_HOME/bundles/"
+    echo "All bundles installed"
+  else
+    mkdir -p "$TABULA_HOME/bundles"
+    IFS=',' read -ra wanted <<< "$BUNDLES"
+    for name in "${wanted[@]}"; do
+      if [ -d "bundles/$name" ]; then
+        rsync -a --delete \
+          --exclude '__pycache__' \
+          --exclude '*.pyc' \
+          "bundles/$name/" "$TABULA_HOME/bundles/$name/"
+        echo "Bundle installed: $name"
+      else
+        echo "warning: bundle '$name' not found, skipping"
+      fi
+    done
+  fi
+fi
+
 # Memory directory (don't overwrite existing data)
 mkdir -p "$TABULA_HOME/memory"
 

@@ -19,4 +19,4 @@ fi
 
 PORT="${TABULA_API_PORT:-8090}"
 
-exec "$VENV_PYTHON" "$TABULA_HOME/skills/gateways/gateway-api/run.py" --port "$PORT"
+exec "$VENV_PYTHON" "$TABULA_HOME/skills/gateway-api/run.py" --port "$PORT"

@@ -20,6 +20,7 @@ from datetime import date
 
 TABULA_HOME = os.environ.get("TABULA_HOME", os.path.join(os.path.expanduser("~"), ".tabula"))
 SKILLS_DIR = os.path.join(TABULA_HOME, "skills")
+BUNDLES_DIR = os.path.join(TABULA_HOME, "bundles")
 MEMORY_FILE = os.path.join(TABULA_HOME, "memory", "MEMORY.md")
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
 PROJECT_FILES = ["IDENTITY.md", "SOUL.md", "USER.md", "AGENTS.md"]
@@ -42,16 +43,17 @@ PROVIDER_ALIASES = {
 
 def available_providers() -> list[str]:
     providers = []
-    if not os.path.isdir(SKILLS_DIR):
-        return providers
-    for root, dirs, files in os.walk(SKILLS_DIR):
-        dirs[:] = [d for d in sorted(dirs) if not d.startswith((".", "__"))]
-        name = os.path.basename(root)
-        if not name.startswith("driver-"):
+    for base_dir in [SKILLS_DIR, BUNDLES_DIR]:
+        if not os.path.isdir(base_dir):
             continue
-        provider = name[len("driver-"):]
-        if "run.py" in files:
-            providers.append(provider)
+        for root, dirs, files in os.walk(base_dir):
+            dirs[:] = [d for d in sorted(dirs) if not d.startswith((".", "__"))]
+            name = os.path.basename(root)
+            if not name.startswith("driver-"):
+                continue
+            provider = name[len("driver-"):]
+            if "run.py" in files and provider not in providers:
+                providers.append(provider)
     return providers
 
 
@@ -73,7 +75,7 @@ def resolve_provider() -> str:
             )
             return provider
 
-    raise SystemExit("No LLM provider skills found. Expected skills/drivers/driver-anthropic or skills/drivers/driver-openai.")
+    raise SystemExit("No LLM provider skills found. Expected skills/driver-anthropic or skills/driver-openai.")
 
 
 ACTIVE_PROVIDER = resolve_provider()
@@ -132,24 +134,26 @@ def parse_skill_md(text: str) -> tuple[dict, str]:
     return meta, body
 
 
-def walk_skills() -> list[tuple[str, str]]:
-    """Walk SKILLS_DIR recursively, yield (rel_path, SKILL.md abs path) for each skill.
+def walk_skills() -> list[tuple[str, str, str]]:
+    """Walk SKILLS_DIR and BUNDLES_DIR recursively.
 
-    A skill is any directory containing SKILL.md. rel_path is relative to SKILLS_DIR
-    (e.g. "weather", "caveman/caveman-compress").
+    Yields (prefix, rel_path, SKILL.md abs path) for each skill.
+    prefix is "skills" or "bundles" — used in exec paths.
+    rel_path is relative to the base dir (e.g. "weather", "caveman/caveman-compress").
     """
     results = []
-    if not os.path.isdir(SKILLS_DIR):
-        return results
-    for root, dirs, files in os.walk(SKILLS_DIR):
-        dirs[:] = [d for d in sorted(dirs) if not d.startswith((".", "__"))]
-        if "SKILL.md" in files:
-            rel = os.path.relpath(root, SKILLS_DIR)
-            # Filter by provider (use the last path component as skill name)
-            leaf = os.path.basename(root)
-            if not include_skill(leaf):
-                continue
-            results.append((rel, os.path.join(root, "SKILL.md")))
+    for base_dir, prefix in [(SKILLS_DIR, "skills"), (BUNDLES_DIR, "bundles")]:
+        if not os.path.isdir(base_dir):
+            continue
+        for root, dirs, files in os.walk(base_dir):
+            dirs[:] = [d for d in sorted(dirs) if not d.startswith((".", "__"))]
+            if "SKILL.md" in files:
+                rel = os.path.relpath(root, base_dir)
+                # Filter by provider (use the last path component as skill name)
+                leaf = os.path.basename(root)
+                if not include_skill(leaf):
+                    continue
+                results.append((prefix, rel, os.path.join(root, "SKILL.md")))
     return results
 
 
@@ -160,7 +164,7 @@ def scan_skills() -> list[str]:
     a description field.
     """
     skills = []
-    for rel_path, skill_md in walk_skills():
+    for prefix, rel_path, skill_md in walk_skills():
         with open(skill_md) as f:
             raw = f.read().strip()
         meta, body = parse_skill_md(raw)
@@ -184,7 +188,7 @@ def discover_skill_tools() -> list[dict]:
     """
     tools = []
     seen = set()
-    for rel_path, skill_md in walk_skills():
+    for prefix, rel_path, skill_md in walk_skills():
         with open(skill_md) as f:
             raw = f.read().strip()
         meta, _ = parse_skill_md(raw)
@@ -203,7 +207,7 @@ def discover_skill_tools() -> list[dict]:
                 tools = [t for t in tools if t.get("name") != tool_name]
             seen.add(tool_name)
             if "exec" not in tool:
-                tool["exec"] = f"{VENV_PYTHON} skills/{rel_path}/run.py tool {tool_name}"
+                tool["exec"] = f"{VENV_PYTHON} {prefix}/{rel_path}/run.py tool {tool_name}"
             tools.append(tool)
     return tools
 
@@ -215,7 +219,7 @@ def discover_slash_commands() -> list[dict]:
     Only includes skills with explicit `user-invocable: true` in frontmatter.
     """
     commands = []
-    for rel_path, skill_md in walk_skills():
+    for prefix, rel_path, skill_md in walk_skills():
         with open(skill_md) as f:
             raw = f.read().strip()
         meta, body = parse_skill_md(raw)
@@ -469,14 +473,15 @@ def build_spawn() -> list[str]:
     sessions_skill = os.path.join(SKILLS_DIR, "sessions", "run.py")
     if os.path.isfile(sessions_skill):
         procs.append(f"{VENV_PYTHON} skills/sessions/run.py daemon")
-    # Spawn hook skills (search recursively)
-    for rel_path, skill_md in walk_skills():
+    # Spawn hook skills (search recursively across skills and bundles)
+    for prefix, rel_path, skill_md in walk_skills():
         leaf = os.path.basename(rel_path)
         if not leaf.startswith("hook-"):
             continue
-        run_py = os.path.join(SKILLS_DIR, rel_path, "run.py")
+        base_dir = SKILLS_DIR if prefix == "skills" else BUNDLES_DIR
+        run_py = os.path.join(base_dir, rel_path, "run.py")
         if os.path.isfile(run_py):
-            procs.append(f"{VENV_PYTHON} skills/{rel_path}/run.py")
+            procs.append(f"{VENV_PYTHON} {prefix}/{rel_path}/run.py")
     return procs
 
 

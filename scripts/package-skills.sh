@@ -7,14 +7,19 @@ VERSION="${1:?usage: package-skills.sh <version>}"
 mkdir -p extra
 
 tar -czf "extra/tabula-skills-${VERSION}.tar.gz" \
-  --exclude='skills/drivers/driver-mock' \
-  --exclude='skills/subagents/subagent-mock' \
-  --exclude='skills/gateways/gateway-test' \
+  --exclude='skills/driver-mock' \
+  --exclude='skills/subagent-mock' \
+  --exclude='skills/gateway-test' \
   --exclude='skills/*/__pycache__' \
   --exclude='skills/__pycache__' \
   --exclude='skills/*/*.pyc' \
   --exclude='skills/.venv' \
+  --exclude='bundles/*/__pycache__' \
+  --exclude='bundles/*/*/__pycache__' \
+  --exclude='bundles/*/*.pyc' \
+  --exclude='bundles/*/*/*.pyc' \
   skills/ \
+  bundles/ \
   templates/ \
   boot.py \
   tabula.yaml \

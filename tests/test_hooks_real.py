@@ -46,7 +46,7 @@ def setup_test_home(port: int) -> tuple[str, str]:
         f"  'url': 'ws://127.0.0.1:{port}/ws',\n"
         "  'system_prompt': 'You are Tabula, an AI agent. You have kernel tools: EXEC, SPAWN, KILL, LIST. Be helpful, concise, and respond in Russian.',\n"
         "  'spawn': [\n"
-        f"    '{venv_py} skills/drivers/driver-anthropic/run.py',\n"
+        f"    '{venv_py} skills/driver-anthropic/run.py',\n"
         f"    '{venv_py} skills/hook-logger/run.py --log-file {log_file}',\n"
         "  ]\n"
         "}, sys.stdout)\n"

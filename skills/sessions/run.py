@@ -18,8 +18,7 @@ import time
 import urllib.request
 
 SKILL_DIR = os.path.dirname(os.path.abspath(__file__))
-SKILLS_ROOT = os.path.dirname(SKILL_DIR)
-ROOT = os.path.dirname(SKILLS_ROOT)
+ROOT = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
