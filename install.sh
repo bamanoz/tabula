@@ -207,19 +207,23 @@ install_launchd() {
     return
   fi
 
-  # Stop existing service if loaded, wait for it to fully unload
-  if launchctl print "gui/$(id -u)/com.tabula.kernel" &>/dev/null; then
-    launchctl bootout "gui/$(id -u)/com.tabula.kernel" 2>/dev/null || true
+  # Replace placeholders and install plist
+  sed "s|__TABULA_HOME__|${TABULA_HOME}|g" "$plist_src" > "$plist_dest"
+
+  local domain="gui/$(id -u)"
+  local label="com.tabula.kernel"
+
+  if launchctl print "$domain/$label" &>/dev/null; then
+    # Already loaded — unload, reload with new plist, then force-start
+    launchctl bootout "$domain/$label" 2>/dev/null || true
     for _ in 1 2 3 4 5; do
-      launchctl print "gui/$(id -u)/com.tabula.kernel" &>/dev/null || break
+      launchctl print "$domain/$label" &>/dev/null || break
       sleep 1
     done
   fi
 
-  # Replace placeholders and install
-  sed "s|__TABULA_HOME__|${TABULA_HOME}|g" "$plist_src" > "$plist_dest"
-
-  launchctl bootstrap "gui/$(id -u)" "$plist_dest"
+  launchctl bootstrap "$domain" "$plist_dest"
+  launchctl kickstart -k "$domain/$label" 2>/dev/null || true
   ok "Kernel service installed (launchd)"
 }
 
