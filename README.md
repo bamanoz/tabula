@@ -114,6 +114,7 @@ The kernel is a Go binary — a WebSocket server that routes messages between sk
 | `mcp` | Model Context Protocol bridge |
 | `cron` | Scheduled task execution |
 | `hook-logger` | Audit logger (JSONL) |
+| `hook-permissions` | Permission enforcement — blocks denied tool calls |
 
 ### Bundles
 
@@ -181,6 +182,24 @@ Create a directory in `skills/` with a `SKILL.md` (frontmatter + docs) and a `ru
 See `skills/skill-contract/SKILL.md` for the full specification.
 
 ## Configuration
+
+### Permissions
+
+Create `~/.tabula/permissions.json` to control which tools the agent can use:
+
+```json
+{
+  "rules": [
+    {"tool": "EXEC", "command": "rm -rf *", "effect": "deny"},
+    {"tool": "EXEC", "command": "git push *--force*", "effect": "deny"},
+    {"tool": "write_file", "effect": "deny"},
+    {"tool": "*", "effect": "allow"}
+  ]
+}
+```
+
+Rules use glob patterns. Specificity wins: command-level rules override tool-level.
+Within same specificity, deny overrides allow. No file = allow all.
 
 <details>
 <summary>Environment variables</summary>

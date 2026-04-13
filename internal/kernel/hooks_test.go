@@ -2,6 +2,10 @@ package kernel
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -289,5 +293,200 @@ func TestHookNone_MessagePassesThrough(t *testing.T) {
 	msg := readMsg(t, drv)
 	if msg.Type != "message" || msg.Text != "hello" {
 		t.Fatalf("expected message/hello, got %s/%s", msg.Type, msg.Text)
+	}
+}
+
+// --- Universal before_tool_call tests ---
+
+// newTestEnvWithSkillTool creates a test env with a skill tool "echo_tool" that just echoes input.
+func newTestEnvWithSkillTool(t *testing.T) *testEnv {
+	t.Helper()
+	toolsJSON := json.RawMessage(`[{"name":"EXEC","description":"run cmd","params":{"command":{"type":"string","description":"cmd"}},"required":["command"]},{"name":"echo_tool","description":"echo","params":{"text":{"type":"string","description":"text"}},"required":["text"]}]`)
+	skillExec := map[string]string{"echo_tool": "echo"}
+	hub := NewHub("test system prompt", toolsJSON, skillExec, 3, 5, nil)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := testUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Logf("upgrade error: %v", err)
+			return
+		}
+		NewClient(hub, conn)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(func() {
+		hub.Shutdown()
+		server.Close()
+	})
+	return &testEnv{Hub: hub, Server: server, t: t}
+}
+
+func TestBeforeToolCallHookFiresForEXEC(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+	env := newTestEnv(t)
+
+	hook := env.connectHook("perm", []HookSubscription{
+		{Event: "before_tool_call", Priority: 100},
+	})
+
+	drv := env.connectAndJoin("driver", "main",
+		[]string{"tool_use"},
+		[]string{"tool_result"},
+	)
+
+	// Send EXEC tool_use
+	go func() {
+		writeJSON(t, drv, Message{
+			Type:  "tool_use",
+			Name:  "EXEC",
+			ID:    "t1",
+			Input: json.RawMessage(`{"command":"echo hi"}`),
+		})
+	}()
+
+	// Hook should receive before_tool_call
+	hookMsg := readMsg(t, hook)
+	if hookMsg.Type != "hook" || hookMsg.Name != "before_tool_call" {
+		t.Fatalf("expected hook/before_tool_call, got %s/%s", hookMsg.Type, hookMsg.Name)
+	}
+	var payload map[string]json.RawMessage
+	json.Unmarshal(hookMsg.Payload, &payload)
+	var tool string
+	json.Unmarshal(payload["tool"], &tool)
+	if tool != "EXEC" {
+		t.Fatalf("expected tool EXEC, got %s", tool)
+	}
+
+	// Pass through
+	writeJSON(t, hook, Message{Type: "hook_result", ID: hookMsg.ID, Action: "pass"})
+
+	// Should get tool_result
+	result := readMsg(t, drv)
+	if result.Type != "tool_result" {
+		t.Fatalf("expected tool_result, got %s", result.Type)
+	}
+}
+
+func TestBeforeToolCallHookFiresForSkillTool(t *testing.T) {
+	env := newTestEnvWithSkillTool(t)
+
+	hook := env.connectHook("perm", []HookSubscription{
+		{Event: "before_tool_call", Priority: 100},
+	})
+
+	drv := env.connectAndJoin("driver", "main",
+		[]string{"tool_use"},
+		[]string{"tool_result"},
+	)
+
+	// Send skill tool_use
+	go func() {
+		writeJSON(t, drv, Message{
+			Type:  "tool_use",
+			Name:  "echo_tool",
+			ID:    "t2",
+			Input: json.RawMessage(`{"text":"hello"}`),
+		})
+	}()
+
+	// Hook should receive before_tool_call for skill tool
+	hookMsg := readMsg(t, hook)
+	if hookMsg.Type != "hook" || hookMsg.Name != "before_tool_call" {
+		t.Fatalf("expected hook/before_tool_call, got %s/%s", hookMsg.Type, hookMsg.Name)
+	}
+	var payload map[string]json.RawMessage
+	json.Unmarshal(hookMsg.Payload, &payload)
+	var tool string
+	json.Unmarshal(payload["tool"], &tool)
+	if tool != "echo_tool" {
+		t.Fatalf("expected tool echo_tool, got %s", tool)
+	}
+
+	writeJSON(t, hook, Message{Type: "hook_result", ID: hookMsg.ID, Action: "pass"})
+
+	// Should get tool_result
+	result := readMsg(t, drv)
+	if result.Type != "tool_result" {
+		t.Fatalf("expected tool_result, got %s", result.Type)
+	}
+}
+
+func TestBeforeToolCallHookCanBlockEXEC(t *testing.T) {
+	env := newTestEnv(t)
+
+	hook := env.connectHook("perm", []HookSubscription{
+		{Event: "before_tool_call", Priority: 100},
+	})
+
+	drv := env.connectAndJoin("driver", "main",
+		[]string{"tool_use"},
+		[]string{"tool_result"},
+	)
+
+	go func() {
+		writeJSON(t, drv, Message{
+			Type:  "tool_use",
+			Name:  "EXEC",
+			ID:    "t3",
+			Input: json.RawMessage(`{"command":"rm -rf /"}`),
+		})
+	}()
+
+	hookMsg := readMsg(t, hook)
+	writeJSON(t, hook, Message{
+		Type:   "hook_result",
+		ID:     hookMsg.ID,
+		Action: "block",
+		Reason: "denied",
+	})
+
+	// Driver should get error in tool_result
+	result := readMsg(t, drv)
+	if result.Type != "tool_result" {
+		t.Fatalf("expected tool_result, got %s", result.Type)
+	}
+	if !strings.Contains(result.Output, "blocked by hook") {
+		t.Fatalf("expected 'blocked by hook' in output, got %s", result.Output)
+	}
+}
+
+func TestBeforeToolCallHookCanBlockSkillTool(t *testing.T) {
+	env := newTestEnvWithSkillTool(t)
+
+	hook := env.connectHook("perm", []HookSubscription{
+		{Event: "before_tool_call", Priority: 100},
+	})
+
+	drv := env.connectAndJoin("driver", "main",
+		[]string{"tool_use"},
+		[]string{"tool_result"},
+	)
+
+	go func() {
+		writeJSON(t, drv, Message{
+			Type:  "tool_use",
+			Name:  "echo_tool",
+			ID:    "t4",
+			Input: json.RawMessage(`{"text":"hello"}`),
+		})
+	}()
+
+	hookMsg := readMsg(t, hook)
+	writeJSON(t, hook, Message{
+		Type:   "hook_result",
+		ID:     hookMsg.ID,
+		Action: "block",
+		Reason: "denied",
+	})
+
+	result := readMsg(t, drv)
+	if result.Type != "tool_result" {
+		t.Fatalf("expected tool_result, got %s", result.Type)
+	}
+	if !strings.Contains(result.Output, "blocked by hook") {
+		t.Fatalf("expected 'blocked by hook' in output, got %s", result.Output)
 	}
 }

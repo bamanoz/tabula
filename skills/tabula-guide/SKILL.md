@@ -163,8 +163,8 @@ Skills subscribe to events via `hooks` field in `connect` message:
 |-------|----------|-------------|
 | `before_message` | modifying | Intercept user messages; can modify text or block |
 | `after_message` | void | Fires on `done`; audit logging |
-| `before_tool_call` | modifying | Intercept EXEC; can modify command or block |
-| `after_tool_call` | void | Fires after EXEC completes |
+| `before_tool_call` | modifying | Intercept any tool call; can modify or block |
+| `after_tool_call` | void | Fires after any tool call completes |
 | `session_start` | modifying | Fires on join; can inject context into init |
 | `session_end` | void | Fires on client disconnect |
 | `before_spawn` | modifying | Intercept SPAWN; can modify or block |
@@ -292,6 +292,53 @@ Optional: `--timeout N` (0=oneshot, default). Results delivered as messages to p
 
 See `skills/skill-contract/SKILL.md` for the full specification: frontmatter fields,
 tool definitions, slash commands, wire protocol, and skill creation guide.
+
+## Permissions
+
+Tool permission rules defined in `~/.tabula/permissions.json`:
+
+```json
+{
+  "rules": [
+    {"tool": "EXEC", "command": "rm -rf *", "effect": "deny"},
+    {"tool": "EXEC", "command": "git push *--force*", "effect": "deny"},
+    {"tool": "write_file", "effect": "deny"},
+    {"tool": "*", "effect": "allow"}
+  ]
+}
+```
+
+### Rule fields
+
+- `tool` — tool name or glob pattern (`EXEC`, `write_*`, `*`)
+- `command` — glob pattern for EXEC/SPAWN command field (optional)
+- `effect` — `allow` or `deny`
+
+### Evaluation
+
+**Specificity wins**: command-level rules override tool-level rules.
+Within the same specificity, deny overrides allow.
+No rules file or empty rules = allow all.
+
+Example EXEC allowlist — allow only specific commands:
+```json
+{
+  "rules": [
+    {"tool": "EXEC", "command": "git *", "effect": "allow"},
+    {"tool": "EXEC", "command": "go *", "effect": "allow"},
+    {"tool": "EXEC", "effect": "deny"},
+    {"tool": "*", "effect": "allow"}
+  ]
+}
+```
+
+### Two-layer enforcement
+
+1. **Boot filtering**: `filter_denied_tools()` removes unconditionally denied tools
+   from the init message — the LLM never sees them.
+2. **Runtime hook**: `hook-permissions` skill subscribes to `before_tool_call` with
+   priority 100. Evaluates rules at runtime, blocks denied calls. Only spawned when
+   `permissions.json` exists.
 
 ## Limits
 

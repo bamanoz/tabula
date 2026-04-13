@@ -30,6 +30,7 @@ if sys.platform == "win32":
 else:
     VENV_PYTHON = os.path.join(TABULA_HOME, ".venv", "bin", "python3")
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
+PERMISSIONS_FILE = os.path.join(TABULA_HOME, "permissions.json")
 TABULA_PROVIDER = os.environ.get("TABULA_PROVIDER", "anthropic").strip().lower() or "anthropic"
 PROVIDER_ALIASES = {
     "anthropic": "anthropic",
@@ -242,6 +243,43 @@ def discover_slash_commands() -> list[dict]:
 
 
 MCP_CONFIG = os.path.join(TABULA_HOME, "mcp", "servers.json")
+
+
+def load_permissions() -> list[dict]:
+    """Load permission rules from ~/.tabula/permissions.json."""
+    if not os.path.isfile(PERMISSIONS_FILE):
+        return []
+    try:
+        with open(PERMISSIONS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        rules = data.get("rules", []) if isinstance(data, dict) else []
+        return [r for r in rules if isinstance(r, dict) and "tool" in r and "effect" in r]
+    except Exception as e:
+        print(f"warning: failed to parse {PERMISSIONS_FILE}: {e}", file=sys.stderr)
+        return []
+
+
+def filter_denied_tools(tools: list[dict], permissions: list[dict]) -> list[dict]:
+    """Remove tools that are unconditionally denied by permissions.
+
+    Only filters tools matching a deny rule with no command pattern (fully denied).
+    Tools with conditional deny (command-based) are kept since they're partially allowed.
+    """
+    if not permissions:
+        return tools
+    from fnmatch import fnmatch
+
+    denied_patterns = [
+        r["tool"] for r in permissions
+        if r["effect"] == "deny" and not r.get("command")
+    ]
+    if not denied_patterns:
+        return tools
+
+    def is_denied(tool_name: str) -> bool:
+        return any(fnmatch(tool_name, pat) for pat in denied_patterns)
+
+    return [t for t in tools if not is_denied(t.get("name", ""))]
 
 
 def discover_mcp_tools() -> dict[str, list[dict]]:
@@ -481,6 +519,9 @@ def build_spawn() -> list[str]:
         leaf = os.path.basename(rel_path)
         if not leaf.startswith("hook-"):
             continue
+        # hook-permissions only spawns when permissions.json exists
+        if leaf == "hook-permissions" and not os.path.isfile(PERMISSIONS_FILE):
+            continue
         run_py = os.path.join(SKILLS_DIR, rel_path, "run.py")
         if os.path.isfile(run_py):
             procs.append(f"{VENV_PYTHON} skills/{rel_path}/run.py")
@@ -493,6 +534,9 @@ def main():
     mcp_tools = discover_mcp_tools()
     skill_tools = discover_skill_tools()
     slash_commands = discover_slash_commands()
+    permissions = load_permissions()
+    if permissions:
+        skill_tools = filter_denied_tools(skill_tools, permissions)
     config = {
         "url": TABULA_URL,
         "system_prompt": build_system_prompt(skills, mcp_tools),

@@ -42,6 +42,15 @@ func (h *Hub) handleToolUse(sender *Client, msg *Message) {
 
 	h.Logger.Debug("tool_use", "tool", toolName, "session", session, "id", toolID)
 
+	// Universal before_tool_call hook — fires for ALL tools.
+	hookPayload, _ := json.Marshal(map[string]any{
+		"tool": toolName, "id": toolID, "input": msg.Input,
+	})
+	if _, ok := h.dispatchHook("before_tool_call", hookPayload, session); !ok {
+		h.sendToolResult(session, toolID, "ERROR: blocked by hook")
+		return
+	}
+
 	switch toolName {
 	case "EXEC":
 		var input struct {
@@ -50,20 +59,6 @@ func (h *Hub) handleToolUse(sender *Client, msg *Message) {
 		if err := json.Unmarshal(msg.Input, &input); err != nil || input.Command == "" {
 			h.sendToolResult(session, toolID, "ERROR: missing or invalid command")
 			return
-		}
-		// before_tool_call hook
-		hookPayload, _ := json.Marshal(map[string]string{
-			"tool": "EXEC", "id": toolID, "command": input.Command,
-		})
-		result, ok := h.dispatchHook("before_tool_call", hookPayload, session)
-		if !ok {
-			h.sendToolResult(session, toolID, "ERROR: blocked by hook")
-			return
-		}
-		// Apply modifications from hook.
-		var mod struct{ Command string }
-		if json.Unmarshal(result, &mod) == nil && mod.Command != "" {
-			input.Command = mod.Command
 		}
 		// Run async — release lock, execute in goroutine
 		go h.execAsync(session, toolID, input.Command)
@@ -107,7 +102,7 @@ func (h *Hub) handleToolUse(sender *Client, msg *Message) {
 		}
 		h.sendToolResult(session, toolID, fmt.Sprintf("PID %d", pid))
 		// after_spawn hook (void)
-		spawnHookPayload, _ := json.Marshal(map[string]interface{}{
+		spawnHookPayload, _ := json.Marshal(map[string]any{
 			"tool": "SPAWN", "id": toolID, "command": input.Command, "pid": pid,
 		})
 		h.dispatchHook("after_spawn", spawnHookPayload, session)
@@ -268,4 +263,9 @@ func (h *Hub) execSkillTool(session, toolID, toolName, execCmd string, input jso
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.sendToolResult(session, toolID, result)
+	// after_tool_call hook (void)
+	hookPayload, _ := json.Marshal(map[string]string{
+		"tool": toolName, "id": toolID, "output": result,
+	})
+	h.dispatchHook("after_tool_call", hookPayload, session)
 }

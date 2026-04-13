@@ -316,5 +316,116 @@ class TestFullDiscovery(BootTestBase):
         self.assertIn("skills/hook-caveman", hook_procs[0])
 
 
+class TestLoadPermissions(BootTestBase):
+    def setUp(self):
+        super().setUp()
+        self._orig_perm_file = boot.PERMISSIONS_FILE
+        self.perm_file = os.path.join(self.tmpdir, "permissions.json")
+        boot.PERMISSIONS_FILE = self.perm_file
+
+    def tearDown(self):
+        boot.PERMISSIONS_FILE = self._orig_perm_file
+        super().tearDown()
+
+    def test_valid(self):
+        with open(self.perm_file, "w") as f:
+            json.dump({"rules": [
+                {"tool": "EXEC", "command": "rm *", "effect": "deny"},
+                {"tool": "*", "effect": "allow"},
+            ]}, f)
+        rules = boot.load_permissions()
+        self.assertEqual(len(rules), 2)
+        self.assertEqual(rules[0]["tool"], "EXEC")
+        self.assertEqual(rules[0]["effect"], "deny")
+
+    def test_missing(self):
+        rules = boot.load_permissions()
+        self.assertEqual(rules, [])
+
+    def test_empty(self):
+        with open(self.perm_file, "w") as f:
+            f.write("{}")
+        rules = boot.load_permissions()
+        self.assertEqual(rules, [])
+
+    def test_invalid_json(self):
+        with open(self.perm_file, "w") as f:
+            f.write("not json")
+        rules = boot.load_permissions()
+        self.assertEqual(rules, [])
+
+
+class TestFilterDeniedTools(unittest.TestCase):
+    def test_removes_unconditionally_denied(self):
+        tools = [
+            {"name": "write_file", "description": "Write"},
+            {"name": "read_file", "description": "Read"},
+            {"name": "EXEC", "description": "Exec"},
+        ]
+        perms = [
+            {"tool": "write_file", "effect": "deny"},
+            {"tool": "*", "effect": "allow"},
+        ]
+        filtered = boot.filter_denied_tools(tools, perms)
+        names = [t["name"] for t in filtered]
+        self.assertNotIn("write_file", names)
+        self.assertIn("read_file", names)
+        self.assertIn("EXEC", names)
+
+    def test_keeps_conditional_deny(self):
+        tools = [{"name": "EXEC", "description": "Exec"}]
+        perms = [
+            {"tool": "EXEC", "command": "rm *", "effect": "deny"},
+            {"tool": "*", "effect": "allow"},
+        ]
+        filtered = boot.filter_denied_tools(tools, perms)
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["name"], "EXEC")
+
+    def test_glob_deny(self):
+        tools = [
+            {"name": "write_file", "description": "Write"},
+            {"name": "write_config", "description": "Config"},
+            {"name": "read_file", "description": "Read"},
+        ]
+        perms = [{"tool": "write_*", "effect": "deny"}]
+        filtered = boot.filter_denied_tools(tools, perms)
+        names = [t["name"] for t in filtered]
+        self.assertEqual(names, ["read_file"])
+
+    def test_empty_permissions(self):
+        tools = [{"name": "EXEC", "description": "Exec"}]
+        filtered = boot.filter_denied_tools(tools, [])
+        self.assertEqual(len(filtered), 1)
+
+
+class TestBuildSpawnPermissions(BootTestBase):
+    def setUp(self):
+        super().setUp()
+        self._orig_perm_file = boot.PERMISSIONS_FILE
+        self.perm_file = os.path.join(self.tmpdir, "permissions.json")
+        boot.PERMISSIONS_FILE = self.perm_file
+
+    def tearDown(self):
+        boot.PERMISSIONS_FILE = self._orig_perm_file
+        super().tearDown()
+
+    def test_hook_permissions_spawned_when_file_exists(self):
+        self._write_skill("hook-permissions", '---\nname: hook-permissions\n---\n')
+        self._write_file("hook-permissions/run.py", "")
+        with open(self.perm_file, "w") as f:
+            json.dump({"rules": [{"tool": "*", "effect": "allow"}]}, f)
+        procs = boot.build_spawn()
+        perm_procs = [p for p in procs if "hook-permissions" in p]
+        self.assertEqual(len(perm_procs), 1)
+
+    def test_hook_permissions_not_spawned_without_file(self):
+        self._write_skill("hook-permissions", '---\nname: hook-permissions\n---\n')
+        self._write_file("hook-permissions/run.py", "")
+        procs = boot.build_spawn()
+        perm_procs = [p for p in procs if "hook-permissions" in p]
+        self.assertEqual(len(perm_procs), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

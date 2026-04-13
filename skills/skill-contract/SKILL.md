@@ -127,6 +127,8 @@ Hook events: `before_message`, `after_message`, `before_tool_call`,
 `after_tool_call`, `session_start`, `session_end`, `before_spawn`, `after_spawn`,
 `cancel`.
 
+`before_tool_call` fires for **all** tools (kernel tools and skill tools).
+
 The kernel sends a `hook` message to subscribers:
 ```json
 {"type": "hook", "id": "h-abc123", "name": "before_message", "payload": {"text": "hello", "sender": "cli"}}
