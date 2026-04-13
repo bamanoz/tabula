@@ -11,6 +11,7 @@ Contract: stdout must be a single JSON object with:
   - tools: list of skill tool definitions
   - commands: list of slash commands
 """
+from __future__ import annotations
 
 import json
 import os
