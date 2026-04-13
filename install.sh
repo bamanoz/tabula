@@ -170,13 +170,18 @@ link_bundles() {
     [ -L "${link%/}" ] && rm -f "${link%/}"
   done
 
-  # Create symlinks for each installed bundle
+  # Symlink each skill inside each bundle into skills/ (flat)
   if [ -d "$bundles_dir" ]; then
-    for dir in "$bundles_dir"/*/; do
-      [ -d "$dir" ] || continue
-      local name
-      name=$(basename "$dir")
-      ln -sfn "../bundles/$name" "$skills_dir/$name"
+    for bundle in "$bundles_dir"/*/; do
+      [ -d "$bundle" ] || continue
+      local bundle_name
+      bundle_name=$(basename "$bundle")
+      for skill in "$bundle"/*/; do
+        [ -d "$skill" ] || continue
+        local skill_name
+        skill_name=$(basename "$skill")
+        ln -sfn "../bundles/$bundle_name/$skill_name" "$skills_dir/$skill_name"
+      done
     done
   fi
 }

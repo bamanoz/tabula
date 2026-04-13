@@ -31,7 +31,10 @@ class BootTestBase(unittest.TestCase):
     def _write_skill(self, rel_path, content, bundle=False):
         """Write a SKILL.md at the given relative path under skills or bundles.
 
-        If bundle=True, writes under bundles/ and creates a symlink in skills/.
+        If bundle=True, writes under bundles/ and creates a symlink in skills/
+        for the leaf skill directory (flat layout).
+        e.g. rel_path="caveman/caveman-commit" -> skills/caveman-commit symlink.
+        Top-level bundle paths (no /) don't get symlinked — they're bundle metadata.
         """
         if bundle:
             base = self.bundles_dir
@@ -40,12 +43,13 @@ class BootTestBase(unittest.TestCase):
             os.makedirs(os.path.dirname(full), exist_ok=True)
             with open(full, "w") as f:
                 f.write(content)
-            # Create symlink: skills/<top_level> -> ../bundles/<top_level>
-            top = rel_path.split(os.sep)[0] if os.sep in rel_path else rel_path
-            link = os.path.join(self.skills_dir, top)
-            target = os.path.join(self.bundles_dir, top)
-            if not os.path.exists(link):
-                os.symlink(target, link)
+            # Only symlink sub-skills, not the bundle root
+            if os.sep in rel_path or "/" in rel_path:
+                leaf = os.path.basename(rel_path)
+                link = os.path.join(self.skills_dir, leaf)
+                target = os.path.join(self.bundles_dir, rel_path)
+                if not os.path.exists(link):
+                    os.symlink(target, link)
         else:
             full = os.path.join(self.skills_dir, rel_path, "SKILL.md")
             os.makedirs(os.path.dirname(full), exist_ok=True)
@@ -99,13 +103,13 @@ class TestWalkSkills(BootTestBase):
         self.assertIn("files", names)
 
     def test_bundles_via_symlink(self):
-        """Bundles symlinked into skills/ are discovered via followlinks."""
+        """Bundle skills are symlinked flat into skills/."""
         self._write_skill("caveman/caveman-commit", '---\nname: caveman-commit\n---\n', bundle=True)
         self._write_skill("caveman/caveman-review", '---\nname: caveman-review\n---\n', bundle=True)
         results = boot.walk_skills()
         rels = [rel for rel, _ in results]
-        self.assertIn(os.path.join("caveman", "caveman-commit"), rels)
-        self.assertIn(os.path.join("caveman", "caveman-review"), rels)
+        self.assertIn("caveman-commit", rels)
+        self.assertIn("caveman-review", rels)
 
     def test_mixed_skills_and_bundles(self):
         self._write_skill("weather", '---\nname: weather\n---\n')
@@ -113,7 +117,7 @@ class TestWalkSkills(BootTestBase):
         results = boot.walk_skills()
         rels = [rel for rel, _ in results]
         self.assertIn("weather", rels)
-        self.assertIn(os.path.join("caveman", "hook-caveman"), rels)
+        self.assertIn("hook-caveman", rels)
 
     def test_skips_dotdirs(self):
         self._write_skill(".hidden", '---\nname: hidden\n---\n')
@@ -166,8 +170,8 @@ class TestDiscoverSkillTools(BootTestBase):
         tools = boot.discover_skill_tools()
         self.assertEqual(len(tools), 1)
         self.assertEqual(tools[0]["name"], "caveman_compress")
-        # Exec path uses skills/ prefix (symlink is transparent)
-        self.assertIn("skills/caveman/caveman-compress/run.py", tools[0]["exec"])
+        # Exec path is flat: skills/caveman-compress/run.py
+        self.assertIn("skills/caveman-compress/run.py", tools[0]["exec"])
 
     def test_custom_exec(self):
         self._write_skill("custom", '---\ntools: [{"name": "my_tool", "exec": "node index.js", "description": "Custom"}]\n---\n')
@@ -226,7 +230,7 @@ class TestBuildSpawn(BootTestBase):
         procs = boot.build_spawn()
         hook_procs = [p for p in procs if "hook-caveman" in p]
         self.assertEqual(len(hook_procs), 1)
-        self.assertIn("skills/caveman/hook-caveman/run.py", hook_procs[0])
+        self.assertIn("skills/hook-caveman/run.py", hook_procs[0])
 
     def test_no_duplicate_hooks(self):
         self._write_skill("hook-a", '---\nname: hook-a\n---\n')
@@ -296,13 +300,12 @@ class TestFullDiscovery(BootTestBase):
         tool_map = {t["name"]: t for t in tools}
         self.assertIn("caveman_compress", tool_map)
         self.assertIn("get_weather", tool_map)
-        self.assertIn("skills/caveman/caveman-compress/run.py", tool_map["caveman_compress"]["exec"])
+        self.assertIn("skills/caveman-compress/run.py", tool_map["caveman_compress"]["exec"])
         self.assertIn("skills/weather/run.py", tool_map["get_weather"]["exec"])
 
-        # Verify slash commands
+        # Verify slash commands (only sub-skills are symlinked, not bundle root)
         cmds = boot.discover_slash_commands()
         cmd_names = [c["name"] for c in cmds]
-        self.assertIn("caveman", cmd_names)
         self.assertIn("caveman-commit", cmd_names)
         self.assertIn("weather", cmd_names)
 
@@ -310,7 +313,7 @@ class TestFullDiscovery(BootTestBase):
         procs = boot.build_spawn()
         hook_procs = [p for p in procs if "hook-caveman" in p]
         self.assertEqual(len(hook_procs), 1)
-        self.assertIn("skills/caveman/hook-caveman", hook_procs[0])
+        self.assertIn("skills/hook-caveman", hook_procs[0])
 
 
 if __name__ == "__main__":

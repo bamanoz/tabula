@@ -52,15 +52,19 @@ if [ -n "$BUNDLES" ]; then
   fi
 fi
 
-# Symlink bundles into skills/ (remove stale symlinks first)
+# Symlink bundle skills into skills/ flat (remove stale symlinks first)
 for link in "$TABULA_HOME/skills"/*/; do
   [ -L "${link%/}" ] && rm -f "${link%/}"
 done
 if [ -d "$TABULA_HOME/bundles" ]; then
-  for dir in "$TABULA_HOME/bundles"/*/; do
-    [ -d "$dir" ] || continue
-    name=$(basename "$dir")
-    ln -sfn "../bundles/$name" "$TABULA_HOME/skills/$name"
+  for bundle in "$TABULA_HOME/bundles"/*/; do
+    [ -d "$bundle" ] || continue
+    bundle_name=$(basename "$bundle")
+    for skill in "$bundle"/*/; do
+      [ -d "$skill" ] || continue
+      skill_name=$(basename "$skill")
+      ln -sfn "../bundles/$bundle_name/$skill_name" "$TABULA_HOME/skills/$skill_name"
+    done
   done
 fi
 
