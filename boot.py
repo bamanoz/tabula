@@ -44,11 +44,13 @@ def available_providers() -> list[str]:
     providers = []
     if not os.path.isdir(SKILLS_DIR):
         return providers
-    for name in sorted(os.listdir(SKILLS_DIR)):
+    for root, dirs, files in os.walk(SKILLS_DIR):
+        dirs[:] = [d for d in sorted(dirs) if not d.startswith((".", "__"))]
+        name = os.path.basename(root)
         if not name.startswith("driver-"):
             continue
         provider = name[len("driver-"):]
-        if os.path.isfile(os.path.join(SKILLS_DIR, name, "run.py")):
+        if "run.py" in files:
             providers.append(provider)
     return providers
 
@@ -130,26 +132,35 @@ def parse_skill_md(text: str) -> tuple[dict, str]:
     return meta, body
 
 
-def scan_skills() -> list[str]:
-    """Read SKILL.md from each skill subdirectory.
+def walk_skills() -> list[tuple[str, str]]:
+    """Walk SKILLS_DIR recursively, yield (rel_path, SKILL.md abs path) for each skill.
 
-    Frontmatter format (OpenClaw-compatible):
-      name: skill-name
-      description: "short description"
+    A skill is any directory containing SKILL.md. rel_path is relative to SKILLS_DIR
+    (e.g. "weather", "caveman/caveman-compress").
+    """
+    results = []
+    if not os.path.isdir(SKILLS_DIR):
+        return results
+    for root, dirs, files in os.walk(SKILLS_DIR):
+        dirs[:] = [d for d in sorted(dirs) if not d.startswith((".", "__"))]
+        if "SKILL.md" in files:
+            rel = os.path.relpath(root, SKILLS_DIR)
+            # Filter by provider (use the last path component as skill name)
+            leaf = os.path.basename(root)
+            if not include_skill(leaf):
+                continue
+            results.append((rel, os.path.join(root, "SKILL.md")))
+    return results
+
+
+def scan_skills() -> list[str]:
+    """Read SKILL.md from each skill directory (recursive).
 
     Hidden skills (not injected into system prompt) are those without
-    a description field. If description is present, it's injected as
-    a one-liner; otherwise the skill is skipped.
+    a description field.
     """
     skills = []
-    if not os.path.isdir(SKILLS_DIR):
-        return skills
-    for name in sorted(os.listdir(SKILLS_DIR)):
-        if not include_skill(name):
-            continue
-        skill_md = os.path.join(SKILLS_DIR, name, "SKILL.md")
-        if not os.path.isfile(skill_md):
-            continue
+    for rel_path, skill_md in walk_skills():
         with open(skill_md) as f:
             raw = f.read().strip()
         meta, body = parse_skill_md(raw)
@@ -158,7 +169,7 @@ def scan_skills() -> list[str]:
         if not description:
             continue
 
-        skill_name = meta.get("name", name)
+        skill_name = meta.get("name", os.path.basename(rel_path))
         skills.append(f"**{skill_name}**: {description}")
     return skills
 
@@ -167,20 +178,13 @@ KERNEL_TOOLS = {"EXEC", "SPAWN", "KILL", "LIST"}
 
 
 def discover_skill_tools() -> list[dict]:
-    """Scan SKILL.md frontmatter for tool definitions.
+    """Scan SKILL.md frontmatter for tool definitions (recursive).
 
     Returns tools in kernel format, with an added 'exec' field for dispatch.
     """
     tools = []
     seen = set()
-    if not os.path.isdir(SKILLS_DIR):
-        return tools
-    for name in sorted(os.listdir(SKILLS_DIR)):
-        if not include_skill(name):
-            continue
-        skill_md = os.path.join(SKILLS_DIR, name, "SKILL.md")
-        if not os.path.isfile(skill_md):
-            continue
+    for rel_path, skill_md in walk_skills():
         with open(skill_md) as f:
             raw = f.read().strip()
         meta, _ = parse_skill_md(raw)
@@ -192,32 +196,26 @@ def discover_skill_tools() -> list[dict]:
             if not tool_name:
                 continue
             if tool_name in KERNEL_TOOLS:
-                print(f"warning: tool {tool_name!r} in skill {name!r} collides with kernel tool, skipping", file=sys.stderr)
+                print(f"warning: tool {tool_name!r} in skill {rel_path!r} collides with kernel tool, skipping", file=sys.stderr)
                 continue
             if tool_name in seen:
-                print(f"warning: duplicate tool {tool_name!r} in skill {name!r}, overriding previous", file=sys.stderr)
+                print(f"warning: duplicate tool {tool_name!r} in skill {rel_path!r}, overriding previous", file=sys.stderr)
                 tools = [t for t in tools if t.get("name") != tool_name]
             seen.add(tool_name)
-            tool["exec"] = f"{VENV_PYTHON} skills/{name}/run.py tool {tool_name}"
+            if "exec" not in tool:
+                tool["exec"] = f"{VENV_PYTHON} skills/{rel_path}/run.py tool {tool_name}"
             tools.append(tool)
     return tools
 
 
 def discover_slash_commands() -> list[dict]:
-    """Scan SKILL.md for user-invocable skills.
+    """Scan SKILL.md for user-invocable skills (recursive).
 
     Returns list of {"name", "description", "body"} for gateway slash commands.
     Only includes skills with explicit `user-invocable: true` in frontmatter.
     """
     commands = []
-    if not os.path.isdir(SKILLS_DIR):
-        return commands
-    for name in sorted(os.listdir(SKILLS_DIR)):
-        if not include_skill(name):
-            continue
-        skill_md = os.path.join(SKILLS_DIR, name, "SKILL.md")
-        if not os.path.isfile(skill_md):
-            continue
+    for rel_path, skill_md in walk_skills():
         with open(skill_md) as f:
             raw = f.read().strip()
         meta, body = parse_skill_md(raw)
@@ -226,7 +224,7 @@ def discover_slash_commands() -> list[dict]:
         if ui.lower() not in ("true", "yes", "1"):
             continue
 
-        skill_name = meta.get("name", name)
+        skill_name = meta.get("name", os.path.basename(rel_path))
         description = meta.get("description", "")
         commands.append({
             "name": skill_name,
@@ -471,10 +469,14 @@ def build_spawn() -> list[str]:
     sessions_skill = os.path.join(SKILLS_DIR, "sessions", "run.py")
     if os.path.isfile(sessions_skill):
         procs.append(f"{VENV_PYTHON} skills/sessions/run.py daemon")
-    # Spawn hook skills
-    hook_logger = os.path.join(SKILLS_DIR, "hook-logger", "run.py")
-    if os.path.isfile(hook_logger):
-        procs.append(f"{VENV_PYTHON} skills/hook-logger/run.py")
+    # Spawn hook skills (search recursively)
+    for rel_path, skill_md in walk_skills():
+        leaf = os.path.basename(rel_path)
+        if not leaf.startswith("hook-"):
+            continue
+        run_py = os.path.join(SKILLS_DIR, rel_path, "run.py")
+        if os.path.isfile(run_py):
+            procs.append(f"{VENV_PYTHON} skills/{rel_path}/run.py")
     return procs
 
 
