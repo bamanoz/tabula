@@ -6,7 +6,8 @@
     <string>com.tabula.kernel</string>
     <key>ProgramArguments</key>
     <array>
-        <string>__TABULA_HOME__/bin/tabula-server</string>
+        <string>__TABULA_HOME__/bin/tabula</string>
+        <string>serve</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
