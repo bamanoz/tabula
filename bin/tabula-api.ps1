@@ -1,5 +1,5 @@
 # Launch Tabula API gateway (connects to a running kernel).
-# Start the kernel first with tabula-headless.
+# Start the kernel first with tabula-server.
 $env:TABULA_HOME = if ($env:TABULA_HOME) { $env:TABULA_HOME } else { Join-Path $HOME ".tabula" }
 $VenvPython = Join-Path $env:TABULA_HOME ".venv" "Scripts" "python.exe"
 

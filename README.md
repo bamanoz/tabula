@@ -140,7 +140,7 @@ Install with: `BUNDLES=caveman bash install.sh` or `BUNDLES=all` for everything.
 Start alongside the kernel or connect to a running one:
 
 ```bash
-TABULA_API_PORT=8090 tabula-headless   # kernel + API
+TABULA_API_PORT=8090 tabula-server     # kernel + API
 tabula-api                              # connect to running kernel
 ```
 

@@ -88,7 +88,7 @@ if [ "$(uname)" = "Darwin" ]; then
 fi
 
 # Launch scripts
-for script in tabula-headless tabula-api tabula-cli; do
+for script in tabula-server tabula-api tabula-cli; do
   cp "bin/$script" "$BIN_DIR/$script"
   chmod +x "$BIN_DIR/$script"
 done

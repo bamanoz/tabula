@@ -92,7 +92,7 @@ $BinPath = Join-Path $BinDir "tabula.exe"
 go build -o $BinPath ./cmd/tabula/
 
 # Launch scripts
-foreach ($script in @("tabula-headless.ps1", "tabula-cli.ps1", "tabula-api.ps1")) {
+foreach ($script in @("tabula-server.ps1", "tabula-cli.ps1", "tabula-api.ps1")) {
     Copy-Item (Join-Path "bin" $script) -Destination (Join-Path $BinDir $script) -Force
 }
 

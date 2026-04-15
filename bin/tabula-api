@@ -1,6 +1,6 @@
 #!/bin/bash
 # Launch Tabula API gateway (connects to a running kernel).
-# Start the kernel first with tabula-headless or tabula-main.
+# Start the kernel first with tabula-server or tabula-main.
 # Configuration via environment variables:
 #   TABULA_HOME       — workspace directory (default: ~/.tabula)
 #   TABULA_PROVIDER   — LLM provider for the driver (default: anthropic)

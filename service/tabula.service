@@ -4,7 +4,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=__TABULA_HOME__/bin/tabula-headless
+ExecStart=__TABULA_HOME__/bin/tabula-server
 WorkingDirectory=__TABULA_HOME__
 Restart=always
 RestartSec=5

@@ -23,7 +23,7 @@ tar -czf "extra/tabula-skills-${VERSION}.tar.gz" \
   templates/ \
   boot.py \
   tabula.yaml \
-  bin/tabula-headless \
+  bin/tabula-server \
   bin/tabula-cli \
   bin/tabula-api \
   service/

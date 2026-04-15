@@ -117,3 +117,9 @@ func (h *Hub) Shutdown() {
 	h.processes.timeout = h.ShutdownTimeout
 	h.processes.Shutdown()
 }
+
+// Stop shuts down all spawned processes without grace period.
+// Used by one-shot mode to clean up after a single exchange.
+func (h *Hub) Stop() {
+	h.processes.Shutdown()
+}

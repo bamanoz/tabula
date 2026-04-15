@@ -34,6 +34,7 @@ type Client struct {
 	sendMu     sync.Mutex
 	sendClosed bool
 	state      ClientState
+	recvCh     chan *Message // if set, messages go here instead of WebSocket
 }
 
 // NewClient creates a client and starts its pumps.
@@ -99,6 +100,15 @@ func (c *Client) canReceive(msgType string) bool {
 
 // SendMsg marshals and queues a message for sending.
 func (c *Client) SendMsg(msg *Message) {
+	if c.recvCh != nil {
+		// Internal client: send directly to receive channel.
+		select {
+		case c.recvCh <- msg:
+		default:
+			c.hub.Logger.Warn("dropping message to slow internal client", "client", c.name)
+		}
+		return
+	}
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return
@@ -167,4 +177,7 @@ func (c *Client) closeSend() {
 	}
 	c.sendClosed = true
 	close(c.sendCh)
+	if c.recvCh != nil {
+		close(c.recvCh)
+	}
 }

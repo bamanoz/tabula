@@ -348,7 +348,7 @@ main() {
   fi
 
   tar -xzf "$tmp/$skills_archive" -C "$TABULA_HOME"
-  chmod +x "$BIN_DIR/tabula-headless" "$BIN_DIR/tabula-cli" "$BIN_DIR/tabula-api" 2>/dev/null || true
+  chmod +x "$BIN_DIR/tabula-server" "$BIN_DIR/tabula-cli" "$BIN_DIR/tabula-api" 2>/dev/null || true
   ok "Skills and config installed"
 
   # Install bundles (optional) and symlink into skills/

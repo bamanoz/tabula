@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bamanoz/tabula/internal/kernel"
 	"github.com/bamanoz/tabula/internal/logging"
@@ -35,9 +37,27 @@ var upgrader = websocket.Upgrader{
 }
 
 func main() {
-	if len(os.Args) == 2 && os.Args[1] == "--version" {
-		fmt.Printf("tabula %s (%s) built %s\n", version, commit, date)
-		os.Exit(0)
+	// Parse subcommand early.
+	subcommand := ""
+	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
+		subcommand = os.Args[1]
+	}
+
+	switch subcommand {
+	case "run":
+		os.Exit(runCmd(os.Args[2:]))
+		return
+	case "serve":
+		// Fall through to server mode.
+	default:
+		// --version is the only flag-only invocation we support.
+		if len(os.Args) == 2 && os.Args[1] == "--version" {
+			fmt.Printf("tabula %s (%s) built %s\n", version, commit, date)
+			os.Exit(0)
+		}
+		// No subcommand — print usage.
+		fmt.Fprintf(os.Stderr, "Usage: tabula <command>\n\nCommands:\n  serve   Start the kernel WebSocket server (default)\n  run     One-shot prompt → response\n\nFlags:\n  --version   Show version\n")
+		os.Exit(1)
 	}
 
 	// 1. Resolve TABULA_HOME
@@ -72,8 +92,6 @@ func main() {
 	slog.Info("working directory", "path", tabulaHome)
 
 	// 4. Restore full PATH from install-time snapshot
-	// launchd/systemd start with minimal PATH (/usr/bin:/bin).
-	// install.sh saves the user's login PATH as TABULA_PATH in .env.
 	savedPath := readEnvKey(filepath.Join(tabulaHome, ".env"), "TABULA_PATH")
 	if savedPath != "" {
 		os.Setenv("PATH", savedPath)
@@ -89,7 +107,7 @@ func main() {
 	}
 	slog.Info("running boot", "command", bootCmd)
 
-	// 5. Run boot script → get config
+	// 6. Run boot script → get config
 	bootConfig, err := runBoot(bootCmd)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: boot failed: %v\n", err)
@@ -97,7 +115,7 @@ func main() {
 	}
 	slog.Info("boot config loaded", "url", bootConfig.URL, "prompt_bytes", len(bootConfig.SystemPrompt), "spawn_count", len(bootConfig.Spawn))
 
-	// 6. Load and merge tools (embedded kernel tools + boot skill tools)
+	// 7. Load and merge tools
 	var kernelTools []json.RawMessage
 	if err := json.Unmarshal(embeddedToolsJSON, &kernelTools); err != nil {
 		fmt.Fprintf(os.Stderr, "error: invalid embedded kernel.tools.json: %v\n", err)
@@ -106,7 +124,6 @@ func main() {
 	allTools := make([]json.RawMessage, len(kernelTools))
 	copy(allTools, kernelTools)
 
-	// Merge skill tools from boot config
 	skillExec := make(map[string]string)
 	if len(bootConfig.Tools) > 0 {
 		var bootTools []json.RawMessage
@@ -116,7 +133,6 @@ func main() {
 		}
 		allTools = append(allTools, bootTools...)
 
-		// Build exec dispatch map
 		parsed, err := parseSkillExecMap(bootConfig.Tools)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: invalid boot tools for exec dispatch: %v\n", err)
@@ -132,7 +148,7 @@ func main() {
 
 	toolsJSON, _ := json.Marshal(allTools)
 
-	// 7. Parse URL to get listen address
+	// 8. Parse URL to get listen address
 	u, err := url.Parse(bootConfig.URL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: invalid url %q: %v\n", bootConfig.URL, err)
@@ -143,18 +159,18 @@ func main() {
 		listenAddr += ":8089"
 	}
 
-	// 8. Set environment for all child processes
+	// 9. Set environment for all child processes
 	os.Setenv("TABULA_URL", bootConfig.URL)
 	os.Setenv("TABULA_HOME", tabulaHome)
 
-	// 9. Init kernel hub
+	// 10. Init kernel hub
 	slog.Info("initializing kernel")
 	maxSpawnDepth := envInt("TABULA_MAX_SPAWN_DEPTH", 3)
 	maxChildren := envInt("TABULA_MAX_CHILDREN_PER_SESSION", 5)
 	hub := kernel.NewHub(bootConfig.SystemPrompt, toolsJSON, skillExec, maxSpawnDepth, maxChildren, logger.Logger)
 	hub.StartReaper()
 
-	// 10. Start HTTP/WebSocket server
+	// 11. Start HTTP/WebSocket server
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -183,7 +199,7 @@ func main() {
 		}
 	}()
 
-	// 11. Spawn processes from boot config
+	// 12. Spawn processes from boot config
 	for _, cmd := range bootConfig.Spawn {
 		slog.Info("spawning boot process", "command", cmd)
 		c := mainShellCommand(cmd)
@@ -199,12 +215,217 @@ func main() {
 
 	slog.Info("ready")
 
-	// 12. Wait for signal
+	// 13. Wait for signal
 	waitForShutdownSignal()
 
 	slog.Info("shutting down")
 	hub.Shutdown()
 	server.Close()
+}
+
+// runCmd handles "tabula run" — one-shot prompt → response.
+func runCmd(args []string) int {
+	prompt := ""
+	session := "oneshot"
+	timeout := 120 * time.Second
+	asJSON := false
+
+	// Parse flags.
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--prompt", "-p":
+			if i+1 < len(args) {
+				prompt = args[i+1]
+				i++
+			}
+		case "--session", "-s":
+			if i+1 < len(args) {
+				session = args[i+1]
+				i++
+			}
+		case "--timeout", "-t":
+			if i+1 < len(args) {
+				d, err := time.ParseDuration(args[i+1])
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error: invalid timeout %q: %v\n", args[i+1], err)
+					return 1
+				}
+				timeout = d
+				i++
+			}
+		case "--json":
+			asJSON = true
+		case "--help", "-h":
+			fmt.Println("Usage: tabula run [flags]\n\nFlags:\n  -p, --prompt TEXT   Prompt text (reads stdin if omitted)\n  -s, --session NAME  Session name (default: oneshot)\n  -t, --timeout DUR   Timeout (default: 120s)\n  --json              Output as JSON")
+			return 0
+		}
+	}
+
+	// Read prompt from stdin if not provided.
+	if prompt == "" {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: reading stdin: %v\n", err)
+			return 1
+		}
+		prompt = strings.TrimSpace(string(data))
+	}
+	if prompt == "" {
+		fmt.Fprintln(os.Stderr, "error: no prompt provided (use --prompt or pipe stdin)")
+		return 1
+	}
+
+	// Resolve TABULA_HOME (same as server mode).
+	tabulaHome := os.Getenv("TABULA_HOME")
+	if tabulaHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error: cannot determine home directory")
+			return 1
+		}
+		tabulaHome = filepath.Join(home, ".tabula")
+	}
+
+	// Setup logging.
+	logFile := os.Getenv("TABULA_LOG_FILE")
+	if logFile == "" {
+		logFile = filepath.Join(tabulaHome, "logs", "kernel.log")
+	}
+	logger := logging.Setup(logging.Config{
+		ConsoleLevel: os.Getenv("TABULA_LOG_LEVEL"),
+		FileLevel:    os.Getenv("TABULA_FILE_LOG_LEVEL"),
+		FilePath:     logFile,
+		Compress:     true,
+	})
+	defer logger.Close()
+
+	// chdir to TABULA_HOME.
+	if err := os.Chdir(tabulaHome); err != nil {
+		fmt.Fprintf(os.Stderr, "error: cannot chdir to %s: %v\n", tabulaHome, err)
+		return 1
+	}
+
+	// Restore PATH.
+	savedPath := readEnvKey(filepath.Join(tabulaHome, ".env"), "TABULA_PATH")
+	if savedPath != "" {
+		os.Setenv("PATH", savedPath)
+	}
+
+	// Boot.
+	configPath := filepath.Join(tabulaHome, "tabula.yaml")
+	bootCmd, err := readBootCmd(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+	bootConfig, err := runBoot(bootCmd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: boot failed: %v\n", err)
+		return 1
+	}
+
+	// Load tools.
+	var kernelTools []json.RawMessage
+	if err := json.Unmarshal(embeddedToolsJSON, &kernelTools); err != nil {
+		fmt.Fprintf(os.Stderr, "error: invalid embedded kernel.tools.json: %v\n", err)
+		return 1
+	}
+	allTools := make([]json.RawMessage, len(kernelTools))
+	copy(allTools, kernelTools)
+
+	skillExec := make(map[string]string)
+	if len(bootConfig.Tools) > 0 {
+		var bootTools []json.RawMessage
+		if err := json.Unmarshal(bootConfig.Tools, &bootTools); err != nil {
+			fmt.Fprintf(os.Stderr, "error: invalid boot tools: %v\n", err)
+			return 1
+		}
+		allTools = append(allTools, bootTools...)
+
+		parsed, err := parseSkillExecMap(bootConfig.Tools)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: invalid boot tools for exec dispatch: %v\n", err)
+			return 1
+		}
+		for _, t := range parsed {
+			if t.Exec != "" {
+				skillExec[t.Name] = t.Exec
+			}
+		}
+	}
+
+	toolsJSON, _ := json.Marshal(allTools)
+
+	// Parse URL.
+	u, err := url.Parse(bootConfig.URL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: invalid url %q: %v\n", bootConfig.URL, err)
+		return 1
+	}
+	listenAddr := u.Host
+	if !strings.Contains(listenAddr, ":") {
+		listenAddr += ":8089"
+	}
+
+	os.Setenv("TABULA_URL", bootConfig.URL)
+	os.Setenv("TABULA_HOME", tabulaHome)
+
+	// Init hub.
+	maxSpawnDepth := envInt("TABULA_MAX_SPAWN_DEPTH", 3)
+	maxChildren := envInt("TABULA_MAX_CHILDREN_PER_SESSION", 5)
+	hub := kernel.NewHub(bootConfig.SystemPrompt, toolsJSON, skillExec, maxSpawnDepth, maxChildren, logger.Logger)
+	hub.StartReaper()
+
+	// Start HTTP/WebSocket server (driver needs WebSocket).
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			slog.Error("websocket upgrade failed", "error", err)
+			return
+		}
+		kernel.NewClient(hub, conn)
+	})
+
+	listener, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: cannot listen on %s: %v\n", listenAddr, err)
+		return 1
+	}
+
+	server := &http.Server{Handler: mux}
+	go func() {
+		if err := server.Serve(listener); err != http.ErrServerClosed {
+			slog.Error("server error", "error", err)
+		}
+	}()
+
+	// Give the server a moment to be ready.
+	time.Sleep(200 * time.Millisecond)
+
+	// Run one-shot exchange.
+	result, err := hub.RunOneShot(kernel.OneShotConfig{
+		Prompt:  prompt,
+		Session: session,
+		Timeout: timeout,
+	})
+
+	hub.Stop()
+	server.Close()
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if asJSON {
+		out, _ := json.Marshal(map[string]string{"text": result, "session": session})
+		fmt.Println(string(out))
+	} else {
+		fmt.Println(result)
+	}
+
+	return 0
 }
 
 func envInt(name string, fallback int) int {
@@ -347,14 +568,12 @@ func runBoot(cmd string) (*BootConfig, error) {
 	c.Stderr = &stderr
 	out, err := c.Output()
 	if err != nil {
-		// Log stderr for debugging context, but report the real error
 		if stderr.Len() > 0 {
 			slog.Error("boot script stderr", "output", stderr.String())
 		}
 		return nil, fmt.Errorf("boot script failed: %v", err)
 	}
 
-	// Log warnings from boot script even on success
 	if stderr.Len() > 0 {
 		slog.Warn("boot script warnings", "output", stderr.String())
 	}

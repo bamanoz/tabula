@@ -68,7 +68,7 @@ function Install-Service {
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
     }
 
-    $HeadlessScript = Join-Path $BinDir "tabula-headless.ps1"
+    $HeadlessScript = Join-Path $BinDir "tabula-server.ps1"
     $OutLog = Join-Path $LogDir "kernel.out.log"
     $ErrLog = Join-Path $LogDir "kernel.err.log"
 
@@ -201,7 +201,7 @@ try {
     Ok "Python dependencies installed"
 
     # Copy PowerShell launch scripts
-    foreach ($script in @("tabula-headless.ps1", "tabula-cli.ps1", "tabula-api.ps1")) {
+    foreach ($script in @("tabula-server.ps1", "tabula-cli.ps1", "tabula-api.ps1")) {
         $src = Join-Path $TabulaHome "bin" $script
         if (Test-Path $src) {
             Copy-Item $src -Destination (Join-Path $BinDir $script) -Force
