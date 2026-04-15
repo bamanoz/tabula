@@ -490,11 +490,55 @@ def resolve_bot_tokens() -> list[str]:
 
 # -- Entry point ---------------------------------------------------------------
 
+_PID_FILE = os.path.join(TABULA_HOME, "gateway-telegram.pid")
+
+
+def _check_pid_file() -> bool:
+    """Return True if another instance is already running."""
+    if not os.path.isfile(_PID_FILE):
+        return False
+    try:
+        with open(_PID_FILE) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)  # signal 0 = check if alive
+        return True
+    except (ValueError, ProcessLookupError, PermissionError):
+        # Stale PID file — remove it
+        try:
+            os.remove(_PID_FILE)
+        except OSError:
+            pass
+        return False
+
+
+def _write_pid_file():
+    with open(_PID_FILE, "w") as f:
+        f.write(str(os.getpid()))
+
+
+def _remove_pid_file():
+    try:
+        os.remove(_PID_FILE)
+    except OSError:
+        pass
+
+
 def main():
     tokens = resolve_bot_tokens()
     if not tokens:
         sys.exit("TELEGRAM_BOT_TOKENS is not set. Add to ~/.tabula/.env")
 
+    if _check_pid_file():
+        sys.exit("gateway-telegram is already running. Remove ~/.tabula/gateway-telegram.pid to force start.")
+
+    _write_pid_file()
+    try:
+        _run_gateway(tokens)
+    finally:
+        _remove_pid_file()
+
+
+def _run_gateway(tokens):
     gateway = TelegramGateway()
 
     # Register slash commands with the first bot

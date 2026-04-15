@@ -1,6 +1,6 @@
 ---
 name: gateway-telegram
-description: Telegram Bot gateway. Bridges Telegram chats to Tabula sessions. Each chat_id gets its own session + driver. Access control via pairing tokens. Run: `python3 skills/gateway-telegram/run.py` (requires TELEGRAM_BOT_TOKENS env). Install as service: `bash skills/gateway-telegram/install-service.sh`
+description: Telegram Bot gateway. Bridges Telegram chats to Tabula sessions. Each chat_id gets its own session + driver. Access control via pairing tokens. Before running: check TELEGRAM_BOT_TOKENS is set (cat ~/.tabula/.env), if missing ask user to add their bot token. Run: `python3 skills/gateway-telegram/run.py`. Install as service: `bash skills/gateway-telegram/install-service.sh`
 ---
 
 # gateway-telegram

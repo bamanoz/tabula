@@ -31,5 +31,5 @@ Run: `python3 skills/pair/run.py discord revoke 123456789`
 ## Instructions
 
 1. Parse gateway name and action from "User request"
-2. Run the corresponding command via EXEC
+2. Execute the corresponding command via EXEC tool (not SPAWN — this is a quick CLI, not a daemon)
 3. Show the result to the user
