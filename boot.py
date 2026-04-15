@@ -207,8 +207,9 @@ def discover_skill_tools() -> list[dict]:
                 print(f"warning: tool {tool_name!r} in skill {rel_path!r} collides with kernel tool, skipping", file=sys.stderr)
                 continue
             if tool_name in seen:
-                print(f"warning: duplicate tool {tool_name!r} in skill {rel_path!r}, overriding previous", file=sys.stderr)
-                tools = [t for t in tools if t.get("name") != tool_name]
+                # Duplicate tool — keep the first one, skip the duplicate.
+                # This is a warning, not an error — boot continues.
+                continue
             seen.add(tool_name)
             if "exec" not in tool:
                 tool["exec"] = f"{VENV_PYTHON} skills/{rel_path}/run.py tool {tool_name}"

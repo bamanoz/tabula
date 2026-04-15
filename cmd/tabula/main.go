@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -342,10 +343,20 @@ type BootConfig struct {
 // runBoot executes the boot command and parses its JSON output.
 func runBoot(cmd string) (*BootConfig, error) {
 	c := mainShellCommand(cmd)
-	c.Stderr = os.Stderr
+	var stderr bytes.Buffer
+	c.Stderr = &stderr
 	out, err := c.Output()
 	if err != nil {
+		// Log stderr for debugging context, but report the real error
+		if stderr.Len() > 0 {
+			slog.Error("boot script stderr", "output", stderr.String())
+		}
 		return nil, fmt.Errorf("boot script failed: %v", err)
+	}
+
+	// Log warnings from boot script even on success
+	if stderr.Len() > 0 {
+		slog.Warn("boot script warnings", "output", stderr.String())
 	}
 
 	var config BootConfig
