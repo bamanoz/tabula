@@ -1,119 +1,111 @@
 package kernel
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"time"
 )
 
-func (h *Hub) handleConnect(c *Client, msg *Message) {
-	c.name = msg.Name
-	c.sends = make(map[string]bool)
-	for _, s := range msg.Sends {
-		c.sends[s] = true
+// connectPlan holds the complete result of a connect computation.
+type connectPlan struct {
+	name          string
+	sends         []string
+	receives      []string
+	hooks         []HookSubscription
+	depth         int
+	clientID      int
+	errorMsg      string
+	connectedMsg  *Message
+}
+
+// buildConnectPlan performs pure computation for a connect:
+// validates protocol version, spawn token, computes the next client ID.
+// No state mutations or messages are sent during this phase.
+func (h *Hub) buildConnectPlan(c *Client, msg *Message) connectPlan {
+	plan := connectPlan{
+		name:     msg.Name,
+		sends:    msg.Sends,
+		receives: msg.Receives,
+		hooks:    msg.Hooks,
 	}
-	c.receives = make(map[string]bool)
-	for _, r := range msg.Receives {
-		c.receives[r] = true
+
+	// Version 0 means legacy client — we accept it for backwards compatibility.
+	if msg.Version != 0 && msg.Version != ProtocolVersion {
+		return connectPlan{errorMsg: fmt.Sprintf("unsupported protocol version %d (kernel expects %d)", msg.Version, ProtocolVersion)}
 	}
-	c.id = h.nextClientID
-	// Resolve depth from spawn token (one-time use)
-	if msg.Token != "" {
-		if entry, ok := h.spawnTokens[msg.Token]; ok {
-			c.depth = entry.depth
-			delete(h.spawnTokens, msg.Token)
-		} else {
-			h.Logger.Warn("invalid spawn token", "from", msg.Name)
-		}
+
+	depth, err := h.policy.CanConnect(msg.Token)
+	if err != nil {
+		return connectPlan{errorMsg: err.Error()}
 	}
-	h.nextClientID++
-	c.connected = true
-	// Hook subscriptions
-	c.hooks = msg.Hooks
+	plan.depth = depth
+
+	// Compute the next ID without mutating the client.
+	id := h.nextClientID()
+	plan.clientID = id
+	plan.connectedMsg = &Message{
+		Type:    string(MsgConnected),
+		Version: ProtocolVersion,
+		ID:      fmt.Sprintf("c%d", id),
+	}
+
+	return plan
+}
+
+// applyConnectPlan executes the side effects of a connect:
+// mutates state (configure client, rebuild hooks) and sends messages.
+func (h *Hub) applyConnectPlan(c *Client, plan connectPlan) {
+	if plan.errorMsg != "" {
+		h.Logger.Warn("invalid spawn token", "from", plan.name)
+		c.SendMsg(&Message{
+			Type: string(MsgError),
+			Text: plan.errorMsg,
+		})
+		return
+	}
+
+	// Mutate state.
+	h.configureClient(c, plan.name, plan.sends, plan.receives, plan.hooks, plan.depth)
+	c.MarkProtocolReady()
 	h.rebuildHookIndex()
 
-	resp := &Message{
-		Type: "connected",
-		ID:   fmt.Sprintf("c%d", c.id),
-	}
-	c.SendMsg(resp)
-	h.Logger.Info("client connected", "name", c.name, "id", c.id)
+	// Send messages.
+	c.SendMsg(plan.connectedMsg)
+	h.Logger.Info("client connected", "name", c.name, "id", plan.clientID)
+}
+
+// nextClientID returns the next client ID without incrementing the counter.
+func (h *Hub) nextClientID() int {
+	return h.clients.NextID()
+}
+
+func (h *Hub) handleConnect(c *Client, msg *Message) {
+	plan := h.buildConnectPlan(c, msg)
+	h.applyConnectPlan(c, plan)
 }
 
 func (h *Hub) handleJoin(c *Client, msg *Message) {
-	c.session = msg.Session
-	resp := &Message{
-		Type:    "joined",
-		Session: c.session,
-	}
-	c.SendMsg(resp)
-	h.Logger.Info("client joined session", "name", c.name, "session", c.session)
-
-	// Notify other clients in the session
-	joinedNotify := &Message{
-		Type:    "member_joined",
-		Name:    c.name,
-		Session: c.session,
-	}
-	h.broadcastToSession(c.session, "member_joined", joinedNotify, c)
-
-	// Fire session_start hook (modifying) before sending init.
-	// Hooks can inject extra context via payload.context field.
-	hookPayload, _ := json.Marshal(map[string]string{
-		"session": c.session,
-		"client":  c.name,
-	})
-	result, _ := h.dispatchHook("session_start", hookPayload, c.session)
-
-	if c.canReceive("init") {
-		prompt := h.systemPrompt
-		// Apply context injection from session_start hooks.
-		var hookData struct{ Context string }
-		if json.Unmarshal(result, &hookData) == nil && hookData.Context != "" {
-			prompt = prompt + "\n\n" + hookData.Context
-		}
-		h.sendInitWithPrompt(c, prompt)
-	}
-}
-
-func (h *Hub) sendInitWithPrompt(c *Client, prompt string) {
-	resp := &Message{
-		Type:   "init",
-		Prompt: prompt,
-		Tools:  h.toolsJSON,
-	}
-	c.SendMsg(resp)
-	h.Logger.Debug("sent init", "client", c.name)
+	plan := h.buildJoinPlan(c, msg.Session)
+	h.applyJoinPlan(c, plan)
 }
 
 func (h *Hub) handleCancel(session string) {
-	// Broadcast cancel to session members (e.g. driver can abort LLM streaming)
-	h.broadcastToSession(session, "cancel", &Message{Type: "cancel"}, nil)
-	// Also SIGINT spawned processes in this session
-	for pid, proc := range h.spawned {
+	h.broadcastToSession(session, string(MsgCancel), &Message{Type: string(MsgCancel)}, nil)
+	h.forEachProcess(func(pid int, proc *SpawnedProcess) {
 		if proc.Alive && proc.Session == session {
 			h.Logger.Debug("sending SIGINT", "pid", pid)
 			proc.Signal()
 		}
-	}
+	})
 }
 
 func (h *Hub) generateSpawnToken(childDepth int) (string, error) {
-	// Prune expired tokens
-	now := time.Now()
-	for k, v := range h.spawnTokens {
-		if now.Sub(v.createdAt) > spawnTokenTTL {
-			delete(h.spawnTokens, k)
-		}
-	}
+	return h.tokens.Generate(childDepth, time.Now())
+}
 
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("generate spawn token: %w", err)
+func makeCapabilitySet(items []string) map[string]bool {
+	set := make(map[string]bool, len(items))
+	for _, item := range items {
+		set[item] = true
 	}
-	token := hex.EncodeToString(b)
-	h.spawnTokens[token] = spawnTokenEntry{depth: childDepth, createdAt: now}
-	return token, nil
+	return set
 }

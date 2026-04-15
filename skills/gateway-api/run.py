@@ -20,6 +20,11 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from skills.lib.kernel_client import KernelConnection
+from skills.lib.protocol import (
+    MSG_CONNECT, MSG_JOIN, MSG_MESSAGE, MSG_TOOL_USE,
+    MSG_TOOL_RESULT, MSG_MEMBER_JOINED,
+    TOOL_SPAWN, TOOL_KILL,
+)
 
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
 TABULA_HOME = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
@@ -59,21 +64,21 @@ class SessionState:
     def connect(self, driver_cmd: str):
         """Connect to kernel, join session, spawn driver."""
         self.conn.send({
-            "type": "connect",
+            "type": MSG_CONNECT,
             "name": f"api-{self.session_id}",
-            "sends": ["message", "cancel", "tool_use"],
-            "receives": ["stream_start", "stream_delta", "stream_end", "done", "error", "tool_result", "member_joined"],
+            "sends": [MSG_MESSAGE, MSG_CANCEL, MSG_TOOL_USE],
+            "receives": [MSG_STREAM_START, MSG_STREAM_DELTA, MSG_STREAM_END, MSG_DONE, MSG_ERROR, MSG_TOOL_RESULT, MSG_MEMBER_JOINED],
         })
         self.conn.recv()
-        self.conn.send({"type": "join", "session": self.session_id})
+        self.conn.send({"type": MSG_JOIN, "session": self.session_id})
         self.conn.recv()
 
         # Spawn driver
         spawn_cmd = f"{driver_cmd} --session {self.session_id}"
         self.conn.send({
-            "type": "tool_use",
+            "type": MSG_TOOL_USE,
             "id": "spawn-driver",
-            "name": "SPAWN",
+            "name": TOOL_SPAWN,
             "input": {"command": spawn_cmd},
         })
         deadline = time.time() + 15
@@ -81,7 +86,7 @@ class SessionState:
             msg = self.conn.recv(timeout=15)
             if msg is None:
                 raise RuntimeError("lost connection while spawning driver")
-            if msg.get("type") == "tool_result" and msg.get("id") == "spawn-driver":
+            if msg.get("type") == MSG_TOOL_RESULT and msg.get("id") == "spawn-driver":
                 output = msg.get("output", "")
                 m = re.match(r"PID (\d+)", output)
                 if m:
@@ -95,7 +100,7 @@ class SessionState:
             msg = self.conn.recv(timeout=10)
             if msg is None:
                 raise RuntimeError("lost connection waiting for driver")
-            if msg.get("type") == "member_joined":
+            if msg.get("type") == MSG_MEMBER_JOINED:
                 break
 
         # Start receiver thread
@@ -109,7 +114,7 @@ class SessionState:
                 self.events.put(("disconnect", ""))
                 return
             msg_type = msg.get("type")
-            if msg_type in ("stream_start", "stream_delta", "stream_end", "done", "error"):
+            if msg_type in (MSG_STREAM_START, MSG_STREAM_DELTA, MSG_STREAM_END, MSG_DONE, MSG_ERROR):
                 payload = msg.get("text", "")
                 self.events.put((msg_type, payload))
 
@@ -118,9 +123,9 @@ class SessionState:
         if self.driver_pid is not None:
             try:
                 self.conn.send({
-                    "type": "tool_use",
+                    "type": MSG_TOOL_USE,
                     "id": "kill-driver",
-                    "name": "KILL",
+                    "name": TOOL_KILL,
                     "input": {"pid": self.driver_pid},
                 })
             except Exception:

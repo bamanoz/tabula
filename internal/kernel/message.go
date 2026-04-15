@@ -4,6 +4,7 @@ import "encoding/json"
 
 // Message is the generic JSON message exchanged over WebSocket.
 type Message struct {
+	Version  int             `json:"version,omitempty"`
 	Type     string          `json:"type"`
 	Name     string          `json:"name,omitempty"`
 	Session  string          `json:"session,omitempty"`

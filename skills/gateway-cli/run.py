@@ -18,6 +18,12 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from skills.lib.kernel_client import KernelConnection
+from skills.lib.protocol import (
+    MSG_CONNECT, MSG_JOIN, MSG_MESSAGE, MSG_TOOL_USE, MSG_CANCEL,
+    MSG_STREAM_START, MSG_STREAM_DELTA, MSG_STREAM_END,
+    MSG_DONE, MSG_ERROR, MSG_TOOL_RESULT, MSG_STATUS,
+    TOOL_SPAWN, TOOL_KILL,
+)
 
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
 
@@ -142,17 +148,17 @@ class Gateway:
     def connect(self):
         self.conn.send(
             {
-                "type": "connect",
+                "type": MSG_CONNECT,
                 "name": f"cli-{self.session_id}",
-                "sends": ["message", "cancel", "tool_use"],
+                "sends": [MSG_MESSAGE, MSG_CANCEL, MSG_TOOL_USE],
                 "receives": [
-                    "stream_start", "stream_delta", "stream_end",
-                    "done", "error", "tool_result", "status",
+                    MSG_STREAM_START, MSG_STREAM_DELTA, MSG_STREAM_END,
+                    MSG_DONE, MSG_ERROR, MSG_TOOL_RESULT, MSG_STATUS,
                 ],
             }
         )
         self.conn.recv()
-        self.conn.send({"type": "join", "session": self.session_id})
+        self.conn.send({"type": MSG_JOIN, "session": self.session_id})
         self.conn.recv()
 
         if self.driver_cmd:
@@ -161,9 +167,9 @@ class Gateway:
     def _spawn_driver(self):
         spawn_cmd = f"{self.driver_cmd} --session {self.session_id}"
         self.conn.send({
-            "type": "tool_use",
+            "type": MSG_TOOL_USE,
             "id": "spawn-driver",
-            "name": "SPAWN",
+            "name": TOOL_SPAWN,
             "input": {"command": spawn_cmd},
         })
         deadline = time.time() + 15
@@ -171,7 +177,7 @@ class Gateway:
             msg = self.conn.recv(timeout=15)
             if msg is None:
                 raise RuntimeError("lost connection while spawning driver")
-            if msg.get("type") == "tool_result" and msg.get("id") == "spawn-driver":
+            if msg.get("type") == MSG_TOOL_RESULT and msg.get("id") == "spawn-driver":
                 output = msg.get("output", "")
                 m = re.match(r"PID (\d+)", output)
                 if m:
@@ -185,9 +191,9 @@ class Gateway:
             return
         try:
             self.conn.send({
-                "type": "tool_use",
+                "type": MSG_TOOL_USE,
                 "id": "kill-driver",
-                "name": "KILL",
+                "name": TOOL_KILL,
                 "input": {"pid": self.driver_pid},
             })
         except Exception:
@@ -220,18 +226,18 @@ class Gateway:
                 self._wake()
                 return
             msg_type = msg.get("type")
-            if msg_type == "stream_start":
-                self._events.put(("stream_start", ""))
-            elif msg_type == "stream_delta":
-                self._events.put(("stream_delta", msg.get("text", "")))
-            elif msg_type == "stream_end":
-                self._events.put(("stream_end", ""))
-            elif msg_type == "done":
-                self._events.put(("done", ""))
-            elif msg_type == "error":
-                self._events.put(("error", msg.get("text", "unknown error")))
-            elif msg_type == "status":
-                self._events.put(("status", msg.get("text", "")))
+            if msg_type == MSG_STREAM_START:
+                self._events.put((MSG_STREAM_START, ""))
+            elif msg_type == MSG_STREAM_DELTA:
+                self._events.put((MSG_STREAM_DELTA, msg.get("text", "")))
+            elif msg_type == MSG_STREAM_END:
+                self._events.put((MSG_STREAM_END, ""))
+            elif msg_type == MSG_DONE:
+                self._events.put((MSG_DONE, ""))
+            elif msg_type == MSG_ERROR:
+                self._events.put((MSG_ERROR, msg.get("text", "unknown error")))
+            elif msg_type == MSG_STATUS:
+                self._events.put((MSG_STATUS, msg.get("text", "")))
             self._wake()
 
     # ── Input (raw mode) ──────────────────────────────────────
@@ -252,7 +258,7 @@ class Gateway:
                 # Check for unsolicited server events first
                 try:
                     event = self._events.get_nowait()
-                    if event[0] == "stream_start":
+                    if event[0] == MSG_STREAM_START:
                         self._clear_line()
                         self._events.put(event)
                         return ""
@@ -364,7 +370,7 @@ class Gateway:
 
     def _cancel_turn(self):
         """Send cancel and return immediately. Stale events flushed before next turn."""
-        self.conn.send({"type": "cancel"})
+        self.conn.send({"type": MSG_CANCEL})
         self._write("\n[cancelled]\n\n")
 
     def _flush_events(self):
@@ -430,12 +436,12 @@ class Gateway:
             except queue.Empty:
                 continue
 
-            if kind == "stream_start":
+            if kind == MSG_STREAM_START:
                 if waiting:
                     waiting = False
                     spinner_stop.set()
                     spinner_thread.join()
-            elif kind == "stream_delta":
+            elif kind == MSG_STREAM_DELTA:
                 if waiting:
                     waiting = False
                     spinner_stop.set()
@@ -448,11 +454,11 @@ class Gateway:
                         continue
                 self._write(payload)
                 has_output = True
-            elif kind == "stream_end":
+            elif kind == MSG_STREAM_END:
                 if has_output:
                     self._write("\n")
                     has_output = False
-            elif kind == "done":
+            elif kind == MSG_DONE:
                 if waiting:
                     spinner_stop.set()
                     spinner_thread.join()
@@ -466,7 +472,7 @@ class Gateway:
                 else:
                     self._write(f"\n[{elapsed:.1f}s]\n\n")
                 return
-            elif kind == "error":
+            elif kind == MSG_ERROR:
                 if waiting:
                     spinner_stop.set()
                     spinner_thread.join()
@@ -475,7 +481,7 @@ class Gateway:
                     self._write("\n")
                     has_output = False
                 self._write(f"error: {payload}\n")
-            elif kind == "status":
+            elif kind == MSG_STATUS:
                 pass
             elif kind == "disconnect":
                 spinner_stop.set()
@@ -521,7 +527,7 @@ class Gateway:
                 text += f"\n\nUser request: {args}"
             self.in_turn = True
             self._flush_events()
-            self.conn.send({"type": "message", "text": text})
+            self.conn.send({"type": MSG_MESSAGE, "text": text})
             self._process_turn()
             self.in_turn = False
             return True
@@ -571,7 +577,7 @@ class Gateway:
                     # Check if there's an unsolicited turn waiting
                     try:
                         event = self._events.get_nowait()
-                        if event[0] in ("stream_start", "stream_delta"):
+                        if event[0] in (MSG_STREAM_START, MSG_STREAM_DELTA):
                             self.in_turn = True
                             self._events.put(event)
                             self._process_turn()
@@ -592,7 +598,7 @@ class Gateway:
 
                 self.in_turn = True
                 self._flush_events()
-                self.conn.send({"type": "message", "text": line})
+                self.conn.send({"type": MSG_MESSAGE, "text": line})
                 self._process_turn()
                 self.in_turn = False
         finally:

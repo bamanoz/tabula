@@ -46,6 +46,8 @@ func newTestEnv(t *testing.T) *testEnv {
 	t.Cleanup(func() {
 		hub.Shutdown()
 		server.Close()
+		// Give readPump goroutines time to finish Unregister after server.Close()
+		time.Sleep(50 * time.Millisecond)
 	})
 	return &testEnv{Hub: hub, Server: server, t: t}
 }
@@ -95,6 +97,19 @@ func (e *testEnv) connectAndJoin(name, session string, sends, receives []string)
 	return conn
 }
 
+// disconnectClient closes the WebSocket connection and waits for cleanup.
+func (e *testEnv) disconnectClient(name string) {
+	e.t.Helper()
+	for _, c := range e.Hub.clients.All() {
+		if c.name == name {
+			c.conn.Close()
+			// Give the readPump goroutine time to clean up
+			time.Sleep(50 * time.Millisecond)
+			return
+		}
+	}
+}
+
 // writeJSON sends a JSON message on a WS connection.
 func writeJSON(t *testing.T, conn *websocket.Conn, v any) {
 	t.Helper()
@@ -129,9 +144,7 @@ func readMsgTimeout(t *testing.T, conn *websocket.Conn, d time.Duration) *Messag
 func (e *testEnv) connectWithDepth(name string, depth int, sends, receives []string) *websocket.Conn {
 	e.t.Helper()
 	// Generate a spawn token in the hub (simulates kernel-issued token)
-	e.Hub.mu.Lock()
 	token, err := e.Hub.generateSpawnToken(depth)
-	e.Hub.mu.Unlock()
 	if err != nil {
 		e.t.Fatalf("generateSpawnToken: %v", err)
 	}
@@ -796,25 +809,18 @@ func TestCancel(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Verify process is no longer alive
-	env.Hub.mu.Lock()
-	proc, ok := env.Hub.spawned[pid]
-	var alive bool
-	if ok {
-		alive = proc.Alive
-	}
-	env.Hub.mu.Unlock()
+	proc, ok := env.Hub.processByPID(pid)
+	alive := ok && proc.Alive
 
 	// The process may or may not have been reaped yet, but it should have received SIGINT
 	// We can verify by checking if the process is still running after a bit
 	time.Sleep(500 * time.Millisecond)
 
-	env.Hub.mu.Lock()
-	if proc, ok := env.Hub.spawned[pid]; ok {
+	if proc, ok := env.Hub.processByPID(pid); ok {
 		// After SIGINT + wait, the process shouldn't be alive
 		// (sleep exits on SIGINT on most platforms)
 		_ = proc
 	}
-	env.Hub.mu.Unlock()
 
 	// At minimum, verify no panic occurred and cancel was processed
 	_ = alive
@@ -859,24 +865,20 @@ func TestCancelScopedToSession(t *testing.T) {
 	writeJSON(t, connA, Message{Type: "cancel"})
 	time.Sleep(500 * time.Millisecond)
 
-	env.Hub.mu.Lock()
-	procB, ok := env.Hub.spawned[pidB]
+	procB, ok := env.Hub.processByPID(pidB)
 	bAlive := ok && procB.Alive
-	env.Hub.mu.Unlock()
 
 	if !bAlive {
 		t.Error("cancel from sessA should not kill sessB's process")
 	}
 
 	// Clean up
-	env.Hub.mu.Lock()
-	if p, ok := env.Hub.spawned[pidA]; ok && p.Alive {
+	if p, ok := env.Hub.processByPID(pidA); ok && p.Alive {
 		p.Kill()
 	}
-	if p, ok := env.Hub.spawned[pidB]; ok && p.Alive {
+	if p, ok := env.Hub.processByPID(pidB); ok && p.Alive {
 		p.Kill()
 	}
-	env.Hub.mu.Unlock()
 }
 
 func TestExecWithSpecialCharacters(t *testing.T) {
@@ -1323,9 +1325,7 @@ func TestSpawnTokenPropagatedInEnv(t *testing.T) {
 	}
 
 	// Verify the token resolves to depth=2 in hub
-	env.Hub.mu.Lock()
-	entry, ok := env.Hub.spawnTokens[token]
-	env.Hub.mu.Unlock()
+	entry, ok := env.Hub.spawnTokenEntry(token)
 	if !ok {
 		t.Errorf("token %q not found in hub spawnTokens", token)
 	} else if entry.depth != 2 {
@@ -1383,9 +1383,7 @@ func TestSpawnTokenOneTimeUse(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Create a token for depth=1
-	env.Hub.mu.Lock()
 	token, err := env.Hub.generateSpawnToken(1)
-	env.Hub.mu.Unlock()
 	if err != nil {
 		t.Fatalf("generateSpawnToken: %v", err)
 	}
@@ -1405,19 +1403,12 @@ func TestSpawnTokenOneTimeUse(t *testing.T) {
 	}
 
 	// Verify depth was set
-	env.Hub.mu.Lock()
-	var firstDepth int
-	for c := range env.Hub.clients {
-		if c.name == "first" {
-			firstDepth = c.depth
-		}
-	}
-	env.Hub.mu.Unlock()
+	firstDepth, _ := env.Hub.clientDepthByName("first")
 	if firstDepth != 1 {
 		t.Errorf("first client: expected depth 1, got %d", firstDepth)
 	}
 
-	// Second connect with same token — should get depth=0 (token consumed)
+	// Second connect with same token should be rejected.
 	conn2 := env.dial()
 	writeJSON(t, conn2, Message{
 		Type:     "connect",
@@ -1427,20 +1418,11 @@ func TestSpawnTokenOneTimeUse(t *testing.T) {
 		Token:    token,
 	})
 	msg2 := readMsg(t, conn2)
-	if msg2.Type != "connected" {
-		t.Fatalf("expected connected, got %s", msg2.Type)
+	if msg2.Type != "error" {
+		t.Fatalf("expected error, got %s", msg2.Type)
 	}
-
-	env.Hub.mu.Lock()
-	var secondDepth int
-	for c := range env.Hub.clients {
-		if c.name == "second" {
-			secondDepth = c.depth
-		}
-	}
-	env.Hub.mu.Unlock()
-	if secondDepth != 0 {
-		t.Errorf("second client (reused token): expected depth 0, got %d", secondDepth)
+	if !strings.Contains(msg2.Text, "invalid or expired spawn token") {
+		t.Fatalf("unexpected error text: %q", msg2.Text)
 	}
 }
 
@@ -1452,14 +1434,7 @@ func TestNoTokenMeansDepthZero(t *testing.T) {
 		[]string{"tool_use"}, []string{"init", "tool_result"})
 	readMsg(t, conn) // init
 
-	env.Hub.mu.Lock()
-	var depth int
-	for c := range env.Hub.clients {
-		if c.name == "driver" {
-			depth = c.depth
-		}
-	}
-	env.Hub.mu.Unlock()
+	depth, _ := env.Hub.clientDepthByName("driver")
 
 	if depth != 0 {
 		t.Errorf("no-token client: expected depth 0, got %d", depth)
@@ -1620,39 +1595,59 @@ func TestShutdownGraceful(t *testing.T) {
 	}
 
 	// Verify process is no longer alive
-	env.Hub.mu.Lock()
-	for _, proc := range env.Hub.spawned {
+	env.Hub.forEachProcess(func(_ int, proc *SpawnedProcess) {
 		if proc.Alive {
 			t.Error("process still alive after shutdown")
 		}
-	}
-	env.Hub.mu.Unlock()
+	})
 }
 
 func TestSpawnTokenExpiry(t *testing.T) {
 	env := newTestEnv(t)
 
-	env.Hub.mu.Lock()
-	// Insert an expired token manually
-	env.Hub.spawnTokens["expired-token"] = spawnTokenEntry{
+	env.Hub.seedSpawnToken("expired-token", spawnTokenEntry{
 		depth:     1,
 		createdAt: time.Now().Add(-2 * spawnTokenTTL),
-	}
-	// Generate a fresh token (should prune the expired one)
+	})
+
 	token, err := env.Hub.generateSpawnToken(3)
 	if err != nil {
-		env.Hub.mu.Unlock()
 		t.Fatalf("generateSpawnToken: %v", err)
 	}
-	_, expiredExists := env.Hub.spawnTokens["expired-token"]
-	_, freshExists := env.Hub.spawnTokens[token]
-	env.Hub.mu.Unlock()
+	_, expiredExists := env.Hub.spawnTokenEntry("expired-token")
+	_, freshExists := env.Hub.spawnTokenEntry(token)
 
 	if expiredExists {
 		t.Error("expired token should have been pruned")
 	}
 	if !freshExists {
 		t.Error("fresh token should exist")
+	}
+}
+
+func TestExpiredSpawnTokenRejectedOnConnect(t *testing.T) {
+	env := newTestEnv(t)
+
+	env.Hub.seedSpawnToken("expired-token", spawnTokenEntry{
+		depth:     1,
+		createdAt: time.Now().Add(-2 * spawnTokenTTL),
+	})
+
+	conn := env.dial()
+	writeJSON(t, conn, Message{
+		Type:     "connect",
+		Name:     "expired",
+		Sends:    []string{"tool_use"},
+		Receives: []string{"init", "tool_result"},
+		Token:    "expired-token",
+	})
+
+	msg := readMsg(t, conn)
+	if msg.Type != "error" {
+		t.Fatalf("expected error, got %s", msg.Type)
+	}
+	if !strings.Contains(msg.Text, "invalid or expired spawn token") {
+		t.Fatalf("unexpected error text: %q", msg.Text)
 	}
 }
 
@@ -1671,5 +1666,143 @@ func TestMaxClients(t *testing.T) {
 	c := NewClient(env.Hub, conn3)
 	if c != nil {
 		t.Error("expected nil client when at capacity")
+	}
+}
+
+// --- Protocol version and message validation tests ---
+
+func TestProtocolVersionInConnectedResponse(t *testing.T) {
+	env := newTestEnv(t)
+	conn := env.dial()
+	writeJSON(t, conn, Message{
+		Type:     "connect",
+		Name:     "versioned-client",
+		Sends:    []string{"message"},
+		Receives: []string{"init"},
+		Version:  ProtocolVersion,
+	})
+	msg := readMsg(t, conn)
+	if msg.Type != "connected" {
+		t.Fatalf("expected connected, got %s", msg.Type)
+	}
+	if msg.Version != ProtocolVersion {
+		t.Errorf("expected version %d, got %d", ProtocolVersion, msg.Version)
+	}
+}
+
+func TestLegacyClientAccepted(t *testing.T) {
+	env := newTestEnv(t)
+	conn := env.dial()
+	// Version 0 = legacy, should be accepted
+	writeJSON(t, conn, Message{
+		Type:  "connect",
+		Name:  "legacy-client",
+		Sends: []string{"message"},
+		// no Version field — defaults to 0
+	})
+	msg := readMsg(t, conn)
+	if msg.Type != "connected" {
+		t.Fatalf("expected connected for legacy client, got %s", msg.Type)
+	}
+}
+
+func TestUnsupportedProtocolVersionRejected(t *testing.T) {
+	env := newTestEnv(t)
+	conn := env.dial()
+	writeJSON(t, conn, Message{
+		Type:    "connect",
+		Name:    "future-client",
+		Sends:   []string{"message"},
+		Version: 999, // future incompatible version
+	})
+	msg := readMsg(t, conn)
+	if msg.Type != "error" {
+		t.Fatalf("expected error for unsupported version, got %s", msg.Type)
+	}
+	if !strings.Contains(msg.Text, "unsupported protocol version") {
+		t.Errorf("unexpected error text: %q", msg.Text)
+	}
+}
+
+func TestValidateMessageMissingType(t *testing.T) {
+	err := validateMessage(&Message{})
+	if err == nil {
+		t.Fatal("expected error for missing type")
+	}
+	if !strings.Contains(err.Error(), "missing message type") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateConnectMissingName(t *testing.T) {
+	err := validateMessage(&Message{Type: "connect"})
+	if err == nil {
+		t.Fatal("expected error for connect without name")
+	}
+	if !strings.Contains(err.Error(), "missing name") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateJoinMissingSession(t *testing.T) {
+	err := validateMessage(&Message{Type: "join"})
+	if err == nil {
+		t.Fatal("expected error for join without session")
+	}
+	if !strings.Contains(err.Error(), "missing session") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateToolUseMissingFields(t *testing.T) {
+	err := validateMessage(&Message{Type: "tool_use"})
+	if err == nil {
+		t.Fatal("expected error for tool_use without id/name")
+	}
+	if !strings.Contains(err.Error(), "missing id") {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	err = validateMessage(&Message{Type: "tool_use", ID: "t1"})
+	if err == nil {
+		t.Fatal("expected error for tool_use without name")
+	}
+	if !strings.Contains(err.Error(), "missing name") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateHookResultMissingFields(t *testing.T) {
+	err := validateMessage(&Message{Type: "hook_result"})
+	if err == nil {
+		t.Fatal("expected error for hook_result without id/action")
+	}
+	if !strings.Contains(err.Error(), "missing id") {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	err = validateMessage(&Message{Type: "hook_result", ID: "h1"})
+	if err == nil {
+		t.Fatal("expected error for hook_result without action")
+	}
+	if !strings.Contains(err.Error(), "missing action") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateValidMessages(t *testing.T) {
+	valid := []*Message{
+		{Type: "connect", Name: "test", Sends: []string{"message"}},
+		{Type: "join", Session: "main"},
+		{Type: "message", Text: "hello"},
+		{Type: "tool_use", ID: "t1", Name: "EXEC"},
+		{Type: "hook_result", ID: "h1", Action: "pass"},
+		{Type: "done"},
+		{Type: "cancel"},
+	}
+	for _, msg := range valid {
+		if err := validateMessage(msg); err != nil {
+			t.Errorf("expected valid message %+v, got error: %v", msg, err)
+		}
 	}
 }

@@ -14,18 +14,22 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from skills.lib.kernel_client import KernelConnection
+from skills.lib.protocol import (
+    MSG_CONNECT, MSG_HOOK, MSG_HOOK_RESULT, HOOK_PASS,
+    HOOK_AFTER_MESSAGE, HOOK_AFTER_TOOL_CALL, HOOK_SESSION_START,
+)
 
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
 DEFAULT_LOG = os.path.join(os.path.expanduser("~"), ".tabula", "logs", "hooks.jsonl")
 
 HOOK_EVENTS = [
-    {"event": "after_message", "priority": 0},
-    {"event": "after_tool_call", "priority": 0},
-    {"event": "session_start", "priority": 0},
+    {"event": HOOK_AFTER_MESSAGE, "priority": 0},
+    {"event": HOOK_AFTER_TOOL_CALL, "priority": 0},
+    {"event": HOOK_SESSION_START, "priority": 0},
 ]
 
 # Modifying hooks require a hook_result response.
-MODIFYING_EVENTS = {"session_start"}
+MODIFYING_EVENTS = {HOOK_SESSION_START}
 
 
 def run(log_file: str, url: str = TABULA_URL):
@@ -33,10 +37,10 @@ def run(log_file: str, url: str = TABULA_URL):
 
     conn = KernelConnection(url)
     conn.send({
-        "type": "connect",
+        "type": MSG_CONNECT,
         "name": "hook-logger",
-        "sends": ["hook_result"],
-        "receives": ["hook"],
+        "sends": [MSG_HOOK_RESULT],
+        "receives": [MSG_HOOK],
         "hooks": HOOK_EVENTS,
     })
     conn.recv()  # connected
@@ -48,7 +52,7 @@ def run(log_file: str, url: str = TABULA_URL):
             msg = conn.recv()
             if msg is None:
                 break
-            if msg.get("type") != "hook":
+            if msg.get("type") != MSG_HOOK:
                 continue
 
             entry = {
@@ -64,9 +68,9 @@ def run(log_file: str, url: str = TABULA_URL):
             # Modifying hooks require a response.
             if msg.get("name", "") in MODIFYING_EVENTS:
                 conn.send({
-                    "type": "hook_result",
+                    "type": MSG_HOOK_RESULT,
                     "id": msg["id"],
-                    "action": "pass",
+                    "action": HOOK_PASS,
                 })
     except KeyboardInterrupt:
         pass

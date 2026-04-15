@@ -7,11 +7,13 @@ import (
 	"syscall"
 )
 
-// signalProcess sends an interrupt signal to a process.
+// Signal sends SIGINT to the process.
 func (p *SpawnedProcess) Signal() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.Cmd.Process != nil {
+	if p.Handle != nil {
+		_ = p.Handle.Signal()
+	} else if p.Cmd.Process != nil {
 		_ = p.Cmd.Process.Signal(syscall.SIGINT)
 	}
 }
@@ -19,11 +21,17 @@ func (p *SpawnedProcess) Signal() {
 // afterSpawn starts a goroutine that waits for the process to exit.
 func (h *Hub) afterSpawn(pid int, proc *SpawnedProcess) {
 	go func() {
-		err := proc.Cmd.Wait()
+		var err error
+		if proc.Handle != nil {
+			err = proc.Handle.Wait()
+		} else {
+			err = proc.Cmd.Wait()
+		}
 
-		h.mu.Lock()
-		proc.Alive = false
-		close(proc.done)
+		proc, ok := h.processes.MarkExited(pid)
+		if !ok {
+			return
+		}
 
 		if err != nil {
 			exitCode := 1
@@ -39,7 +47,6 @@ func (h *Hub) afterSpawn(pid int, proc *SpawnedProcess) {
 		} else {
 			h.Logger.Info("process exited", "pid", pid, "command", proc.Command)
 		}
-		h.mu.Unlock()
 	}()
 }
 

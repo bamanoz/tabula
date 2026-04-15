@@ -2,25 +2,38 @@ package kernel
 
 import (
 	"encoding/json"
+	"sync"
 
 	"github.com/gorilla/websocket"
 )
 
 const sendBufSize = 64
 
+// ClientState represents the protocol lifecycle state of a client.
+type ClientState string
+
+const (
+	ClientSocketConnected ClientState = "socket_connected"
+	ClientProtocolReady   ClientState = "protocol_ready"
+	ClientJoined          ClientState = "joined"
+	ClientClosed          ClientState = "closed"
+)
+
 // Client represents a single WebSocket connection.
 type Client struct {
-	hub       *Hub
-	conn      *websocket.Conn
-	name      string
-	session   string
-	id        int
-	depth     int
-	sends     map[string]bool
-	receives  map[string]bool
-	hooks     []HookSubscription
-	sendCh    chan []byte
-	connected bool
+	hub        *Hub
+	conn       *websocket.Conn
+	name       string
+	session    string
+	id         int
+	depth      int
+	sends      map[string]bool
+	receives   map[string]bool
+	hooks      []HookSubscription
+	sendCh     chan []byte
+	sendMu     sync.Mutex
+	sendClosed bool
+	state      ClientState
 }
 
 // NewClient creates a client and starts its pumps.
@@ -30,6 +43,7 @@ func NewClient(hub *Hub, conn *websocket.Conn) *Client {
 		hub:    hub,
 		conn:   conn,
 		sendCh: make(chan []byte, sendBufSize),
+		state:  ClientSocketConnected,
 	}
 	if !hub.Register(c) {
 		conn.Close()
@@ -38,6 +52,41 @@ func NewClient(hub *Hub, conn *websocket.Conn) *Client {
 	go c.writePump()
 	go c.readPump()
 	return c
+}
+
+// transition moves the client to a new state, returning false if invalid.
+func (c *Client) transition(to ClientState) bool {
+	valid := map[ClientState]map[ClientState]bool{
+		ClientSocketConnected: {ClientProtocolReady: true, ClientClosed: true},
+		ClientProtocolReady:   {ClientJoined: true, ClientClosed: true},
+		ClientJoined:          {ClientClosed: true},
+		ClientClosed:          {},
+	}
+	if !valid[c.state][to] {
+		return false
+	}
+	c.state = to
+	return true
+}
+
+// MarkProtocolReady transitions from socket_connected to protocol_ready.
+func (c *Client) MarkProtocolReady() bool {
+	return c.transition(ClientProtocolReady)
+}
+
+// MarkJoined transitions to joined state.
+func (c *Client) MarkJoined() bool {
+	return c.transition(ClientJoined)
+}
+
+// MarkClosed transitions to closed state.
+func (c *Client) MarkClosed() {
+	c.transition(ClientClosed)
+}
+
+// IsConnected returns true if the client is in a live state.
+func (c *Client) IsConnected() bool {
+	return c.state != ClientClosed
 }
 
 func (c *Client) canSend(msgType string) bool {
@@ -59,6 +108,11 @@ func (c *Client) SendMsg(msg *Message) {
 
 // SendRaw queues raw JSON bytes for sending.
 func (c *Client) SendRaw(data []byte) {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if c.sendClosed {
+		return
+	}
 	select {
 	case c.sendCh <- data:
 	default:
@@ -71,7 +125,7 @@ func (c *Client) readPump() {
 	defer func() {
 		c.hub.Unregister(c)
 		c.conn.Close()
-		close(c.sendCh)
+		c.closeSend()
 	}()
 
 	for {
@@ -86,6 +140,12 @@ func (c *Client) readPump() {
 			continue
 		}
 
+		if err := validateMessage(&msg); err != nil {
+			c.hub.Logger.Warn("invalid message from client", "client", c.name, "error", err)
+			c.SendMsg(&Message{Type: string(MsgError), Text: err.Error()})
+			continue
+		}
+
 		c.hub.HandleMessage(c, &msg)
 	}
 }
@@ -97,4 +157,14 @@ func (c *Client) writePump() {
 			break
 		}
 	}
+}
+
+func (c *Client) closeSend() {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if c.sendClosed {
+		return
+	}
+	c.sendClosed = true
+	close(c.sendCh)
 }

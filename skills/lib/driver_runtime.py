@@ -10,6 +10,13 @@ import time
 from dataclasses import dataclass
 
 from .kernel_client import KernelConnection
+from .protocol import (
+    MSG_CONNECT, MSG_CONNECTED, MSG_JOIN, MSG_JOINED, MSG_INIT,
+    MSG_MESSAGE, MSG_TOOL_USE, MSG_TOOL_RESULT, MSG_DONE,
+    MSG_STREAM_START, MSG_STREAM_DELTA, MSG_STREAM_END,
+    MSG_ERROR, MSG_CANCEL, MSG_STATUS, MSG_MEMBER_JOINED,
+    TOOL_SPAWN,
+)
 from .providers import ProviderSession, ToolCall, ToolResult
 
 
@@ -92,14 +99,14 @@ class DriverRuntime:
     def connect(self):
         self.conn.send(
             {
-                "type": "connect",
+                "type": MSG_CONNECT,
                 "name": self.config.name,
-                "sends": ["stream_start", "stream_delta", "stream_end", "tool_use", "done", "status"],
-                "receives": ["message", "tool_result", "init", "error", "cancel"],
+                "sends": [MSG_STREAM_START, MSG_STREAM_DELTA, MSG_STREAM_END, MSG_TOOL_USE, MSG_DONE, MSG_STATUS],
+                "receives": [MSG_MESSAGE, MSG_TOOL_RESULT, MSG_INIT, MSG_ERROR, MSG_CANCEL],
             }
         )
         self.conn.recv()
-        self.conn.send({"type": "join", "session": self.config.session})
+        self.conn.send({"type": MSG_JOIN, "session": self.config.session})
         self.conn.recv()
 
     def process_turn(self, suppress_stream: bool = False):
@@ -114,7 +121,7 @@ class DriverRuntime:
         except AbortError:
             self.log("turn aborted")
             self.provider.record_aborted_turn()
-            self.conn.send({"type": "done"})
+            self.conn.send({"type": MSG_DONE})
 
     def _do_process_turn(self, suppress_stream: bool):
         stream_started = False
@@ -128,10 +135,10 @@ class DriverRuntime:
         window = get_context_window(model) if model else 0
         self.log(f"compact check: {len(messages)} msgs, ~{est} est tokens, threshold={int(window * COMPACT_THRESHOLD)}")
         if self.provider.needs_compact():
-            self.conn.send({"type": "status", "text": "compacting conversation"})
+            self.conn.send({"type": MSG_STATUS, "text": "compacting conversation"})
         summary = self.provider.compact(logger=self.log)
         if summary:
-            self.conn.send({"type": "status", "text": ""})
+            self.conn.send({"type": MSG_STATUS, "text": ""})
             self.log("conversation compacted")
             self._write_history({"role": "system", "type": "compaction", "summary": summary})
 
@@ -140,9 +147,9 @@ class DriverRuntime:
             if suppress_stream:
                 return
             if not stream_started:
-                self.conn.send({"type": "stream_start"})
+                self.conn.send({"type": MSG_STREAM_START})
                 stream_started = True
-            self.conn.send({"type": "stream_delta", "text": text})
+            self.conn.send({"type": MSG_STREAM_DELTA, "text": text})
 
         try:
             outcome = self.provider.generate(on_text_delta)
@@ -154,18 +161,18 @@ class DriverRuntime:
             if self.collecting:
                 self._collect_start = time.time()
                 return
-            self.conn.send({"type": "stream_start"})
-            self.conn.send({"type": "stream_delta", "text": f"<error>{exc}</error>"})
-            self.conn.send({"type": "stream_end"})
-            self.conn.send({"type": "done"})
+            self.conn.send({"type": MSG_STREAM_START})
+            self.conn.send({"type": MSG_STREAM_DELTA, "text": f"<error>{exc}</error>"})
+            self.conn.send({"type": MSG_STREAM_END})
+            self.conn.send({"type": MSG_DONE})
             return
         finally:
             if stream_started:
-                self.conn.send({"type": "stream_end"})
+                self.conn.send({"type": MSG_STREAM_END})
 
         if self.aborted:
             self.provider.record_aborted_turn()
-            self.conn.send({"type": "done"})
+            self.conn.send({"type": MSG_DONE})
             return
 
         # Record assistant output to history
@@ -176,7 +183,7 @@ class DriverRuntime:
 
         spawn_ids = set()
         for tool in outcome.tool_calls:
-            if tool.name == "SPAWN":
+            if tool.name == TOOL_SPAWN:
                 spawn_id = extract_spawn_id(tool.input.get("command", ""))
                 if spawn_id:
                     spawn_ids.add(spawn_id)
@@ -193,7 +200,7 @@ class DriverRuntime:
             for tool in outcome.tool_calls:
                 self.conn.send(
                     {
-                        "type": "tool_use",
+                        "type": MSG_TOOL_USE,
                         "id": tool.id,
                         "name": tool.name,
                         "input": tool.input,
@@ -215,9 +222,9 @@ class DriverRuntime:
             return
 
         if suppress_stream and outcome.final_text.strip():
-            self.conn.send({"type": "stream_start"})
-            self.conn.send({"type": "stream_delta", "text": outcome.final_text})
-            self.conn.send({"type": "stream_end"})
+            self.conn.send({"type": MSG_STREAM_START})
+            self.conn.send({"type": MSG_STREAM_DELTA, "text": outcome.final_text})
+            self.conn.send({"type": MSG_STREAM_END})
 
         if outcome.usage:
             from .compaction import get_context_window, COMPACT_THRESHOLD
@@ -228,7 +235,7 @@ class DriverRuntime:
             pct = f"{inp / ctx * 100:.1f}%" if ctx else "?"
             self.log(f"usage: input={inp} output={out} context={pct} (compaction at {threshold})")
 
-        self.conn.send({"type": "done"})
+        self.conn.send({"type": MSG_DONE})
 
     def _flush_collected(self):
         if not self.provider:
@@ -418,13 +425,13 @@ class DriverRuntime:
                 break
 
             msg_type = msg.get("type")
-            if msg_type == "init":
+            if msg_type == MSG_INIT:
                 self.handle_init(msg)
-            elif msg_type == "message":
+            elif msg_type == MSG_MESSAGE:
                 self.handle_message(msg)
-            elif msg_type == "tool_result":
+            elif msg_type == MSG_TOOL_RESULT:
                 self.handle_tool_result(msg)
-            elif msg_type == "error":
+            elif msg_type == MSG_ERROR:
                 self.handle_error(msg)
-            elif msg_type == "cancel":
+            elif msg_type == MSG_CANCEL:
                 self.abort()

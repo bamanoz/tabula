@@ -13,6 +13,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from skills.lib.kernel_client import KernelConnection
+from skills.lib.protocol import MSG_CONNECT, MSG_JOIN, MSG_MESSAGE, MSG_INIT
 
 
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
@@ -36,7 +37,7 @@ def simulate(task: str, agent_id: str, index: int, max_turns: int, sleep_ms: int
 
 
 def send_result(conn: KernelConnection, parent_session: str, agent_id: str, text: str):
-    conn.send({"type": "message", "session": parent_session, "id": agent_id, "text": text})
+    conn.send({"type": MSG_MESSAGE, "session": parent_session, "id": agent_id, "text": text})
 
 
 def main():
@@ -53,19 +54,19 @@ def main():
     session_name = f"subagent-{args.id}"
     conn = KernelConnection(TABULA_URL)
     connect_msg = {
-        "type": "connect",
+        "type": MSG_CONNECT,
         "name": session_name,
-        "sends": ["message"],
-        "receives": ["message", "init"],
+        "sends": [MSG_MESSAGE],
+        "receives": [MSG_MESSAGE, MSG_INIT],
     }
     if TABULA_SPAWN_TOKEN:
         connect_msg["token"] = TABULA_SPAWN_TOKEN
     conn.send(connect_msg)
     conn.recv()
-    conn.send({"type": "join", "session": session_name})
+    conn.send({"type": MSG_JOIN, "session": session_name})
     conn.recv()
     init_msg = conn.recv()
-    if init_msg is None or init_msg.get("type") != "init":
+    if init_msg is None or init_msg.get("type") != MSG_INIT:
         log("did not receive init")
 
     result = simulate(args.task, args.id, args.index, args.max_turns, args.sleep_ms)
@@ -82,7 +83,7 @@ def main():
             break
         if msg is None:
             break
-        if msg.get("type") != "message":
+        if msg.get("type") != MSG_MESSAGE:
             continue
         text = msg.get("text", "")
         if not text.strip():

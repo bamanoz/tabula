@@ -76,26 +76,80 @@ func TestHookVoid_FireAndForget(t *testing.T) {
 func TestHookVoid_SessionStart(t *testing.T) {
 	env := newTestEnv(t)
 
-	// Hook subscriber: listens to session_start (void)
+	// Hook subscriber: listens to session_start (modifying strategy)
 	hook := env.connectHook("logger", []HookSubscription{
 		{Event: "session_start", Priority: 0},
 	})
 
-	// Client joins session — should fire session_start
-	env.connectAndJoin("cli", "s1", []string{"message"}, []string{})
+	// Client joins session — hook receives session_start synchronously
+	conn := env.connect("cli", []string{"message"}, []string{})
 
-	hookMsg := readMsgTimeout(t, hook, 2*time.Second)
-	if hookMsg == nil {
-		t.Fatal("hook subscriber did not receive session_start hook")
-	}
+	go func() {
+		writeJSON(t, conn, Message{Type: "join", Session: "s1"})
+	}()
+
+	hookMsg := readMsg(t, hook)
 	if hookMsg.Type != "hook" || hookMsg.Name != "session_start" {
 		t.Fatalf("expected hook/session_start, got %s/%s", hookMsg.Type, hookMsg.Name)
 	}
+
 	// Payload should contain session and client name
 	var payload map[string]string
 	json.Unmarshal(hookMsg.Payload, &payload)
 	if payload["session"] != "s1" {
 		t.Fatalf("expected session s1, got %s", payload["session"])
+	}
+
+	// Respond with pass so join completes
+	writeJSON(t, hook, Message{
+		Type:   "hook_result",
+		ID:     hookMsg.ID,
+		Action: "pass",
+	})
+
+	joined := readMsg(t, conn)
+	if joined.Type != "joined" {
+		t.Fatalf("expected joined, got %s", joined.Type)
+	}
+}
+
+func TestHookSessionStartCanBlockJoin(t *testing.T) {
+	env := newTestEnv(t)
+
+	hook := env.connectHook("guard", []HookSubscription{
+		{Event: "session_start", Priority: 100},
+	})
+
+	conn := env.connect("cli", []string{"message"}, []string{"init", "error"})
+
+	go func() {
+		writeJSON(t, conn, Message{Type: "join", Session: "s1"})
+	}()
+
+	hookMsg := readMsg(t, hook)
+	if hookMsg.Type != "hook" || hookMsg.Name != "session_start" {
+		t.Fatalf("expected hook/session_start, got %s/%s", hookMsg.Type, hookMsg.Name)
+	}
+
+	writeJSON(t, hook, Message{
+		Type:   "hook_result",
+		ID:     hookMsg.ID,
+		Action: "block",
+		Reason: "denied",
+	})
+
+	// Blocked join sends only error, not joined+error.
+	errMsg := readMsg(t, conn)
+	if errMsg.Type != "error" {
+		t.Fatalf("expected error, got %s", errMsg.Type)
+	}
+	if !strings.Contains(errMsg.Text, "session blocked by hook") {
+		t.Fatalf("unexpected error text: %q", errMsg.Text)
+	}
+
+	noInit := readMsgTimeout(t, conn, 300*time.Millisecond)
+	if noInit != nil {
+		t.Fatalf("expected no init after blocked session start, got %s", noInit.Type)
 	}
 }
 
@@ -488,5 +542,98 @@ func TestBeforeToolCallHookCanBlockSkillTool(t *testing.T) {
 	}
 	if !strings.Contains(result.Output, "blocked by hook") {
 		t.Fatalf("expected 'blocked by hook' in output, got %s", result.Output)
+	}
+}
+
+// --- Hook classification tests ---
+
+func TestSecurityHookTimeoutBlocksToolCall(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Hook that never responds on before_tool_call (security event)
+	_ = env.connectHook("slow-perm", []HookSubscription{
+		{Event: "before_tool_call", Priority: 100},
+	})
+
+	drv := env.connectAndJoin("driver", "main",
+		[]string{"tool_use"},
+		[]string{"tool_result"},
+	)
+
+	go func() {
+		writeJSON(t, drv, Message{
+			Type:  "tool_use",
+			Name:  "EXEC",
+			ID:    "t1",
+			Input: json.RawMessage(`{"command":"echo hello"}`),
+		})
+	}()
+
+	// Security hook timeout should block the tool call
+	result := readMsgTimeout(t, drv, 10*time.Second)
+	if result == nil {
+		t.Fatal("expected a result after hook timeout")
+	}
+	if result.Type != "tool_result" {
+		t.Fatalf("expected tool_result, got %s", result.Type)
+	}
+	if !strings.Contains(result.Output, "blocked by hook") {
+		t.Fatalf("expected 'blocked by hook' for timed-out security hook, got %s", result.Output)
+	}
+}
+
+func TestSecurityHookTimeoutBlocksSpawn(t *testing.T) {
+	env := newTestEnv(t)
+
+	_ = env.connectHook("slow-spawn", []HookSubscription{
+		{Event: "before_spawn", Priority: 100},
+	})
+
+	drv := env.connectAndJoin("driver", "main",
+		[]string{"tool_use"},
+		[]string{"tool_result"},
+	)
+
+	go func() {
+		writeJSON(t, drv, Message{
+			Type:  "tool_use",
+			Name:  "SPAWN",
+			ID:    "s1",
+			Input: json.RawMessage(`{"command":"sleep 60"}`),
+		})
+	}()
+
+	result := readMsgTimeout(t, drv, 10*time.Second)
+	if result == nil {
+		t.Fatal("expected a result after hook timeout")
+	}
+	if result.Type != "tool_result" {
+		t.Fatalf("expected tool_result, got %s", result.Type)
+	}
+	if !strings.Contains(result.Output, "blocked by hook") {
+		t.Fatalf("expected 'blocked by hook' for timed-out security hook, got %s", result.Output)
+	}
+}
+
+func TestDomainHookTimeoutPassesThrough(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Hook that never responds on session_start (domain event)
+	_ = env.connectHook("slow-domain", []HookSubscription{
+		{Event: "session_start", Priority: 100},
+	})
+
+	// Join should still complete after timeout (fail-open for domain hooks)
+	conn := env.connect("cli", []string{"message"}, []string{"init"})
+	go func() {
+		writeJSON(t, conn, Message{Type: "join", Session: "s1"})
+	}()
+
+	joined := readMsgTimeout(t, conn, 10*time.Second)
+	if joined == nil {
+		t.Fatal("expected joined after hook timeout")
+	}
+	if joined.Type != "joined" {
+		t.Fatalf("expected joined, got %s", joined.Type)
 	}
 }

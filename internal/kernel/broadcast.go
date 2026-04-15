@@ -6,21 +6,14 @@ import (
 )
 
 // broadcastToSession sends a message to all clients in a session that can receive the given type.
-// Caller must hold h.mu.
 func (h *Hub) broadcastToSession(session, msgType string, msg *Message, exclude *Client) {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return
 	}
 	delivered := 0
-	for c := range h.clients {
+	for _, c := range h.sessionClients(session) {
 		if c == exclude {
-			continue
-		}
-		if !c.connected || c.session == "" {
-			continue
-		}
-		if c.session != session {
 			continue
 		}
 		if !c.canReceive(msgType) {
@@ -33,16 +26,9 @@ func (h *Hub) broadcastToSession(session, msgType string, msg *Message, exclude 
 }
 
 // broadcastToSessionRaw sends raw JSON bytes to a session.
-// Caller must hold h.mu.
 func (h *Hub) broadcastToSessionRaw(session, msgType string, data []byte) {
 	delivered := 0
-	for c := range h.clients {
-		if !c.connected || c.session == "" {
-			continue
-		}
-		if c.session != session {
-			continue
-		}
+	for _, c := range h.sessionClients(session) {
 		if !c.canReceive(msgType) {
 			continue
 		}
@@ -53,34 +39,35 @@ func (h *Hub) broadcastToSessionRaw(session, msgType string, data []byte) {
 }
 
 // sendToolResult sends a tool_result to a session.
-// Caller must hold h.mu.
 func (h *Hub) sendToolResult(session, toolID, output string) {
-	msg := &Message{
-		Type:   "tool_result",
+	h.broadcastJSONToSession(session, string(MsgToolResult), &Message{
+		Type:   string(MsgToolResult),
 		ID:     toolID,
 		Output: output,
-	}
+	})
+}
+
+func (h *Hub) broadcastJSONToSession(session, msgType string, msg *Message) {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return
 	}
-	h.broadcastToSessionRaw(session, "tool_result", data)
+	h.broadcastToSessionRaw(session, msgType, data)
 }
 
 // broadcastProcessError sends an error message about a crashed process.
-// Caller must hold h.mu.
 func (h *Hub) broadcastProcessError(session string, pid int, command string, exitCode int) {
 	h.Logger.Error("process crashed", "pid", pid, "exit_code", exitCode, "command", command)
 	if session == "" {
 		return
 	}
 	errMsg := &Message{
-		Type: "error",
+		Type: string(MsgError),
 		Text: fmt.Sprintf("process %d crashed (exit %d)", pid, exitCode),
 	}
 	data, err := json.Marshal(errMsg)
 	if err != nil {
 		return
 	}
-	h.broadcastToSessionRaw(session, "error", data)
+	h.broadcastToSessionRaw(session, string(MsgError), data)
 }

@@ -17,6 +17,7 @@ if SKILLS_ROOT not in sys.path:
     sys.path.insert(0, SKILLS_ROOT)
 
 from lib.kernel_client import KernelConnection
+from lib.protocol import MSG_CONNECT, MSG_JOIN, MSG_MESSAGE
 
 
 def main():
@@ -33,16 +34,16 @@ def main():
     url = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
     conn = KernelConnection(url)
     conn.send({
-        "type": "connect",
+        "type": MSG_CONNECT,
         "name": "timer",
-        "sends": ["message"],
+        "sends": [MSG_MESSAGE],
         "receives": [],
     })
     conn.recv(timeout=5)
-    conn.send({"type": "join", "session": args.session})
+    conn.send({"type": MSG_JOIN, "session": args.session})
     conn.recv(timeout=5)
     conn.send({
-        "type": "message",
+        "type": MSG_MESSAGE,
         "session": args.session,
         "id": f"timer-{int(time.time())}",
         "text": args.message,

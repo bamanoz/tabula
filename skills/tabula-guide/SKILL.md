@@ -293,6 +293,22 @@ Optional: `--timeout N` (0=oneshot, default). Results delivered as messages to p
 See `skills/skill-contract/SKILL.md` for the full specification: frontmatter fields,
 tool definitions, slash commands, wire protocol, and skill creation guide.
 
+## Slash Commands
+
+Slash commands are user-invocable skills triggered by `/command` in the gateway.
+Declared in SKILL.md frontmatter `commands` field:
+
+```yaml
+commands:
+  - name: my-command
+    description: "What this command does"
+    body: "Instructions for the LLM when triggered"
+```
+
+Commands are discovered by `discover_slash_commands()` during boot and included
+in the system prompt. When a user types `/command args`, the gateway sends a
+message with the command body + args to the driver.
+
 ## Permissions
 
 Tool permission rules defined in `~/.tabula/permissions.json`:
@@ -339,6 +355,45 @@ Example EXEC allowlist — allow only specific commands:
 2. **Runtime hook**: `hook-permissions` skill subscribes to `before_tool_call` with
    priority 100. Evaluates rules at runtime, blocks denied calls. Only spawned when
    `permissions.json` exists.
+
+## Wire Protocol
+
+All communication is JSON over WebSocket. Message types are defined in
+`skills/lib/protocol.py` (Python) and `internal/kernel/protocol.go` (Go).
+
+### Protocol version
+
+The kernel expects `version: 1` in the connect message. Legacy clients sending
+`version: 0` (or omitting it) are accepted for backwards compatibility.
+
+### Client → Kernel
+
+| Message | Required fields | Purpose |
+|---------|----------------|---------|
+| `connect` | `name`, `sends`, `receives` | Register client with capabilities |
+| `join` | `session` | Join a session |
+| `message` | `text` | Chat message |
+| `tool_use` | `id`, `name`, `input` | Request tool execution |
+| `hook_result` | `id`, `action` | Response to hook event |
+| `status` | `text` | Status update |
+| `cancel` | — | Cancel current turn |
+
+### Kernel → Client
+
+| Message | Purpose |
+|---------|---------|
+| `connected` | Confirm connection with client ID |
+| `joined` | Confirm session join |
+| `init` | System prompt + tools for LLM |
+| `member_joined` | Notify session members |
+| `message` | Chat message from another client |
+| `tool_result` | Tool execution result |
+| `hook` | Hook event to subscriber |
+| `error` | Error message |
+| `stream_start`, `stream_delta`, `stream_end` | Streaming response chunks |
+| `done` | Turn complete |
+| `status` | Status update (e.g. compacting) |
+| `cancel` | Cancel signal |
 
 ## Limits
 

@@ -30,7 +30,7 @@ var (
 )
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: checkWebSocketOrigin,
 }
 
 func main() {
@@ -116,11 +116,11 @@ func main() {
 		allTools = append(allTools, bootTools...)
 
 		// Build exec dispatch map
-		var parsed []struct {
-			Name string `json:"name"`
-			Exec string `json:"exec"`
+		parsed, err := parseSkillExecMap(bootConfig.Tools)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: invalid boot tools for exec dispatch: %v\n", err)
+			os.Exit(1)
 		}
-		json.Unmarshal(bootConfig.Tools, &parsed)
 		for _, t := range parsed {
 			if t.Exec != "" {
 				skillExec[t.Name] = t.Exec
@@ -216,6 +216,77 @@ func envInt(name string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func checkWebSocketOrigin(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+
+	allowed := allowedWebSocketOrigins()
+	if len(allowed) == 0 {
+		return isLocalOrigin(origin, r.Host)
+	}
+	for _, candidate := range allowed {
+		if strings.EqualFold(origin, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func allowedWebSocketOrigins() []string {
+	raw := strings.TrimSpace(os.Getenv("TABULA_ALLOWED_ORIGINS"))
+	if raw == "" {
+		return nil
+	}
+
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func isLocalOrigin(origin, requestHost string) bool {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+
+	host := strings.ToLower(u.Hostname())
+	switch host {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+
+	if requestHost == "" {
+		return false
+	}
+
+	reqURL, err := url.Parse("http://" + requestHost)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Hostname(), reqURL.Hostname())
+}
+
+type skillToolExec struct {
+	Name string `json:"name"`
+	Exec string `json:"exec"`
+}
+
+func parseSkillExecMap(raw json.RawMessage) ([]skillToolExec, error) {
+	var parsed []skillToolExec
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, err
+	}
+	return parsed, nil
 }
 
 // readEnvKey reads a single KEY=VALUE from a .env file.

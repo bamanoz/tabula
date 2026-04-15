@@ -229,21 +229,22 @@ def cleanup_once_job(job_id: str):
 
 def cmd_fire(args):
     from lib.kernel_client import KernelConnection
+    from lib.protocol import MSG_CONNECT, MSG_JOIN, MSG_MESSAGE
 
     url = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
     try:
         conn = KernelConnection(url)
         conn.send({
-            "type": "connect",
+            "type": MSG_CONNECT,
             "name": "cron-fire",
-            "sends": ["message"],
+            "sends": [MSG_MESSAGE],
             "receives": [],
         })
         conn.recv(timeout=5)
-        conn.send({"type": "join", "session": "main"})
+        conn.send({"type": MSG_JOIN, "session": "main"})
         conn.recv(timeout=5)
         conn.send({
-            "type": "message",
+            "type": MSG_MESSAGE,
             "session": "main",
             "id": args.id,
             "text": args.task,
@@ -259,17 +260,18 @@ def cmd_fire(args):
 def cmd_daemon(_args):
     """Built-in scheduler. Used when OS crontab is unavailable."""
     from lib.kernel_client import KernelConnection
+    from lib.protocol import MSG_CONNECT, MSG_JOIN, MSG_MESSAGE
 
     url = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
     conn = KernelConnection(url)
     conn.send({
-        "type": "connect",
+        "type": MSG_CONNECT,
         "name": "cron-daemon",
-        "sends": ["message"],
+        "sends": [MSG_MESSAGE],
         "receives": [],
     })
     conn.recv(timeout=5)
-    conn.send({"type": "join", "session": "main"})
+    conn.send({"type": MSG_JOIN, "session": "main"})
     conn.recv(timeout=5)
 
     running = True
@@ -304,7 +306,7 @@ def cmd_daemon(_args):
             if cron_matches(job["cron"], now):
                 try:
                     conn.send({
-                        "type": "message",
+                        "type": MSG_MESSAGE,
                         "session": "main",
                         "id": job["id"],
                         "text": job["task"],

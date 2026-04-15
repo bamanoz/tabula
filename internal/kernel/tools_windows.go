@@ -7,24 +7,31 @@ import (
 	"os/exec"
 )
 
-// signalProcess on Windows cannot send SIGINT to child processes.
-// Falls back to sending os.Interrupt.
+// Signal sends os.Interrupt to the process.
 func (p *SpawnedProcess) Signal() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.Cmd.Process != nil {
-		p.Cmd.Process.Signal(os.Interrupt)
+	if p.Handle != nil {
+		_ = p.Handle.Signal()
+	} else if p.Cmd.Process != nil {
+		_ = p.Cmd.Process.Signal(os.Interrupt)
 	}
 }
 
 // afterSpawn starts a goroutine that waits for the process to exit.
 func (h *Hub) afterSpawn(pid int, proc *SpawnedProcess) {
 	go func() {
-		err := proc.Cmd.Wait()
+		var err error
+		if proc.Handle != nil {
+			err = proc.Handle.Wait()
+		} else {
+			err = proc.Cmd.Wait()
+		}
 
-		h.mu.Lock()
-		proc.Alive = false
-		close(proc.done)
+		proc, ok := h.processes.MarkExited(pid)
+		if !ok {
+			return
+		}
 
 		if err != nil {
 			exitCode := 1
@@ -39,7 +46,6 @@ func (h *Hub) afterSpawn(pid int, proc *SpawnedProcess) {
 		} else {
 			h.Logger.Info("process exited", "pid", pid, "command", proc.Command)
 		}
-		h.mu.Unlock()
 	}()
 }
 

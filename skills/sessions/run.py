@@ -74,18 +74,19 @@ def cmd_info(args):
 def cmd_send(args):
     """Send a message to another session."""
     from skills.lib.kernel_client import KernelConnection
+    from skills.lib.protocol import MSG_CONNECT, MSG_JOIN, MSG_MESSAGE
     conn = KernelConnection(TABULA_URL)
     conn.send({
-        "type": "connect",
+        "type": MSG_CONNECT,
         "name": "sessions-send",
-        "sends": ["message"],
+        "sends": [MSG_MESSAGE],
         "receives": [],
     })
     conn.recv()  # connected
-    conn.send({"type": "join", "session": args.session})
+    conn.send({"type": MSG_JOIN, "session": args.session})
     conn.recv()  # joined
     conn.send({
-        "type": "message",
+        "type": MSG_MESSAGE,
         "from_session": args.from_session,
         "text": args.message,
     })
@@ -152,15 +153,16 @@ class SessionRegistry:
 
     def _connect(self):
         from skills.lib.kernel_client import KernelConnection
+        from skills.lib.protocol import MSG_CONNECT, MSG_JOIN, MSG_MESSAGE
         self.conn = KernelConnection(TABULA_URL)
         self.conn.send({
-            "type": "connect",
+            "type": MSG_CONNECT,
             "name": "session-registry",
-            "sends": ["message"],
+            "sends": [MSG_MESSAGE],
             "receives": [],
         })
         self.conn.recv()  # connected
-        self.conn.send({"type": "join", "session": "_system"})
+        self.conn.send({"type": MSG_JOIN, "session": "_system"})
         self.conn.recv()  # joined
 
     def _emit(self, event: str, session: str, data: dict | None = None):
@@ -170,7 +172,7 @@ class SessionRegistry:
             payload["data"] = data
         if self.conn:
             self.conn.send({
-                "type": "message",
+                "type": MSG_MESSAGE,
                 "session": "_system",
                 "text": json.dumps(payload),
             })

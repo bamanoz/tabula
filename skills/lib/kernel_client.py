@@ -8,6 +8,8 @@ import threading
 
 import websocket as ws_client
 
+from .protocol import PROTOCOL_VERSION
+
 
 class KernelConnection:
     """Thread-safe WebSocket wrapper used by skills."""
@@ -17,6 +19,9 @@ class KernelConnection:
         self._lock = threading.Lock()
 
     def send(self, msg: dict):
+        """Send a message, automatically injecting protocol version if missing."""
+        if "version" not in msg:
+            msg["version"] = PROTOCOL_VERSION
         data = json.dumps(msg, ensure_ascii=False)
         with self._lock:
             self.ws.send(data)

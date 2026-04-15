@@ -69,7 +69,7 @@ def start_kernel(home: str, tabula_port: int) -> subprocess.Popen:
 
 def connect_gateway(tabula_port: int):
     """Connect a gateway client that sends messages and receives done/error."""
-    conn = ws_client.create_connection(f"ws://127.0.0.1:{tabula_port}/ws", timeout=5)
+    conn = ws_client.create_connection(f"ws://127.0.0.1:{tabula_port}/ws", timeout=10)
     conn.send(json.dumps({
         "type": "connect",
         "name": "test-gw",
@@ -79,6 +79,7 @@ def connect_gateway(tabula_port: int):
     resp = json.loads(conn.recv())
     assert resp["type"] == "connected"
     conn.send(json.dumps({"type": "join", "session": "s1"}))
+    conn.settimeout(10)
     resp = json.loads(conn.recv())
     assert resp["type"] == "joined"
     return conn

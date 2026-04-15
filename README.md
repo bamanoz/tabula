@@ -215,6 +215,7 @@ Within same specificity, deny overrides allow. No file = allow all.
 | `TABULA_RESUME_SESSION` | Session ID to resume | unset |
 | `TABULA_API_PORT` | API gateway port | unset |
 | `TABULA_API_AUTH` | API Bearer token | unset |
+| `TABULA_ALLOWED_ORIGINS` | Comma-separated allowed WebSocket origins; default allows only localhost / same-host origins | unset |
 | `TABULA_MAX_SPAWN_DEPTH` | Max subagent nesting depth | `3` |
 | `TABULA_MAX_CHILDREN_PER_SESSION` | Max subagents per session | `5` |
 | `ANTHROPIC_API_KEY` | Claude API key | required for `anthropic` |

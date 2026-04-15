@@ -19,8 +19,11 @@ import sys
 
 SKILL_DIR = os.path.dirname(os.path.abspath(__file__))
 SKILLS_ROOT = os.path.join(os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula")), "skills")
-if SKILLS_ROOT not in sys.path:
-    sys.path.insert(0, SKILLS_ROOT)
+# Add TABULA_HOME/skills first (for deployed skills), then parent of this skill's directory
+# (so `import mcp.daemon` resolves to local files even when cwd != repo root).
+for p in (SKILLS_ROOT, os.path.dirname(SKILL_DIR)):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 from mcp.daemon import pool_is_running, pool_request
 from mcp.pool import ClientPool

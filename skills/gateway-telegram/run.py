@@ -24,6 +24,11 @@ if ROOT not in sys.path:
 
 from skills.lib import load_env
 from skills.lib.kernel_client import KernelConnection
+from skills.lib.protocol import (
+    MSG_CONNECT, MSG_JOIN, MSG_JOINED, MSG_TOOL_USE, MSG_MESSAGE,
+    MSG_TOOL_RESULT, MSG_MEMBER_JOINED, MSG_ERROR,
+    TOOL_SPAWN, TOOL_KILL,
+)
 from skills.pair.run import is_authorized as _pair_is_authorized
 from skills.pair.run import create_token as _pair_create_token
 
@@ -164,19 +169,19 @@ class SessionState:
     def connect(self):
         driver_cmd = f"{VENV_PYTHON} skills/driver-{ACTIVE_PROVIDER}/run.py"
         self.conn.send({
-            "type": "connect",
+            "type": MSG_CONNECT,
             "name": f"tg-{self.session_id}",
-            "sends": ["message", "tool_use"],
-            "receives": ["stream_start", "stream_delta", "stream_end", "done", "error", "tool_result", "member_joined"],
+            "sends": [MSG_MESSAGE, MSG_TOOL_USE],
+            "receives": [MSG_STREAM_START, MSG_STREAM_DELTA, MSG_STREAM_END, MSG_DONE, MSG_ERROR, MSG_TOOL_RESULT, MSG_MEMBER_JOINED],
         })
         self.conn.recv()  # connected
-        self.conn.send({"type": "join", "session": self.session_id})
+        self.conn.send({"type": MSG_JOIN, "session": self.session_id})
         self.conn.recv()  # joined
 
         # Spawn driver
         self.conn.send({
-            "type": "tool_use",
-            "name": "SPAWN",
+            "type": MSG_TOOL_USE,
+            "name": TOOL_SPAWN,
             "id": "spawn-driver",
             "input": {"command": f"{driver_cmd} --session {self.session_id}"},
         })
@@ -185,7 +190,7 @@ class SessionState:
             msg = self.conn.recv(timeout=15)
             if msg is None:
                 raise RuntimeError("lost connection while spawning driver")
-            if msg.get("type") == "tool_result" and msg.get("id") == "spawn-driver":
+            if msg.get("type") == MSG_TOOL_RESULT and msg.get("id") == "spawn-driver":
                 m = re.match(r"PID (\d+)", msg.get("output", ""))
                 if m:
                     self.driver_pid = int(m.group(1))
@@ -196,7 +201,7 @@ class SessionState:
         deadline = time.time() + 10
         while time.time() < deadline:
             msg = self.conn.recv(timeout=10)
-            if msg and msg.get("type") == "member_joined":
+            if msg and msg.get("type") == MSG_MEMBER_JOINED:
                 break
 
         self._thread = threading.Thread(target=self._receiver, daemon=True)
@@ -209,7 +214,7 @@ class SessionState:
                 self.events.put(("disconnect", ""))
                 return
             t = msg.get("type")
-            if t in ("stream_start", "stream_delta", "stream_end", "done", "error"):
+            if t in (MSG_STREAM_START, MSG_STREAM_DELTA, MSG_STREAM_END, MSG_DONE, MSG_ERROR):
                 self.events.put((t, msg.get("text", "")))
 
     def ask(self, text: str) -> str:
@@ -220,7 +225,7 @@ class SessionState:
             except queue.Empty:
                 break
 
-        self.conn.send({"type": "message", "text": text})
+        self.conn.send({"type": MSG_MESSAGE, "text": text})
 
         parts = []
         while True:
@@ -246,7 +251,7 @@ class SessionState:
         self.alive = False
         if self.driver_pid is not None:
             try:
-                self.conn.send({"type": "tool_use", "name": "KILL", "id": "kill-driver",
+                self.conn.send({"type": MSG_TOOL_USE, "name": TOOL_KILL, "id": "kill-driver",
                                 "input": {"pid": self.driver_pid}})
             except Exception:
                 pass

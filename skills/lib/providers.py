@@ -553,8 +553,19 @@ class OpenAISession(ProviderSession):
 # ---------------------------------------------------------------------------
 
 import enum
+import os
 import re
 import shlex
+import sys
+
+
+def _venv_python() -> str:
+    """Return path to venv python, falling back to current interpreter."""
+    tabula_home = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
+    venv = os.path.join(tabula_home, ".venv", "bin", "python3")
+    if os.path.isfile(venv):
+        return venv
+    return sys.executable
 
 
 class _MockState(enum.Enum):
@@ -628,7 +639,7 @@ class MockProvider(ProviderSession):
         for index, agent_id in enumerate(sorted(agent_ids), start=1):
             tool_id = f"spawn_{agent_id}"
             command = " ".join([
-                "python3", "skills/subagent-mock/run.py",
+                _venv_python(), "skills/subagent-mock/run.py",
                 "--id", shlex.quote(agent_id),
                 "--parent-session", self._session,
                 "--task", shlex.quote(self._user_text),

@@ -13,6 +13,10 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from skills.lib.kernel_client import KernelConnection
+from skills.lib.protocol import (
+    MSG_CONNECT, MSG_HOOK, MSG_HOOK_RESULT, HOOK_PASS, HOOK_BLOCK,
+    HOOK_BEFORE_TOOL_CALL, TOOL_EXEC, TOOL_SPAWN,
+)
 
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
 PERMISSIONS_FILE = os.path.join(ROOT, "permissions.json")
@@ -79,7 +83,7 @@ def check_permission(rules: list[dict], tool_name: str, command: str = "") -> bo
 def extract_command(payload: dict) -> str:
     """Extract command string from tool input for EXEC/SPAWN."""
     tool = payload.get("tool", "")
-    if tool not in ("EXEC", "SPAWN"):
+    if tool not in (TOOL_EXEC, TOOL_SPAWN):
         return ""
     raw_input = payload.get("input")
     if not raw_input:
@@ -97,11 +101,11 @@ def extract_command(payload: dict) -> str:
 def run(url: str = TABULA_URL):
     conn = KernelConnection(url)
     conn.send({
-        "type": "connect",
+        "type": MSG_CONNECT,
         "name": "hook-permissions",
-        "sends": ["hook_result"],
-        "receives": ["hook"],
-        "hooks": [{"event": "before_tool_call", "priority": 100}],
+        "sends": [MSG_HOOK_RESULT],
+        "receives": [MSG_HOOK],
+        "hooks": [{"event": HOOK_BEFORE_TOOL_CALL, "priority": 100}],
     })
     conn.recv()  # connected
 
@@ -112,7 +116,7 @@ def run(url: str = TABULA_URL):
             msg = conn.recv()
             if msg is None:
                 break
-            if msg.get("type") != "hook":
+            if msg.get("type") != MSG_HOOK:
                 continue
 
             rules = load_rules()
@@ -122,15 +126,15 @@ def run(url: str = TABULA_URL):
             command = extract_command(payload)
 
             if check_permission(rules, tool_name, command):
-                conn.send({"type": "hook_result", "id": hook_id, "action": "pass"})
+                conn.send({"type": MSG_HOOK_RESULT, "id": hook_id, "action": HOOK_PASS})
             else:
                 reason = f"tool '{tool_name}' denied by permissions policy"
                 if command:
                     reason = f"command '{command}' denied by permissions policy"
                 conn.send({
-                    "type": "hook_result",
+                    "type": MSG_HOOK_RESULT,
                     "id": hook_id,
-                    "action": "block",
+                    "action": HOOK_BLOCK,
                     "reason": reason,
                 })
     except KeyboardInterrupt:

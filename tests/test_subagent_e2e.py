@@ -19,6 +19,7 @@ import websocket as ws_client
 
 
 ROOT = Path(__file__).resolve().parents[1]
+VENV_PYTHON = os.path.join(ROOT, ".venv", "bin", "python3")
 
 
 class MockAnthropicHandler(BaseHTTPRequestHandler):
@@ -175,7 +176,7 @@ def test_subagent_initial_task():
                     "id": "spawn-1",
                     "name": "SPAWN",
                     "input": {
-                        "command": "python3 skills/subagent-anthropic/run.py --id task_42 --parent-session main --task 'List files in /tmp' --timeout 5"
+                        "command": f"{VENV_PYTHON} skills/subagent-anthropic/run.py --id task_42 --parent-session main --task 'List files in /tmp' --timeout 5"
                     },
                 }
             )
@@ -216,7 +217,7 @@ def test_subagent_followup():
                     "id": "spawn-2",
                     "name": "SPAWN",
                     "input": {
-                        "command": "python3 skills/subagent-anthropic/run.py --id followup_1 --parent-session main --task 'Initial task' --timeout 10"
+                        "command": f"{VENV_PYTHON} skills/subagent-anthropic/run.py --id followup_1 --parent-session main --task 'Initial task' --timeout 10"
                     },
                 }
             )

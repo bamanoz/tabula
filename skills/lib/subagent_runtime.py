@@ -8,6 +8,10 @@ from collections import deque
 from dataclasses import dataclass
 
 from .kernel_client import KernelConnection
+from .protocol import (
+    MSG_CONNECT, MSG_JOIN, MSG_INIT, MSG_MESSAGE, MSG_TOOL_USE, MSG_TOOL_RESULT,
+    MSG_DONE,
+)
 from .providers import ProviderSession, ToolResult
 
 
@@ -38,19 +42,19 @@ class SubagentRuntime:
 
     def connect(self):
         msg = {
-            "type": "connect",
+            "type": MSG_CONNECT,
             "name": self.config.name,
-            "sends": ["message", "tool_use", "done"],
-            "receives": ["message", "tool_result", "init"],
+            "sends": [MSG_MESSAGE, MSG_TOOL_USE, MSG_DONE],
+            "receives": [MSG_MESSAGE, MSG_TOOL_RESULT, MSG_INIT],
         }
         if self.config.spawn_token:
             msg["token"] = self.config.spawn_token
         self.conn.send(msg)
         self.conn.recv()
-        self.conn.send({"type": "join", "session": self.config.session_name})
+        self.conn.send({"type": MSG_JOIN, "session": self.config.session_name})
         self.conn.recv()
         init_msg = self.conn.recv()
-        if init_msg is None or init_msg.get("type") != "init":
+        if init_msg is None or init_msg.get("type") != MSG_INIT:
             raise RuntimeError("did not receive init")
         prompt = self._load_subagent_prompt() or init_msg.get("prompt", "")
         self.provider = self.provider_factory(prompt, init_msg.get("tools", []))
@@ -82,7 +86,7 @@ class SubagentRuntime:
             for tool in outcome.tool_calls:
                 self.conn.send(
                     {
-                        "type": "tool_use",
+                        "type": MSG_TOOL_USE,
                         "id": tool.id,
                         "name": tool.name,
                         "input": tool.input,
@@ -107,10 +111,10 @@ class SubagentRuntime:
                     return "<error>kernel disconnected</error>"
 
                 msg_type = msg.get("type")
-                if msg_type == "tool_result" and msg.get("id") in pending:
+                if msg_type == MSG_TOOL_RESULT and msg.get("id") in pending:
                     pending.remove(msg["id"])
                     tool_results.append(ToolResult(tool_use_id=msg["id"], output=msg.get("output", "")))
-                elif msg_type == "message":
+                elif msg_type == MSG_MESSAGE:
                     queued_text = msg.get("text", "")
                     if queued_text.strip():
                         self._queued_messages.append(queued_text)
@@ -122,7 +126,7 @@ class SubagentRuntime:
     def _send_result(self, text: str):
         self.conn.send(
             {
-                "type": "message",
+                "type": MSG_MESSAGE,
                 "session": self.config.parent_session,
                 "id": self.config.agent_id,
                 "text": text,
@@ -147,7 +151,7 @@ class SubagentRuntime:
                     break
                 if msg is None:
                     break
-                if msg.get("type") != "message":
+                if msg.get("type") != MSG_MESSAGE:
                     continue
                 text = msg.get("text", "")
                 if not text.strip():
