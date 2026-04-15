@@ -4,6 +4,9 @@
 Polls Telegram Bot API, bridges messages to the kernel.
 Each chat_id gets its own session + driver.
 
+Streaming: uses sendMessageDraft for incremental response display,
+then final sendMessage to save to chat history.
+
 Pairing flow:
   /start -> generates token -> admin approves via pair.py
 """
@@ -16,6 +19,7 @@ import re
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime
 
 ROOT = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
@@ -27,6 +31,7 @@ from skills.lib.kernel_client import KernelConnection
 from skills.lib.protocol import (
     MSG_CONNECT, MSG_JOIN, MSG_JOINED, MSG_TOOL_USE, MSG_MESSAGE,
     MSG_TOOL_RESULT, MSG_MEMBER_JOINED, MSG_ERROR,
+    MSG_STREAM_START, MSG_STREAM_DELTA, MSG_STREAM_END, MSG_DONE,
     TOOL_SPAWN, TOOL_KILL,
 )
 from skills.pair.run import is_authorized as _pair_is_authorized
@@ -39,7 +44,6 @@ import requests
 # -- Config --------------------------------------------------------------------
 
 GATEWAY_NAME  = "telegram"
-BOT_TOKEN     = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TABULA_URL    = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
 TABULA_HOME   = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
 PROVIDER      = os.environ.get("TABULA_PROVIDER", "anthropic")
@@ -51,8 +55,7 @@ VENV_PYTHON  = os.path.join(TABULA_HOME, ".venv", "bin", "python3")
 POLL_TIMEOUT = 30   # long-poll seconds
 TOKEN_TTL    = 1800 # pairing token lifetime, seconds
 ASK_TIMEOUT  = 300  # max wait for LLM response, seconds
-
-TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+DRAFT_THROTTLE = 0.1  # seconds between sendMessageDraft calls
 
 # -- Logging -------------------------------------------------------------------
 
@@ -134,27 +137,6 @@ def _convert_inline(text: str) -> str:
     return ''.join(result)
 
 
-# -- Telegram API helpers ------------------------------------------------------
-
-def tg(method: str, **kwargs) -> dict:
-    r = requests.post(f"{TG_API}/{method}", json=kwargs, timeout=10)
-    return r.json()
-
-def send_message(chat_id: int, text: str, parse_mode: str = ""):
-    kwargs: dict = {"chat_id": chat_id, "text": text}
-    if parse_mode:
-        kwargs["parse_mode"] = parse_mode
-    resp = tg("sendMessage", **kwargs)
-    if not resp.get("ok"):
-        log(f"sendMessage failed: {resp}")
-        if parse_mode:
-            resp2 = tg("sendMessage", chat_id=chat_id, text=text)
-            if not resp2.get("ok"):
-                log(f"sendMessage retry failed: {resp2}")
-
-def send_typing(chat_id: int):
-    tg("sendChatAction", chat_id=chat_id, action="typing")
-
 # -- Kernel session per chat ---------------------------------------------------
 
 class SessionState:
@@ -217,8 +199,9 @@ class SessionState:
             if t in (MSG_STREAM_START, MSG_STREAM_DELTA, MSG_STREAM_END, MSG_DONE, MSG_ERROR):
                 self.events.put((t, msg.get("text", "")))
 
-    def ask(self, text: str) -> str:
-        """Send message, collect full response, return text."""
+    def ask_stream(self, text: str):
+        """Send message, yield response chunks as they arrive from kernel."""
+        # Drain stale events
         while True:
             try:
                 self.events.get_nowait()
@@ -227,25 +210,22 @@ class SessionState:
 
         self.conn.send({"type": MSG_MESSAGE, "text": text})
 
-        parts = []
         while True:
             try:
                 kind, payload = self.events.get(timeout=ASK_TIMEOUT)
             except queue.Empty:
-                parts.append("[timeout waiting for response]")
+                yield "[timeout waiting for response]"
                 break
             if kind == "stream_delta":
-                parts.append(payload)
+                yield payload
             elif kind == "done":
                 break
             elif kind == "error":
-                parts.append(f"[error: {payload}]")
+                yield f"\n[error: {payload}]"
                 break
             elif kind == "disconnect":
-                parts.append("[lost connection to kernel]")
+                yield "\n[lost connection to kernel]"
                 break
-
-        return "".join(parts)
 
     def close(self):
         self.alive = False
@@ -289,6 +269,68 @@ def _discover_slash_commands() -> list[dict]:
     return commands
 
 
+# -- Bot instance (one per token) ----------------------------------------------
+
+class BotInstance:
+    """One Telegram bot token = one BotInstance with its own polling loop."""
+
+    def __init__(self, token: str, gateway: "TelegramGateway"):
+        self.token = token
+        self.gateway = gateway
+        self.TG_API = f"https://api.telegram.org/bot{token}"
+
+    def tg(self, method: str, **kwargs) -> dict:
+        return requests.post(f"{self.TG_API}/{method}", json=kwargs, timeout=10).json()
+
+    def send_message(self, chat_id: int, text: str, parse_mode: str = ""):
+        kwargs: dict = {"chat_id": chat_id, "text": text}
+        if parse_mode:
+            kwargs["parse_mode"] = parse_mode
+        resp = self.tg("sendMessage", **kwargs)
+        if not resp.get("ok"):
+            log(f"sendMessage failed: {resp}")
+            if parse_mode:
+                resp2 = self.tg("sendMessage", chat_id=chat_id, text=text)
+                if not resp2.get("ok"):
+                    log(f"sendMessage retry failed: {resp2}")
+
+    def send_typing(self, chat_id: int):
+        self.tg("sendChatAction", chat_id=chat_id, action="typing")
+
+    def send_draft(self, chat_id: int, draft_id: str, text: str):
+        """Send a streaming draft via sendMessageDraft."""
+        self.tg("sendMessageDraft",
+                chat_id=chat_id,
+                draft_id=draft_id,
+                text=text,
+                parse_mode="MarkdownV2")
+
+    def run(self):
+        me = self.tg("getMe").get("result", {})
+        log(f"bot @{me.get('username', '?')} started, provider={ACTIVE_PROVIDER}")
+        offset = 0
+        while True:
+            try:
+                resp = requests.get(
+                    f"{self.TG_API}/getUpdates",
+                    params={"timeout": POLL_TIMEOUT, "offset": offset},
+                    timeout=POLL_TIMEOUT + 5,
+                ).json()
+                if not resp.get("ok"):
+                    log(f"getUpdates error: {resp}")
+                    time.sleep(5)
+                    continue
+                for update in resp.get("result", []):
+                    offset = update["update_id"] + 1
+                    try:
+                        self.gateway.handle_update(update, bot=self)
+                    except Exception as e:
+                        log(f"update handling error: {e}")
+            except requests.RequestException as e:
+                log(f"network error: {e}")
+                time.sleep(5)
+
+
 # -- Gateway -------------------------------------------------------------------
 
 class TelegramGateway:
@@ -303,16 +345,8 @@ class TelegramGateway:
         for cmd in commands:
             tg_name = cmd["name"].replace("-", "_")
             self._commands[tg_name] = cmd
-        if self._commands:
-            tg_commands = [
-                {"command": name, "description": cmd["description"][:256]}
-                for name, cmd in self._commands.items()
-            ]
-            resp = tg("setMyCommands", commands=tg_commands)
-            if resp.get("ok"):
-                log(f"registered {len(tg_commands)} commands with Telegram")
-            else:
-                log(f"setMyCommands failed: {resp}")
+        # Register commands for all bots (done per-bot in BotInstance.run)
+        # We'll register once here using the first bot's token later.
 
     def _get_session(self, chat_id: int) -> SessionState:
         with self._lock:
@@ -324,7 +358,7 @@ class TelegramGateway:
                 log(f"new session for chat_id={chat_id}: {sid}")
             return self.sessions[chat_id]
 
-    def handle_update(self, update: dict):
+    def handle_update(self, update: dict, bot: BotInstance):
         msg = update.get("message") or update.get("edited_message")
         if not msg:
             return
@@ -339,10 +373,10 @@ class TelegramGateway:
         # /start -- pairing flow
         if text == "/start":
             if is_authorized(chat_id):
-                send_message(chat_id, r"You're already authorized\. Just write me something", parse_mode="MarkdownV2")
+                bot.send_message(chat_id, r"You're already authorized\. Just write me something", parse_mode="MarkdownV2")
             else:
                 token = create_pairing_token(chat_id, username)
-                send_message(
+                bot.send_message(
                     chat_id,
                     r"To get access, you need to go through pairing\." + "\n\n"
                     r"Your token:" + f"\n\n`{token}`\n\n"
@@ -353,7 +387,7 @@ class TelegramGateway:
 
         # Not authorized
         if not is_authorized(chat_id):
-            send_message(
+            bot.send_message(
                 chat_id,
                 r"Access denied\. Send /start to request pairing\.",
                 parse_mode="MarkdownV2",
@@ -371,58 +405,58 @@ class TelegramGateway:
                 full_text = cmd["body"] + (f"\n\nUser request: {args}" if args else "")
                 threading.Thread(
                     target=self._process_message,
-                    args=(chat_id, full_text),
+                    args=(chat_id, full_text, bot),
                     daemon=True,
                 ).start()
                 return
 
         # Authorized -- route to kernel
         log(f"message from chat_id={chat_id} (@{username}): {text[:60]}")
-        send_typing(chat_id)
+        bot.send_typing(chat_id)
         threading.Thread(
             target=self._process_message,
-            args=(chat_id, text),
+            args=(chat_id, text, bot),
             daemon=True,
         ).start()
 
-    def _process_message(self, chat_id: int, text: str):
+    def _process_message(self, chat_id: int, text: str, bot: BotInstance):
         try:
-            session  = self._get_session(chat_id)
-            send_typing(chat_id)
-            response = session.ask(text)
-            if response:
-                for chunk in _split_text(md_to_tgv2(response), 4096):
-                    send_message(chat_id, chunk, parse_mode="MarkdownV2")
+            session = self._get_session(chat_id)
+            bot.send_typing(chat_id)
+
+            draft_id = str(uuid.uuid4())[:8]
+            full_text = ""
+            last_draft = 0.0
+
+            for delta in session.ask_stream(text):
+                full_text += delta
+                now = time.time()
+
+                if now - last_draft >= DRAFT_THROTTLE:
+                    try:
+                        bot.send_draft(chat_id, draft_id, md_to_tgv2(full_text))
+                    except Exception:
+                        pass  # ignore draft failures
+                    last_draft = now
+
+            # Final message (saved to chat history)
+            if full_text:
+                for chunk in _split_text(md_to_tgv2(full_text), 4096):
+                    bot.send_message(chat_id, chunk, parse_mode="MarkdownV2")
             else:
-                send_message(chat_id, "_(empty response)_", parse_mode="MarkdownV2")
+                bot.send_message(chat_id, "_(empty response)_", parse_mode="MarkdownV2")
         except Exception as e:
             log(f"error processing message from {chat_id}: {e}")
-            send_message(chat_id, f"Internal error: {escape_tgv2(str(e))}")
+            bot.send_message(chat_id, f"Internal error: {escape_tgv2(str(e))}")
 
-    def run(self):
-        me = tg("getMe").get("result", {})
-        log(f"started. Bot: @{me.get('username', '?')}, provider={ACTIVE_PROVIDER}")
-        offset = 0
-        while True:
-            try:
-                resp = requests.get(
-                    f"{TG_API}/getUpdates",
-                    params={"timeout": POLL_TIMEOUT, "offset": offset},
-                    timeout=POLL_TIMEOUT + 5,
-                ).json()
-                if not resp.get("ok"):
-                    log(f"getUpdates error: {resp}")
-                    time.sleep(5)
-                    continue
-                for update in resp.get("result", []):
-                    offset = update["update_id"] + 1
-                    try:
-                        self.handle_update(update)
-                    except Exception as e:
-                        log(f"update handling error: {e}")
-            except requests.RequestException as e:
-                log(f"network error: {e}")
-                time.sleep(5)
+    def shutdown(self):
+        with self._lock:
+            for session in self.sessions.values():
+                try:
+                    session.close()
+                except Exception:
+                    pass
+            self.sessions.clear()
 
 
 def _split_text(text: str, limit: int) -> list[str]:
@@ -434,10 +468,8 @@ def _split_text(text: str, limit: int) -> list[str]:
         if len(text) <= limit:
             chunks.append(text)
             break
-        # Try to split at last newline within limit
         cut = text.rfind('\n', 0, limit)
         if cut <= 0:
-            # No newline found, try space
             cut = text.rfind(' ', 0, limit)
         if cut <= 0:
             cut = limit
@@ -446,9 +478,50 @@ def _split_text(text: str, limit: int) -> list[str]:
     return chunks
 
 
+# -- Token resolution ----------------------------------------------------------
+
+def resolve_bot_tokens() -> list[str]:
+    """Resolve bot tokens from TELEGRAM_BOT_TOKENS (comma-separated)."""
+    tokens = os.environ.get("TELEGRAM_BOT_TOKENS", "").strip()
+    if not tokens:
+        return []
+    return [t.strip() for t in tokens.split(",") if t.strip()]
+
+
 # -- Entry point ---------------------------------------------------------------
 
+def main():
+    tokens = resolve_bot_tokens()
+    if not tokens:
+        sys.exit("TELEGRAM_BOT_TOKENS is not set. Add to ~/.tabula/.env")
+
+    gateway = TelegramGateway()
+
+    # Register slash commands with the first bot
+    if gateway._commands:
+        first_bot = BotInstance(tokens[0], gateway)
+        tg_commands = [
+            {"command": name, "description": cmd["description"][:256]}
+            for name, cmd in gateway._commands.items()
+        ]
+        resp = first_bot.tg("setMyCommands", commands=tg_commands)
+        if resp.get("ok"):
+            log(f"registered {len(tg_commands)} commands with Telegram")
+        else:
+            log(f"setMyCommands failed: {resp}")
+
+    # Start one polling thread per bot token
+    for token in tokens:
+        bot = BotInstance(token, gateway)
+        threading.Thread(target=bot.run, daemon=True).start()
+
+    # Keep main thread alive
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        gateway.shutdown()
+
+
 if __name__ == "__main__":
-    if not BOT_TOKEN:
-        sys.exit("TELEGRAM_BOT_TOKEN is not set. Add it to ~/.tabula/.env")
-    TelegramGateway().run()
+    main()
