@@ -12,6 +12,8 @@
     <dict>
         <key>TABULA_HOME</key>
         <string>__TABULA_HOME__</string>
+        <key>TABULA_BOOT</key>
+        <string>python3 __TABULA_HOME__/boot.py</string>
     </dict>
     <key>WorkingDirectory</key>
     <string>__TABULA_HOME__</string>

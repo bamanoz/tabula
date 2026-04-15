@@ -9,6 +9,7 @@ WorkingDirectory=__TABULA_HOME__
 Restart=always
 RestartSec=5
 Environment=TABULA_HOME=__TABULA_HOME__
+Environment=TABULA_BOOT=python3 __TABULA_HOME__/boot.py
 StandardOutput=append:__TABULA_HOME__/logs/kernel.out.log
 StandardError=append:__TABULA_HOME__/logs/kernel.err.log
 

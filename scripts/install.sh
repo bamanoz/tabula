@@ -340,13 +340,6 @@ main() {
   fi
   ok "Binary installed"
 
-  # Back up user config before tar overwrites it
-  local had_config=false
-  if [ -f "$TABULA_HOME/tabula.yaml" ]; then
-    cp "$TABULA_HOME/tabula.yaml" "$tmp/tabula.yaml.bak"
-    had_config=true
-  fi
-
   tar -xzf "$tmp/$skills_archive" -C "$TABULA_HOME"
   chmod +x "$BIN_DIR/tabula-server" "$BIN_DIR/tabula-cli" "$BIN_DIR/tabula-api" 2>/dev/null || true
   ok "Skills and config installed"
@@ -354,11 +347,6 @@ main() {
   # Install bundles (optional) and symlink into skills/
   install_bundles
   link_bundles
-
-  # Restore user config if it existed
-  if [ "$had_config" = true ]; then
-    cp "$tmp/tabula.yaml.bak" "$TABULA_HOME/tabula.yaml"
-  fi
 
   # Python
   check_python
