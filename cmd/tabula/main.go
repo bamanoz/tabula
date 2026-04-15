@@ -60,18 +60,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 1. Resolve TABULA_HOME
+	os.Exit(serveCmd())
+}
+
+// serveCmd handles "tabula serve" — persistent WebSocket server.
+func serveCmd() int {
+	// Resolve TABULA_HOME
 	tabulaHome := os.Getenv("TABULA_HOME")
 	if tabulaHome == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error: cannot determine home directory")
-			os.Exit(1)
+			return 1
 		}
 		tabulaHome = filepath.Join(home, ".tabula")
 	}
 
-	// 2. Setup structured logging
+	// Setup structured logging
 	logFile := os.Getenv("TABULA_LOG_FILE")
 	if logFile == "" {
 		logFile = filepath.Join(tabulaHome, "logs", "kernel.log")
@@ -84,42 +89,41 @@ func main() {
 	})
 	defer logger.Close()
 
-	// 3. chdir to TABULA_HOME
+	// chdir to TABULA_HOME
 	if err := os.Chdir(tabulaHome); err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot chdir to %s: %v\n", tabulaHome, err)
-		os.Exit(1)
+		return 1
 	}
 	slog.Info("working directory", "path", tabulaHome)
 
-	// 4. Restore full PATH from install-time snapshot
+	// Restore full PATH from install-time snapshot
 	savedPath := readEnvKey(filepath.Join(tabulaHome, ".env"), "TABULA_PATH")
 	if savedPath != "" {
 		os.Setenv("PATH", savedPath)
 		slog.Info("PATH restored from TABULA_PATH", "path", savedPath)
 	}
 
-	// 5. Read tabula.yaml → boot command
-	configPath := filepath.Join(tabulaHome, "tabula.yaml")
-	bootCmd, err := readBootCmd(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+	// Resolve boot command
+	bootCmd := os.Getenv("TABULA_BOOT")
+	if bootCmd == "" {
+		fmt.Fprintln(os.Stderr, "error: no boot command specified (set TABULA_BOOT env var)")
+		return 1
 	}
 	slog.Info("running boot", "command", bootCmd)
 
-	// 6. Run boot script → get config
+	// Run boot script → get config
 	bootConfig, err := runBoot(bootCmd)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: boot failed: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	slog.Info("boot config loaded", "url", bootConfig.URL, "prompt_bytes", len(bootConfig.SystemPrompt), "spawn_count", len(bootConfig.Spawn))
 
-	// 7. Load and merge tools
+	// Load and merge tools
 	var kernelTools []json.RawMessage
 	if err := json.Unmarshal(embeddedToolsJSON, &kernelTools); err != nil {
 		fmt.Fprintf(os.Stderr, "error: invalid embedded kernel.tools.json: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	allTools := make([]json.RawMessage, len(kernelTools))
 	copy(allTools, kernelTools)
@@ -129,14 +133,14 @@ func main() {
 		var bootTools []json.RawMessage
 		if err := json.Unmarshal(bootConfig.Tools, &bootTools); err != nil {
 			fmt.Fprintf(os.Stderr, "error: invalid boot tools: %v\n", err)
-			os.Exit(1)
+			return 1
 		}
 		allTools = append(allTools, bootTools...)
 
 		parsed, err := parseSkillExecMap(bootConfig.Tools)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: invalid boot tools for exec dispatch: %v\n", err)
-			os.Exit(1)
+			return 1
 		}
 		for _, t := range parsed {
 			if t.Exec != "" {
@@ -148,29 +152,29 @@ func main() {
 
 	toolsJSON, _ := json.Marshal(allTools)
 
-	// 8. Parse URL to get listen address
+	// Parse URL to get listen address
 	u, err := url.Parse(bootConfig.URL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: invalid url %q: %v\n", bootConfig.URL, err)
-		os.Exit(1)
+		return 1
 	}
 	listenAddr := u.Host
 	if !strings.Contains(listenAddr, ":") {
 		listenAddr += ":8089"
 	}
 
-	// 9. Set environment for all child processes
+	// Set environment for all child processes
 	os.Setenv("TABULA_URL", bootConfig.URL)
 	os.Setenv("TABULA_HOME", tabulaHome)
 
-	// 10. Init kernel hub
+	// Init kernel hub
 	slog.Info("initializing kernel")
 	maxSpawnDepth := envInt("TABULA_MAX_SPAWN_DEPTH", 3)
 	maxChildren := envInt("TABULA_MAX_CHILDREN_PER_SESSION", 5)
 	hub := kernel.NewHub(bootConfig.SystemPrompt, toolsJSON, skillExec, maxSpawnDepth, maxChildren, logger.Logger)
 	hub.StartReaper()
 
-	// 11. Start HTTP/WebSocket server
+	// Start HTTP/WebSocket server
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -188,7 +192,7 @@ func main() {
 	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot listen on %s: %v\n", listenAddr, err)
-		os.Exit(1)
+		return 1
 	}
 	slog.Info("listening", "addr", listenAddr)
 
@@ -199,7 +203,7 @@ func main() {
 		}
 	}()
 
-	// 12. Spawn processes from boot config
+	// Spawn processes from boot config
 	for _, cmd := range bootConfig.Spawn {
 		slog.Info("spawning boot process", "command", cmd)
 		c := mainShellCommand(cmd)
@@ -215,18 +219,18 @@ func main() {
 
 	slog.Info("ready")
 
-	// 13. Wait for signal
+	// Wait for signal
 	waitForShutdownSignal()
 
 	slog.Info("shutting down")
 	hub.Shutdown()
 	server.Close()
+	return 0
 }
 
 // runCmd handles "tabula run" — one-shot prompt → response.
 func runCmd(args []string) int {
 	prompt := ""
-	session := "oneshot"
 	timeout := 120 * time.Second
 	asJSON := false
 
@@ -236,11 +240,6 @@ func runCmd(args []string) int {
 		case "--prompt", "-p":
 			if i+1 < len(args) {
 				prompt = args[i+1]
-				i++
-			}
-		case "--session", "-s":
-			if i+1 < len(args) {
-				session = args[i+1]
 				i++
 			}
 		case "--timeout", "-t":
@@ -256,7 +255,7 @@ func runCmd(args []string) int {
 		case "--json":
 			asJSON = true
 		case "--help", "-h":
-			fmt.Println("Usage: tabula run [flags]\n\nFlags:\n  -p, --prompt TEXT   Prompt text (reads stdin if omitted)\n  -s, --session NAME  Session name (default: oneshot)\n  -t, --timeout DUR   Timeout (default: 120s)\n  --json              Output as JSON")
+			fmt.Println("Usage: tabula run [flags]\n\nFlags:\n  -p, --prompt TEXT   Prompt text (reads stdin if omitted)\n  -t, --timeout DUR   Timeout (default: 120s)\n  --json              Output as JSON")
 			return 0
 		}
 	}
@@ -311,13 +310,14 @@ func runCmd(args []string) int {
 		os.Setenv("PATH", savedPath)
 	}
 
-	// Boot.
-	configPath := filepath.Join(tabulaHome, "tabula.yaml")
-	bootCmd, err := readBootCmd(configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	// Resolve boot command.
+	bootCmd := os.Getenv("TABULA_BOOT")
+	if bootCmd == "" {
+		fmt.Fprintln(os.Stderr, "error: no boot command specified (set TABULA_BOOT env var)")
 		return 1
 	}
+	slog.Info("running boot", "command", bootCmd)
+
 	bootConfig, err := runBoot(bootCmd)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: boot failed: %v\n", err)
@@ -369,6 +369,7 @@ func runCmd(args []string) int {
 
 	os.Setenv("TABULA_URL", bootConfig.URL)
 	os.Setenv("TABULA_HOME", tabulaHome)
+	os.Setenv("TABULA_SKIP_MCP", "1")
 
 	// Init hub.
 	maxSpawnDepth := envInt("TABULA_MAX_SPAWN_DEPTH", 3)
@@ -400,17 +401,47 @@ func runCmd(args []string) int {
 		}
 	}()
 
-	// Give the server a moment to be ready.
-	time.Sleep(200 * time.Millisecond)
+	// Spawn boot processes (driver, MCP, hooks, etc).
+	for _, cmd := range bootConfig.Spawn {
+		slog.Info("spawning boot process", "command", cmd)
+		c := mainShellCommand(cmd)
+		c.Stdout = nil
+		c.Stderr = nil
+		if err := c.Start(); err != nil {
+			slog.Error("failed to spawn boot process", "command", cmd, "error", err)
+			continue
+		}
+		hub.RegisterSpawn(c, cmd, "main")
+	}
+
+	// Wait for any client to join the session.
+	clientReady := make(chan bool, 1)
+	go func() {
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			sess, ok := hub.GetSession("main")
+			if ok && sess.ClientCount() >= 1 {
+				clientReady <- true
+				return
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		clientReady <- false
+	}()
+
+	if !<-clientReady {
+		fmt.Fprintln(os.Stderr, "error: no client joined session in time")
+		return 1
+	}
 
 	// Run one-shot exchange.
 	result, err := hub.RunOneShot(kernel.OneShotConfig{
 		Prompt:  prompt,
-		Session: session,
+		Session: "main",
 		Timeout: timeout,
 	})
 
-	hub.Stop()
+	hub.Shutdown()
 	server.Close()
 
 	if err != nil {
@@ -419,7 +450,7 @@ func runCmd(args []string) int {
 	}
 
 	if asJSON {
-		out, _ := json.Marshal(map[string]string{"text": result, "session": session})
+		out, _ := json.Marshal(map[string]string{"text": result})
 		fmt.Println(string(out))
 	} else {
 		fmt.Println(result)
@@ -527,30 +558,6 @@ func readEnvKey(path, key string) string {
 		}
 	}
 	return ""
-}
-
-// readBootCmd reads the boot command from tabula.yaml.
-func readBootCmd(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", fmt.Errorf("cannot read %s: %v", path, err)
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || line[0] == '#' {
-			continue
-		}
-		if strings.HasPrefix(line, "boot:") {
-			val := strings.TrimSpace(line[len("boot:"):])
-			if val != "" {
-				return val, nil
-			}
-		}
-	}
-	return "", fmt.Errorf("tabula.yaml must specify 'boot'")
 }
 
 // BootConfig holds the parsed output of the boot script.

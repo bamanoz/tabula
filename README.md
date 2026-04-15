@@ -6,7 +6,7 @@ A modular AI agent. Small Go kernel, pluggable everything — LLM providers, gat
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash
 ```
 
 Requires Python 3.11+. Installs to `~/.tabula/` (override with `TABULA_HOME`).
@@ -19,7 +19,7 @@ To install with optional bundles: `BUNDLES=caveman bash install.sh`
 <summary>Windows</summary>
 
 ```powershell
-irm https://raw.githubusercontent.com/bamanoz/tabula/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.ps1 | iex
 # With bundles: $env:BUNDLES='caveman'; irm ... | iex
 ```
 </details>
@@ -29,10 +29,10 @@ irm https://raw.githubusercontent.com/bamanoz/tabula/main/install.ps1 | iex
 
 ```bash
 git clone https://github.com/bamanoz/tabula.git && cd tabula
-./install-dev.sh    # macOS/Linux
+./scripts/install-dev.sh    # macOS/Linux
 # or
-./install-dev.ps1   # Windows
-# With bundles: BUNDLES=caveman ./install-dev.sh
+./scripts/install-dev.ps1   # Windows
+# With bundles: BUNDLES=caveman ./scripts/install-dev.sh
 ```
 
 Requires Go 1.26+ and Python 3.11+.
@@ -46,10 +46,10 @@ Requires Go 1.26+ and Python 3.11+.
 ├── bin/tabula              # Go kernel binary
 ├── bin/tabula-cli          # Launch: CLI session
 ├── bin/tabula-api          # Launch: API gateway
+├── bin/tabula-server       # Launch: persistent server
 ├── service/                # launchd/systemd templates
-├── tabula.yaml             # Config
 ├── boot.py                 # Skill discovery & prompt assembly
-├── templates/              # System prompt templates
+├── templates/              # System prompt templates, boot-cicd.py
 ├── skills/                 # Installed skills (+ symlinks to bundles)
 ├── bundles/                # Optional skill bundles (if installed)
 ├── memory/                 # Persistent memory
@@ -69,6 +69,30 @@ tabula-cli
 
 On first launch, Tabula will introduce itself and ask you to set up its identity together.
 
+## Running
+
+The kernel has two modes:
+
+```bash
+# Persistent server — connects skills, stays running
+tabula serve
+
+# One-shot — runs a single prompt and exits
+tabula run --prompt "what is 2+2?"
+```
+
+Both modes require `TABULA_BOOT` to be set, pointing to a boot script:
+
+```bash
+# Interactive mode (full skill set)
+TABULA_BOOT="python3 boot.py" tabula serve
+
+# CI/CD mode (minimal, driver only)
+TABULA_BOOT="python3 boot-cicd.py" tabula run --prompt "summarize this file"
+```
+
+`boot-cicd.py` is a minimal boot script that spawns only the LLM driver — no MCP, no hooks, no session registry. Copy it to your workspace: `cp templates/boot-cicd.py $TABULA_HOME/`.
+
 ## Features
 
 - **Multi-provider** — Anthropic (Claude) and OpenAI out of the box, switchable via env var
@@ -87,7 +111,7 @@ On first launch, Tabula will introduce itself and ask you to set up its identity
 The kernel is a Go binary — a WebSocket server that routes messages between skills via session-scoped pub/sub.
 
 **Boot sequence:**
-1. Kernel reads `tabula.yaml`, runs `boot.py`
+1. Kernel runs the boot script specified by `TABULA_BOOT`
 2. Boot scans `skills/` for `SKILL.md` files (follows symlinks for bundles), assembles system prompt, discovers tools
 3. Boot outputs JSON config → kernel starts WebSocket server, spawns skill processes
 4. Skills connect, join sessions, begin message exchange
@@ -207,12 +231,11 @@ Within same specificity, deny overrides allow. No file = allow all.
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `TABULA_HOME` | Workspace directory | `~/.tabula` |
+| `TABULA_BOOT` | Boot command to run (required) | none |
 | `TABULA_URL` | Kernel WebSocket URL | `ws://localhost:8089/ws` |
 | `TABULA_PROVIDER` | LLM provider (`anthropic`, `openai`) | `anthropic` |
 | `BUNDLES` | Bundles to install (`caveman`, `all`, comma-separated) | none |
 | `TABULA_VERBOSE` | Verbose logging (`1` to enable) | unset |
-| `TABULA_HEADLESS` | Skip CLI gateway | unset |
-| `TABULA_RESUME_SESSION` | Session ID to resume | unset |
 | `TABULA_API_PORT` | API gateway port | unset |
 | `TABULA_API_AUTH` | API Bearer token | unset |
 | `TABULA_ALLOWED_ORIGINS` | Comma-separated allowed WebSocket origins; default allows only localhost / same-host origins | unset |

@@ -1,6 +1,6 @@
 # Tabula installer — downloads pre-built binary and skills from GitHub Releases.
 # Usage:
-#   irm https://raw.githubusercontent.com/bamanoz/tabula/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.ps1 | iex
 #   $env:VERSION = "v1.0.0"; irm ... | iex
 
 $ErrorActionPreference = "Stop"

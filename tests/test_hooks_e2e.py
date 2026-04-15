@@ -29,7 +29,6 @@ def setup_test_home(tabula_port: int) -> str:
     home = tempfile.mkdtemp(prefix="tabula-hook-e2e-")
     shutil.copytree(ROOT / "skills", Path(home) / "skills")
     shutil.copytree(ROOT / ".venv", Path(home) / ".venv", dirs_exist_ok=True)
-    (Path(home) / "tabula.yaml").write_text("boot: python3 boot.py\n")
     (Path(home) / "boot.py").write_text(
         "import json, sys\n"
         "json.dump({\n"
@@ -45,10 +44,11 @@ def start_kernel(home: str, tabula_port: int) -> subprocess.Popen:
     env = os.environ.copy()
     env["TABULA_HOME"] = home
     env["TABULA_URL"] = f"ws://127.0.0.1:{tabula_port}/ws"
+    env["TABULA_BOOT"] = f"python3 {home}/boot.py"
     env["TABULA_PROVIDER"] = "mock"
 
     proc = subprocess.Popen(
-        ["go", "run", "./cmd/tabula"],
+        ["go", "run", "./cmd/tabula", "serve"],
         cwd=ROOT,
         env=env,
         stdout=subprocess.DEVNULL,

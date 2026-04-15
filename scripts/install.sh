@@ -1,7 +1,7 @@
 #!/bin/bash
 # Tabula installer — downloads pre-built binary and skills from GitHub Releases.
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash
 #   VERSION=v1.0.0 curl -fsSL ... | bash
 #   BUNDLES=caveman curl -fsSL ... | bash
 #   BUNDLES=all curl -fsSL ... | bash

@@ -1,6 +1,6 @@
 # Tabula uninstaller — removes service, binary, skills, and optionally user data.
 # Usage:
-#   irm https://raw.githubusercontent.com/bamanoz/tabula/main/uninstall.ps1 | iex
+#   irm https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/uninstall.ps1 | iex
 #   .\uninstall.ps1 -All
 
 param([switch]$All)

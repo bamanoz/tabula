@@ -1,5 +1,5 @@
 # Install Tabula to ~\.tabula\
-# Run: powershell -ExecutionPolicy Bypass -File install.ps1
+# Run: powershell -ExecutionPolicy Bypass -File install-dev.ps1
 
 $ErrorActionPreference = "Stop"
 

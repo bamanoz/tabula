@@ -40,6 +40,8 @@ func (h *Hub) afterSpawn(pid int, proc *SpawnedProcess) {
 			}
 			if exitCode < 0 {
 				h.Logger.Info("process killed by signal", "pid", pid, "signal", -exitCode, "command", proc.Command)
+			} else if h.processes.IsShuttingDown() {
+				h.Logger.Info("process exited on shutdown", "pid", pid, "exit_code", exitCode, "command", proc.Command)
 			} else {
 				h.broadcastProcessError(proc.Session, pid, proc.Command, exitCode)
 			}

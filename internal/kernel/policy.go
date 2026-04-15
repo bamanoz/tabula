@@ -130,15 +130,3 @@ func (pe *PolicyEngine) CanSpawn(sender *Client, command string, toolID string, 
 	}
 	return nil
 }
-
-// CanKill validates that the caller has permission to kill a process.
-func (pe *PolicyEngine) CanKill(pid int, session string) error {
-	proc, ok := pe.processes.ByPID(pid)
-	if !ok {
-		return &PolicyError{Reason: "unknown pid"}
-	}
-	if proc.Session != session {
-		return &PolicyError{Reason: "not your process"}
-	}
-	return nil
-}

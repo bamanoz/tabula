@@ -8,10 +8,11 @@ import (
 )
 
 type ProcessSupervisor struct {
-	mu      sync.RWMutex
-	spawned map[int]*SpawnedProcess
-	logger  *slog.Logger
-	timeout time.Duration
+	mu           sync.RWMutex
+	spawned      map[int]*SpawnedProcess
+	logger       *slog.Logger
+	timeout      time.Duration
+	shuttingDown bool // set before Shutdown() to suppress crash logs
 }
 
 func NewProcessSupervisor(logger *slog.Logger, timeout time.Duration) *ProcessSupervisor {
@@ -74,6 +75,13 @@ func (ps *ProcessSupervisor) ForEach(fn func(pid int, proc *SpawnedProcess)) {
 	}
 }
 
+// IsShuttingDown returns true if Shutdown() has been called.
+func (ps *ProcessSupervisor) IsShuttingDown() bool {
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
+	return ps.shuttingDown
+}
+
 func (ps *ProcessSupervisor) MarkExited(pid int) (*SpawnedProcess, bool) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
@@ -87,6 +95,7 @@ func (ps *ProcessSupervisor) MarkExited(pid int) (*SpawnedProcess, bool) {
 }
 
 func (ps *ProcessSupervisor) Shutdown() {
+	ps.shuttingDown = true
 	var alive []*SpawnedProcess
 	ps.ForEach(func(pid int, proc *SpawnedProcess) {
 		if proc.Alive {

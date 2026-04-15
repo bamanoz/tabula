@@ -55,42 +55,23 @@ func (h *Hub) RunOneShot(cfg OneShotConfig) (string, error) {
 		return "", fmt.Errorf("join blocked: %s", joinPlan.blockedReason)
 	}
 
-	// Drain any non-message responses (joined, member_joined, init).
-	deadline := time.Now().Add(cfg.Timeout)
-	drainDeadline := time.Now().Add(2 * time.Second)
-drainLoop:
-	for time.Now().Before(drainDeadline) {
-		select {
-		case msg := <-recvCh:
-			if msg == nil {
-				return "", fmt.Errorf("internal client disconnected")
-			}
-			// Stop draining once we see a message-related type from the driver.
-			if msg.Type == string(MsgMessage) || msg.Type == string(MsgStreamStart) ||
-				msg.Type == string(MsgStreamDelta) || msg.Type == string(MsgDone) ||
-				msg.Type == string(MsgError) {
-				// Process this message below.
-				var sb strings.Builder
-				return h.collectResponse(recvCh, msg, &sb, deadline)
-			}
-		case <-time.After(100 * time.Millisecond):
-			break drainLoop
-		}
-	}
-
 	// Send the prompt.
+	deadline := time.Now().Add(cfg.Timeout)
+	h.Logger.Info("oneshot: sending prompt", "session", cfg.Session, "prompt_len", len(cfg.Prompt))
 	h.HandleMessage(c, &Message{
 		Type:    string(MsgMessage),
 		Text:    cfg.Prompt,
 		Session: cfg.Session,
 	})
+	h.Logger.Info("oneshot: prompt dispatched, waiting for response")
 
-	// Collect response.
+	// Collect response — skips non-response messages (joined, init, etc).
 	var sb strings.Builder
 	return h.collectResponse(recvCh, nil, &sb, deadline)
 }
 
 // collectResponse reads from recvCh, accumulating text until done/error/timeout.
+// Messages that aren't stream_delta/message/done/error are silently skipped.
 func (h *Hub) collectResponse(recvCh chan *Message, first *Message, sb *strings.Builder, deadline time.Time) (string, error) {
 	msg := first
 	for {
@@ -126,6 +107,8 @@ func (h *Hub) collectResponse(recvCh chan *Message, first *Message, sb *strings.
 			return strings.TrimSpace(sb.String()), nil
 		case string(MsgError):
 			return "", fmt.Errorf("driver error: %s", msg.Text)
+		default:
+			// Skip protocol messages (joined, member_joined, init, etc).
 		}
 
 		msg = nil

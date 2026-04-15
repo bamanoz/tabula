@@ -118,8 +118,7 @@ func (h *Hub) Shutdown() {
 	h.processes.Shutdown()
 }
 
-// Stop shuts down all spawned processes without grace period.
-// Used by one-shot mode to clean up after a single exchange.
-func (h *Hub) Stop() {
-	h.processes.Shutdown()
+// GetSession returns a session by ID, or nil if not found.
+func (h *Hub) GetSession(id string) (*Session, bool) {
+	return h.sessions.Get(id)
 }

@@ -285,6 +285,8 @@ def filter_denied_tools(tools: list[dict], permissions: list[dict]) -> list[dict
 
 def discover_mcp_tools() -> dict[str, list[dict]]:
     """Run MCP discover to get tools from all configured servers."""
+    if os.environ.get("TABULA_SKIP_MCP"):
+        return {}
     if not os.path.isfile(MCP_CONFIG):
         return {}
     mcp_script = os.path.join(SKILLS_DIR, "mcp", "run.py")

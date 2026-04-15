@@ -77,6 +77,9 @@ func (e *HookEngine) Dispatch(event string, payload json.RawMessage, session str
 		return payload, true
 	}
 
+	// Inject session into payload so observers can correlate events.
+	payload = e.injectSession(payload, session)
+
 	var relevant []hookEntry
 	for _, entry := range entries {
 		if entry.client.session == session || entry.client.session == "" {
@@ -194,6 +197,22 @@ func (e *HookEngine) sendAndWait(c *Client, event string, payload json.RawMessag
 
 	e.removePendingHook(id)
 	return result
+}
+
+func (e *HookEngine) injectSession(payload json.RawMessage, session string) json.RawMessage {
+	if session == "" {
+		return payload
+	}
+	var m map[string]interface{}
+	if json.Unmarshal(payload, &m) != nil {
+		return payload
+	}
+	if _, ok := m["session"]; !ok {
+		m["session"] = session
+		out, _ := json.Marshal(m)
+		return out
+	}
+	return payload
 }
 
 func (e *HookEngine) entries(event string) []hookEntry {

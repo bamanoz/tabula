@@ -13,7 +13,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from skills.lib import load_env
-from skills.lib.driver_runtime import AbortError, DriverConfig, DriverRuntime
+from skills.lib.driver_runtime import DriverConfig, DriverRuntime
 from skills.lib.providers import OpenAISession
 
 load_env()
@@ -54,15 +54,18 @@ def main():
     )
 
     def handle_sigint(sig, frame):
-        log("SIGINT received, aborting active request")
+        log("SIGINT received, shutting down")
         runtime.abort()
-        raise AbortError("cancelled")
+        runtime.conn.close()
 
     signal.signal(signal.SIGINT, handle_sigint)
 
     log(f"connecting to {TABULA_URL}")
-    runtime.connect()
-    runtime.run()
+    try:
+        runtime.connect()
+        runtime.run()
+    finally:
+        runtime.conn.close()
 
 
 if __name__ == "__main__":
