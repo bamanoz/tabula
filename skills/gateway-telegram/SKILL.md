@@ -1,6 +1,6 @@
 ---
 name: gateway-telegram
-description: Telegram Bot gateway. Bridges Telegram chats to Tabula sessions. Each chat_id gets its own session + driver. Access control via pairing tokens. Before running: check TELEGRAM_BOT_TOKENS is set (cat ~/.tabula/.env), if missing ask user to add their bot token. Run: `python3 skills/gateway-telegram/run.py`. Install as service: `bash skills/gateway-telegram/install-service.sh`
+description: Telegram Bot gateway. Bridges Telegram chats to Tabula sessions. Each chat_id gets its own session + driver. Access control via pairing tokens. Before running: verify `TELEGRAM_BOT_TOKENS` exists without printing secret values; if missing ask user to add their bot token. Run: `python3 skills/gateway-telegram/run.py`. Install as service: `bash skills/gateway-telegram/install-service.sh`
 ---
 
 # gateway-telegram
@@ -13,6 +13,20 @@ Supports multiple bot tokens and streaming responses via sendMessageDraft.
 1. Create a bot via @BotFather, get token
 2. Add `TELEGRAM_BOT_TOKENS=xxx` to `~/.tabula/.env`
 3. Install as service (see below)
+
+If you need to verify the variable is present, do it without printing the token value.
+Example:
+
+```bash
+python3 - <<'PY'
+import os
+from pathlib import Path
+
+env_file = Path.home() / '.tabula' / '.env'
+text = env_file.read_text() if env_file.exists() else ''
+print('set' if any(line.startswith('TELEGRAM_BOT_TOKENS=') for line in text.splitlines()) else 'missing')
+PY
+```
 
 ## Environment variables
 
@@ -91,4 +105,3 @@ Responses are streamed to Telegram via `sendMessageDraft`:
 
 - Messages > 4096 chars are split automatically
 - Sessions reset on gateway restart
-

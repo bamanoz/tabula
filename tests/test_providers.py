@@ -50,6 +50,32 @@ class TestKernelToOpenAITools(unittest.TestCase):
         self.assertNotIn("strict", tools[0])
 
 
+class TestOpenAIRestoreHistory(unittest.TestCase):
+    def test_restore_history_replays_text_only(self):
+        session = OpenAISession(
+            system_prompt="sys",
+            model="gpt-5.4",
+            api_key="test-key",
+            base_url="https://api.openai.com/v1",
+            tools=[],
+        )
+
+        session.restore_history([
+            {"role": "user", "text": "hello"},
+            {"role": "assistant", "tool_use": {"id": "call_1", "name": "EXEC", "input": {"command": "pwd"}}},
+            {"role": "tool", "tool_use_id": "call_1", "output": "/tmp"},
+            {"role": "assistant", "text": "done"},
+        ])
+
+        self.assertEqual(
+            session.pending_input,
+            [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "done"},
+            ],
+        )
+
+
 class TestOpenAIErrorReporting(unittest.TestCase):
     def test_generate_includes_http_error_body_message(self):
         session = OpenAISession(

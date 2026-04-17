@@ -401,20 +401,9 @@ class OpenAISession(ProviderSession):
                 self.pending_input.append({"role": "user", "content": entry["text"]})
             elif role == "assistant" and "text" in entry:
                 self.pending_input.append({"role": "assistant", "content": entry["text"]})
-            elif role == "assistant" and "tool_use" in entry:
-                tu = entry["tool_use"]
-                self.pending_input.append({
-                    "type": "function_call",
-                    "id": tu["id"],
-                    "name": tu["name"],
-                    "arguments": json.dumps(tu.get("input", {})),
-                })
-            elif role == "tool":
-                self.pending_input.append({
-                    "type": "function_call_output",
-                    "call_id": entry["tool_use_id"],
-                    "output": entry.get("output", ""),
-                })
+            # OpenAI-compatible endpoints may reject replayed function_call/
+            # function_call_output items without an original response chain.
+            # For resumed sessions, text history is the safest portable subset.
 
     def needs_compact(self) -> bool:
         from .compaction import should_compact

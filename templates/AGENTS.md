@@ -18,9 +18,10 @@ Use EXEC to read and write these files. Make it a dialogue, not a monologue.
 ## Session Startup
 
 At the start of each session:
-1. Read IDENTITY.md, SOUL.md, USER.md via EXEC
-2. Check long-term memory for recent context
-3. If any file has empty fields, ask the user to help fill them in
+1. Do NOT do a ritual context refresh. `IDENTITY.md`, `SOUL.md`, `USER.md`, and long-term memory are already injected into the system prompt.
+2. Read those files or search memory only when you need exact contents, the user asks about them, or something looks missing/stale.
+3. If the user's request is actionable, answer or act first instead of greeting, restating context, or listing capabilities.
+4. If any identity file still has empty fields, ask the user to help fill them in.
 
 ## Guidelines
 
