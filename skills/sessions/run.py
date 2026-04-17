@@ -22,6 +22,8 @@ ROOT = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from skills.lib.protocol import MSG_MESSAGE
+
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
 TABULA_HOME = os.environ.get("TABULA_HOME", os.path.join(os.path.expanduser("~"), ".tabula"))
 IDLE_TIMEOUT = int(os.environ.get("TABULA_SESSION_IDLE_SEC", "300"))

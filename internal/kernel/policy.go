@@ -100,7 +100,21 @@ func (pe *PolicyEngine) CanUseTool(toolName string, toolID string, input json.Ra
 	hookPayload, _ := json.Marshal(map[string]any{
 		"tool": toolName, "id": toolID, "input": input,
 	})
-	return pe.hub.dispatchHook("before_tool_call", hookPayload, session)
+	result, ok := pe.hub.dispatchHook("before_tool_call", hookPayload, session)
+	if !ok {
+		return nil, false
+	}
+
+	var modified struct {
+		Input json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(result, &modified); err != nil {
+		return input, true
+	}
+	if modified.Input == nil {
+		return input, true
+	}
+	return modified.Input, true
 }
 
 // CanSpawn validates the before_spawn hook and resource limits (depth, MaxChildren).

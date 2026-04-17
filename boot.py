@@ -20,6 +20,25 @@ import sys
 from datetime import date
 
 TABULA_HOME = os.environ.get("TABULA_HOME", os.path.join(os.path.expanduser("~"), ".tabula"))
+
+
+def load_env() -> None:
+    """Load $TABULA_HOME/.env into os.environ without overriding shell vars."""
+    env_file = os.path.join(TABULA_HOME, ".env")
+    if not os.path.isfile(env_file):
+        return
+    with open(env_file) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            key, _, value = line.partition("=")
+            if key:
+                os.environ.setdefault(key.strip(), value.strip())
+
+
+load_env()
+
 SKILLS_DIR = os.path.join(TABULA_HOME, "skills")
 MEMORY_FILE = os.path.join(TABULA_HOME, "memory", "MEMORY.md")
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
@@ -191,7 +210,7 @@ def discover_skill_tools() -> list[dict]:
     Returns tools in kernel format, with an added 'exec' field for dispatch.
     """
     tools = []
-    seen = set()
+    seen_index: dict[str, int] = {}
     for rel_path, skill_md in walk_skills():
         with open(skill_md) as f:
             raw = f.read().strip()
@@ -206,13 +225,13 @@ def discover_skill_tools() -> list[dict]:
             if tool_name in KERNEL_TOOLS:
                 print(f"warning: tool {tool_name!r} in skill {rel_path!r} collides with kernel tool, skipping", file=sys.stderr)
                 continue
-            if tool_name in seen:
-                # Duplicate tool — keep the first one, skip the duplicate.
-                # This is a warning, not an error — boot continues.
-                continue
-            seen.add(tool_name)
             if "exec" not in tool:
                 tool["exec"] = f"{VENV_PYTHON} skills/{rel_path}/run.py tool {tool_name}"
+            if tool_name in seen_index:
+                # Duplicate tool — last definition wins to support local overrides.
+                tools[seen_index[tool_name]] = tool
+                continue
+            seen_index[tool_name] = len(tools)
             tools.append(tool)
     return tools
 

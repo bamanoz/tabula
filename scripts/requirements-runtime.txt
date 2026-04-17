@@ -1,0 +1,3 @@
+websocket-client
+prompt_toolkit
+rich

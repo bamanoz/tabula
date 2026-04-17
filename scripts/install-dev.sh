@@ -1,20 +1,26 @@
 #!/bin/bash
-# Install Tabula to ~/.tabula/
-set -e
+# Install Tabula from source into ~/.tabula/.
+set -euo pipefail
 
 TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
 BIN_DIR="$TABULA_HOME/bin"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+VENV="$TABULA_HOME/.venv"
 
 echo "Installing Tabula to $TABULA_HOME..."
 
 mkdir -p "$TABULA_HOME" "$BIN_DIR"
 
-# Config
-cp tabula.yaml "$TABULA_HOME/"
-cp boot.py "$TABULA_HOME/"
+# Boot scripts
+cp "$REPO_ROOT/boot.py" "$TABULA_HOME/"
+cp "$REPO_ROOT/examples/boot-cicd.py" "$TABULA_HOME/"
 
 # Templates
-rsync -a --delete templates/ "$TABULA_HOME/templates/"
+rsync -a --delete "$REPO_ROOT/templates/" "$TABULA_HOME/templates/"
+
+# Service units
+rsync -a --delete "$REPO_ROOT/service/" "$TABULA_HOME/service/"
 
 # Skills
 rsync -a --delete \
@@ -23,7 +29,7 @@ rsync -a --delete \
   --exclude '.venv' \
   --exclude 'driver-mock' \
   --exclude 'subagent-mock' \
-  skills/ "$TABULA_HOME/skills/"
+  "$REPO_ROOT/skills/" "$TABULA_HOME/skills/"
 
 # Bundles (optional thematic skill collections)
 # BUNDLES=all for everything, BUNDLES=caveman,foo for specific ones, empty = skip
@@ -33,17 +39,17 @@ if [ -n "$BUNDLES" ]; then
     rsync -a --delete \
       --exclude '__pycache__' \
       --exclude '*.pyc' \
-      bundles/ "$TABULA_HOME/bundles/"
+      "$REPO_ROOT/bundles/" "$TABULA_HOME/bundles/"
     echo "All bundles installed"
   else
     mkdir -p "$TABULA_HOME/bundles"
     IFS=',' read -ra wanted <<< "$BUNDLES"
     for name in "${wanted[@]}"; do
-      if [ -d "bundles/$name" ]; then
+      if [ -d "$REPO_ROOT/bundles/$name" ]; then
         rsync -a --delete \
           --exclude '__pycache__' \
           --exclude '*.pyc' \
-          "bundles/$name/" "$TABULA_HOME/bundles/$name/"
+          "$REPO_ROOT/bundles/$name/" "$TABULA_HOME/bundles/$name/"
         echo "Bundle installed: $name"
       else
         echo "warning: bundle '$name' not found, skipping"
@@ -72,30 +78,33 @@ fi
 mkdir -p "$TABULA_HOME/memory"
 
 # Python venv with dependencies
-VENV="$TABULA_HOME/.venv"
 if [ ! -d "$VENV" ]; then
   echo "Creating Python venv..."
   python3 -m venv "$VENV"
 fi
-"$VENV/bin/pip" install -q websocket-client pytest
+"$VENV/bin/pip" install -q --upgrade pip
+"$VENV/bin/pip" install -q -r "$SCRIPT_DIR/requirements-dev.txt"
 echo "Python dependencies installed"
 
 # Go binary
 echo "Building Go binary..."
-go build -o "$BIN_DIR/tabula" ./cmd/tabula/
+(
+  cd "$REPO_ROOT"
+  go build -o "$BIN_DIR/tabula" ./cmd/tabula/
+)
 if [ "$(uname)" = "Darwin" ]; then
   codesign --force --sign - "$BIN_DIR/tabula" 2>/dev/null || true
 fi
 
 # Launch scripts
 for script in tabula-server tabula-api tabula-cli; do
-  cp "bin/$script" "$BIN_DIR/$script"
+  cp "$REPO_ROOT/bin/$script" "$BIN_DIR/$script"
   chmod +x "$BIN_DIR/$script"
 done
 
 # Add to PATH
 SHELL_RC=""
-if [ -n "$ZSH_VERSION" ] || [ -f "$HOME/.zshrc" ]; then
+if [ -n "${ZSH_VERSION:-}" ] || [ -f "$HOME/.zshrc" ]; then
   SHELL_RC="$HOME/.zshrc"
 elif [ -f "$HOME/.bashrc" ]; then
   SHELL_RC="$HOME/.bashrc"

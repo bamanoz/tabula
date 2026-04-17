@@ -427,5 +427,46 @@ class TestBuildSpawnPermissions(BootTestBase):
         self.assertEqual(len(perm_procs), 0)
 
 
+class TestLoadEnv(BootTestBase):
+    def setUp(self):
+        super().setUp()
+        self._orig_tabula_home = boot.TABULA_HOME
+        self._orig_provider = os.environ.get("TABULA_PROVIDER")
+        self._orig_model = os.environ.get("OPENAI_MODEL")
+        boot.TABULA_HOME = self.tmpdir
+
+    def tearDown(self):
+        boot.TABULA_HOME = self._orig_tabula_home
+        if self._orig_provider is None:
+            os.environ.pop("TABULA_PROVIDER", None)
+        else:
+            os.environ["TABULA_PROVIDER"] = self._orig_provider
+        if self._orig_model is None:
+            os.environ.pop("OPENAI_MODEL", None)
+        else:
+            os.environ["OPENAI_MODEL"] = self._orig_model
+        super().tearDown()
+
+    def test_load_env_populates_missing_values(self):
+        with open(os.path.join(self.tmpdir, ".env"), "w") as f:
+            f.write("TABULA_PROVIDER=openai\nOPENAI_MODEL=gpt-5.4\n")
+
+        os.environ.pop("TABULA_PROVIDER", None)
+        os.environ.pop("OPENAI_MODEL", None)
+        boot.load_env()
+
+        self.assertEqual(os.environ.get("TABULA_PROVIDER"), "openai")
+        self.assertEqual(os.environ.get("OPENAI_MODEL"), "gpt-5.4")
+
+    def test_load_env_does_not_override_existing_shell_env(self):
+        with open(os.path.join(self.tmpdir, ".env"), "w") as f:
+            f.write("TABULA_PROVIDER=anthropic\n")
+
+        os.environ["TABULA_PROVIDER"] = "openai"
+        boot.load_env()
+
+        self.assertEqual(os.environ.get("TABULA_PROVIDER"), "openai")
+
+
 if __name__ == "__main__":
     unittest.main()

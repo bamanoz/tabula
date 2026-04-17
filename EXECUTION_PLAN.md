@@ -22,6 +22,36 @@
 - `[-]` в работе
 - `[x]` завершено
 
+## Current progress
+
+Ниже зафиксирован текущий статус после первого параллельного delivery slice.
+
+- `T0-01` завершен
+- `T0-02` завершен
+- `T0-03` завершен
+- `T0-04` завершен
+- `T0-05` завершен
+- `T0-06` завершен
+- `T0-07` завершен
+- `T0-08` завершен
+- `T0-09` завершен
+- `T0-10` завершен
+- `T0-11` завершен
+- `T0-12` завершен
+
+Первый реальный delivery slice уже дал:
+
+- выровненный install/bootstrap contract;
+- детерминированный smoke bootstrap path, согласованный с `tabula serve`;
+- рабочий `gateway-api` baseline;
+- concurrency-safe `gateway-api` server path с per-session turn serialization;
+- Telegram gateway session lifecycle baseline с TTL/cleanup/turn serialization;
+- безопасный process snapshot path;
+- реальное применение modified payload в `before_tool_call`;
+- observer выведен из modifying/security hook path в telemetry-only модель;
+- разделение verification matrix на `unit/smoke/e2e/contract`;
+- устранение красной unit-regression в `boot.py` вокруг duplicate tool override.
+
 ## Рекомендуемые parallel lanes
 
 - `Lane A` install/bootstrap/release contract
@@ -336,89 +366,113 @@ Task integration и guardrails:
 
 ## Wave 0. Stabilization и hardening
 
-- [ ] `T0-01` Fix install/dev/runtime contract
+- [x] `T0-01` Fix install/dev/runtime contract
   Lane: `A`
   Area: `scripts/`, `Makefile`, `bin/`, `README.md`
   Depends on: none
   Done when:
   один source of truth для config/install path, исправлены launcher paths, install from source проходит по documented flow.
+  Status note:
+  install scripts, launchers, `README`, requirements source of truth и `tabula-server` baseline уже выровнены.
 
-- [ ] `T0-02` Normalize Python dependency contract and smoke bootstrap
+- [x] `T0-02` Normalize Python dependency contract and smoke bootstrap
   Lane: `A`
   Area: `scripts/`, Python dependency manifests, install docs
   Depends on: `T0-01`
   Done when:
   dev/install paths ставят один и тот же минимально достаточный dependency set, есть smoke-check `install -> boot -> connect -> stop`.
+  Status note:
+  dependency contract вынесен в `scripts/requirements-runtime.txt` и `scripts/requirements-dev.txt`; runtime smoke harness выровнен с `tabula serve` и детерминированно ждет boot-spawned driver по `/sessions`, так что documented bootstrap path теперь проверяется отдельным smoke-контуром.
 
-- [ ] `T0-03` Make `gateway-api` reliably executable
+- [x] `T0-03` Make `gateway-api` reliably executable
   Lane: `B`
   Area: `skills/gateway-api/run.py`, `bin/tabula-api*`
   Depends on: none
   Done when:
   устранены import/runtime errors, gateway поднимается и отвечает на базовый request path без ручных правок окружения.
+  Status note:
+  добавлены missing protocol constants, robust `TABULA_HOME` resolution, `.env` loading, absolute driver command и unit tests.
 
-- [ ] `T0-04` Move API gateway to concurrency-safe runtime
+- [x] `T0-04` Move API gateway to concurrency-safe runtime
   Lane: `B`
   Area: `skills/gateway-api/run.py`
   Depends on: `T0-03`
   Done when:
   gateway использует threaded/concurrency-safe server model, SSE path не блокирует весь server, session state защищен от очевидных гонок.
+  Status note:
+  `gateway-api` переведен на `ThreadingHTTPServer`, создание session больше не держит глобальный map-lock во время kernel/driver handshake, concurrent creation одной session идет single-flight, а turn-операции одной session сериализованы вокруг общего driver/event queue.
 
-- [ ] `T0-05` Normalize process record model
+- [x] `T0-05` Normalize process record model
   Lane: `C`
   Area: `internal/kernel/process_manager.go`, `internal/kernel/process_supervisor.go`, `internal/kernel/kernel.go`
   Depends on: none
   Done when:
   `SpawnedProcess` имеет явный record-level contract для `pid`, `handle`, `command`, `session`, `alive`, без неявной зависимости от `exec.Cmd.Process`.
+  Status note:
+  `SpawnedProcess` теперь хранит явный `PID`, а supervisor заполняет его независимо от локального `Cmd.Process`.
 
-- [ ] `T0-06` Rebuild safe `/sessions` snapshot path
+- [x] `T0-06` Rebuild safe `/sessions` snapshot path
   Lane: `C`
   Area: `internal/kernel/snapshot.go`, `skills/sessions/run.py`
   Depends on: `T0-05`
   Done when:
   snapshot безопасно работает для boot-spawned и tool-spawned процессов, `/sessions` больше не опирается на хрупкий локальный `Cmd.Process`.
+  Status note:
+  `SnapshotSessions()` переведен на recorded PID, добавлен focused test.
 
-- [ ] `T0-07` Introduce strict session lifecycle
+- [x] `T0-07` Introduce strict session lifecycle
   Lane: `C`
   Area: `internal/kernel/session.go`, `skills/gateway-api/run.py`, `skills/gateway-telegram/run.py`
   Depends on: `T0-05`
   Done when:
   есть TTL/idle cleanup/eviction policy, session-owned drivers корректно завершаются, долгоживущие session states не висят бессрочно.
+  Status note:
+  kernel session state теперь отслеживает lifecycle/activity, `gateway-api` и Telegram используют TTL/idle cleanup/eviction, single-flight creation, explicit `close(reason)` и корректно закрывают replaced/shutdown session-owned drivers; regression tests покрывают cleanup, replacement и shutdown paths.
 
-- [ ] `T0-08` Add session turn serialization and cancel semantics
+- [x] `T0-08` Add session turn serialization and cancel semantics
   Lane: `C`
   Area: `internal/kernel/message_router.go`, gateway session state, cancel handling
   Depends on: `T0-04`, `T0-07`
   Done when:
   одна session не исполняет несколько конфликтующих turn-операций одновременно, `cancel` работает предсказуемо и не оставляет зависшие inflight paths.
+  Status note:
+  kernel session model теперь хранит `last_active`, inflight turn и `cancel_requested`; root-level turns сериализуются в `message_router`, повторный root message во время inflight turn отклоняется как `session busy`, turn state сбрасывается на `done`, `error`, process crash и disconnect turn-capable client, а gateway session states используют согласованный inflight/cancel contract с focused regressions на busy/cancel/reset paths.
 
-- [ ] `T0-09` Align hook contract with runtime behavior
+- [x] `T0-09` Align hook contract with runtime behavior
   Lane: `D`
   Area: `internal/kernel/hook_engine.go`, `internal/kernel/policy.go`, `internal/kernel/tool_service.go`
   Depends on: none
   Done when:
   `before_tool_call` либо реально поддерживает modified payload end-to-end, либо контракт упрощен и это отражено в коде и тестах.
+  Status note:
+  modified payload в `before_tool_call` теперь реально применяется к effective tool input; добавлен focused regression test.
 
-- [ ] `T0-10` Separate policy path from telemetry path
+- [x] `T0-10` Separate policy path from telemetry path
   Lane: `D`
   Area: `skills/observer/run.py`, `internal/kernel/hooks.go`, observability hooks
   Depends on: `T0-09`
   Done when:
   observer не участвует в security/modifying critical path, telemetry живет отдельно от policy enforcement.
+  Status note:
+  observer теперь подписывается только на observability hooks (`after_message`, `after_tool_call`, `session_end`, `after_spawn`), не отправляет `hook_result`, а session/process telemetry добирает через безопасный `/sessions` snapshot polling.
 
-- [ ] `T0-11` Split test harness into unit/smoke/e2e layers
+- [x] `T0-11` Split test harness into unit/smoke/e2e layers
   Lane: `E`
   Area: `tests/`, `cmd/tabula/*_test.go`, test docs/scripts
   Depends on: none
   Done when:
   тесты разделены на четкие категории, можно отдельно запускать fast unit, runtime smoke и heavier e2e.
+  Status note:
+  добавлены `pytest` markers, `Makefile` targets, `scripts/test-go.sh`, `scripts/test-python.sh`, `tests/README.md`.
 
-- [ ] `T0-12` Add regression suites for runtime, lifecycle and concurrency
+- [x] `T0-12` Add regression suites for runtime, lifecycle and concurrency
   Lane: `E`
   Area: `tests/`, `internal/kernel/*_test.go`
   Depends on: `T0-02`, `T0-04`, `T0-06`, `T0-08`, `T0-10`
   Done when:
   есть регрессии на install/runtime path, session lifecycle, gateway concurrency, hook/tool contract.
+  Status note:
+  regression matrix теперь закрывает bootstrap/runtime smoke, live kernel busy/reset path, kernel busy/cancel reset, gateway API lifecycle cleanup/replacement/shutdown/cancel, Telegram lifecycle/cancel regression, safe snapshot path, before_tool_call contract и observer telemetry separation через `tests/runtime_harness.py`, `tests/test_runtime_smoke.py`, `tests/test_gateway_api.py`, `tests/test_telegram_gateway.py`, `tests/test_observer.py`, `internal/kernel/snapshot_test.go`, `internal/kernel/tool_hook_test.go` и смежные hook tests.
 
 ## Wave 1. Durable control plane
 

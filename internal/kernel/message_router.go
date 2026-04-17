@@ -10,6 +10,8 @@ func (h *Hub) handleSessionMessage(sender *Client, msg *Message) {
 		return
 	}
 
+	h.touchSessionActivity(h.targetSession(sender, msg))
+
 	switch MsgType(msg.Type) {
 	case MsgToolUse:
 		h.handleToolUse(sender, msg)
@@ -55,13 +57,65 @@ func (h *Hub) applyMessagePlan(sender *Client, msg *Message, plan messagePlan) {
 
 func (h *Hub) handleUserMessage(sender *Client, msg *Message) {
 	plan := h.buildMessagePlan(sender, msg)
+	if !plan.blocked && h.shouldStartSessionTurn(sender, plan.targetSession) {
+		if !h.tryBeginSessionTurn(plan.targetSession) {
+			sender.SendMsg(&Message{Type: string(MsgError), Text: "session busy: turn already in progress"})
+			return
+		}
+	}
 	h.applyMessagePlan(sender, msg, plan)
 }
 
 func (h *Hub) forwardSessionMessage(sender *Client, msg *Message) {
 	target := h.targetSession(sender, msg)
 	h.broadcastToSession(target, msg.Type, msg, sender)
-	if MsgType(msg.Type) == MsgDone {
+	switch MsgType(msg.Type) {
+	case MsgDone:
+		h.completeSessionTurn(target)
 		h.emitAfterMessage(target, sender)
+	case MsgError:
+		h.completeSessionTurn(target)
 	}
+}
+
+func (h *Hub) touchSessionActivity(session string) {
+	if session == "" {
+		return
+	}
+	sess, ok := h.sessions.Get(session)
+	if !ok {
+		return
+	}
+	sess.Touch()
+}
+
+func (h *Hub) shouldStartSessionTurn(sender *Client, session string) bool {
+	if session == "" || sender.depth != 0 {
+		return false
+	}
+	for _, client := range h.sessionClients(session) {
+		if client == sender {
+			continue
+		}
+		if client.canReceive(string(MsgMessage)) && client.canSend(string(MsgDone)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Hub) tryBeginSessionTurn(session string) bool {
+	sess, ok := h.sessions.Get(session)
+	if !ok {
+		return false
+	}
+	return sess.BeginTurn()
+}
+
+func (h *Hub) completeSessionTurn(session string) {
+	sess, ok := h.sessions.Get(session)
+	if !ok {
+		return
+	}
+	sess.EndTurn()
 }

@@ -1,4 +1,4 @@
-.PHONY: build test lint vet install clean
+.PHONY: build test test-unit test-smoke test-e2e test-contract test-go test-go-unit test-go-smoke test-python test-python-unit test-python-smoke test-python-e2e test-python-contract lint vet install install-dev clean
 
 TABULA_HOME ?= .
 VENV_PYTHON = .venv/bin/python3
@@ -20,11 +20,37 @@ build-all: build build-windows build-linux
 
 test: test-go test-python
 
+test-unit: test-go-unit test-python-unit
+
+test-smoke: test-go-smoke test-python-smoke
+
+test-e2e: test-python-e2e
+
+test-contract: test-python-contract
+
 test-go:
-	go test ./...
+	./scripts/test-go.sh all
+
+test-go-unit:
+	./scripts/test-go.sh unit
+
+test-go-smoke:
+	./scripts/test-go.sh smoke
 
 test-python:
-	TABULA_HOME=$(TABULA_HOME) $(VENV_PYTHON) -m pytest tests/ -x -q
+	TABULA_HOME=$(TABULA_HOME) ./scripts/test-python.sh all
+
+test-python-unit:
+	TABULA_HOME=$(TABULA_HOME) ./scripts/test-python.sh unit
+
+test-python-smoke:
+	TABULA_HOME=$(TABULA_HOME) ./scripts/test-python.sh smoke
+
+test-python-e2e:
+	TABULA_HOME=$(TABULA_HOME) ./scripts/test-python.sh e2e
+
+test-python-contract:
+	TABULA_HOME=$(TABULA_HOME) ./scripts/test-python.sh contract
 
 # Lint
 
@@ -40,7 +66,9 @@ vet:
 # Install
 
 install:
-	bash install-dev.sh
+	bash scripts/install-dev.sh
+
+install-dev: install
 
 # Clean
 

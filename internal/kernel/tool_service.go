@@ -10,8 +10,8 @@ import (
 const maxExecOutput = 16 * 1024 // 16KB
 
 type ToolService struct {
-	hub      *Hub
-	process  *ProcessManager
+	hub     *Hub
+	process *ProcessManager
 }
 
 func NewToolService(hub *Hub) *ToolService {
@@ -28,10 +28,12 @@ func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 
 	s.hub.Logger.Debug("tool_use", "tool", toolName, "session", session, "id", toolID)
 
-	if _, ok := s.hub.policy.CanUseTool(toolName, toolID, msg.Input, session); !ok {
+	effectiveInput, ok := s.hub.policy.CanUseTool(toolName, toolID, msg.Input, session)
+	if !ok {
 		s.hub.sendToolResult(session, toolID, "ERROR: blocked by hook")
 		return
 	}
+	msg.Input = effectiveInput
 
 	switch KernelTool(toolName) {
 	case ToolEXEC:

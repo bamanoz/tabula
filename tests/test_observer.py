@@ -19,6 +19,12 @@ import websocket as ws_client
 
 ROOT = Path(__file__).resolve().parents[1]
 OBSERVER_SCRIPT = ROOT / "skills" / "observer" / "run.py"
+MODIFYING_HOOK_NAMES = {
+    "before_message",
+    "before_tool_call",
+    "session_start",
+    "before_spawn",
+}
 
 
 def get_free_port() -> int:
@@ -146,7 +152,46 @@ def recv_msg(conn, timeout=3):
         return None
 
 
+def wait_for(predicate, timeout=5.0, interval=0.1):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(interval)
+    return None
+
+
+def metrics_when_tool_calls(observer_port: int, tool_name: str, calls: int) -> dict | None:
+    metrics = get_metrics(observer_port)
+    tool_metrics = metrics.get("tools", {}).get(tool_name, {})
+    if tool_metrics.get("calls") == calls:
+        return metrics
+    return None
+
+
+def metrics_when_spawns_exist(observer_port: int) -> dict | None:
+    metrics = get_metrics(observer_port)
+    if metrics.get("spawns"):
+        return metrics
+    return None
+
+
 # --- Tests ---
+
+
+def test_observer_subscribes_only_to_observability_hooks():
+    """Observer must not be a participant in policy/modifying hooks."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("observer_run", OBSERVER_SCRIPT)
+    observer = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(observer)
+
+    events = {entry["event"] for entry in observer.HOOK_EVENTS}
+    assert events == {"after_message", "after_tool_call", "session_end", "after_spawn"}
+    assert events.isdisjoint(MODIFYING_HOOK_NAMES)
 
 
 def test_metrics_endpoint_returns_json():
@@ -219,7 +264,7 @@ def test_session_message_count():
 
 
 def test_session_latency_tracked():
-    """Observer tracks average latency per session."""
+    """Observer tracks message activity without entering before_message path."""
     port = get_free_port()
     obs_port = get_free_port()
     home = setup_test_home(port, obs_port)
@@ -243,10 +288,9 @@ def test_session_latency_tracked():
 
         metrics = get_metrics(obs_port)
         session = metrics["sessions"].get("s1", {})
-        assert "avg_latency_ms" in session, "avg_latency_ms not tracked"
-        assert session["avg_latency_ms"] > 0, \
-            f"avg_latency_ms should be positive, got {session['avg_latency_ms']}"
-        print("  PASS: test_session_latency_tracked")
+        assert "last_message_at" in session, "last_message_at not tracked"
+        assert "avg_latency_ms" not in session, "observer should not depend on before_message latency hooks"
+        print("  PASS: test_session_activity_tracked_without_latency_hook")
     finally:
         if obs_proc:
             obs_proc.terminate()
@@ -297,46 +341,48 @@ def test_session_clients_tracked():
 
 
 def test_tool_call_count_tracked():
-    """Observer tracks tool call counts."""
+    """Observer tracks tool completions from after_tool_call only."""
     port = get_free_port()
     obs_port = get_free_port()
     home = setup_test_home(port, obs_port)
     kernel_proc = None
     obs_proc = None
+    conn = None
     try:
         kernel_proc = start_kernel(home, port)
         obs_proc = start_observer(home, port, obs_port)
         time.sleep(1)  # let observer connect and subscribe to hooks
 
-        gw = connect_gateway(port)
-        drv = connect_driver(port)
+        conn = ws_client.create_connection(f"ws://127.0.0.1:{port}/ws", timeout=5)
+        conn.send(json.dumps({
+            "type": "connect",
+            "name": "tool-client",
+            "sends": ["tool_use"],
+            "receives": ["tool_result", "init"],
+        }))
+        assert json.loads(conn.recv())["type"] == "connected"
+        conn.send(json.dumps({"type": "join", "session": "main"}))
+        assert json.loads(conn.recv())["type"] == "joined"
+        assert json.loads(conn.recv())["type"] == "init"
 
-        # Simulate a tool call via before_tool_call / after_tool_call hooks
-        # We need to connect as a hook subscriber that can trigger these events.
-        # Actually, the kernel fires these hooks when a driver uses tools.
-        # In mock mode, the driver won't actually call tools.
-        # Instead, let's manually fire hook events by connecting as a hook client
-        # that receives and we verify the observer processes them correctly.
+        conn.send(json.dumps({
+            "type": "tool_use",
+            "id": "exec-1",
+            "name": "EXEC",
+            "input": {"command": "printf observer-tool"},
+        }))
+        result = recv_msg(conn, timeout=10)
+        assert result is not None and result["type"] == "tool_result", f"unexpected tool result: {result}"
 
-        # Connect directly to observer's hook listener by sending events through kernel.
-        # The kernel fires before_tool_call/after_tool_call when a tool is used.
-        # Since mock driver doesn't use tools, we test the observer's Metrics class directly.
-
-        # For E2E: send a message that triggers tool usage in mock mode.
-        # Mock provider may not trigger tools, so let's verify at least the
-        # observer is running and sessions are tracked.
-        gw.send(json.dumps({"type": "message", "text": "run tool"}))
-        msg = recv_msg(drv)
-        if msg:
-            drv.send(json.dumps({"type": "done"}))
-            recv_msg(gw, timeout=2)
-
-        time.sleep(0.5)
-        metrics = get_metrics(obs_port)
-        # At minimum, observer should be alive and tracking sessions
-        assert "tools" in metrics
+        metrics = wait_for(lambda: metrics_when_tool_calls(obs_port, "EXEC", 1), timeout=5)
+        assert metrics is not None, "observer did not record EXEC completion"
+        exec_metrics = metrics["tools"]["EXEC"]
+        assert exec_metrics["calls"] == 1
+        assert exec_metrics["errors"] == 0
         print("  PASS: test_tool_call_count_tracked")
     finally:
+        if conn:
+            conn.close()
         if obs_proc:
             obs_proc.terminate()
             obs_proc.wait(timeout=5)
@@ -347,9 +393,9 @@ def test_tool_call_count_tracked():
 
 
 def test_spawn_tracking():
-    """Observer tracks spawn events (before_spawn, after_spawn).
+    """Observer tracks spawn events from after_spawn plus snapshot reconciliation.
 
-    The mock driver uses SPAWN tool, which fires before_spawn/after_spawn hooks.
+    The mock driver uses SPAWN tool, which fires after_spawn; /sessions fills alive state.
     We boot with the mock driver spawned, then send it a message to trigger spawning.
     """
     port = get_free_port()
@@ -377,13 +423,12 @@ def test_spawn_tracking():
         # Drain done/error
         recv_msg(gw, timeout=10)
 
-        # Wait for mock driver to process and spawn
-        time.sleep(5)
-
-        metrics = get_metrics(obs_port)
+        metrics = wait_for(lambda: metrics_when_spawns_exist(obs_port), timeout=8, interval=0.2)
+        assert metrics is not None, "observer did not record spawn metrics"
         # Find any spawn entry — the mock driver spawns subagent-mock commands
         assert len(metrics["spawns"]) > 0, \
             f"no spawns tracked, metrics: {json.dumps(metrics, indent=2)}"
+        assert any(info.get("alive") for info in metrics["spawns"].values())
         print("  PASS: test_spawn_tracking")
     finally:
         if obs_proc:

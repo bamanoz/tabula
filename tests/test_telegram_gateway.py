@@ -9,10 +9,45 @@ import queue
 import sys
 import threading
 import time
+import types
 import unittest
 from unittest.mock import MagicMock, patch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+if "websocket" not in sys.modules:
+    fake_websocket = types.ModuleType("websocket")
+
+    class _FakeTimeout(Exception):
+        pass
+
+    class _FakeClosed(Exception):
+        pass
+
+    def _unexpected_create_connection(_url: str):
+        raise RuntimeError("websocket.create_connection should be patched in tests")
+
+    fake_websocket.create_connection = _unexpected_create_connection
+    fake_websocket.WebSocketTimeoutException = _FakeTimeout
+    fake_websocket.WebSocketConnectionClosedException = _FakeClosed
+    sys.modules["websocket"] = fake_websocket
+
+if "requests" not in sys.modules:
+    fake_requests = types.ModuleType("requests")
+
+    class _FakeRequestException(Exception):
+        pass
+
+    def _unexpected_requests_call(*args, **kwargs):
+        raise RuntimeError("requests should be patched in tests")
+
+    fake_requests.get = _unexpected_requests_call
+    fake_requests.post = _unexpected_requests_call
+    fake_requests.RequestException = _FakeRequestException
+    sys.modules["requests"] = fake_requests
 
 # gateway-telegram has a hyphen, so we can't import it as a Python package.
 # Load the module directly from its file path.
@@ -170,7 +205,8 @@ class TestBotInstance(unittest.TestCase):
 class TestTelegramGateway(unittest.TestCase):
     def setUp(self):
         with patch.object(_gw, "_discover_slash_commands", return_value=[]):
-            self.gateway = TelegramGateway()
+            self.gateway = TelegramGateway(cleanup_interval=0)
+        self.addCleanup(self.gateway.shutdown)
         self.bot = MagicMock(spec=BotInstance)
         self.bot.TG_API = "https://api.telegram.org/bot123:ABC"
 
@@ -211,6 +247,233 @@ class TestTelegramGateway(unittest.TestCase):
         mock_token.assert_called_once()
         self.bot.send_message.assert_called_once()
 
+    def test_different_sessions_connect_without_holding_global_lock(self):
+        gateway = TelegramGateway(cleanup_interval=0)
+        self.addCleanup(gateway.shutdown)
+        barrier = threading.Barrier(2)
+        errors: list[BaseException] = []
+
+        class SlowSession:
+            def __init__(self, session_id: str):
+                self.session_id = session_id
+                self.alive = True
+                self.touch_calls = 0
+
+            def connect(self):
+                try:
+                    barrier.wait(timeout=1)
+                except BaseException as exc:
+                    errors.append(exc)
+                    raise
+
+            def touch(self, now=None):
+                self.touch_calls += 1
+
+            def expiry_reason(self, now=None):
+                return None
+
+            def is_busy(self):
+                return False
+
+            def close(self, reason="closed"):
+                self.alive = False
+
+        results = []
+        with patch.object(_gw, "SessionState", SlowSession):
+            threads = [
+                threading.Thread(target=lambda cid=cid: results.append(gateway._get_session(cid)))
+                for cid in (101, 202)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=2)
+
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertEqual(errors, [])
+        self.assertEqual({state.session_id for state in results}, {"tg-101", "tg-202"})
+
+    def test_same_chat_session_creation_is_single_flight(self):
+        gateway = TelegramGateway(cleanup_interval=0)
+        self.addCleanup(gateway.shutdown)
+        connect_started = threading.Event()
+        release_connect = threading.Event()
+        connect_calls = 0
+        connect_lock = threading.Lock()
+
+        class SlowSession:
+            def __init__(self, session_id: str):
+                self.session_id = session_id
+                self.alive = True
+
+            def connect(self):
+                nonlocal connect_calls
+                with connect_lock:
+                    connect_calls += 1
+                connect_started.set()
+                release_connect.wait(timeout=2)
+
+            def touch(self, now=None):
+                return None
+
+            def expiry_reason(self, now=None):
+                return None
+
+            def is_busy(self):
+                return False
+
+            def close(self, reason="closed"):
+                self.alive = False
+
+        results = []
+        with patch.object(_gw, "SessionState", SlowSession):
+            first = threading.Thread(target=lambda: results.append(gateway._get_session(77)))
+            second = threading.Thread(target=lambda: results.append(gateway._get_session(77)))
+            first.start()
+            self.assertTrue(connect_started.wait(timeout=1))
+            second.start()
+            release_connect.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(connect_calls, 1)
+        self.assertEqual(len(results), 2)
+        self.assertIs(results[0], results[1])
+
+    def test_cleanup_evicts_idle_session_and_closes_driver(self):
+        gateway = TelegramGateway(cleanup_interval=0)
+        self.addCleanup(gateway.shutdown)
+
+        class FakeSession:
+            def __init__(self, session_id: str):
+                self.session_id = session_id
+                self.alive = True
+                self.closed = 0
+                self.closed_reason = None
+
+            def expiry_reason(self, now=None):
+                return "idle"
+
+            def is_busy(self):
+                return False
+
+            def close(self, reason="closed"):
+                self.closed += 1
+                self.closed_reason = reason
+                self.alive = False
+
+        session = FakeSession("tg-5")
+        gateway.sessions[5] = session
+
+        gateway._cleanup_sessions()
+
+        self.assertNotIn(5, gateway.sessions)
+        self.assertEqual(session.closed, 1)
+        self.assertEqual(session.closed_reason, "idle")
+
+    def test_cleanup_skips_busy_expired_session(self):
+        gateway = TelegramGateway(cleanup_interval=0)
+        self.addCleanup(gateway.shutdown)
+
+        class FakeSession:
+            def __init__(self, session_id: str):
+                self.session_id = session_id
+                self.alive = True
+                self.closed = 0
+
+            def expiry_reason(self, now=None):
+                return "idle"
+
+            def is_busy(self):
+                return True
+
+            def close(self, reason="closed"):
+                self.closed += 1
+                self.alive = False
+
+        session = FakeSession("tg-6")
+        gateway.sessions[6] = session
+
+        gateway._cleanup_sessions()
+
+        self.assertIs(gateway.sessions[6], session)
+        self.assertEqual(session.closed, 0)
+
+    def test_get_session_replaces_expired_idle_session(self):
+        gateway = TelegramGateway(cleanup_interval=0)
+        self.addCleanup(gateway.shutdown)
+
+        class ExpiredSession:
+            def __init__(self, session_id: str):
+                self.session_id = session_id
+                self.alive = True
+                self.closed = 0
+                self.closed_reason = None
+
+            def expiry_reason(self, now=None):
+                return "ttl"
+
+            def is_busy(self):
+                return False
+
+            def touch(self, now=None):
+                return None
+
+            def close(self, reason="closed"):
+                self.closed += 1
+                self.closed_reason = reason
+                self.alive = False
+
+        replacement = MagicMock()
+        replacement.session_id = "tg-9"
+        replacement.alive = True
+        replacement.expiry_reason.return_value = None
+        replacement.is_busy.return_value = False
+
+        existing = ExpiredSession("tg-9")
+        gateway.sessions[9] = existing
+
+        with patch.object(_gw, "SessionState", return_value=replacement) as mock_state_cls:
+            result = gateway._get_session(9)
+
+        self.assertIs(result, replacement)
+        self.assertEqual(existing.closed, 1)
+        self.assertEqual(existing.closed_reason, "replaced")
+        mock_state_cls.assert_called_once_with("tg-9")
+        replacement.connect.assert_called_once_with()
+
+    def test_shutdown_closes_all_sessions_and_unblocks_creators(self):
+        gateway = TelegramGateway(cleanup_interval=0)
+
+        class FakeSession:
+            def __init__(self, session_id: str):
+                self.session_id = session_id
+                self.closed = 0
+                self.closed_reason = None
+
+            def close(self, reason="closed"):
+                self.closed += 1
+                self.closed_reason = reason
+
+        first = FakeSession("tg-1")
+        second = FakeSession("tg-2")
+        waiter = threading.Event()
+        gateway.sessions = {1: first, 2: second}
+        gateway._creating = {3: waiter}
+
+        gateway.shutdown()
+
+        self.assertEqual(first.closed, 1)
+        self.assertEqual(second.closed, 1)
+        self.assertEqual(first.closed_reason, "shutdown")
+        self.assertEqual(second.closed_reason, "shutdown")
+        self.assertTrue(waiter.is_set())
+        self.assertEqual(gateway.sessions, {})
+        self.assertEqual(gateway._creating, {})
+        self.assertTrue(gateway._stop_event.is_set())
+
 
 # -- SessionState.ask_stream --
 
@@ -223,6 +486,12 @@ class TestSessionAskStream(unittest.TestCase):
         self.session.alive = True
         self.session.driver_pid = None
         self.session._thread = None
+        self.session.turn_lock = threading.Lock()
+        self.session._state_lock = threading.Lock()
+        self.session.created_at = 0.0
+        self.session.last_used_at = 0.0
+        self.session.inflight_turn_id = None
+        self.session.closed_reason = None
 
     def _feed_events(self, *events):
         """Feed events after ask_stream drains stale ones and sends the message."""
@@ -288,6 +557,66 @@ class TestSessionAskStream(unittest.TestCase):
         self.assertEqual(len(captured), 1)
         self.assertEqual(captured[0]["type"], "message")
         self.assertEqual(captured[0]["text"], "user input")
+
+    def test_drains_stale_events_and_serializes_turn(self):
+        self.session.events.put(("stream_delta", "stale"))
+        seen_lock_state = []
+
+        def send_and_capture(msg):
+            seen_lock_state.append(self.session.turn_lock.locked())
+            self.session.events.put(("done", ""))
+
+        self.session.conn.send = send_and_capture
+        with patch.object(_gw, "ASK_TIMEOUT", 0.1):
+            list(self.session.ask_stream("fresh"))
+
+        self.assertEqual(seen_lock_state, [True])
+        self.assertTrue(self.session.events.empty())
+
+    def test_cancel_turn_requires_matching_inflight_turn(self):
+        self.session.inflight_turn_id = "turn-123"
+
+        self.assertFalse(self.session.cancel_turn("turn-mismatch"))
+        self.session.conn.send.assert_not_called()
+
+        self.assertTrue(self.session.cancel_turn("turn-123"))
+        self.assertTrue(self.session.cancel_requested)
+        self.session.conn.send.assert_called_once_with({"type": "cancel"})
+
+    def test_touch_and_expiry_helpers(self):
+        with patch.object(_gw.time, "monotonic", return_value=125.0):
+            self.session.touch()
+        self.assertEqual(self.session.last_used_at, 125.0)
+
+        self.session.created_at = 10.0
+        self.session.last_used_at = 90.0
+        with patch.object(_gw, "SESSION_IDLE_TTL", 20), patch.object(_gw, "SESSION_MAX_AGE", 200):
+            self.assertEqual(self.session.idle_seconds(115.0), 25.0)
+            self.assertEqual(self.session.expiry_reason(115.0), "idle")
+
+        with patch.object(_gw, "SESSION_IDLE_TTL", 0), patch.object(_gw, "SESSION_MAX_AGE", 50):
+            self.assertEqual(self.session.expiry_reason(70.0), "ttl")
+
+    def test_close_kills_driver_once(self):
+        self.session.driver_pid = 4321
+
+        self.session.close("idle")
+        self.session.close("shutdown")
+
+        self.session.conn.send.assert_called_once_with({
+            "type": "tool_use",
+            "name": "KILL",
+            "id": "kill-driver",
+            "input": {"pid": 4321},
+        })
+        self.session.conn.close.assert_called_once()
+        self.assertEqual(self.session.closed_reason, "idle")
+
+    def test_raises_when_session_is_closed(self):
+        self.session.alive = False
+
+        with self.assertRaisesRegex(RuntimeError, "session is closed"):
+            list(self.session.ask_stream("test"))
 
 
 if __name__ == "__main__":

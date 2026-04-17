@@ -91,24 +91,43 @@ def kernel_to_anthropic_tools(kernel_tools: list[dict]) -> list[dict]:
 def kernel_to_openai_tools(kernel_tools: list[dict]) -> list[dict]:
     result = []
     for tool in kernel_tools:
+        properties = {
+            key: {"type": value["type"], "description": value["description"]}
+            for key, value in tool.get("params", {}).items()
+        }
+        required = tool.get("required", [])
         result.append(
             {
                 "type": "function",
                 "name": tool["name"],
                 "description": tool["description"],
-                "strict": True,
+                **({"strict": True} if set(required) == set(properties.keys()) else {}),
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        key: {"type": value["type"], "description": value["description"]}
-                        for key, value in tool.get("params", {}).items()
-                    },
-                    "required": tool.get("required", []),
+                    "properties": properties,
+                    "required": required,
                     "additionalProperties": False,
                 },
             }
         )
     return result
+
+
+def _http_error_message(err: urllib.error.HTTPError) -> str:
+    try:
+        body = err.read().decode("utf-8", errors="replace").strip()
+    except Exception:
+        body = ""
+    if not body:
+        return str(err)
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return f"{err}: {body}"
+    message = data.get("error", {}).get("message") or data.get("message")
+    if message:
+        return f"{err}: {message}"
+    return f"{err}: {body}"
 
 
 def normalize_api_base(base_url: str, version_prefix: str) -> str:
@@ -254,9 +273,14 @@ class AnthropicSession(ProviderSession):
             },
         )
 
-        resp = urllib.request.urlopen(req, timeout=300)
+        try:
+            resp = urllib.request.urlopen(req, timeout=300)
+        except urllib.error.HTTPError as err:
+            raise RuntimeError(_http_error_message(err)) from err
         self._current_resp = resp
-        sock = resp.fp.raw._sock if hasattr(resp.fp, "raw") and hasattr(resp.fp.raw, "_sock") else None
+        fp = getattr(resp, "fp", None)
+        raw = getattr(fp, "raw", None)
+        sock = getattr(raw, "_sock", None)
         if sock:
             sock.settimeout(600)
 
@@ -434,9 +458,14 @@ class OpenAISession(ProviderSession):
             },
         )
 
-        resp = urllib.request.urlopen(req, timeout=300)
+        try:
+            resp = urllib.request.urlopen(req, timeout=300)
+        except urllib.error.HTTPError as err:
+            raise RuntimeError(_http_error_message(err)) from err
         self._current_resp = resp
-        sock = resp.fp.raw._sock if hasattr(resp.fp, "raw") and hasattr(resp.fp.raw, "_sock") else None
+        fp = getattr(resp, "fp", None)
+        raw = getattr(fp, "raw", None)
+        sock = getattr(raw, "_sock", None)
         if sock:
             sock.settimeout(600)
 
@@ -528,6 +557,18 @@ class OpenAISession(ProviderSession):
         self.pending_input = []
         if response_id:
             self.previous_response_id = response_id
+        if not completed_output and tool_order:
+            completed_output = [
+                {
+                    "type": "function_call",
+                    "id": item_id,
+                    "call_id": tool_state[item_id].get("call_id", ""),
+                    "name": tool_state[item_id].get("name", ""),
+                    "arguments": tool_state[item_id].get("arguments", "") or "",
+                    "status": "completed",
+                }
+                for item_id in tool_order
+            ]
         self.last_response_output = completed_output
 
         tool_calls: list[ToolCall] = []

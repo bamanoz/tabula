@@ -881,6 +881,87 @@ func TestCancelScopedToSession(t *testing.T) {
 	}
 }
 
+func TestSessionBusyBlocksConcurrentRootMessagesAndResetsAfterCancel(t *testing.T) {
+	env := newTestEnv(t)
+	gateway := env.connectAndJoin("gateway", "main",
+		[]string{"message", "cancel"},
+		[]string{"error"})
+	driver := env.connectAndJoinWithDepth("driver", "main", 1,
+		[]string{"done"},
+		[]string{"message", "cancel"})
+
+	writeJSON(t, gateway, Message{Type: "message", Text: "first"})
+	first := readMsg(t, driver)
+	if first.Type != "message" || first.Text != "first" {
+		t.Fatalf("expected first turn message, got %+v", first)
+	}
+
+	sess, ok := env.Hub.sessions.Get("main")
+	if !ok {
+		t.Fatal("session main should exist")
+	}
+	if !sess.IsBusy() {
+		t.Fatal("session should be busy after first root message")
+	}
+
+	writeJSON(t, gateway, Message{Type: "cancel"})
+	cancel := readMsg(t, driver)
+	if cancel.Type != "cancel" {
+		t.Fatalf("expected cancel to reach driver, got %+v", cancel)
+	}
+	if !sess.CancelRequested() {
+		t.Fatal("session should remember cancel request while turn is inflight")
+	}
+
+	writeJSON(t, gateway, Message{Type: "message", Text: "second"})
+	errMsg := readMsg(t, gateway)
+	if errMsg.Type != "error" || !strings.Contains(errMsg.Text, "session busy") {
+		t.Fatalf("expected busy error, got %+v", errMsg)
+	}
+
+	writeJSON(t, driver, Message{Type: "done"})
+	time.Sleep(50 * time.Millisecond)
+	if sess.IsBusy() {
+		t.Fatal("session should stop being busy after done")
+	}
+	if sess.CancelRequested() {
+		t.Fatal("cancel state should reset after done")
+	}
+
+	writeJSON(t, gateway, Message{Type: "message", Text: "third"})
+	third := readMsg(t, driver)
+	if third.Type != "message" || third.Text != "third" {
+		t.Fatalf("expected turn to resume after done, got %+v", third)
+	}
+}
+
+func TestChildMessagesStillRouteWhileParentTurnIsBusy(t *testing.T) {
+	env := newTestEnv(t)
+	gateway := env.connectAndJoin("gateway", "main",
+		[]string{"message"},
+		[]string{"error"})
+	driver := env.connectAndJoinWithDepth("driver", "main", 1,
+		[]string{"done"},
+		[]string{"message"})
+	child := env.connectAndJoinWithDepth("subagent", "main", 2,
+		[]string{"message"},
+		[]string{})
+
+	writeJSON(t, gateway, Message{Type: "message", Text: "root turn"})
+	root := readMsg(t, driver)
+	if root.Type != "message" || root.Text != "root turn" {
+		t.Fatalf("expected root turn message, got %+v", root)
+	}
+
+	writeJSON(t, child, Message{Type: "message", ID: "agent-1", Text: "child result"})
+	childMsg := readMsg(t, driver)
+	if childMsg.Type != "message" || childMsg.ID != "agent-1" || childMsg.Text != "child result" {
+		t.Fatalf("expected child message to route during busy turn, got %+v", childMsg)
+	}
+
+	writeJSON(t, driver, Message{Type: "done"})
+}
+
 func TestExecWithSpecialCharacters(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.connectAndJoin("driver", "main",

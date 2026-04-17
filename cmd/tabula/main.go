@@ -76,6 +76,9 @@ func serveCmd() int {
 		tabulaHome = filepath.Join(home, ".tabula")
 	}
 
+	// Load .env before reading any other configuration.
+	loadEnvFile(filepath.Join(tabulaHome, ".env"))
+
 	// Setup structured logging
 	logFile := os.Getenv("TABULA_LOG_FILE")
 	if logFile == "" {
@@ -97,7 +100,7 @@ func serveCmd() int {
 	slog.Info("working directory", "path", tabulaHome)
 
 	// Restore full PATH from install-time snapshot
-	savedPath := readEnvKey(filepath.Join(tabulaHome, ".env"), "TABULA_PATH")
+	savedPath := os.Getenv("TABULA_PATH")
 	if savedPath != "" {
 		os.Setenv("PATH", savedPath)
 		slog.Info("PATH restored from TABULA_PATH", "path", savedPath)
@@ -285,6 +288,8 @@ func runCmd(args []string) int {
 		tabulaHome = filepath.Join(home, ".tabula")
 	}
 
+	loadEnvFile(filepath.Join(tabulaHome, ".env"))
+
 	// Setup logging.
 	logFile := os.Getenv("TABULA_LOG_FILE")
 	if logFile == "" {
@@ -305,7 +310,7 @@ func runCmd(args []string) int {
 	}
 
 	// Restore PATH.
-	savedPath := readEnvKey(filepath.Join(tabulaHome, ".env"), "TABULA_PATH")
+	savedPath := os.Getenv("TABULA_PATH")
 	if savedPath != "" {
 		os.Setenv("PATH", savedPath)
 	}
@@ -542,22 +547,32 @@ func parseSkillExecMap(raw json.RawMessage) ([]skillToolExec, error) {
 	return parsed, nil
 }
 
-// readEnvKey reads a single KEY=VALUE from a .env file.
-func readEnvKey(path, key string) string {
+// loadEnvFile loads KEY=VALUE entries from a .env file without overriding shell env.
+func loadEnvFile(path string) {
 	f, err := os.Open(path)
 	if err != nil {
-		return ""
+		return
 	}
 	defer f.Close()
-	prefix := key + "="
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, prefix) {
-			return line[len(prefix):]
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
 		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if _, exists := os.LookupEnv(key); exists {
+			continue
+		}
+		os.Setenv(key, strings.TrimSpace(value))
 	}
-	return ""
 }
 
 // BootConfig holds the parsed output of the boot script.

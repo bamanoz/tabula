@@ -89,6 +89,19 @@ check_python() {
   ok "Python ${major}.${minor}"
 }
 
+install_python_deps() {
+  local requirements_url="https://raw.githubusercontent.com/${REPO}/${VERSION}/scripts/requirements-runtime.txt"
+
+  info "Installing Python dependencies..."
+  "$VENV/bin/pip" install -q --upgrade pip
+  if curl -fsSL -o "$tmp/requirements-runtime.txt" "$requirements_url"; then
+    "$VENV/bin/pip" install -q -r "$tmp/requirements-runtime.txt"
+  else
+    "$VENV/bin/pip" install -q websocket-client prompt_toolkit rich
+  fi
+  ok "Python dependencies installed"
+}
+
 # ── save PATH ────────────────────────────────────────────────────
 
 save_path_to_env() {
@@ -347,6 +360,9 @@ for a in data.get('assets', []):
   ok "Binary installed"
 
   tar -xzf "$tmp/$skills_archive" -C "$TABULA_HOME"
+  if [ -f "$TABULA_HOME/examples/boot-cicd.py" ]; then
+    cp "$TABULA_HOME/examples/boot-cicd.py" "$TABULA_HOME/boot-cicd.py"
+  fi
   chmod +x "$BIN_DIR/tabula-server" "$BIN_DIR/tabula-cli" "$BIN_DIR/tabula-api" 2>/dev/null || true
   ok "Skills and config installed"
 
@@ -362,10 +378,7 @@ for a in data.get('assets', []):
     "$PYTHON_BIN" -m venv "$VENV"
   fi
 
-  info "Installing Python dependencies..."
-  "$VENV/bin/pip" install -q --upgrade pip
-  "$VENV/bin/pip" install -q websocket-client prompt_toolkit rich
-  ok "Python dependencies installed"
+  install_python_deps
 
   # Shell
   configure_shell

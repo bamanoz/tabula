@@ -22,6 +22,7 @@ tar -czf "extra/tabula-skills-${VERSION}.tar.gz" \
   bundles/ \
   templates/ \
   boot.py \
+  examples/boot-cicd.py \
   bin/tabula-server \
   bin/tabula-cli \
   bin/tabula-api \

@@ -16,20 +16,35 @@ const (
 
 // Session represents an active session with its own lifecycle and metadata.
 type Session struct {
-	mu        sync.RWMutex
-	ID        string
-	State     SessionState
-	CreatedAt time.Time
-	clients   map[string]bool // client name → true
+	mu              sync.RWMutex
+	ID              string
+	State           SessionState
+	CreatedAt       time.Time
+	LastActiveAt    time.Time
+	clients         map[string]bool // client name → true
+	inflightTurn    bool
+	cancelRequested bool
 }
 
 func newSession(id string) *Session {
+	now := time.Now()
 	return &Session{
-		ID:        id,
-		State:     SessionIdle,
-		CreatedAt: time.Now(),
-		clients:   make(map[string]bool),
+		ID:           id,
+		State:        SessionIdle,
+		CreatedAt:    now,
+		LastActiveAt: now,
+		clients:      make(map[string]bool),
 	}
+}
+
+func (s *Session) touchLocked() {
+	s.LastActiveAt = time.Now()
+}
+
+func (s *Session) Touch() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.touchLocked()
 }
 
 func (s *Session) AddClient(name string) {
@@ -37,21 +52,70 @@ func (s *Session) AddClient(name string) {
 	defer s.mu.Unlock()
 	s.clients[name] = true
 	s.State = SessionActive
+	s.touchLocked()
 }
 
 func (s *Session) RemoveClient(name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.clients, name)
-	if len(s.clients) == 0 {
+	if len(s.clients) == 0 && !s.inflightTurn {
 		s.State = SessionIdle
 	}
+	s.touchLocked()
 }
 
 func (s *Session) ClientCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.clients)
+}
+
+func (s *Session) BeginTurn() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.State == SessionClosing || s.inflightTurn {
+		return false
+	}
+	s.inflightTurn = true
+	s.cancelRequested = false
+	s.State = SessionActive
+	s.touchLocked()
+	return true
+}
+
+func (s *Session) EndTurn() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.inflightTurn = false
+	s.cancelRequested = false
+	if s.State != SessionClosing && len(s.clients) == 0 {
+		s.State = SessionIdle
+	}
+	s.touchLocked()
+}
+
+func (s *Session) RequestCancel() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.State == SessionClosing || !s.inflightTurn || s.cancelRequested {
+		return false
+	}
+	s.cancelRequested = true
+	s.touchLocked()
+	return true
+}
+
+func (s *Session) IsBusy() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.inflightTurn
+}
+
+func (s *Session) CancelRequested() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cancelRequested
 }
 
 // SessionRegistry manages session lifecycle and metadata.
@@ -100,6 +164,9 @@ func (r *SessionRegistry) Remove(id string) {
 	defer r.mu.Unlock()
 	if s, ok := r.sessions[id]; ok {
 		s.State = SessionClosing
+		s.inflightTurn = false
+		s.cancelRequested = false
+		s.touchLocked()
 	}
 	delete(r.sessions, id)
 }

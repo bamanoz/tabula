@@ -83,6 +83,9 @@ func (h *Hub) onClientDisconnect(c *Client) {
 	if !ok {
 		return
 	}
+	if sess.IsBusy() && c.canSend(string(MsgDone)) {
+		sess.EndTurn()
+	}
 	sess.RemoveClient(c.name)
 	if sess.ClientCount() == 0 {
 		h.emitSessionEnd(c.session)

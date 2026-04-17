@@ -36,6 +36,8 @@ git clone https://github.com/bamanoz/tabula.git && cd tabula
 ```
 
 Requires Go 1.26+ and Python 3.11+.
+
+Source install copies `boot.py`, `boot-cicd.py`, skills, templates, service units, and launchers into `TABULA_HOME`, then builds `bin/tabula`.
 </details>
 
 <details>
@@ -49,7 +51,8 @@ Requires Go 1.26+ and Python 3.11+.
 ├── bin/tabula-server       # Launch: persistent server
 ├── service/                # launchd/systemd templates
 ├── boot.py                 # Skill discovery & prompt assembly
-├── templates/              # System prompt templates, boot-cicd.py
+├── boot-cicd.py            # Minimal CI/CD boot script
+├── templates/              # System prompt templates
 ├── skills/                 # Installed skills (+ symlinks to bundles)
 ├── bundles/                # Optional skill bundles (if installed)
 ├── memory/                 # Persistent memory
@@ -81,7 +84,13 @@ tabula serve
 tabula run --prompt "what is 2+2?"
 ```
 
-Both modes require `TABULA_BOOT` to be set, pointing to a boot script:
+`tabula-server` sets a sane default automatically:
+
+```bash
+tabula-server
+```
+
+Direct `tabula serve` / `tabula run` invocations still require `TABULA_BOOT` to be set, pointing to a boot script:
 
 ```bash
 # Interactive mode (full skill set)
@@ -91,7 +100,7 @@ TABULA_BOOT="python3 boot.py" tabula serve
 TABULA_BOOT="python3 boot-cicd.py" tabula run --prompt "summarize this file"
 ```
 
-`boot-cicd.py` is a minimal boot script that spawns only the LLM driver — no MCP, no hooks, no session registry. Copy it to your workspace: `cp templates/boot-cicd.py $TABULA_HOME/`.
+`boot-cicd.py` is a minimal boot script that spawns only the LLM driver — no MCP, no hooks, no session registry. It is installed at `$TABULA_HOME/boot-cicd.py`.
 
 ## Features
 
@@ -161,10 +170,11 @@ Install with: `BUNDLES=caveman bash install.sh` or `BUNDLES=all` for everything.
 
 ### API gateway
 
-Start alongside the kernel or connect to a running one:
+Start the kernel, then connect the API gateway:
 
 ```bash
-TABULA_API_PORT=8090 tabula-server     # kernel + API
+tabula-server
+TABULA_API_PORT=8090 tabula-api
 tabula-api                              # connect to running kernel
 ```
 
@@ -204,6 +214,19 @@ JSON messages over WebSocket. Each message has a `type` field:
 Create a directory in `skills/` with a `SKILL.md` (frontmatter + docs) and a `run.py` entry point. The skill connects to the kernel via WebSocket, declares its message types, and joins a session.
 
 See `skills/skill-contract/SKILL.md` for the full specification.
+
+## Testing
+
+The verification matrix is split into explicit layers so we can run fast checks locally and keep heavier runtime flows targeted:
+
+```bash
+make test-unit
+make test-smoke
+make test-e2e
+make test-contract
+```
+
+Python layers are classified with `pytest` markers via `conftest.py`; the current matrix is documented in [`tests/README.md`](tests/README.md).
 
 ## Configuration
 
@@ -249,6 +272,16 @@ Within same specificity, deny overrides allow. No file = allow all.
 | `OPENAI_BASE_URL` | OpenAI API endpoint | `https://api.openai.com` |
 
 </details>
+
+## Development
+
+Install from source into `TABULA_HOME`:
+
+```bash
+make install
+```
+
+That flow installs Python packages from `scripts/requirements-dev.txt`, and the release installer uses `scripts/requirements-runtime.txt` as its runtime dependency source of truth.
 
 ## License
 

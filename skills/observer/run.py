@@ -10,6 +10,8 @@ import sys
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib import parse as urlparse
+from urllib import request as urlrequest
 
 ROOT = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
 if ROOT not in sys.path:
@@ -17,30 +19,23 @@ if ROOT not in sys.path:
 
 from skills.lib.kernel_client import KernelConnection
 from skills.lib.protocol import (
-    MSG_CONNECT, MSG_HOOK, MSG_HOOK_RESULT,
-    HOOK_BEFORE_MESSAGE, HOOK_AFTER_MESSAGE,
-    HOOK_BEFORE_TOOL_CALL, HOOK_AFTER_TOOL_CALL,
-    HOOK_SESSION_START, HOOK_SESSION_END,
-    HOOK_BEFORE_SPAWN, HOOK_AFTER_SPAWN,
+    MSG_CONNECT, MSG_HOOK,
+    HOOK_AFTER_MESSAGE, HOOK_AFTER_TOOL_CALL,
+    HOOK_SESSION_END, HOOK_AFTER_SPAWN,
 )
 
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
+SNAPSHOT_POLL_SEC = 0.5
 
-# Observer subscribes to all observability hooks.
-# For modifying hooks it always responds with "pass" (no-op).
+# Observer only subscribes to observability hooks.
+# Session/process topology is reconciled from /sessions snapshots so telemetry
+# stays out of the policy/modifying path.
 HOOK_EVENTS = [
-    {"event": HOOK_BEFORE_MESSAGE, "priority": 0},
     {"event": HOOK_AFTER_MESSAGE, "priority": 0},
-    {"event": HOOK_BEFORE_TOOL_CALL, "priority": 0},
     {"event": HOOK_AFTER_TOOL_CALL, "priority": 0},
-    {"event": HOOK_SESSION_START, "priority": 0},
     {"event": HOOK_SESSION_END, "priority": 0},
-    {"event": HOOK_BEFORE_SPAWN, "priority": 0},
     {"event": HOOK_AFTER_SPAWN, "priority": 0},
 ]
-
-# Modifying hooks that require a hook_result response.
-MODIFYING_HOOKS = {HOOK_BEFORE_MESSAGE, HOOK_BEFORE_TOOL_CALL, HOOK_SESSION_START, HOOK_BEFORE_SPAWN}
 
 
 class Metrics:
@@ -48,11 +43,9 @@ class Metrics:
 
     def __init__(self):
         self._lock = threading.Lock()
-        self._msg_start: dict[str, float] = {}  # session → timestamp
-        self._tool_start: dict[str, float] = {}  # tool_id → timestamp
         self.sessions: dict[str, dict] = {}
-        self.tools: dict[str, dict] = {}  # tool_name → {calls, errors, total_ms}
-        self.spawns: dict[str, dict] = {}  # command → {count, alive}
+        self.tools: dict[str, dict] = {}  # tool_name -> {calls, errors, total_ms}
+        self.spawns: dict[str, dict] = {}  # command -> {count, alive}
         self.started_at = time.time()
 
     def handle_hook(self, event: str, payload: dict):
@@ -60,54 +53,49 @@ class Metrics:
         now = time.time()
 
         with self._lock:
-            if event == HOOK_BEFORE_MESSAGE:
-                self._msg_start[session] = now
-                self.sessions.setdefault(session, {})["last_message_at"] = now
-
-            elif event == HOOK_AFTER_MESSAGE:
-                start = self._msg_start.pop(session, None)
+            if event == HOOK_AFTER_MESSAGE:
                 info = self.sessions.setdefault(session, {})
                 info["last_message_at"] = now
                 info["message_count"] = info.get("message_count", 0) + 1
-                if start:
-                    elapsed = (now - start) * 1000
-                    info["avg_latency_ms"] = (
-                        (info.get("avg_latency_ms", 0) * (info["message_count"] - 1) + elapsed)
-                        / info["message_count"]
-                    )
-
-            elif event == HOOK_BEFORE_TOOL_CALL:
-                tool_id = payload.get("id", "")
-                tool_name = payload.get("tool", "")
-                self._tool_start[tool_id] = now
-                info = self.tools.setdefault(tool_name, {"calls": 0, "errors": 0, "total_ms": 0})
-                info["calls"] += 1
 
             elif event == HOOK_AFTER_TOOL_CALL:
-                tool_id = payload.get("id", "")
                 tool_name = payload.get("tool", "")
-                start = self._tool_start.pop(tool_id, None)
                 info = self.tools.setdefault(tool_name, {"calls": 0, "errors": 0, "total_ms": 0})
-                if start:
-                    info["total_ms"] += (now - start) * 1000
-
-            elif event == HOOK_SESSION_START:
-                client = payload.get("client", "")
-                self.sessions.setdefault(session, {})["clients"] = sorted(
-                    set(self.sessions.get(session, {}).get("clients", []) + [client])
-                )
+                info["calls"] += 1
+                if str(payload.get("output", "")).startswith("ERROR:"):
+                    info["errors"] += 1
 
             elif event == HOOK_SESSION_END:
-                self.sessions.setdefault(session, {})["ended_at"] = now
-
-            elif event == HOOK_BEFORE_SPAWN:
-                cmd = payload.get("command", "")
-                info = self.spawns.setdefault(cmd, {"count": 0, "alive": True})
-                info["count"] += 1
+                info = self.sessions.setdefault(session, {})
+                info["ended_at"] = now
+                info["clients"] = []
 
             elif event == HOOK_AFTER_SPAWN:
                 cmd = payload.get("command", "")
                 self.spawns.setdefault(cmd, {"count": 0, "alive": True})["alive"] = True
+                self.spawns[cmd]["count"] += 1
+
+    def reconcile_snapshot(self, snapshot: dict):
+        with self._lock:
+            live_counts: dict[str, int] = {}
+            for session, info in snapshot.items():
+                session_info = self.sessions.setdefault(session, {})
+                session_info["clients"] = sorted(info.get("clients", []))
+                for proc in info.get("processes", []):
+                    cmd = proc.get("command", "")
+                    if not cmd:
+                        continue
+                    live_counts[cmd] = live_counts.get(cmd, 0) + (1 if proc.get("alive") else 0)
+
+            for cmd, alive_count in live_counts.items():
+                spawn_info = self.spawns.setdefault(cmd, {"count": 0, "alive": False})
+                if spawn_info["count"] < alive_count:
+                    spawn_info["count"] = alive_count
+                spawn_info["alive"] = alive_count > 0
+
+            for cmd, spawn_info in self.spawns.items():
+                if cmd not in live_counts:
+                    spawn_info["alive"] = False
 
     def snapshot(self) -> dict:
         with self._lock:
@@ -128,13 +116,19 @@ class Metrics:
 metrics = Metrics()
 
 
+def sessions_url(kernel_url: str) -> str:
+    parsed = urlparse.urlsplit(kernel_url)
+    scheme = "https" if parsed.scheme == "wss" else "http"
+    return urlparse.urlunsplit((scheme, parsed.netloc, "/sessions", "", ""))
+
+
 def run_hook_listener(url: str):
     """Connect to kernel and listen for hook events."""
     conn = KernelConnection(url)
     conn.send({
         "type": MSG_CONNECT,
         "name": "observer",
-        "sends": [MSG_HOOK_RESULT],
+        "sends": [],
         "receives": [MSG_HOOK],
         "hooks": HOOK_EVENTS,
     })
@@ -149,17 +143,21 @@ def run_hook_listener(url: str):
                 continue
             event = msg.get("name", "")
             metrics.handle_hook(event, msg.get("payload", {}))
-            # Respond with "pass" on modifying hooks so kernel doesn't block.
-            if event in MODIFYING_HOOKS:
-                conn.send({
-                    "type": MSG_HOOK_RESULT,
-                    "id": msg.get("id", ""),
-                    "action": "pass",
-                })
     except (ConnectionError, OSError):
         pass
     finally:
         conn.close()
+
+
+def poll_sessions(url: str):
+    snapshot_url = sessions_url(url)
+    while True:
+        try:
+            with urlrequest.urlopen(snapshot_url, timeout=1) as resp:
+                metrics.reconcile_snapshot(json.loads(resp.read()))
+        except Exception:
+            pass
+        time.sleep(SNAPSHOT_POLL_SEC)
 
 
 class MetricsHandler(BaseHTTPRequestHandler):
@@ -187,6 +185,8 @@ def main():
     # Start hook listener in background.
     t = threading.Thread(target=run_hook_listener, args=(args.url,), daemon=True)
     t.start()
+    snapshot_thread = threading.Thread(target=poll_sessions, args=(args.url,), daemon=True)
+    snapshot_thread.start()
 
     # Serve metrics on HTTP.
     server = HTTPServer(("127.0.0.1", args.port), MetricsHandler)

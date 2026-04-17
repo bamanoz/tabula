@@ -1,28 +1,36 @@
-# Install Tabula to ~\.tabula\
-# Run: powershell -ExecutionPolicy Bypass -File install-dev.ps1
+# Install Tabula from source to ~\.tabula\
+# Run: powershell -ExecutionPolicy Bypass -File scripts/install-dev.ps1
 
 $ErrorActionPreference = "Stop"
 
 $TabulaHome = if ($env:TABULA_HOME) { $env:TABULA_HOME } else { Join-Path $HOME ".tabula" }
 $BinDir = Join-Path $TabulaHome "bin"
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepoRoot = Split-Path -Parent $ScriptDir
+$Venv = Join-Path $TabulaHome ".venv"
 
 Write-Host "Installing Tabula to $TabulaHome..."
 
 New-Item -ItemType Directory -Force -Path $TabulaHome, $BinDir | Out-Null
 
-# Config
-Copy-Item "tabula.yaml" -Destination $TabulaHome -Force
-Copy-Item "boot.py" -Destination $TabulaHome -Force
+# Boot scripts
+Copy-Item (Join-Path $RepoRoot "boot.py") -Destination $TabulaHome -Force
+Copy-Item (Join-Path $RepoRoot "examples" "boot-cicd.py") -Destination (Join-Path $TabulaHome "boot-cicd.py") -Force
 
 # Templates
 $TemplatesDest = Join-Path $TabulaHome "templates"
 if (Test-Path $TemplatesDest) { Remove-Item -Recurse -Force $TemplatesDest }
-Copy-Item "templates" -Destination $TemplatesDest -Recurse -Force
+Copy-Item (Join-Path $RepoRoot "templates") -Destination $TemplatesDest -Recurse -Force
+
+# Service units
+$ServiceDest = Join-Path $TabulaHome "service"
+if (Test-Path $ServiceDest) { Remove-Item -Recurse -Force $ServiceDest }
+Copy-Item (Join-Path $RepoRoot "service") -Destination $ServiceDest -Recurse -Force
 
 # Skills (mirror directory, exclude test/mock skills)
 $SkillsDest = Join-Path $TabulaHome "skills"
 if (Test-Path $SkillsDest) { Remove-Item -Recurse -Force $SkillsDest }
-Copy-Item "skills" -Destination $SkillsDest -Recurse -Force
+Copy-Item (Join-Path $RepoRoot "skills") -Destination $SkillsDest -Recurse -Force
 # Remove mock skills
 Remove-Item -Recurse -Force (Join-Path $SkillsDest "driver-mock") -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force (Join-Path $SkillsDest "subagent-mock") -ErrorAction SilentlyContinue
@@ -36,14 +44,14 @@ if ($Requested) {
     $BundlesDest = Join-Path $TabulaHome "bundles"
     if ($Requested -eq "all") {
         if (Test-Path $BundlesDest) { Remove-Item -Recurse -Force $BundlesDest }
-        Copy-Item "bundles" -Destination $BundlesDest -Recurse -Force
+        Copy-Item (Join-Path $RepoRoot "bundles") -Destination $BundlesDest -Recurse -Force
         Get-ChildItem -Path $BundlesDest -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
         Write-Host "All bundles installed"
     } else {
         New-Item -ItemType Directory -Force -Path $BundlesDest | Out-Null
         $Wanted = $Requested -split ","
         foreach ($name in $Wanted) {
-            $src = Join-Path "bundles" $name
+            $src = Join-Path $RepoRoot "bundles" $name
             if (Test-Path $src) {
                 $dest = Join-Path $BundlesDest $name
                 if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
@@ -77,23 +85,25 @@ if (Test-Path $BundlesDest) {
 New-Item -ItemType Directory -Force -Path (Join-Path $TabulaHome "memory") | Out-Null
 
 # Python venv with dependencies
-$Venv = Join-Path $TabulaHome ".venv"
 if (-not (Test-Path $Venv)) {
     Write-Host "Creating Python venv..."
     python -m venv $Venv
 }
 $Pip = Join-Path $Venv "Scripts" "pip.exe"
-& $Pip install -q websocket-client pytest
+& $Pip install -q --upgrade pip
+& $Pip install -q -r (Join-Path $ScriptDir "requirements-dev.txt")
 Write-Host "Python dependencies installed"
 
 # Go binary
 Write-Host "Building Go binary..."
 $BinPath = Join-Path $BinDir "tabula.exe"
+Push-Location $RepoRoot
 go build -o $BinPath ./cmd/tabula/
+Pop-Location
 
 # Launch scripts
 foreach ($script in @("tabula-server.ps1", "tabula-cli.ps1", "tabula-api.ps1")) {
-    Copy-Item (Join-Path "bin" $script) -Destination (Join-Path $BinDir $script) -Force
+    Copy-Item (Join-Path $RepoRoot "bin" $script) -Destination (Join-Path $BinDir $script) -Force
 }
 
 # Add to PATH

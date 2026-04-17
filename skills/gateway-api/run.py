@@ -4,34 +4,53 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
 import queue
 import re
+import shlex
+import subprocess
 import sys
 import threading
 import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from uuid import uuid4
 
-ROOT = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
 
+
+def _resolve_tabula_home() -> str:
+    configured = os.environ.get("TABULA_HOME")
+    if configured:
+        return os.path.abspath(os.path.expanduser(configured))
+    return REPO_ROOT
+
+
+TABULA_HOME = _resolve_tabula_home()
+if TABULA_HOME not in sys.path:
+    sys.path.insert(0, TABULA_HOME)
+
+from skills.lib import load_env
 from skills.lib.kernel_client import KernelConnection
 from skills.lib.protocol import (
-    MSG_CONNECT, MSG_JOIN, MSG_MESSAGE, MSG_TOOL_USE,
-    MSG_TOOL_RESULT, MSG_MEMBER_JOINED,
+    MSG_CANCEL, MSG_CONNECT, MSG_DONE, MSG_ERROR, MSG_JOIN, MSG_MEMBER_JOINED,
+    MSG_MESSAGE, MSG_STREAM_DELTA, MSG_STREAM_END, MSG_STREAM_START,
+    MSG_TOOL_RESULT, MSG_TOOL_USE,
     TOOL_SPAWN, TOOL_KILL,
 )
 
+load_env()
+
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
-TABULA_HOME = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
 AUTH_TOKEN = os.environ.get("TABULA_API_AUTH", "")
 VERBOSE = os.environ.get("TABULA_VERBOSE", "") == "1"
-VENV_PYTHON = os.path.join(TABULA_HOME, ".venv", "bin", "python3")
 PROVIDER = os.environ.get("TABULA_PROVIDER", "anthropic")
+SESSION_IDLE_TTL = float(os.environ.get("TABULA_API_SESSION_IDLE_TTL", "900"))
+SESSION_MAX_AGE = float(os.environ.get("TABULA_API_SESSION_MAX_AGE", "21600"))
+SESSION_CLEANUP_INTERVAL = float(os.environ.get("TABULA_API_SESSION_CLEANUP_INTERVAL", "30"))
 
 # Provider alias resolution (same as boot.py)
 PROVIDER_ALIASES = {
@@ -42,6 +61,23 @@ PROVIDER_ALIASES = {
     "openclaw": "openai",
 }
 ACTIVE_PROVIDER = PROVIDER_ALIASES.get(PROVIDER, PROVIDER)
+
+
+def _shell_join(parts: list[str]) -> str:
+    if os.name == "nt":
+        return subprocess.list2cmdline(parts)
+    return shlex.join(parts)
+
+
+def _driver_script_path(provider: str) -> str:
+    return os.path.join(TABULA_HOME, "skills", f"driver-{provider}", "run.py")
+
+
+def _driver_command(provider: str) -> str:
+    script = _driver_script_path(provider)
+    if not os.path.isfile(script):
+        raise RuntimeError(f"driver script not found: {script}")
+    return _shell_join([sys.executable, script])
 
 
 def log(msg: str):
@@ -59,6 +95,14 @@ class SessionState:
         self.driver_pid: int | None = None
         self.events: queue.Queue[tuple[str, str]] = queue.Queue()
         self.alive = True
+        self.turn_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        now = time.monotonic()
+        self.created_at = now
+        self.last_used_at = now
+        self.inflight_turn_id: str | None = None
+        self.cancel_requested = False
+        self.closed_reason: str | None = None
         self._receiver_thread: threading.Thread | None = None
 
     def connect(self, driver_cmd: str):
@@ -118,15 +162,86 @@ class SessionState:
                 payload = msg.get("text", "")
                 self.events.put((msg_type, payload))
 
-    def close(self):
-        self.alive = False
-        if self.driver_pid is not None:
+    def _drain_events(self):
+        while True:
+            try:
+                self.events.get_nowait()
+            except queue.Empty:
+                break
+
+    def touch(self, now: float | None = None):
+        with self._state_lock:
+            self.last_used_at = time.monotonic() if now is None else now
+
+    def age_seconds(self, now: float | None = None) -> float:
+        current = time.monotonic() if now is None else now
+        return current - self.created_at
+
+    def idle_seconds(self, now: float | None = None) -> float:
+        current = time.monotonic() if now is None else now
+        with self._state_lock:
+            return current - self.last_used_at
+
+    def is_busy(self) -> bool:
+        return self.turn_lock.locked()
+
+    def expiry_reason(self, now: float | None = None) -> str | None:
+        current = time.monotonic() if now is None else now
+        if SESSION_MAX_AGE > 0 and self.age_seconds(current) >= SESSION_MAX_AGE:
+            return "ttl"
+        if SESSION_IDLE_TTL > 0 and self.idle_seconds(current) >= SESSION_IDLE_TTL:
+            return "idle"
+        return None
+
+    @contextmanager
+    def turn(self, text: str, turn_id: str | None = None):
+        """Serialize turns for a session because one driver owns one event queue."""
+        with self.turn_lock:
+            with self._state_lock:
+                if not self.alive:
+                    raise RuntimeError("session is closed")
+                self.inflight_turn_id = turn_id or f"turn-{uuid4().hex[:12]}"
+                self.cancel_requested = False
+                self.last_used_at = time.monotonic()
+            try:
+                self._drain_events()
+                self.conn.send({"type": MSG_MESSAGE, "text": text})
+                yield
+            finally:
+                with self._state_lock:
+                    self.inflight_turn_id = None
+                    self.cancel_requested = False
+                    self.last_used_at = time.monotonic()
+
+    def cancel_turn(self, turn_id: str | None = None) -> bool:
+        with self._state_lock:
+            if not self.alive or self.inflight_turn_id is None:
+                return False
+            if turn_id and turn_id != self.inflight_turn_id:
+                return False
+            self.cancel_requested = True
+        try:
+            self.conn.send({"type": MSG_CANCEL})
+            return True
+        except Exception:
+            return False
+
+    def close(self, reason: str = "closed"):
+        with self._state_lock:
+            if not self.alive:
+                return
+            self.alive = False
+            self.closed_reason = reason
+            driver_pid = self.driver_pid
+            self.driver_pid = None
+
+        if driver_pid is not None:
             try:
                 self.conn.send({
                     "type": MSG_TOOL_USE,
                     "id": "kill-driver",
                     "name": TOOL_KILL,
-                    "input": {"pid": self.driver_pid},
+                    "input": {"pid": driver_pid},
                 })
             except Exception:
                 pass
@@ -136,20 +251,148 @@ class SessionState:
 class GatewayAPI:
     """Manages sessions and provides the HTTP handler."""
 
-    def __init__(self):
+    def __init__(self, cleanup_interval: float | None = None):
         self.sessions: dict[str, SessionState] = {}
+        self._creating: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
-        self.driver_cmd = f"{VENV_PYTHON} skills/driver-{ACTIVE_PROVIDER}/run.py"
+        self._shutdown = False
+        self._stop_event = threading.Event()
+        self._cleanup_interval = SESSION_CLEANUP_INTERVAL if cleanup_interval is None else cleanup_interval
+        self._cleanup_thread: threading.Thread | None = None
+        self.driver_cmd = _driver_command(ACTIVE_PROVIDER)
+        if self._cleanup_interval > 0:
+            self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
+            self._cleanup_thread.start()
 
     def get_or_create_session(self, session_id: str) -> SessionState:
-        with self._lock:
-            if session_id in self.sessions:
-                return self.sessions[session_id]
-            state = SessionState(session_id)
+        while True:
+            stale: SessionState | None = None
+            wait_for_create: threading.Event | None = None
+            should_create = False
+            with self._lock:
+                if self._shutdown:
+                    raise RuntimeError("gateway is shutting down")
+
+                state = self.sessions.get(session_id)
+                if state is not None:
+                    if not state.alive:
+                        stale = self.sessions.pop(session_id, None)
+                    else:
+                        reason = state.expiry_reason()
+                        if reason is None or state.is_busy():
+                            state.touch()
+                            return state
+                        stale = self.sessions.pop(session_id, None)
+
+                creating = self._creating.get(session_id)
+                if creating is None:
+                    creating = threading.Event()
+                    self._creating[session_id] = creating
+                    should_create = True
+                else:
+                    wait_for_create = creating
+
+            if stale is not None:
+                try:
+                    stale.close("replaced")
+                except Exception:
+                    pass
+            if should_create:
+                break
+            if wait_for_create is not None:
+                wait_for_create.wait()
+
+        state = SessionState(session_id)
+        try:
             state.connect(self.driver_cmd)
-            self.sessions[session_id] = state
-            log(f"created session {session_id}")
+        except Exception:
+            try:
+                state.close()
+            finally:
+                with self._lock:
+                    creating = self._creating.pop(session_id, None)
+                    if creating is not None:
+                        creating.set()
+            raise
+
+        with self._lock:
+            creating = self._creating.pop(session_id, None)
+            if creating is not None:
+                creating.set()
+            if self._shutdown:
+                should_close = True
+            else:
+                should_close = False
+                self.sessions[session_id] = state
+                log(f"created session {session_id}")
+
+        if should_close:
+            state.close("shutdown")
+            raise RuntimeError("gateway is shutting down")
+        return state
+
+    def get_session(self, session_id: str) -> SessionState | None:
+        with self._lock:
+            state = self.sessions.get(session_id)
+            if state is None or not state.alive:
+                return None
             return state
+
+    def cancel_session(self, session_id: str, turn_id: str | None = None) -> bool:
+        state = self.get_session(session_id)
+        if state is None:
+            return False
+        return state.cancel_turn(turn_id)
+
+    def _cleanup_loop(self):
+        while not self._stop_event.wait(self._cleanup_interval):
+            self.cleanup_sessions()
+
+    def cleanup_sessions(self):
+        now = time.monotonic()
+        evicted: list[tuple[str, SessionState, str]] = []
+        with self._lock:
+            for session_id, state in list(self.sessions.items()):
+                if not state.alive:
+                    removed = self.sessions.pop(session_id, None)
+                    if removed is not None:
+                        evicted.append((session_id, removed, "closed"))
+                    continue
+                reason = state.expiry_reason(now)
+                if reason is None or state.is_busy():
+                    continue
+                removed = self.sessions.pop(session_id, None)
+                if removed is not None:
+                    evicted.append((session_id, removed, reason))
+
+        for session_id, state, reason in evicted:
+            try:
+                state.close(reason)
+            finally:
+                if reason != "closed":
+                    log(f"evicted session {session_id}: {reason}")
+
+    def shutdown(self):
+        thread = None
+        with self._lock:
+            self._shutdown = True
+            thread = self._cleanup_thread
+            sessions = list(self.sessions.values())
+            self.sessions.clear()
+            creating = list(self._creating.values())
+            self._creating.clear()
+
+        self._stop_event.set()
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=self._cleanup_interval + 1)
+
+        for event in creating:
+            event.set()
+        for state in sessions:
+            try:
+                state.close("shutdown")
+            except Exception:
+                pass
 
     def resolve_session_id(self, request_body: dict, headers: dict) -> str:
         """Determine session ID from request."""
@@ -192,11 +435,26 @@ def make_handler(gateway: GatewayAPI):
                 self.send_error(400, "Invalid JSON")
                 return None
 
+        def _read_optional_body(self) -> dict:
+            length = int(self.headers.get("Content-Length", 0))
+            if length == 0:
+                return {}
+            try:
+                body = json.loads(self.rfile.read(length))
+            except (json.JSONDecodeError, ValueError):
+                self.send_error(400, "Invalid JSON")
+                return {}
+            return body if isinstance(body, dict) else {}
+
         def do_POST(self):
             if self.path == "/v1/chat/completions":
                 self._handle_chat_completions()
             elif self.path == "/v1/responses":
                 self._handle_responses()
+            elif self.path.startswith("/v1/responses/") and self.path.endswith("/cancel"):
+                self._handle_cancel("response")
+            elif self.path.startswith("/v1/chat/completions/") and self.path.endswith("/cancel"):
+                self._handle_cancel("chat.completion")
             else:
                 self.send_error(404, "Not found")
 
@@ -233,14 +491,13 @@ def make_handler(gateway: GatewayAPI):
                 self.send_error(503, str(e))
                 return
 
-            self._drain_events(session)
-            session.conn.send({"type": "message", "text": user_text})
             completion_id = f"chatcmpl-{uuid4().hex[:12]}"
 
-            if stream:
-                self._handle_stream(session, completion_id)
-            else:
-                self._handle_sync(session, completion_id)
+            with session.turn(user_text, turn_id=completion_id):
+                if stream:
+                    self._handle_stream(session, completion_id)
+                else:
+                    self._handle_sync(session, completion_id)
 
         def _handle_responses(self):
             if not self._check_auth():
@@ -281,16 +538,51 @@ def make_handler(gateway: GatewayAPI):
                 self._send_json_error(503, "api_error", str(e))
                 return
 
-            self._drain_events(session)
-            session.conn.send({"type": "message", "text": user_text})
-
             resp_id = f"resp_{uuid4().hex[:12]}"
             msg_id = f"msg_{uuid4().hex[:12]}"
 
-            if stream:
-                self._handle_responses_stream(session, resp_id, msg_id)
-            else:
-                self._handle_responses_sync(session, resp_id, msg_id)
+            with session.turn(user_text, turn_id=resp_id):
+                if stream:
+                    self._handle_responses_stream(session, resp_id, msg_id)
+                else:
+                    self._handle_responses_sync(session, resp_id, msg_id)
+
+        def _handle_cancel(self, object_type: str):
+            if not self._check_auth():
+                return
+
+            object_id = self.path.rstrip("/").split("/")[-2]
+            body = self._read_optional_body()
+            headers_dict = {k.lower(): v for k, v in self.headers.items()}
+            session_id = body.get("session_id") or headers_dict.get("x-session-id", "")
+            turn_id = body.get("turn_id") or object_id
+
+            if not session_id:
+                self._send_json_error(
+                    400,
+                    "invalid_request_error",
+                    "Cancel requires `X-Session-Id` header or `session_id` in the JSON body.",
+                )
+                return
+
+            if not gateway.cancel_session(session_id, turn_id):
+                self._send_json_error(409, "session_not_cancellable", "No matching inflight turn to cancel.")
+                return
+
+            self._send_json({
+                "id": object_id,
+                "object": object_type,
+                "status": "cancelled",
+                "cancelled": True,
+            })
+
+        def _send_json(self, data: dict, code: int = 200):
+            body = json.dumps(data).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def _send_json_error(self, code: int, error_type: str, message: str):
             body = json.dumps({"error": {"type": error_type, "message": message}}).encode()
@@ -301,11 +593,7 @@ def make_handler(gateway: GatewayAPI):
             self.wfile.write(body)
 
         def _drain_events(self, session: SessionState):
-            while True:
-                try:
-                    session.events.get_nowait()
-                except queue.Empty:
-                    break
+            session._drain_events()
 
         def _handle_stream(self, session: SessionState, completion_id: str):
             self.send_response(200)
@@ -545,7 +833,7 @@ def main():
     args = parser.parse_args()
 
     gateway = GatewayAPI()
-    server = HTTPServer(("0.0.0.0", args.port), make_handler(gateway))
+    server = ThreadingHTTPServer(("0.0.0.0", args.port), make_handler(gateway))
     server.daemon_threads = True
     log(f"listening on http://0.0.0.0:{args.port}")
     print(f"gateway-api listening on http://0.0.0.0:{args.port}", file=sys.stderr)
@@ -555,8 +843,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        for state in gateway.sessions.values():
-            state.close()
+        gateway.shutdown()
         server.server_close()
 
 

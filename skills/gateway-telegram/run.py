@@ -16,6 +16,7 @@ import json
 import os
 import queue
 import re
+import shlex
 import sys
 import threading
 import time
@@ -29,7 +30,7 @@ if ROOT not in sys.path:
 from skills.lib import load_env
 from skills.lib.kernel_client import KernelConnection
 from skills.lib.protocol import (
-    MSG_CONNECT, MSG_JOIN, MSG_JOINED, MSG_TOOL_USE, MSG_MESSAGE,
+    MSG_CANCEL, MSG_CONNECT, MSG_JOIN, MSG_JOINED, MSG_TOOL_USE, MSG_MESSAGE,
     MSG_TOOL_RESULT, MSG_MEMBER_JOINED, MSG_ERROR,
     MSG_STREAM_START, MSG_STREAM_DELTA, MSG_STREAM_END, MSG_DONE,
     TOOL_SPAWN, TOOL_KILL,
@@ -56,6 +57,9 @@ POLL_TIMEOUT = 30   # long-poll seconds
 TOKEN_TTL    = 1800 # pairing token lifetime, seconds
 ASK_TIMEOUT  = 300  # max wait for LLM response, seconds
 DRAFT_THROTTLE = 0.1  # seconds between sendMessageDraft calls
+SESSION_IDLE_TTL = float(os.environ.get("TABULA_TELEGRAM_SESSION_IDLE_TTL", "900"))
+SESSION_MAX_AGE = float(os.environ.get("TABULA_TELEGRAM_SESSION_MAX_AGE", "21600"))
+SESSION_CLEANUP_INTERVAL = float(os.environ.get("TABULA_TELEGRAM_SESSION_CLEANUP_INTERVAL", "30"))
 
 # -- Logging -------------------------------------------------------------------
 
@@ -63,6 +67,11 @@ def log(msg: str):
     ts = datetime.now().strftime("%H:%M:%S")
     sys.stderr.write(f"[gateway-telegram] {ts} {msg}\n")
     sys.stderr.flush()
+
+
+def _driver_command() -> str:
+    driver_path = os.path.join(TABULA_HOME, "skills", f"driver-{ACTIVE_PROVIDER}", "run.py")
+    return shlex.join([VENV_PYTHON, driver_path])
 
 # -- Auth (delegates to skills/pair) -------------------------------------------
 
@@ -147,13 +156,21 @@ class SessionState:
         self.events: queue.Queue[tuple[str, str]] = queue.Queue()
         self.alive       = True
         self._thread: threading.Thread | None = None
+        self.turn_lock   = threading.Lock()
+        self._state_lock = threading.Lock()
+        now = time.monotonic()
+        self.created_at  = now
+        self.last_used_at = now
+        self.inflight_turn_id: str | None = None
+        self.cancel_requested = False
+        self.closed_reason: str | None = None
 
     def connect(self):
-        driver_cmd = f"{VENV_PYTHON} skills/driver-{ACTIVE_PROVIDER}/run.py"
+        driver_cmd = _driver_command()
         self.conn.send({
             "type": MSG_CONNECT,
             "name": f"tg-{self.session_id}",
-            "sends": [MSG_MESSAGE, MSG_TOOL_USE],
+            "sends": [MSG_MESSAGE, MSG_CANCEL, MSG_TOOL_USE],
             "receives": [MSG_STREAM_START, MSG_STREAM_DELTA, MSG_STREAM_END, MSG_DONE, MSG_ERROR, MSG_TOOL_RESULT, MSG_MEMBER_JOINED],
         })
         self.conn.recv()  # connected
@@ -189,6 +206,30 @@ class SessionState:
         self._thread = threading.Thread(target=self._receiver, daemon=True)
         self._thread.start()
 
+    def touch(self, now: float | None = None):
+        with self._state_lock:
+            self.last_used_at = time.monotonic() if now is None else now
+
+    def age_seconds(self, now: float | None = None) -> float:
+        current = time.monotonic() if now is None else now
+        return current - self.created_at
+
+    def idle_seconds(self, now: float | None = None) -> float:
+        current = time.monotonic() if now is None else now
+        with self._state_lock:
+            return current - self.last_used_at
+
+    def is_busy(self) -> bool:
+        return self.turn_lock.locked()
+
+    def expiry_reason(self, now: float | None = None) -> str | None:
+        current = time.monotonic() if now is None else now
+        if SESSION_MAX_AGE > 0 and self.age_seconds(current) >= SESSION_MAX_AGE:
+            return "ttl"
+        if SESSION_IDLE_TTL > 0 and self.idle_seconds(current) >= SESSION_IDLE_TTL:
+            return "idle"
+        return None
+
     def _receiver(self):
         while self.alive:
             msg = self.conn.recv()
@@ -199,40 +240,78 @@ class SessionState:
             if t in (MSG_STREAM_START, MSG_STREAM_DELTA, MSG_STREAM_END, MSG_DONE, MSG_ERROR):
                 self.events.put((t, msg.get("text", "")))
 
-    def ask_stream(self, text: str):
-        """Send message, yield response chunks as they arrive from kernel."""
-        # Drain stale events
+    def _drain_events(self):
         while True:
             try:
                 self.events.get_nowait()
             except queue.Empty:
                 break
 
-        self.conn.send({"type": MSG_MESSAGE, "text": text})
+    def ask_stream(self, text: str):
+        """Send message, yield response chunks as they arrive from kernel."""
+        with self.turn_lock:
+            if not self.alive:
+                raise RuntimeError("session is closed")
 
-        while True:
+            with self._state_lock:
+                self.inflight_turn_id = f"turn-{uuid.uuid4().hex[:12]}"
+                self.cancel_requested = False
+                self.last_used_at = time.monotonic()
             try:
-                kind, payload = self.events.get(timeout=ASK_TIMEOUT)
-            except queue.Empty:
-                yield "[timeout waiting for response]"
-                break
-            if kind == "stream_delta":
-                yield payload
-            elif kind == "done":
-                break
-            elif kind == "error":
-                yield f"\n[error: {payload}]"
-                break
-            elif kind == "disconnect":
-                yield "\n[lost connection to kernel]"
-                break
+                self._drain_events()
+                self.conn.send({"type": MSG_MESSAGE, "text": text})
 
-    def close(self):
-        self.alive = False
-        if self.driver_pid is not None:
+                while True:
+                    try:
+                        kind, payload = self.events.get(timeout=ASK_TIMEOUT)
+                    except queue.Empty:
+                        self.touch()
+                        yield "[timeout waiting for response]"
+                        break
+
+                    self.touch()
+                    if kind == "stream_delta":
+                        yield payload
+                    elif kind == "done":
+                        break
+                    elif kind == "error":
+                        yield f"\n[error: {payload}]"
+                        break
+                    elif kind == "disconnect":
+                        yield "\n[lost connection to kernel]"
+                        break
+            finally:
+                with self._state_lock:
+                    self.inflight_turn_id = None
+                    self.cancel_requested = False
+                    self.last_used_at = time.monotonic()
+
+    def cancel_turn(self, turn_id: str | None = None) -> bool:
+        with self._state_lock:
+            if not self.alive or self.inflight_turn_id is None:
+                return False
+            if turn_id and turn_id != self.inflight_turn_id:
+                return False
+            self.cancel_requested = True
+        try:
+            self.conn.send({"type": MSG_CANCEL})
+            return True
+        except Exception:
+            return False
+
+    def close(self, reason: str = "closed"):
+        with self._state_lock:
+            if not self.alive:
+                return
+            self.alive = False
+            self.closed_reason = reason
+            driver_pid = self.driver_pid
+            self.driver_pid = None
+
+        if driver_pid is not None:
             try:
                 self.conn.send({"type": MSG_TOOL_USE, "name": TOOL_KILL, "id": "kill-driver",
-                                "input": {"pid": self.driver_pid}})
+                                "input": {"pid": driver_pid}})
             except Exception:
                 pass
         self.conn.close()
@@ -334,11 +413,19 @@ class BotInstance:
 # -- Gateway -------------------------------------------------------------------
 
 class TelegramGateway:
-    def __init__(self):
+    def __init__(self, cleanup_interval: float | None = None):
         self.sessions:  dict[int, SessionState] = {}
+        self._creating: dict[int, threading.Event] = {}
         self._lock      = threading.Lock()
         self._commands: dict[str, dict] = {}
+        self._shutdown  = False
+        self._stop_event = threading.Event()
+        self._cleanup_interval = SESSION_CLEANUP_INTERVAL if cleanup_interval is None else cleanup_interval
+        self._cleanup_thread: threading.Thread | None = None
         self._load_slash_commands()
+        if self._cleanup_interval > 0:
+            self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
+            self._cleanup_thread.start()
 
     def _load_slash_commands(self):
         commands = _discover_slash_commands()
@@ -349,14 +436,101 @@ class TelegramGateway:
         # We'll register once here using the first bot's token later.
 
     def _get_session(self, chat_id: int) -> SessionState:
+        while True:
+            stale: SessionState | None = None
+            wait_for_create: threading.Event | None = None
+            should_create = False
+            with self._lock:
+                if self._shutdown:
+                    raise RuntimeError("gateway is shutting down")
+
+                state = self.sessions.get(chat_id)
+                if state is not None:
+                    if not state.alive:
+                        stale = self.sessions.pop(chat_id, None)
+                    else:
+                        reason = state.expiry_reason()
+                        if reason is None or state.is_busy():
+                            state.touch()
+                            return state
+                        stale = self.sessions.pop(chat_id, None)
+
+                creating = self._creating.get(chat_id)
+                if creating is None:
+                    creating = threading.Event()
+                    self._creating[chat_id] = creating
+                    should_create = True
+                else:
+                    wait_for_create = creating
+
+            if stale is not None:
+                try:
+                    stale.close("replaced")
+                except Exception:
+                    pass
+            if should_create:
+                break
+            if wait_for_create is not None:
+                wait_for_create.wait()
+
+        sid = f"tg-{chat_id}"
+        state = SessionState(sid)
+        try:
+            state.connect()
+        except Exception:
+            try:
+                state.close()
+            finally:
+                with self._lock:
+                    creating = self._creating.pop(chat_id, None)
+                    if creating is not None:
+                        creating.set()
+            raise
+
         with self._lock:
-            if chat_id not in self.sessions:
-                sid   = f"tg-{chat_id}"
-                state = SessionState(sid)
-                state.connect()
+            if self._shutdown:
+                creating = self._creating.pop(chat_id, None)
+                if creating is not None:
+                    creating.set()
+            else:
                 self.sessions[chat_id] = state
+                creating = self._creating.pop(chat_id, None)
+                if creating is not None:
+                    creating.set()
                 log(f"new session for chat_id={chat_id}: {sid}")
-            return self.sessions[chat_id]
+                return state
+
+        state.close()
+        raise RuntimeError("gateway is shutting down")
+
+    def _cleanup_loop(self):
+        while not self._stop_event.wait(self._cleanup_interval):
+            self._cleanup_sessions()
+
+    def _cleanup_sessions(self):
+        now = time.monotonic()
+        evicted: list[tuple[int, SessionState, str]] = []
+        with self._lock:
+            for chat_id, state in list(self.sessions.items()):
+                if not state.alive:
+                    self.sessions.pop(chat_id, None)
+                    evicted.append((chat_id, state, "closed"))
+                    continue
+
+                reason = state.expiry_reason(now)
+                if reason is None or state.is_busy():
+                    continue
+
+                removed = self.sessions.pop(chat_id, None)
+                if removed is not None:
+                    evicted.append((chat_id, removed, reason))
+
+        for chat_id, state, reason in evicted:
+            try:
+                state.close(reason)
+            finally:
+                if reason != "closed":
+                    log(f"evicted session chat_id={chat_id} session={state.session_id} reason={reason}")
 
     def handle_update(self, update: dict, bot: BotInstance):
         msg = update.get("message") or update.get("edited_message")
@@ -392,6 +566,14 @@ class TelegramGateway:
                 r"Access denied\. Send /start to request pairing\.",
                 parse_mode="MarkdownV2",
             )
+            return
+
+        if text == "/cancel":
+            cancelled = self._cancel_session(chat_id)
+            if cancelled:
+                bot.send_message(chat_id, r"Cancelled current turn\.", parse_mode="MarkdownV2")
+            else:
+                bot.send_message(chat_id, r"No active turn to cancel\.", parse_mode="MarkdownV2")
             return
 
         # Slash commands (user-invocable skills)
@@ -449,14 +631,35 @@ class TelegramGateway:
             log(f"error processing message from {chat_id}: {e}")
             bot.send_message(chat_id, f"Internal error: {escape_tgv2(str(e))}")
 
-    def shutdown(self):
+    def _cancel_session(self, chat_id: int) -> bool:
         with self._lock:
-            for session in self.sessions.values():
-                try:
-                    session.close()
-                except Exception:
-                    pass
+            session = self.sessions.get(chat_id)
+        if session is None:
+            return False
+        return session.cancel_turn()
+
+    def shutdown(self):
+        thread = None
+        with self._lock:
+            self._shutdown = True
+            thread = self._cleanup_thread
+            sessions = list(self.sessions.values())
             self.sessions.clear()
+            creating = list(self._creating.values())
+            self._creating.clear()
+
+        self._stop_event.set()
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=self._cleanup_interval + 1)
+
+        for event in creating:
+            event.set()
+
+        for session in sessions:
+            try:
+                session.close("shutdown")
+            except Exception:
+                pass
 
 
 def _split_text(text: str, limit: int) -> list[str]:

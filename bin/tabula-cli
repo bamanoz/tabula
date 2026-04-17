@@ -7,6 +7,33 @@
 set -e
 
 TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
+
+load_tabula_env() {
+  local env_file="$TABULA_HOME/.env"
+  [ -f "$env_file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|'#'*) continue ;;
+    esac
+    local key="${line%%=*}"
+    local value="${line#*=}"
+    key="${key#${key%%[![:space:]]*}}"
+    key="${key%${key##*[![:space:]]}}"
+    value="${value#${value%%[![:space:]]*}}"
+    value="${value%${value##*[![:space:]]}}"
+    [ -n "$key" ] || continue
+    case "$key" in
+      [A-Za-z_][A-Za-z0-9_]*) ;;
+      *) continue ;;
+    esac
+    if [ -z "${!key+x}" ]; then
+      export "$key=$value"
+    fi
+  done < "$env_file"
+}
+
+load_tabula_env
+
 VENV_PYTHON="$TABULA_HOME/.venv/bin/python3"
 
 if [ ! -f "$VENV_PYTHON" ]; then

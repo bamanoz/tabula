@@ -54,6 +54,22 @@ function Check-Python {
     return $py
 }
 
+function Install-PythonDeps {
+    $RequirementsUrl = "https://raw.githubusercontent.com/$Repo/$Version/scripts/requirements-runtime.txt"
+    $RequirementsPath = Join-Path $TmpDir "requirements-runtime.txt"
+
+    Info "Installing Python dependencies..."
+    $Pip = Join-Path $Venv "Scripts" "pip.exe"
+    & $Pip install -q --upgrade pip
+    try {
+        Invoke-WebRequest $RequirementsUrl -OutFile $RequirementsPath
+        & $Pip install -q -r $RequirementsPath
+    } catch {
+        & $Pip install -q websocket-client prompt_toolkit rich
+    }
+    Ok "Python dependencies installed"
+}
+
 # ── Service install ─────────────────────────────────────────────
 
 function Install-Service {
@@ -136,6 +152,10 @@ try {
 
     # Extract skills tarball
     tar -xzf (Join-Path $TmpDir $SkillsArchive) -C $TabulaHome
+    $BootCicd = Join-Path $TabulaHome "examples" "boot-cicd.py"
+    if (Test-Path $BootCicd) {
+        Copy-Item $BootCicd -Destination (Join-Path $TabulaHome "boot-cicd.py") -Force
+    }
     Ok "Skills and config installed"
 
     # Install bundles (optional)
@@ -194,11 +214,7 @@ try {
         & $Python -m venv $Venv
     }
 
-    Info "Installing Python dependencies..."
-    $Pip = Join-Path $Venv "Scripts" "pip.exe"
-    & $Pip install -q --upgrade pip
-    & $Pip install -q websocket-client prompt_toolkit rich
-    Ok "Python dependencies installed"
+    Install-PythonDeps
 
     # Copy PowerShell launch scripts
     foreach ($script in @("tabula-server.ps1", "tabula-cli.ps1", "tabula-api.ps1")) {

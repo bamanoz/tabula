@@ -7,6 +7,7 @@ import (
 
 // SpawnedProcess tracks a background process started via SPAWN.
 type SpawnedProcess struct {
+	PID     int
 	Cmd     *exec.Cmd
 	Command string
 	Alive   bool
@@ -27,7 +28,6 @@ func (p *SpawnedProcess) Kill() {
 		_ = p.Cmd.Process.Kill()
 	}
 }
-
 
 func (h *Hub) handleToolUse(sender *Client, msg *Message) {
 	h.tools.HandleToolUse(sender, msg)

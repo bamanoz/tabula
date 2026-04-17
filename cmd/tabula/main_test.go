@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -62,5 +64,42 @@ func TestParseSkillExecMap_InvalidJSON(t *testing.T) {
 	_, err := parseSkillExecMap(json.RawMessage(`{`))
 	if err == nil {
 		t.Fatal("expected parse error for invalid tools json")
+	}
+}
+
+func TestLoadEnvFileLoadsMissingValues(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	if err := os.WriteFile(path, []byte("TABULA_PROVIDER=openai\nOPENAI_MODEL=gpt-5.4\n"), 0o644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+
+	t.Setenv("TABULA_PROVIDER", "")
+	os.Unsetenv("TABULA_PROVIDER")
+	t.Setenv("OPENAI_MODEL", "")
+	os.Unsetenv("OPENAI_MODEL")
+
+	loadEnvFile(path)
+
+	if got := os.Getenv("TABULA_PROVIDER"); got != "openai" {
+		t.Fatalf("expected TABULA_PROVIDER=openai, got %q", got)
+	}
+	if got := os.Getenv("OPENAI_MODEL"); got != "gpt-5.4" {
+		t.Fatalf("expected OPENAI_MODEL=gpt-5.4, got %q", got)
+	}
+}
+
+func TestLoadEnvFileDoesNotOverrideExistingValues(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	if err := os.WriteFile(path, []byte("TABULA_PROVIDER=anthropic\n"), 0o644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+
+	t.Setenv("TABULA_PROVIDER", "openai")
+	loadEnvFile(path)
+
+	if got := os.Getenv("TABULA_PROVIDER"); got != "openai" {
+		t.Fatalf("expected existing TABULA_PROVIDER to win, got %q", got)
 	}
 }
