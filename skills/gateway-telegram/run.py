@@ -54,6 +54,7 @@ ACTIVE_PROVIDER  = PROVIDER_ALIASES.get(PROVIDER, PROVIDER)
 
 VENV_PYTHON  = os.path.join(TABULA_HOME, ".venv", "bin", "python3")
 POLL_TIMEOUT = 30   # long-poll seconds
+API_TIMEOUT = float(os.environ.get("TABULA_TELEGRAM_API_TIMEOUT", "10"))
 TOKEN_TTL    = 1800 # pairing token lifetime, seconds
 ASK_TIMEOUT  = 300  # max wait for LLM response, seconds
 DRAFT_THROTTLE = 0.1  # seconds between sendMessageDraft calls
@@ -359,7 +360,7 @@ class BotInstance:
         self.TG_API = f"https://api.telegram.org/bot{token}"
 
     def tg(self, method: str, **kwargs) -> dict:
-        return requests.post(f"{self.TG_API}/{method}", json=kwargs, timeout=10).json()
+        return requests.post(f"{self.TG_API}/{method}", json=kwargs, timeout=API_TIMEOUT).json()
 
     def send_message(self, chat_id: int, text: str, parse_mode: str = ""):
         kwargs: dict = {"chat_id": chat_id, "text": text}
@@ -385,7 +386,11 @@ class BotInstance:
                 parse_mode="MarkdownV2")
 
     def run(self):
-        me = self.tg("getMe").get("result", {})
+        try:
+            me = self.tg("getMe").get("result", {})
+        except requests.RequestException as e:
+            log(f"getMe failed: {e}")
+            me = {}
         log(f"bot @{me.get('username', '?')} started, provider={ACTIVE_PROVIDER}")
         offset = 0
         while True:
@@ -751,11 +756,14 @@ def _run_gateway(tokens):
             {"command": name, "description": cmd["description"][:256]}
             for name, cmd in gateway._commands.items()
         ]
-        resp = first_bot.tg("setMyCommands", commands=tg_commands)
-        if resp.get("ok"):
-            log(f"registered {len(tg_commands)} commands with Telegram")
-        else:
-            log(f"setMyCommands failed: {resp}")
+        try:
+            resp = first_bot.tg("setMyCommands", commands=tg_commands)
+            if resp.get("ok"):
+                log(f"registered {len(tg_commands)} commands with Telegram")
+            else:
+                log(f"setMyCommands failed: {resp}")
+        except requests.RequestException as e:
+            log(f"setMyCommands network error: {e}")
 
     # Start one polling thread per bot token
     for token in tokens:

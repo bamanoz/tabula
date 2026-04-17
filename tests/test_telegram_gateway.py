@@ -199,6 +199,16 @@ class TestBotInstance(unittest.TestCase):
         self.assertEqual(call_kwargs["json"]["draft_id"], "draft-1")
         self.assertEqual(call_kwargs["json"]["text"], "streaming text")
 
+    @patch.object(_gw, "log")
+    def test_run_survives_getme_network_error(self, mock_log):
+        request_error = _gw.requests.RequestException("timeout")
+        with patch.object(self.bot, "tg", side_effect=request_error), \
+             patch.object(_gw.requests, "get", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.bot.run()
+
+        self.assertTrue(any("getMe failed" in call.args[0] for call in mock_log.call_args_list))
+
 
 # -- TelegramGateway --
 
@@ -473,6 +483,31 @@ class TestTelegramGateway(unittest.TestCase):
         self.assertEqual(gateway.sessions, {})
         self.assertEqual(gateway._creating, {})
         self.assertTrue(gateway._stop_event.is_set())
+
+    @patch.object(_gw, "BotInstance")
+    @patch.object(_gw, "log")
+    @patch.object(_gw, "threading")
+    def test_run_gateway_continues_after_setmycommands_timeout(self, mock_threading, mock_log, mock_bot_cls):
+        gateway_instance = MagicMock()
+        gateway_instance._commands = {"pair": {"description": "Pair bot"}}
+        gateway_instance.shutdown = MagicMock()
+
+        bot_instance = MagicMock()
+        bot_instance.tg.side_effect = _gw.requests.RequestException("timeout")
+        mock_bot_cls.return_value = bot_instance
+
+        fake_thread = MagicMock()
+        mock_threading.Thread.return_value = fake_thread
+        mock_threading.Event = threading.Event
+        mock_threading.Lock = threading.Lock
+
+        with patch.object(_gw, "TelegramGateway", return_value=gateway_instance), \
+             patch.object(_gw.time, "sleep", side_effect=KeyboardInterrupt):
+            _gw._run_gateway(["123:ABC"])
+
+        bot_instance.tg.assert_called_once()
+        fake_thread.start.assert_called_once()
+        self.assertTrue(any("setMyCommands network error" in call.args[0] for call in mock_log.call_args_list))
 
 
 # -- SessionState.ask_stream --
