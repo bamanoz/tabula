@@ -26,6 +26,7 @@ if ROOT not in sys.path:
 from skills.lib.prompt_builder import (
     build_main_system_prompt as build_main_system_prompt_shared,
     build_subagent_system_prompt as build_subagent_system_prompt_shared,
+    compatible_with_kernel_tools,
     ensure_project_files as ensure_project_files_prompt_builder,
 )
 from skills.lib.paths import skills_dir as flat_skills_dir, templates_dir as flat_templates_dir
@@ -158,11 +159,14 @@ def scan_skills() -> list[str]:
     Hidden skills (not injected into system prompt) are those without
     a description field.
     """
+    visible_tools = [{"name": name} for name in discover_kernel_tools()]
     skills = []
     for rel_path, skill_md in walk_skills():
         with open(skill_md) as f:
             raw = f.read().strip()
         meta, body = parse_skill_md(raw)
+        if not compatible_with_kernel_tools(meta, visible_tools):
+            continue
 
         description = meta.get("description", "")
         if not description:
@@ -182,10 +186,20 @@ def discover_kernel_tools() -> list[str]:
     if not raw.strip():
         return list(DEFAULT_KERNEL_TOOLS)
     tools = []
+    unknown = []
     for item in raw.split(","):
         name = item.strip()
+        if not name:
+            continue
         if name in KERNEL_TOOLS and name not in tools:
             tools.append(name)
+            continue
+        if name not in unknown:
+            unknown.append(name)
+    if unknown:
+        allowed = ", ".join(sorted(KERNEL_TOOLS))
+        bad = ", ".join(unknown)
+        raise SystemExit(f"unknown kernel tool(s): {bad}. Allowed: {allowed}")
     return tools
 
 
@@ -194,12 +208,15 @@ def discover_skill_tools() -> list[dict]:
 
     Returns tools in kernel format, with an added 'exec' field for dispatch.
     """
+    visible_tools = [{"name": name} for name in discover_kernel_tools()]
     tools = []
     seen_index: dict[str, int] = {}
     for rel_path, skill_md in walk_skills():
         with open(skill_md) as f:
             raw = f.read().strip()
         meta, _ = parse_skill_md(raw)
+        if not compatible_with_kernel_tools(meta, visible_tools):
+            continue
         skill_tools = meta.get("tools")
         if not skill_tools or not isinstance(skill_tools, list):
             continue
@@ -227,11 +244,14 @@ def discover_slash_commands() -> list[dict]:
     Returns list of {"name", "description", "body"} for gateway slash commands.
     Only includes skills with explicit `user-invocable: true` in frontmatter.
     """
+    visible_tools = [{"name": name} for name in discover_kernel_tools()]
     commands = []
     for rel_path, skill_md in walk_skills():
         with open(skill_md) as f:
             raw = f.read().strip()
         meta, body = parse_skill_md(raw)
+        if not compatible_with_kernel_tools(meta, visible_tools):
+            continue
 
         ui = meta.get("user-invocable", "")
         if ui.lower() not in ("true", "yes", "1"):
@@ -441,11 +461,18 @@ FIRST_RUN_INSTRUCTION = (
 
 
 def build_system_prompt(skills: list[str], mcp_tools: dict[str, list[dict]] | None = None) -> str:
-    return build_main_system_prompt_shared(provider=ACTIVE_PROVIDER, skills=skills, mcp_tools=mcp_tools)
+    visible_tools = [{"name": name} for name in discover_kernel_tools()]
+    return build_main_system_prompt_shared(
+        provider=ACTIVE_PROVIDER,
+        skills=skills,
+        mcp_tools=mcp_tools,
+        visible_tools=visible_tools,
+    )
 
 
 def build_subagent_prompt() -> str:
-    return build_subagent_system_prompt_shared(provider=ACTIVE_PROVIDER)
+    visible_tools = [{"name": name} for name in discover_kernel_tools()]
+    return build_subagent_system_prompt_shared(provider=ACTIVE_PROVIDER, visible_tools=visible_tools)
 
 
 def has_crontab() -> bool:

@@ -4,7 +4,7 @@ description: >
   Compress natural language memory files (todos, preferences, notes) into caveman format
   to save input tokens. Preserves all technical substance, code, URLs, and structure.
   Compressed version overwrites the original file. Human-readable backup saved as FILE.original.md.
-  Trigger: /caveman:compress <filepath> or "compress memory file"
+Trigger: /caveman:compress <filepath> or "compress memory file"
 tools:
   [
     {
@@ -34,7 +34,7 @@ Compress natural language files (todos, preferences, notes) into caveman-speak t
 
 2. Run:
 
-cd caveman-compress && python3 -m scripts <absolute_filepath>
+shell_exec "cd caveman-compress && python3 -m scripts <absolute_filepath>"
 
 3. The CLI will:
 - detect file type (no tokens)

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
@@ -46,16 +47,18 @@ def templates_dir() -> str:
     return str(templates_dir_path())
 
 
-def kernel_tools() -> list[str]:
-    raw = os.environ.get("TABULA_KERNEL_TOOLS", "")
-    if not raw.strip():
-        return list(DEFAULT_KERNEL_TOOLS)
-    tools = []
-    for item in raw.split(","):
-        name = item.strip()
-        if name in KERNEL_TOOL_LINES and name not in tools:
-            tools.append(name)
-    return tools
+def default_visible_tools() -> list[dict]:
+    return [{"name": name} for name in DEFAULT_KERNEL_TOOLS]
+
+
+def visible_kernel_tool_names(visible_tools: list[dict] | None = None) -> list[str]:
+    visible_tools = default_visible_tools() if visible_tools is None else visible_tools
+    names = []
+    for tool in visible_tools:
+        name = tool.get("name")
+        if name in KERNEL_TOOL_LINES and name not in names:
+            names.append(name)
+    return names
 
 
 def memory_file() -> str:
@@ -80,6 +83,16 @@ def include_skill(name: str, provider: str | None = None) -> bool:
     if name.startswith("subagent-"):
         return name == f"subagent-{provider}"
     return True
+
+
+def compatible_with_kernel_tools(meta: dict, visible_tools: list[dict] | None = None) -> bool:
+    required = meta.get("requires-kernel-tools") or []
+    if not required:
+        return True
+    if isinstance(required, str):
+        required = [required]
+    visible = set(visible_kernel_tool_names(visible_tools))
+    return all(tool in visible for tool in required)
 
 
 def parse_skill_md(text: str) -> tuple[dict, str]:
@@ -136,12 +149,14 @@ def walk_skills(provider: str | None = None) -> list[tuple[str, str]]:
     return results
 
 
-def scan_skills(provider: str | None = None) -> list[str]:
+def scan_skills(provider: str | None = None, *, visible_tools: list[dict] | None = None) -> list[str]:
     skills = []
     for rel_path, skill_md in walk_skills(provider=provider):
         with open(skill_md) as f:
             raw = f.read().strip()
         meta, _ = parse_skill_md(raw)
+        if not compatible_with_kernel_tools(meta, visible_tools):
+            continue
         description = meta.get("description", "")
         if not description:
             continue
@@ -150,17 +165,17 @@ def scan_skills(provider: str | None = None) -> list[str]:
     return skills
 
 
-def _read_template(name: str) -> str:
+def _read_template(name: str, *, visible_tools: list[dict] | None = None) -> str:
     if name == "TOOLS.md":
-        return _render_tools_template()
+        return _render_tools_template(visible_tools=visible_tools)
     path = os.path.join(templates_dir(), name)
     with open(path) as f:
         return f.read().strip()
 
 
-def _render_tools_template() -> str:
+def _render_tools_template(*, visible_tools: list[dict] | None = None) -> str:
     lines = ["## Tools", ""]
-    enabled = kernel_tools()
+    enabled = visible_kernel_tool_names(visible_tools)
     for tool in enabled:
         line = KERNEL_TOOL_LINES.get(tool)
         if line:
@@ -316,18 +331,20 @@ def build_main_system_prompt(
     *,
     skills: list[str] | None = None,
     mcp_tools: dict[str, list[dict]] | None = None,
+    visible_tools: list[dict] | None = None,
 ) -> str:
     ensure_project_files()
     provider = provider or current_provider()
-    skills = scan_skills(provider=provider) if skills is None else skills
+    skills = scan_skills(provider=provider, visible_tools=visible_tools) if skills is None else skills
     mcp_tools = discover_mcp_tools() if mcp_tools is None else mcp_tools
-    static = [_read_template("SYSTEM.md")]
+    visible_tools = copy.deepcopy(default_visible_tools() if visible_tools is None else visible_tools)
+    static = [_read_template("SYSTEM.md", visible_tools=visible_tools)]
     if _is_first_run():
         static.append(FIRST_RUN_INSTRUCTION)
     static.extend([
-        _read_template("TOOLS.md"),
-        _read_template("GUIDELINES.md"),
-        _read_template("SAFETY.md"),
+        _read_template("TOOLS.md", visible_tools=visible_tools),
+        _read_template("GUIDELINES.md", visible_tools=visible_tools),
+        _read_template("SAFETY.md", visible_tools=visible_tools),
     ])
     project = _section_project_files(subagent=False)
     if project:
@@ -342,14 +359,15 @@ def build_main_system_prompt(
     return "\n\n".join(static) + CACHE_BOUNDARY + "\n\n".join(dynamic)
 
 
-def build_subagent_system_prompt(provider: str | None = None) -> str:
+def build_subagent_system_prompt(provider: str | None = None, *, visible_tools: list[dict] | None = None) -> str:
     ensure_project_files()
     provider = provider or current_provider()
+    visible_tools = copy.deepcopy(default_visible_tools() if visible_tools is None else visible_tools)
     sections = [
-        _read_template("SYSTEM.md"),
-        _read_template("TOOLS.md"),
-        _read_template("GUIDELINES.md"),
-        _read_template("SAFETY.md"),
+        _read_template("SYSTEM.md", visible_tools=visible_tools),
+        _read_template("TOOLS.md", visible_tools=visible_tools),
+        _read_template("GUIDELINES.md", visible_tools=visible_tools),
+        _read_template("SAFETY.md", visible_tools=visible_tools),
     ]
     project = _section_project_files(subagent=True)
     if project:

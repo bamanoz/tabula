@@ -501,6 +501,34 @@ class TestBootConfigShape(unittest.TestCase):
             else:
                 os.environ["TABULA_KERNEL_TOOLS"] = old
 
+    def test_unknown_kernel_tool_fails_strictly(self):
+        old = os.environ.get("TABULA_KERNEL_TOOLS")
+        try:
+            os.environ["TABULA_KERNEL_TOOLS"] = "shell_exec,nope_tool"
+            with self.assertRaises(SystemExit) as ctx:
+                boot.discover_kernel_tools()
+            self.assertIn("unknown kernel tool(s): nope_tool", str(ctx.exception))
+        finally:
+            if old is None:
+                os.environ.pop("TABULA_KERNEL_TOOLS", None)
+            else:
+                os.environ["TABULA_KERNEL_TOOLS"] = old
+
+    def test_discover_slash_commands_hides_incompatible_skills(self):
+        old = os.environ.get("TABULA_KERNEL_TOOLS")
+        try:
+            os.environ["TABULA_KERNEL_TOOLS"] = "shell_exec"
+            commands = boot.discover_slash_commands()
+            names = {cmd["name"] for cmd in commands}
+            self.assertNotIn("timer", names)
+            self.assertNotIn("subagent-openai", names)
+            self.assertNotIn("subagent-anthropic", names)
+        finally:
+            if old is None:
+                os.environ.pop("TABULA_KERNEL_TOOLS", None)
+            else:
+                os.environ["TABULA_KERNEL_TOOLS"] = old
+
 
 class TestLoadEnv(BootTestBase):
     def setUp(self):

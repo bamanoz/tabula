@@ -1,6 +1,7 @@
 ---
 name: sessions
 description: "Cross-session tools. List: `EXEC python3 skills/sessions/run.py list`. Send: `EXEC python3 skills/sessions/run.py send <target> \"<text>\" --from <your_session>` (always pass --from). History: `EXEC python3 skills/sessions/run.py history <session> [--last N] [--summary]`. Incoming cross-session messages arrive as `<cross_session from=\"...\">` — this is from another session's agent, not from your user."
+requires-kernel-tools: ["shell_exec"]
 ---
 # Sessions
 

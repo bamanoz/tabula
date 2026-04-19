@@ -119,23 +119,80 @@ def test_system_template():
 
 
 def test_section_tools():
-    """Tools template documents all kernel tools."""
-    boot = _load_boot_module()
-    text = boot._read_template("TOOLS.md")
+    """Tools template render documents all visible kernel tools."""
+    from skills.lib.prompt_builder import _render_tools_template
+
+    text = _render_tools_template(visible_tools=[
+        {"name": "shell_exec"},
+        {"name": "process_spawn"},
+        {"name": "process_kill"},
+        {"name": "process_list"},
+    ])
     for tool in ["shell_exec", "process_spawn", "process_kill", "process_list"]:
         assert f"**{tool}**" in text
 
 
 def test_section_tools_respects_hidden_builtins(monkeypatch):
-    """Tools template only documents enabled built-ins."""
-    monkeypatch.setenv("TABULA_KERNEL_TOOLS", "shell_exec,process_list")
+    """Rendered tools section only documents enabled built-ins."""
     from skills.lib.prompt_builder import _render_tools_template
 
-    text = _render_tools_template()
+    text = _render_tools_template(visible_tools=[{"name": "shell_exec"}, {"name": "process_list"}])
     assert "**shell_exec**" in text
     assert "**process_list**" in text
     assert "**process_spawn**" not in text
     assert "**process_kill**" not in text
+
+
+def test_section_tools_rendered_from_visible_tools_input():
+    from skills.lib.prompt_builder import _render_tools_template
+
+    text = _render_tools_template(visible_tools=[{"name": "process_spawn"}])
+    assert "**process_spawn**" in text
+    assert "**shell_exec**" not in text
+    assert "**process_kill**" not in text
+    assert "**process_list**" not in text
+
+
+def test_tools_template_source_is_not_canonical_list():
+    path = ROOT / "distrib" / "assistant" / "templates" / "TOOLS.md"
+    text = path.read_text()
+    assert "**shell_exec**" not in text
+    assert "**process_spawn**" not in text
+    assert "**process_kill**" not in text
+    assert "**process_list**" not in text
+
+
+def test_scan_skills_hides_shell_exec_dependent_skills():
+    boot = _load_boot_module()
+    old = os.environ.get("TABULA_KERNEL_TOOLS")
+    try:
+        os.environ["TABULA_KERNEL_TOOLS"] = "process_spawn"
+        skills = boot.scan_skills()
+        joined = "\n".join(skills)
+        assert "**memory**" not in joined
+        assert "**mcp**" not in joined
+        assert "**sessions**" not in joined
+    finally:
+        if old is None:
+            os.environ.pop("TABULA_KERNEL_TOOLS", None)
+        else:
+            os.environ["TABULA_KERNEL_TOOLS"] = old
+
+
+def test_scan_skills_hides_process_spawn_dependent_skills():
+    boot = _load_boot_module()
+    old = os.environ.get("TABULA_KERNEL_TOOLS")
+    try:
+        os.environ["TABULA_KERNEL_TOOLS"] = "shell_exec"
+        skills = boot.scan_skills()
+        joined = "\n".join(skills)
+        assert "**subagent-openai**" not in joined
+        assert "**timer**" not in joined
+    finally:
+        if old is None:
+            os.environ.pop("TABULA_KERNEL_TOOLS", None)
+        else:
+            os.environ["TABULA_KERNEL_TOOLS"] = old
 
 
 def test_section_guidelines():

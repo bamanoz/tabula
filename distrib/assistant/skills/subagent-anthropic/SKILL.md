@@ -1,6 +1,7 @@
 ---
 name: subagent-anthropic
 description: "Autonomous LLM sub-agent for parallel tasks. Usage: `SPAWN python3 skills/subagent-anthropic/run.py --id <unique_id> --parent-session <your_session> --task \"<task description>\"`. Optional: `--timeout N` (stay alive for follow-ups, default: 0=oneshot). Full docs: `EXEC cat skills/subagent-anthropic/SKILL.md`"
+requires-kernel-tools: ["process_spawn"]
 ---
 # Subagent (Anthropic)
 

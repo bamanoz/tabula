@@ -1,6 +1,7 @@
 ---
 name: timer
 description: "Timer/reminder. Usage: `SPAWN python3 skills/timer/run.py -s <seconds> -m \"<message>\"`. Sends message to chat after delay. Lightweight (no LLM), connects to kernel directly."
+requires-kernel-tools: ["process_spawn"]
 ---
 # Timer
 
