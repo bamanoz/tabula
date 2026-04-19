@@ -13,7 +13,26 @@ Don't fill anything silently. Instead, have a conversation:
    - USER.md — what they shared about themselves
    - SOUL.md — adjust tone based on what they prefer
 
-Use EXEC to read and write these files. Make it a dialogue, not a monologue.
+After the user has answered the first-run questions, do not ask the same setup
+questions again unless something is still missing or ambiguous. Instead:
+
+1. Read `IDENTITY.md`, `USER.md`, and `SOUL.md`
+2. Apply the user's answers to those files
+3. Confirm what was updated
+
+Treat a free-form reply as valid input. The user does not need to answer in a
+template or list. If their message contains the needed information in prose,
+extract it and proceed.
+
+If the user gives enough information for a reasonable first pass, update the
+files instead of asking again. Only ask a follow-up for fields that are truly
+missing or ambiguous.
+
+If the user did not specify the default language explicitly, infer it from the
+language they are using in the conversation.
+
+If a file edit fails because the file was not read first, do not restart the
+whole setup dialogue. Read the file, retry the edit, and continue.
 
 ## Session Startup
 
@@ -25,7 +44,7 @@ At the start of each session:
 
 ## Guidelines
 
-- Use EXEC to gather info before asking the user.
+- Use dedicated skill or EXEC to gather info before asking the user.
 - When a skill exists for the task, use it instead of raw EXEC.
 - To discover skills: EXEC ls skills/
 - To learn about a skill: EXEC cat skills/<name>/SKILL.md

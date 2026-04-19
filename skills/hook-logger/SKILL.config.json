@@ -1,0 +1,16 @@
+{
+  "id": "hook-logger",
+  "config": {
+    "entries": [
+      {
+        "key": "log_file",
+        "type": "string",
+        "global_key": "hook.logger.log_file",
+        "env": "TABULA_SKILL_HOOK_LOGGER_LOG_FILE",
+        "env_aliases": [
+          "TABULA_LOG_FILE"
+        ]
+      }
+    ]
+  }
+}

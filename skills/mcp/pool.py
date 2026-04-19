@@ -1,8 +1,4 @@
-"""
-MCP client pool — manages connections to multiple MCP servers.
-
-Reads configuration from ~/.tabula/mcp/servers.json.
-"""
+"""MCP client pool — manages connections to multiple MCP servers."""
 
 import json
 import os
@@ -11,7 +7,7 @@ import sys
 from .client import HttpTransport, MCPClient, MCPError, StdioTransport
 
 TABULA_HOME = os.environ.get("TABULA_HOME", os.path.join(os.path.expanduser("~"), ".tabula"))
-CONFIG_FILE = os.path.join(TABULA_HOME, "mcp", "servers.json")
+CONFIG_FILE = os.path.join(TABULA_HOME, "config", "skills", "mcp", "servers.json")
 
 
 def _expand_env(value: str) -> str:

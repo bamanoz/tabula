@@ -7,6 +7,7 @@ import json
 import os
 import queue
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -60,8 +61,29 @@ def _load_gateway_module():
     spec.loader.exec_module(mod)
     return mod
 
-# Load with test environment
-with patch.dict(os.environ, {"TABULA_HOME": "/tmp/tabula-test-gw"}):
+
+def _load_gateway_module_for_home(home: str, extra_env: dict[str, str] | None = None):
+    env = {"TABULA_HOME": home}
+    if extra_env:
+        env.update(extra_env)
+    with patch.dict(os.environ, env, clear=True):
+        return _load_gateway_module()
+
+
+def _write_global_config(home: str, provider: str | None = None, extra: str = ""):
+    cfg_dir = os.path.join(home, "config")
+    os.makedirs(cfg_dir, exist_ok=True)
+    parts = []
+    if provider:
+        parts.append(f'provider = "{provider}"')
+    if extra:
+        parts.append(extra.strip())
+    if parts:
+        with open(os.path.join(cfg_dir, "global.toml"), "w") as f:
+            f.write("\n\n".join(parts) + "\n")
+
+# Load with repository home so provider resolution sees built-in drivers.
+with patch.dict(os.environ, {"TABULA_HOME": ROOT}, clear=True):
     _gw = _load_gateway_module()
     escape_tgv2 = _gw.escape_tgv2
     md_to_tgv2 = _gw.md_to_tgv2
@@ -96,6 +118,81 @@ class TestResolveBotTokens(unittest.TestCase):
     def test_empty_entries_ignored(self):
         with patch.dict(os.environ, {"TELEGRAM_BOT_TOKENS": "123:ABC,,456:DEF,"}, clear=False):
             self.assertEqual(resolve_bot_tokens(), ["123:ABC", "456:DEF"])
+
+    def test_tokens_from_skill_config_and_secret_store(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_global_config(tmp, extra='[gateway.telegram]\nbot_tokens = { source = "store", id = "gateway-telegram.bot_tokens" }\n')
+            with open(os.path.join(tmp, "secrets.json"), "w") as f:
+                json.dump({"gateway-telegram.bot_tokens": ["123:ABC", "456:DEF"]}, f)
+                f.write("\n")
+
+            with patch.dict(os.environ, {"TABULA_HOME": tmp}, clear=True):
+                self.assertEqual(resolve_bot_tokens(), ["123:ABC", "456:DEF"])
+
+    def test_env_override_beats_skill_config_tokens(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_global_config(tmp, extra='[gateway.telegram]\nbot_tokens = { source = "store", id = "gateway-telegram.bot_tokens" }\n')
+            with open(os.path.join(tmp, "secrets.json"), "w") as f:
+                json.dump({"gateway-telegram.bot_tokens": ["123:ABC"]}, f)
+                f.write("\n")
+
+            with patch.dict(
+                os.environ,
+                {"TABULA_HOME": tmp, "TABULA_SKILL_GATEWAY_TELEGRAM_BOT_TOKENS": "env:ONE,env:TWO"},
+                clear=True,
+            ):
+                self.assertEqual(resolve_bot_tokens(), ["env:ONE", "env:TWO"])
+
+
+class TestGatewayConfigImport(unittest.TestCase):
+    def test_module_import_reads_skill_config_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            driver_dir = os.path.join(tmp, "skills", "driver-openai")
+            os.makedirs(driver_dir, exist_ok=True)
+            with open(os.path.join(driver_dir, "run.py"), "w") as f:
+                f.write("#!/usr/bin/env python3\n")
+            with open(os.path.join(driver_dir, "SKILL.config.json"), "w") as f:
+                json.dump({"id": "driver-openai", "config": {"entries": [{"key": "api_key", "type": "string", "secret": True, "required": True, "env": "TABULA_SKILL_DRIVER_OPENAI_API_KEY", "env_aliases": ["OPENAI_API_KEY"], "store_id": "driver-openai.api_key"}]}}, f)
+            _write_global_config(tmp, "openai", '\n'.join([
+                '[gateway.telegram]',
+                'api_timeout = 42',
+                '',
+                '[gateway.telegram.session]',
+                'idle_ttl = 111',
+                'max_age = 222',
+                'cleanup_interval = 7',
+                '',
+            ]))
+
+            mod = _load_gateway_module_for_home(tmp)
+
+            self.assertEqual(mod.PROVIDER_OVERRIDE, None)
+            self.assertEqual(mod.ACTIVE_PROVIDER, "openai")
+            self.assertEqual(mod.API_TIMEOUT, 42.0)
+            self.assertEqual(mod.SESSION_IDLE_TTL, 111.0)
+            self.assertEqual(mod.SESSION_MAX_AGE, 222.0)
+            self.assertEqual(mod.SESSION_CLEANUP_INTERVAL, 7.0)
+
+    def test_module_import_env_overrides_skill_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            driver_dir = os.path.join(tmp, "skills", "driver-openai")
+            os.makedirs(driver_dir, exist_ok=True)
+            with open(os.path.join(driver_dir, "run.py"), "w") as f:
+                f.write("#!/usr/bin/env python3\n")
+            with open(os.path.join(driver_dir, "SKILL.config.json"), "w") as f:
+                json.dump({"id": "driver-openai", "config": {"entries": [{"key": "api_key", "type": "string", "secret": True, "required": True, "env": "TABULA_SKILL_DRIVER_OPENAI_API_KEY", "env_aliases": ["OPENAI_API_KEY"], "store_id": "driver-openai.api_key"}]}}, f)
+            _write_global_config(tmp, "anthropic", '[gateway.telegram]\nprovider_override = "openai"\napi_timeout = 42\n')
+
+            mod = _load_gateway_module_for_home(
+                tmp,
+                {
+                    "TABULA_SKILL_GATEWAY_TELEGRAM_API_TIMEOUT": "15",
+                },
+            )
+
+            self.assertEqual(mod.PROVIDER_OVERRIDE, "openai")
+            self.assertEqual(mod.ACTIVE_PROVIDER, "openai")
+            self.assertEqual(mod.API_TIMEOUT, 15.0)
 
 
 # -- Markdown conversion --

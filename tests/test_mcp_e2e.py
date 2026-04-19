@@ -120,8 +120,8 @@ def create_mock_mcp_home(tabula_port: int | None = None) -> str:
     mock_server.write_text(MOCK_MCP_SERVER_SCRIPT)
 
     # MCP config
-    mcp_dir = hp / "mcp"
-    mcp_dir.mkdir()
+    mcp_dir = hp / "config" / "skills" / "mcp"
+    mcp_dir.mkdir(parents=True)
     (mcp_dir / "servers.json").write_text(json.dumps({
         "servers": {
             "mock": {
@@ -252,6 +252,7 @@ def start_kernel(home: str, tabula_port: int) -> subprocess.Popen:
     env = os.environ.copy()
     env["TABULA_HOME"] = home
     env["TABULA_URL"] = f"ws://127.0.0.1:{tabula_port}/ws"
+    env["TABULA_BOOT"] = f"python3 {Path(home) / 'boot.py'}"
     env["TABULA_PROVIDER"] = "mock"
     env["TABULA_VERBOSE"] = "1"
     env["TABULA_MOCK_SUBAGENTS"] = "0"
@@ -259,7 +260,7 @@ def start_kernel(home: str, tabula_port: int) -> subprocess.Popen:
     env["TABULA_MOCK_SLEEP_MS"] = "5"
 
     proc = subprocess.Popen(
-        ["go", "run", "./cmd/tabula"],
+        ["go", "run", "./cmd/tabula", "serve"],
         cwd=ROOT,
         env=env,
         stdout=subprocess.DEVNULL,
@@ -389,7 +390,7 @@ def start_pool_daemon(home: str) -> subprocess.Popen:
         stderr=subprocess.PIPE,
     )
     # Wait for URL file to appear
-    url_file = os.path.join(home, "mcp", "pool.url")
+    url_file = os.path.join(home, "run", "mcp", "pool.url")
     deadline = time.time() + 5
     while time.time() < deadline:
         if os.path.exists(url_file):

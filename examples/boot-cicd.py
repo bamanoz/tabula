@@ -14,7 +14,13 @@ import json
 import os
 import sys
 
+if TABULA_HOME := os.environ.get("TABULA_HOME"):
+    if TABULA_HOME not in sys.path:
+        sys.path.insert(0, TABULA_HOME)
+
 TABULA_HOME = os.environ.get("TABULA_HOME", os.path.join(os.path.expanduser("~"), ".tabula"))
+if TABULA_HOME not in sys.path:
+    sys.path.insert(0, TABULA_HOME)
 
 
 def load_env() -> None:
@@ -36,18 +42,16 @@ load_env()
 
 SKILLS_DIR = os.path.join(TABULA_HOME, "skills")
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
-TABULA_PROVIDER = os.environ.get("TABULA_PROVIDER", "anthropic").strip().lower() or "anthropic"
+
+from skills.lib.provider_selection import build_driver_command, resolve_provider
 
 VENV_PYTHON = os.path.join(TABULA_HOME, ".venv", "bin", "python3")
 
 
 def find_driver() -> str | None:
     """Find the driver for the configured provider."""
-    driver_name = f"driver-{TABULA_PROVIDER}"
-    run_py = os.path.join(SKILLS_DIR, driver_name, "run.py")
-    if os.path.isfile(run_py):
-        return f"{VENV_PYTHON} skills/{driver_name}/run.py --session main"
-    return None
+    provider = resolve_provider(os.environ.get("TABULA_PROVIDER"), tabula_home=TABULA_HOME, require_ready=False)
+    return build_driver_command(provider, tabula_home=TABULA_HOME, python_executable=VENV_PYTHON) + " --session main"
 
 
 def build_system_prompt() -> str:
@@ -59,9 +63,6 @@ def build_system_prompt() -> str:
 
 def main():
     driver = find_driver()
-    if not driver:
-        print(f"error: no driver found for provider {TABULA_PROVIDER!r}", file=sys.stderr)
-        sys.exit(1)
 
     config = {
         "url": TABULA_URL,

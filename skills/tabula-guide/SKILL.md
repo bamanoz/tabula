@@ -15,6 +15,104 @@ Tabula is a multi-agent LLM kernel. Components:
 
 All communication is JSON over WebSocket (`TABULA_URL`, default `ws://localhost:8089/ws`).
 
+## Configuration Model
+
+Tabula now distinguishes between **bootstrap config** and **skill config**.
+
+### Bootstrap config
+
+These are still runtime env vars because they must exist before boot and before
+the kernel spawns child processes:
+
+- `TABULA_HOME`
+- `TABULA_BOOT`
+- `TABULA_URL`
+- `TABULA_PROVIDER`
+- log/path env like `TABULA_LOG_FILE`, `TABULA_PATH`
+
+`boot.py` and `tabula serve/run` still load `~/.tabula/.env` for bootstrap and
+backcompat. That file is no longer the source of truth for migrated built-in
+skills, but it still participates in early process setup.
+
+### Skill config
+
+Migrated built-in skills declare their config contract in `SKILL.config.json`
+and load resolved values through `skills/lib/config.py`.
+
+For core built-in skills, non-secret config now lives centrally in:
+
+- `~/.tabula/config/global.toml`
+
+Secrets still live in:
+
+- `~/.tabula/secrets.json`
+
+Typical precedence for migrated built-in skills:
+
+1. canonical env (`TABULA_SKILL_*`, then legacy aliases)
+2. `~/.tabula/config/global.toml`
+3. `~/.tabula/secrets.json` for secret fields
+4. schema defaults
+
+Third-party skills from ClawHub may use a different model and are free to
+define their own configuration story.
+
+### Canonical env naming
+
+Canonical skill env names use this pattern:
+
+`TABULA_SKILL_<SKILL_ID_UPPER_UNDERSCORE>_<KEY_PATH_UPPER_UNDERSCORE>`
+
+Examples:
+
+- `TABULA_SKILL_DRIVER_OPENAI_MODEL`
+- `TABULA_SKILL_GATEWAY_TELEGRAM_SESSION_IDLE_TTL`
+- `TABULA_SKILL_MCP_POOL_URL`
+
+Legacy aliases remain supported where needed (`OPENAI_API_KEY`,
+`TELEGRAM_BOT_TOKENS`, etc.).
+
+### Secret storage
+
+Migrated skills can resolve secrets from:
+
+- canonical env / env aliases
+- `~/.tabula/secrets.json`
+- structured secret refs declared in skill config (`store`, `env`, `file`)
+
+Some skills intentionally share secrets. Example: `subagent-openai` falls back
+to `driver-openai.api_key` if its own secret is not present.
+
+### TABULA_HOME layout
+
+Skill-owned files now follow a consistent layout under `TABULA_HOME`:
+
+- `config/global.toml` — centralized config for core built-in skills
+- `config/skills/` — extra structured config and third-party skill config
+- `data/` — durable mutable records owned by skills
+- `state/` — rebuildable indexes/caches
+- `run/` — pid files and runtime-discovered endpoints
+- `logs/` — skill-owned logs
+- `secrets.json` — shared secret store for migrated built-ins
+
+Examples:
+
+- `~/.tabula/config/global.toml`
+- `~/.tabula/data/sessions/<session>/history.jsonl`
+- `~/.tabula/state/memory/index.json`
+- `~/.tabula/run/mcp/pool.url`
+- `~/.tabula/logs/hook-logger/hooks.jsonl`
+
+### Boot-managed files
+
+`boot.py` now also follows the structured `TABULA_HOME` layout for the files it
+owns directly:
+
+- `~/.tabula/config/skills/hook-permissions/permissions.json`
+- `~/.tabula/config/skills/mcp/servers.json`
+- `~/.tabula/data/memory/MEMORY.md`
+- `~/.tabula/state/subagent/prompt.txt`
+
 ## Boot System
 
 `boot.py` outputs JSON config to stdout:
@@ -31,8 +129,16 @@ All communication is JSON over WebSocket (`TABULA_URL`, default `ws://localhost:
 
 ### Provider resolution
 
-`TABULA_PROVIDER` env (default: `anthropic`). Aliases: claude→anthropic, gpt/openclaw→openai.
-Falls back to first available driver if requested unavailable.
+`skills/lib/provider_selection.py` resolves the active provider.
+
+Rules:
+
+1. explicit provider override if supplied (`--provider`, gateway override, etc.)
+2. `TABULA_PROVIDER` env if set
+3. `~/.tabula/config/global.toml` (`provider = "..."`)
+
+There is no silent fallback to another provider. If the selected provider is not
+installed or not configured, startup fails with a clear error.
 
 ### System prompt assembly
 
@@ -48,7 +154,7 @@ The system prompt is split into **static** and **dynamic** sections separated by
 
 **Dynamic sections** (per-session):
 6. `## Available skills` — one-liner per skill with description
-7. `## Long-term memory` — from `~/.tabula/memory/MEMORY.md`
+7. `## Long-term memory` — from `~/.tabula/data/memory/MEMORY.md`
 8. `## MCP Tools` — discovered MCP server tools
 9. `## Environment` — provider, date, working directory
 
@@ -76,7 +182,7 @@ AGENTS.md only, and environment. No skills, memory, IDENTITY, SOUL, or USER.
 ### Subagent prompt
 
 `build_subagent_prompt()` generates a minimal prompt for subagents and writes it
-to `~/.tabula/.subagent_prompt` at boot time. The subagent runtime reads this file
+to `~/.tabula/state/subagent/prompt.txt` at boot time. The subagent runtime reads this file
 instead of using the init prompt from the kernel. This keeps the kernel agnostic —
 it always sends the same system prompt to all clients.
 
@@ -104,7 +210,7 @@ Go WebSocket hub (`internal/kernel/`). Manages clients, sessions, spawned proces
 
 ### Startup sequence
 
-1. Read `tabula.yaml` → boot command
+1. Resolve `TABULA_HOME`, load bootstrap env, read `TABULA_BOOT`
 2. Execute boot → parse JSON config
 3. Load kernel tools + merge skill tools
 4. Start WebSocket server
@@ -233,7 +339,7 @@ wire protocol examples, see `skills/skill-contract/SKILL.md`.
 | Skill | Provider | Default model |
 |-------|----------|---------------|
 | `driver-anthropic` | Anthropic (Claude) | claude-sonnet-4-6 |
-| `driver-openai` | OpenAI | gpt-5 |
+| `driver-openai` | OpenAI | gpt-5.4 |
 | `driver-mock` | Mock (testing) | — |
 
 Drivers receive `message`, `tool_result`, `init`, `cancel`.
@@ -268,8 +374,8 @@ Optional: `--timeout N` (0=oneshot, default). Results delivered as messages to p
 | `memory` | Persistent memory. Categories: fact, preference, decision, entity, note. `--long-term` injects into system prompt. |
 | `pair` | Universal pairing for gateways (Telegram, etc.). |
 | `sessions` | Cross-session messaging. Messages arrive as `<cross_session>` XML tags. |
-| `hook-logger` | JSONL audit log of all hook events to `~/.tabula/logs/hooks.jsonl`. |
-| `mcp` | MCP bridge to external servers. Config: `~/.tabula/mcp/servers.json`. |
+| `hook-logger` | JSONL audit log of all hook events to `~/.tabula/logs/hook-logger/hooks.jsonl`. |
+| `mcp` | MCP bridge to external servers. Pool config lives in `~/.tabula/config/global.toml`; server definitions in `~/.tabula/config/skills/mcp/servers.json`. |
 | `timer` | One-shot delayed message. No LLM, direct WebSocket. |
 
 ### User tools
@@ -311,7 +417,7 @@ message with the command body + args to the driver.
 
 ## Permissions
 
-Tool permission rules defined in `~/.tabula/permissions.json`:
+Tool permission rules defined in `~/.tabula/config/skills/hook-permissions/permissions.json`:
 
 ```json
 {
@@ -354,7 +460,7 @@ Example EXEC allowlist — allow only specific commands:
    from the init message — the LLM never sees them.
 2. **Runtime hook**: `hook-permissions` skill subscribes to `before_tool_call` with
    priority 100. Evaluates rules at runtime, blocks denied calls. Only spawned when
-   `permissions.json` exists.
+   `config/skills/hook-permissions/permissions.json` exists.
 
 ## Wire Protocol
 

@@ -16,8 +16,13 @@ import sys
 import time
 from pathlib import Path
 
-TABULA_HOME = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
-AUTH_DIR = Path(TABULA_HOME) / "auth"
+ROOT = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from skills.lib.paths import skill_data_dir
+
+AUTH_DIR = skill_data_dir("pair")
 
 
 def auth_file(gateway: str) -> Path:

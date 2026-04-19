@@ -8,44 +8,78 @@ description: Telegram Bot gateway. Bridges Telegram chats to Tabula sessions. Ea
 Telegram bot gateway for Tabula. Users go through a pairing flow before they can chat.
 Supports multiple bot tokens and streaming responses via sendMessageDraft.
 
-## Setup
-
-1. Create a bot via @BotFather, get token
-2. Add `TELEGRAM_BOT_TOKENS=xxx` to `~/.tabula/.env`
-3. Install as service (see below)
-
-If you need to verify the variable is present, do it without printing the token value.
-Example:
-
-```bash
-python3 - <<'PY'
-import os
-from pathlib import Path
-
-env_file = Path.home() / '.tabula' / '.env'
-text = env_file.read_text() if env_file.exists() else ''
-print('set' if any(line.startswith('TELEGRAM_BOT_TOKENS=') for line in text.splitlines()) else 'missing')
-PY
-```
-
-## Environment variables
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `TELEGRAM_BOT_TOKENS` | yes | -- | Comma-separated bot tokens |
-| `TABULA_URL` | -- | `ws://localhost:8089/ws` | Kernel WebSocket URL |
-| `TABULA_PROVIDER` | -- | `anthropic` | LLM provider |
-| `TABULA_HOME` | -- | `~/.tabula` | Tabula home directory |
-
 ## Run
 
 ```bash
 python3 skills/gateway-telegram/run.py
 ```
 
-Or install as a persistent service (recommended):
+## Config File
 
-## Service setup
+Path:
+
+    ~/.tabula/config/global.toml
+
+Example:
+
+```toml
+[gateway.telegram]
+# provider_override = "openai"
+api_timeout = 30
+bot_tokens = { source = "store", id = "gateway-telegram.bot_tokens" }
+
+[gateway.telegram.session]
+idle_ttl = 900
+max_age = 21600
+cleanup_interval = 30
+```
+
+## Secrets
+
+Path:
+
+    ~/.tabula/secrets.json
+
+Example:
+
+```json
+{
+  "gateway-telegram.bot_tokens": ["123:ABC", "456:DEF"]
+}
+```
+
+## Configuration
+
+| Key | Type | Default | Secret | Canonical env | Aliases | Notes |
+|---|---|---|---|---|---|---|
+| `provider_override` | `string` | `""` | no | `TABULA_SKILL_GATEWAY_TELEGRAM_PROVIDER_OVERRIDE` | -- | Optional per-gateway provider override |
+| `api_timeout` | `float` | `10` | no | `TABULA_SKILL_GATEWAY_TELEGRAM_API_TIMEOUT` | `TABULA_TELEGRAM_API_TIMEOUT` | Telegram API request timeout in seconds |
+| `session.idle_ttl` | `float` | `900` | no | `TABULA_SKILL_GATEWAY_TELEGRAM_SESSION_IDLE_TTL` | `TABULA_TELEGRAM_SESSION_IDLE_TTL` | Idle session eviction threshold in seconds |
+| `session.max_age` | `float` | `21600` | no | `TABULA_SKILL_GATEWAY_TELEGRAM_SESSION_MAX_AGE` | `TABULA_TELEGRAM_SESSION_MAX_AGE` | Max session lifetime in seconds |
+| `session.cleanup_interval` | `float` | `30` | no | `TABULA_SKILL_GATEWAY_TELEGRAM_SESSION_CLEANUP_INTERVAL` | `TABULA_TELEGRAM_SESSION_CLEANUP_INTERVAL` | Cleanup loop interval in seconds |
+| `bot_tokens` | `string_list` | -- | yes | `TABULA_SKILL_GATEWAY_TELEGRAM_BOT_TOKENS` | `TELEGRAM_BOT_TOKENS` | Store id: `gateway-telegram.bot_tokens` |
+
+## Runtime Environment
+
+| Variable | Required | Description |
+|---|---|---|
+| `TABULA_URL` | yes | Kernel WebSocket URL |
+| `TABULA_HOME` | yes | Tabula home directory used for drivers, auth, and pid file |
+
+## Precedence
+
+1. env (`TABULA_SKILL_*`, then legacy alias)
+2. `~/.tabula/config/global.toml`
+3. `~/.tabula/secrets.json` for `bot_tokens`
+4. schema defaults
+
+## Setup
+
+1. Create a bot via `@BotFather`
+2. Configure tokens via env or `global.toml` + secret store
+3. Install as a service if you want it to run persistently
+
+## Service Setup
 
 ### macOS (launchd)
 
@@ -72,7 +106,7 @@ powershell -ExecutionPolicy Bypass -File skills/gateway-telegram/install-service
 3. Admin approves: `python3 skills/pair/run.py telegram approve PRX-XXXXXX-YYYYYY`
 4. User can now chat with the bot
 
-Auth state is stored in `{TABULA_HOME}/auth/telegram.json`.
+Auth state is stored in `{TABULA_HOME}/data/pair/telegram.json`.
 
 ## pair.py -- access management
 
@@ -105,3 +139,8 @@ Responses are streamed to Telegram via `sendMessageDraft`:
 
 - Messages > 4096 chars are split automatically
 - Sessions reset on gateway restart
+
+## Storage Layout
+
+- PID file: `~/.tabula/run/gateway-telegram/gateway-telegram.pid`
+- Pairing state: `~/.tabula/data/pair/telegram.json`

@@ -10,6 +10,8 @@ import time
 from dataclasses import dataclass
 
 from .kernel_client import KernelConnection
+from .paths import skill_data_dir
+from .prompt_builder import build_main_system_prompt
 from .protocol import (
     MSG_CONNECT, MSG_CONNECTED, MSG_JOIN, MSG_JOINED, MSG_INIT,
     MSG_MESSAGE, MSG_TOOL_USE, MSG_TOOL_RESULT, MSG_DONE,
@@ -69,11 +71,10 @@ class DriverRuntime:
 
         # History persistence
         self._history_file = None
-        tabula_home = os.environ.get("TABULA_HOME", os.path.join(os.path.expanduser("~"), ".tabula"))
-        history_dir = os.path.join(tabula_home, "sessions", config.session)
+        history_dir = skill_data_dir("sessions") / config.session
         try:
             os.makedirs(history_dir, exist_ok=True)
-            self._history_file = open(os.path.join(history_dir, "history.jsonl"), "a")
+            self._history_file = open(history_dir / "history.jsonl", "a")
         except OSError as e:
             logger(f"cannot open history file: {e}")
 
@@ -274,7 +275,7 @@ class DriverRuntime:
         self._needs_turn = True
 
     def handle_init(self, msg: dict):
-        prompt = msg.get("prompt", "")
+        prompt = msg.get("prompt", "") or build_main_system_prompt(provider=self.config.name)
         # Inject session identity so LLM uses correct --parent-session
         prompt += f"\n\nYour session name is `{self.config.session}`."
         self.provider = self.provider_factory(prompt, msg.get("tools", []))

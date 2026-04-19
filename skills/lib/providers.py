@@ -113,6 +113,30 @@ def kernel_to_openai_tools(kernel_tools: list[dict]) -> list[dict]:
     return result
 
 
+def kernel_to_openai_chat_tools(kernel_tools: list[dict]) -> list[dict]:
+    result = []
+    for tool in kernel_tools:
+        properties = {
+            key: {"type": value["type"], "description": value["description"]}
+            for key, value in tool.get("params", {}).items()
+        }
+        required = tool.get("required", [])
+        function = {
+            "name": tool["name"],
+            "description": tool["description"],
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+                "additionalProperties": False,
+            },
+        }
+        if set(required) == set(properties.keys()):
+            function["strict"] = True
+        result.append({"type": "function", "function": function})
+    return result
+
+
 def _http_error_message(err: urllib.error.HTTPError) -> str:
     try:
         body = err.read().decode("utf-8", errors="replace").strip()
@@ -576,6 +600,204 @@ class OpenAISession(ProviderSession):
             )
 
         return TurnOutcome(final_text="".join(text_parts), tool_calls=tool_calls, usage=usage)
+
+
+class OpenAIChatCompletionsSession(ProviderSession):
+    def __init__(self, *, system_prompt: str, model: str, api_key: str, base_url: str, tools: list[dict]):
+        super().__init__(system_prompt)
+        self.model = model
+        self.api_key = api_key
+        self.base_url = normalize_api_base(base_url, "/v1")
+        self.api_url = f"{self.base_url}/v1/chat/completions"
+        self.tools = kernel_to_openai_chat_tools(tools)
+        self.messages: list[dict] = []
+
+    def add_user_text(self, text: str):
+        self.messages.append({"role": "user", "content": text})
+
+    def add_tool_results(self, results: list[ToolResult]):
+        for result in results:
+            self.messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": result.tool_use_id,
+                    "content": result.output,
+                }
+            )
+
+    def record_aborted_turn(self):
+        self.messages.append({"role": "assistant", "content": "[cancelled]"})
+
+    def restore_history(self, entries: list[dict]):
+        for entry in entries:
+            role = entry.get("role")
+            if role == "user":
+                self.messages.append({"role": "user", "content": entry["text"]})
+            elif role == "assistant" and "text" in entry:
+                self.messages.append({"role": "assistant", "content": entry["text"]})
+            # Keep resumed history portable: replay text only.
+
+    def needs_compact(self) -> bool:
+        from .compaction import should_compact
+        return should_compact(self.messages, self.model, self.system_prompt)
+
+    def compact(self, logger=None) -> str:
+        from .compaction import COMPACT_PROMPT, KEEP_LAST_MESSAGES, _extract_summary, estimate_tokens, should_compact
+
+        if not should_compact(self.messages, self.model, self.system_prompt):
+            return ""
+
+        keep_last = KEEP_LAST_MESSAGES
+        old = self.messages[:-keep_last]
+        recent = self.messages[-keep_last:]
+        summary_messages = [{"role": "system", "content": self.system_prompt}] + list(old) + [
+            {"role": "user", "content": COMPACT_PROMPT}
+        ]
+        body = {"model": self.model, "messages": summary_messages}
+        req = urllib.request.Request(
+            self.api_url,
+            data=json.dumps(body).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+        )
+
+        try:
+            resp = urllib.request.urlopen(req, timeout=120)
+            data = json.loads(resp.read())
+            summary_text = (
+                data.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+        except Exception as e:
+            if logger:
+                logger(f"compaction API call failed: {e}")
+            return ""
+
+        summary_text = _extract_summary(summary_text)
+        if not summary_text.strip():
+            if logger:
+                logger("compaction produced empty summary, skipping")
+            return ""
+
+        new_messages = [
+            {"role": "user", "content": f"<conversation_summary>\n{summary_text}\n</conversation_summary>"},
+            {"role": "assistant", "content": "I have the full context from our previous conversation. I'll continue from where we left off."},
+        ] + recent
+
+        if logger:
+            old_tokens = estimate_tokens(self.messages)
+            new_tokens = estimate_tokens(new_messages)
+            logger(f"compacted: {old_tokens} -> {new_tokens} estimated tokens ({len(self.messages)} -> {len(new_messages)} messages)")
+
+        self.messages = new_messages
+        return summary_text
+
+    def generate(self, on_text_delta) -> TurnOutcome:
+        body = {
+            "model": self.model,
+            "messages": [{"role": "system", "content": self.system_prompt}] + self.messages,
+            "stream": True,
+            "parallel_tool_calls": True,
+        }
+        if self.tools:
+            body["tools"] = self.tools
+
+        req = urllib.request.Request(
+            self.api_url,
+            data=json.dumps(body).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+        )
+
+        try:
+            resp = urllib.request.urlopen(req, timeout=300)
+        except urllib.error.HTTPError as err:
+            raise RuntimeError(_http_error_message(err)) from err
+        self._current_resp = resp
+        fp = getattr(resp, "fp", None)
+        raw = getattr(fp, "raw", None)
+        sock = getattr(raw, "_sock", None)
+        if sock:
+            sock.settimeout(600)
+
+        text_parts: list[str] = []
+        usage: dict = {"input_tokens": 0, "output_tokens": 0}
+        tool_state: dict[int, dict] = {}
+
+        try:
+            for data in iter_sse_events(resp):
+                if data.get("error"):
+                    message = data.get("error", {}).get("message") or data.get("message") or "OpenAI stream error"
+                    raise RuntimeError(message)
+
+                if data.get("usage"):
+                    usage["input_tokens"] = data["usage"].get("prompt_tokens", usage["input_tokens"])
+                    usage["output_tokens"] = data["usage"].get("completion_tokens", usage["output_tokens"])
+
+                for choice in data.get("choices", []):
+                    delta = choice.get("delta", {})
+
+                    content = delta.get("content", "")
+                    if content:
+                        text_parts.append(content)
+                        on_text_delta(content)
+
+                    for tool_delta in delta.get("tool_calls", []):
+                        index = int(tool_delta.get("index", 0))
+                        state = tool_state.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                        if tool_delta.get("id"):
+                            state["id"] = tool_delta["id"]
+                        function = tool_delta.get("function", {})
+                        if function.get("name"):
+                            state["name"] = function["name"]
+                        if function.get("arguments"):
+                            state["arguments"] += function["arguments"]
+        finally:
+            self._current_resp = None
+            try:
+                resp.close()
+            except Exception:
+                pass
+
+        tool_calls: list[ToolCall] = []
+        assistant_tool_calls: list[dict] = []
+        for index in sorted(tool_state):
+            tool = tool_state[index]
+            try:
+                input_data = json.loads(tool.get("arguments") or "{}")
+            except json.JSONDecodeError:
+                input_data = {}
+            tool_id = tool.get("id") or f"tool_call_{index}"
+            tool_calls.append(ToolCall(id=tool_id, name=tool.get("name", ""), input=input_data))
+            assistant_tool_calls.append(
+                {
+                    "id": tool_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool.get("name", ""),
+                        "arguments": tool.get("arguments", "") or "{}",
+                    },
+                }
+            )
+
+        final_text = "".join(text_parts)
+        if assistant_tool_calls:
+            self.messages.append(
+                {
+                    "role": "assistant",
+                    "content": final_text or None,
+                    "tool_calls": assistant_tool_calls,
+                }
+            )
+        else:
+            self.messages.append({"role": "assistant", "content": final_text})
+
+        return TurnOutcome(final_text=final_text, tool_calls=tool_calls, usage=usage)
 
 
 # ---------------------------------------------------------------------------

@@ -8,11 +8,16 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 
 ROOT = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+os.environ.setdefault("TABULA_HOME", ROOT)
+
+from skills.lib import load_skill_config
+from skills.lib.paths import skill_logs_dir
 from skills.lib.kernel_client import KernelConnection
 from skills.lib.protocol import (
     MSG_CONNECT, MSG_HOOK, MSG_HOOK_RESULT, HOOK_PASS,
@@ -20,7 +25,14 @@ from skills.lib.protocol import (
 )
 
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
-DEFAULT_LOG = os.path.join(os.path.expanduser("~"), ".tabula", "logs", "hooks.jsonl")
+
+
+def load_hook_logger_settings() -> dict:
+    return load_skill_config(Path(__file__).resolve().parent)
+
+
+SETTINGS = load_hook_logger_settings()
+DEFAULT_LOG = SETTINGS.get("log_file") or str(skill_logs_dir("hook-logger") / "hooks.jsonl")
 
 HOOK_EVENTS = [
     {"event": HOOK_AFTER_MESSAGE, "priority": 0},

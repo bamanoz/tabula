@@ -54,6 +54,10 @@ Jobs are stored in `jobs.json` (source of truth).
 
 In both cases, the LLM receives the task prompt as a message in the `main` session with the job ID in the `id` field.
 
+## Storage Layout
+
+- Jobs file: `~/.tabula/data/cron/jobs.json`
+
 ## Notes
 
 - Jobs persist across Tabula restarts (stored in `jobs.json`)

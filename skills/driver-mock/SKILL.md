@@ -16,28 +16,55 @@ Request modifiers:
 - `waves=N` — number of sequential waves for that request
 - `fanouts=a,b,c` — explicit per-wave fanout, e.g. `fanouts=2,4,1`
 
-## Usage
+## Run
 
 Set:
 
-```
+```bash
 TABULA_PROVIDER=mock
 ```
 
 The boot script will spawn:
 
-```
+```bash
 python3 skills/driver-mock/run.py
 ```
 
-## Environment variables
+## Config File
 
-- `TABULA_MOCK_SUBAGENTS` — number of mock subagents to spawn per request (default: `3`)
-- `TABULA_MOCK_TURNS` — simulated max turns passed to each subagent (default: `5`)
-- `TABULA_MOCK_SLEEP_MS` — per-turn delay in each mock subagent (default: `25`)
-- `TABULA_MOCK_WAIT_SEC` — max wait for all subagent results (default: `30`)
-- `TABULA_MOCK_WAVES` — default number of waves when the request does not specify `waves=...` (default: `1`)
-- `TABULA_MOCK_FANOUTS` — default per-wave fanouts when the request does not specify `fanouts=...`, e.g. `2,4,1`
+Path:
+
+    ~/.tabula/config/skills/driver-mock.toml
+
+Example:
+
+```toml
+subagent_count = 3
+max_turns = 5
+sleep_ms = 25
+default_waves = 1
+# default_fanouts = [2, 4, 1]
+```
+
+## Secrets
+
+This skill has no dedicated secrets.
+
+## Configuration
+
+| Key | Type | Default | Secret | Canonical env | Aliases | Notes |
+|---|---|---|---|---|---|---|
+| `subagent_count` | `int` | `3` | no | `TABULA_SKILL_DRIVER_MOCK_SUBAGENT_COUNT` | `TABULA_MOCK_SUBAGENTS` | Default number of subagents per wave |
+| `max_turns` | `int` | `5` | no | `TABULA_SKILL_DRIVER_MOCK_MAX_TURNS` | `TABULA_MOCK_TURNS` | Passed through to each `subagent-mock` |
+| `sleep_ms` | `int` | `25` | no | `TABULA_SKILL_DRIVER_MOCK_SLEEP_MS` | `TABULA_MOCK_SLEEP_MS` | Per-turn mock subagent delay |
+| `default_waves` | `int` | `1` | no | `TABULA_SKILL_DRIVER_MOCK_DEFAULT_WAVES` | `TABULA_MOCK_WAVES` | Used when request omits `waves=...` |
+| `default_fanouts` | `int_list` | -- | no | `TABULA_SKILL_DRIVER_MOCK_DEFAULT_FANOUTS` | `TABULA_MOCK_FANOUTS` | Example: `2,4,1` |
+
+## Precedence
+
+1. env (`TABULA_SKILL_*`, then legacy alias)
+2. `~/.tabula/config/skills/driver-mock.toml`
+3. schema defaults
 
 ## Protocol
 

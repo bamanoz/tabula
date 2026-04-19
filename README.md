@@ -232,7 +232,7 @@ Python layers are classified with `pytest` markers via `conftest.py`; the curren
 
 ### Permissions
 
-Create `~/.tabula/permissions.json` to control which tools the agent can use:
+Create `~/.tabula/config/skills/hook-permissions/permissions.json` to control which tools the agent can use:
 
 ```json
 {

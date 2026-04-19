@@ -24,18 +24,43 @@ import sys
 import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+ROOT = os.environ.get("TABULA_HOME", os.path.join(os.path.expanduser("~"), ".tabula"))
+SKILLS_ROOT = os.path.join(ROOT, "skills")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+for p in (SKILLS_ROOT, os.path.dirname(os.path.dirname(os.path.abspath(__file__))), REPO_ROOT, ROOT):
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+os.environ.setdefault("TABULA_HOME", ROOT)
+
+from skills.lib import load_skill_config
+from skills.lib.paths import ensure_parent, skill_run_dir
 
 from .client import MCPError
 from .pool import ClientPool
 
 TABULA_HOME = os.environ.get("TABULA_HOME", os.path.join(os.path.expanduser("~"), ".tabula"))
-POOL_URL_FILE = os.path.join(TABULA_HOME, "mcp", "pool.url")
+POOL_URL_FILE = str(skill_run_dir("mcp") / "pool.url")
+
+
+def load_mcp_settings() -> dict:
+    settings = load_skill_config(Path(__file__).resolve().parent)
+    return {
+        "pool.url": settings["pool.url"],
+        "pool.host": settings["pool.host"],
+        "pool.port": settings["pool.port"],
+    }
+
+
+SETTINGS = load_mcp_settings()
 
 
 def _get_pool_url() -> str | None:
     """Get the pool daemon's URL from env or file."""
-    # Explicit override (for containers / remote pools)
-    url = os.environ.get("TABULA_MCP_POOL_URL")
+    # Explicit override or configured remote pool URL
+    url = SETTINGS["pool.url"]
     if url:
         return url
     # Read from file written by the daemon at startup
@@ -92,8 +117,8 @@ def _make_handler(pool: ClientPool, lock: threading.Lock):
 
 def run_daemon():
     """Start the pool daemon on an HTTP port."""
-    host = os.environ.get("TABULA_MCP_POOL_HOST", "0.0.0.0")
-    port = int(os.environ.get("TABULA_MCP_POOL_PORT", "0"))
+    host = SETTINGS["pool.host"]
+    port = SETTINGS["pool.port"]
 
     pool = ClientPool()
     lock = threading.Lock()
@@ -103,8 +128,7 @@ def run_daemon():
 
     # Write URL file so local clients can find us
     pool_url = f"http://{actual_host}:{actual_port}"
-    os.makedirs(os.path.dirname(POOL_URL_FILE), exist_ok=True)
-    with open(POOL_URL_FILE, "w") as f:
+    with open(ensure_parent(Path(POOL_URL_FILE)), "w") as f:
         f.write(pool_url)
 
     print(f"mcp-pool listening on {pool_url}", file=sys.stderr)
@@ -134,7 +158,8 @@ def pool_request(req: dict) -> dict:
         raise ConnectionError("pool not running")
     data = json.dumps(req, ensure_ascii=False).encode()
     http_req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(http_req, timeout=30) as resp:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(http_req, timeout=30) as resp:
         return json.loads(resp.read())
 
 

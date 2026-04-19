@@ -22,13 +22,16 @@ import threading
 import time
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 ROOT = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from skills.lib import load_env
+from skills.lib import load_skill_config
 from skills.lib.kernel_client import KernelConnection
+from skills.lib.paths import ensure_parent, skill_run_dir
+from skills.lib.provider_selection import ProviderSelectionError, build_driver_command, ensure_provider_ready, resolve_provider
 from skills.lib.protocol import (
     MSG_CANCEL, MSG_CONNECT, MSG_JOIN, MSG_JOINED, MSG_TOOL_USE, MSG_MESSAGE,
     MSG_TOOL_RESULT, MSG_MEMBER_JOINED, MSG_ERROR,
@@ -38,8 +41,6 @@ from skills.lib.protocol import (
 from skills.pair.run import is_authorized as _pair_is_authorized
 from skills.pair.run import create_token as _pair_create_token
 
-load_env()
-
 import requests
 
 # -- Config --------------------------------------------------------------------
@@ -47,20 +48,26 @@ import requests
 GATEWAY_NAME  = "telegram"
 TABULA_URL    = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
 TABULA_HOME   = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
-PROVIDER      = os.environ.get("TABULA_PROVIDER", "anthropic")
 
-PROVIDER_ALIASES = {"claude": "anthropic", "gpt": "openai", "openclaw": "openai"}
-ACTIVE_PROVIDER  = PROVIDER_ALIASES.get(PROVIDER, PROVIDER)
+
+def load_gateway_settings() -> dict:
+    return load_skill_config(Path(__file__).resolve().parent)
+
+
+SETTINGS = load_gateway_settings()
+
+PROVIDER_OVERRIDE = SETTINGS["provider_override"] or None
+ACTIVE_PROVIDER  = resolve_provider(PROVIDER_OVERRIDE, tabula_home=TABULA_HOME, require_ready=False)
 
 VENV_PYTHON  = os.path.join(TABULA_HOME, ".venv", "bin", "python3")
 POLL_TIMEOUT = 30   # long-poll seconds
-API_TIMEOUT = float(os.environ.get("TABULA_TELEGRAM_API_TIMEOUT", "10"))
+API_TIMEOUT = SETTINGS["api_timeout"]
 TOKEN_TTL    = 1800 # pairing token lifetime, seconds
 ASK_TIMEOUT  = 300  # max wait for LLM response, seconds
 DRAFT_THROTTLE = 0.1  # seconds between sendMessageDraft calls
-SESSION_IDLE_TTL = float(os.environ.get("TABULA_TELEGRAM_SESSION_IDLE_TTL", "900"))
-SESSION_MAX_AGE = float(os.environ.get("TABULA_TELEGRAM_SESSION_MAX_AGE", "21600"))
-SESSION_CLEANUP_INTERVAL = float(os.environ.get("TABULA_TELEGRAM_SESSION_CLEANUP_INTERVAL", "30"))
+SESSION_IDLE_TTL = SETTINGS["session.idle_ttl"]
+SESSION_MAX_AGE = SETTINGS["session.max_age"]
+SESSION_CLEANUP_INTERVAL = SETTINGS["session.cleanup_interval"]
 
 # -- Logging -------------------------------------------------------------------
 
@@ -71,8 +78,11 @@ def log(msg: str):
 
 
 def _driver_command() -> str:
-    driver_path = os.path.join(TABULA_HOME, "skills", f"driver-{ACTIVE_PROVIDER}", "run.py")
-    return shlex.join([VENV_PYTHON, driver_path])
+    return build_driver_command(ACTIVE_PROVIDER, tabula_home=TABULA_HOME, python_executable=VENV_PYTHON)
+
+
+def ensure_gateway_provider_ready() -> None:
+    ensure_provider_ready(resolve_provider(PROVIDER_OVERRIDE, tabula_home=TABULA_HOME, require_ready=False), tabula_home=TABULA_HOME)
 
 # -- Auth (delegates to skills/pair) -------------------------------------------
 
@@ -419,6 +429,8 @@ class BotInstance:
 
 class TelegramGateway:
     def __init__(self, cleanup_interval: float | None = None):
+        self.active_provider = resolve_provider(PROVIDER_OVERRIDE, tabula_home=TABULA_HOME, require_ready=False)
+        self.driver_cmd = _driver_command()
         self.sessions:  dict[int, SessionState] = {}
         self._creating: dict[int, threading.Event] = {}
         self._lock      = threading.Lock()
@@ -689,16 +701,16 @@ def _split_text(text: str, limit: int) -> list[str]:
 # -- Token resolution ----------------------------------------------------------
 
 def resolve_bot_tokens() -> list[str]:
-    """Resolve bot tokens from TELEGRAM_BOT_TOKENS (comma-separated)."""
-    tokens = os.environ.get("TELEGRAM_BOT_TOKENS", "").strip()
+    """Resolve bot tokens from skill config / secret store / env."""
+    tokens = load_gateway_settings().get("bot_tokens") or []
     if not tokens:
         return []
-    return [t.strip() for t in tokens.split(",") if t.strip()]
+    return [t.strip() for t in tokens if isinstance(t, str) and t.strip()]
 
 
 # -- Entry point ---------------------------------------------------------------
 
-_PID_FILE = os.path.join(TABULA_HOME, "gateway-telegram.pid")
+_PID_FILE = str(skill_run_dir("gateway-telegram") / "gateway-telegram.pid")
 
 
 def _check_pid_file() -> bool:
@@ -720,6 +732,7 @@ def _check_pid_file() -> bool:
 
 
 def _write_pid_file():
+    ensure_parent(Path(_PID_FILE))
     with open(_PID_FILE, "w") as f:
         f.write(str(os.getpid()))
 
@@ -734,19 +747,23 @@ def _remove_pid_file():
 def main():
     tokens = resolve_bot_tokens()
     if not tokens:
-        sys.exit("TELEGRAM_BOT_TOKENS is not set. Add to ~/.tabula/.env")
+        sys.exit("gateway-telegram bot tokens are not configured. Set TELEGRAM_BOT_TOKENS, TABULA_SKILL_GATEWAY_TELEGRAM_BOT_TOKENS, or use config/skills/gateway-telegram.toml + secrets.json")
 
     if _check_pid_file():
-        sys.exit("gateway-telegram is already running. Remove ~/.tabula/gateway-telegram.pid to force start.")
+        sys.exit("gateway-telegram is already running. Remove ~/.tabula/run/gateway-telegram/gateway-telegram.pid to force start.")
 
     _write_pid_file()
     try:
-        _run_gateway(tokens)
+        try:
+            _run_gateway(tokens)
+        except ProviderSelectionError as e:
+            sys.exit(f"error: {e}")
     finally:
         _remove_pid_file()
 
 
 def _run_gateway(tokens):
+    ensure_gateway_provider_ready()
     gateway = TelegramGateway()
 
     # Register slash commands with the first bot

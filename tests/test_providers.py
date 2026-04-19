@@ -15,7 +15,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from skills.lib.providers import OpenAISession, kernel_to_openai_tools
+from skills.lib.providers import (
+    OpenAIChatCompletionsSession,
+    OpenAISession,
+    kernel_to_openai_chat_tools,
+    kernel_to_openai_tools,
+)
 
 
 class TestKernelToOpenAITools(unittest.TestCase):
@@ -48,6 +53,25 @@ class TestKernelToOpenAITools(unittest.TestCase):
         ])
 
         self.assertNotIn("strict", tools[0])
+
+
+class TestKernelToOpenAIChatTools(unittest.TestCase):
+    def test_wraps_tool_schema_under_function(self):
+        tools = kernel_to_openai_chat_tools([
+            {
+                "name": "write_file",
+                "description": "Write file",
+                "params": {
+                    "path": {"type": "string", "description": "Path"},
+                    "content": {"type": "string", "description": "Content"},
+                },
+                "required": ["path", "content"],
+            }
+        ])
+
+        self.assertEqual(tools[0]["type"], "function")
+        self.assertEqual(tools[0]["function"]["name"], "write_file")
+        self.assertTrue(tools[0]["function"]["strict"])
 
 
 class TestOpenAIRestoreHistory(unittest.TestCase):
@@ -160,6 +184,37 @@ class TestOpenAIStreamingState(unittest.TestCase):
                 "status": "completed",
             }],
         )
+
+
+class TestOpenAIChatCompletionsSession(unittest.TestCase):
+    def test_generate_reconstructs_streamed_tool_call(self):
+        session = OpenAIChatCompletionsSession(
+            system_prompt="sys",
+            model="gpt-5.4",
+            api_key="test-key",
+            base_url="https://api.openai.com/v1",
+            tools=[],
+        )
+        session.add_user_text("hello")
+
+        response = _FakeStreamingResponse([
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"write_file","arguments":"{\\"path\\":\\"IDENTITY.md\\""}}]},"finish_reason":null}]}\n',
+            '\n',
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":", \\\"content\\\":\\\"hi\\\"}"}}]},"finish_reason":null}],"usage":{"prompt_tokens":10,"completion_tokens":3}}\n',
+            '\n',
+            'data: [DONE]\n',
+            '\n',
+        ])
+
+        with patch("skills.lib.providers.urllib.request.urlopen", return_value=response):
+            outcome = session.generate(lambda _text: None)
+
+        self.assertEqual(len(outcome.tool_calls), 1)
+        self.assertEqual(outcome.tool_calls[0].id, "call_1")
+        self.assertEqual(outcome.tool_calls[0].name, "write_file")
+        self.assertEqual(outcome.tool_calls[0].input, {"path": "IDENTITY.md", "content": "hi"})
+        self.assertEqual(session.messages[-1]["role"], "assistant")
+        self.assertEqual(session.messages[-1]["tool_calls"][0]["id"], "call_1")
 
 
 if __name__ == "__main__":

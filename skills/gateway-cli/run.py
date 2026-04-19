@@ -18,10 +18,11 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from skills.lib.kernel_client import KernelConnection
+from skills.lib.provider_selection import ProviderSelectionError, resolve_driver_command
 from skills.lib.protocol import (
     MSG_CONNECT, MSG_JOIN, MSG_MESSAGE, MSG_TOOL_USE, MSG_CANCEL,
     MSG_STREAM_START, MSG_STREAM_DELTA, MSG_STREAM_END,
-    MSG_DONE, MSG_ERROR, MSG_TOOL_RESULT, MSG_STATUS,
+    MSG_DONE, MSG_ERROR, MSG_TOOL_RESULT, MSG_STATUS, MSG_MEMBER_JOINED,
     TOOL_SPAWN, TOOL_KILL,
 )
 
@@ -127,9 +128,10 @@ class RawInput:
 
 
 class Gateway:
-    def __init__(self, driver_cmd: str | None = None, resume_session: str | None = None):
+    def __init__(self, driver_cmd: str | None = None, resume_session: str | None = None, provider: str | None = None):
         self.conn = KernelConnection(TABULA_URL)
         self.driver_cmd = driver_cmd
+        self.provider = provider
         self.session_id = resume_session or f"sess-{uuid4().hex[:8]}"
         self.driver_pid: int | None = None
         self.alive = True
@@ -153,13 +155,20 @@ class Gateway:
                 "sends": [MSG_MESSAGE, MSG_CANCEL, MSG_TOOL_USE],
                 "receives": [
                     MSG_STREAM_START, MSG_STREAM_DELTA, MSG_STREAM_END,
-                    MSG_DONE, MSG_ERROR, MSG_TOOL_RESULT, MSG_STATUS,
+                    MSG_DONE, MSG_ERROR, MSG_TOOL_RESULT, MSG_STATUS, MSG_MEMBER_JOINED,
                 ],
             }
         )
         self.conn.recv()
         self.conn.send({"type": MSG_JOIN, "session": self.session_id})
         self.conn.recv()
+
+        if self.driver_cmd is None:
+            _, self.driver_cmd = resolve_driver_command(
+                self.provider,
+                tabula_home=ROOT,
+                python_executable=sys.executable,
+            )
 
         if self.driver_cmd:
             self._spawn_driver()
@@ -173,17 +182,39 @@ class Gateway:
             "input": {"command": spawn_cmd},
         })
         deadline = time.time() + 15
+        saw_spawn_pid = False
+        saw_member_joined = False
         while time.time() < deadline:
-            msg = self.conn.recv(timeout=15)
+            msg = self.conn.recv(timeout=max(0.1, deadline - time.time()))
             if msg is None:
+                if self.driver_pid is not None:
+                    raise RuntimeError(
+                        f"driver process started with PID {self.driver_pid} but did not join session; "
+                        "check driver configuration or credentials"
+                    )
                 raise RuntimeError("lost connection while spawning driver")
             if msg.get("type") == MSG_TOOL_RESULT and msg.get("id") == "spawn-driver":
                 output = msg.get("output", "")
                 m = re.match(r"PID (\d+)", output)
                 if m:
                     self.driver_pid = int(m.group(1))
-                    return
+                    saw_spawn_pid = True
+                    if saw_member_joined:
+                        return
+                    continue
                 raise RuntimeError(f"driver spawn failed: {output}")
+            if msg.get("type") == MSG_MEMBER_JOINED:
+                saw_member_joined = True
+                if saw_spawn_pid:
+                    return
+                continue
+            if msg.get("type") == MSG_ERROR:
+                raise RuntimeError(msg.get("text", "unknown error"))
+        if self.driver_pid is not None:
+            raise RuntimeError(
+                f"driver process started with PID {self.driver_pid} but did not join session; "
+                "check driver configuration or credentials"
+            )
         raise RuntimeError("timeout waiting for driver spawn")
 
     def _kill_driver(self):
@@ -620,11 +651,16 @@ class Gateway:
 def main():
     parser = argparse.ArgumentParser(description="Tabula CLI gateway")
     parser.add_argument("--driver", default=None, help="Driver command to spawn")
+    parser.add_argument("--provider", default=None, help="Provider override for the spawned driver")
     parser.add_argument("--resume", default=None, metavar="SESSION", help="Resume session")
     args = parser.parse_args()
 
-    gateway = Gateway(driver_cmd=args.driver, resume_session=args.resume)
-    gateway.connect()
+    gateway = Gateway(driver_cmd=args.driver, resume_session=args.resume, provider=args.provider)
+    try:
+        gateway.connect()
+    except (RuntimeError, ProviderSelectionError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        raise SystemExit(1)
     gateway.run()
 
 

@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 import uuid
+from pathlib import Path
 
 TABULA_HOME = os.environ.get("TABULA_HOME", os.path.join(os.path.expanduser("~"), ".tabula"))
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
@@ -27,15 +28,18 @@ if sys.platform == "win32":
 else:
     VENV_PYTHON = os.path.join(TABULA_HOME, ".venv", "bin", "python3")
 SKILL_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(TABULA_HOME, "cron")
-JOBS_PATH = os.path.join(DATA_DIR, "jobs.json")
 CRONTAB_MARKER = "# tabula:"
 
 SKILLS_ROOT = os.path.join(os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula")), "skills")
-if SKILLS_ROOT not in sys.path:
-    sys.path.insert(0, SKILLS_ROOT)
+for p in (SKILLS_ROOT, os.path.dirname(SKILL_DIR)):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 from lib.filelock import lock_file, unlock_file
+from lib.paths import ensure_parent, skill_data_dir
+
+DATA_DIR = str(skill_data_dir("cron"))
+JOBS_PATH = str(skill_data_dir("cron") / "jobs.json")
 
 CRON_FIELD_RE = re.compile(r"^[\d,\-\*/]+$")
 

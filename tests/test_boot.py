@@ -320,7 +320,8 @@ class TestLoadPermissions(BootTestBase):
     def setUp(self):
         super().setUp()
         self._orig_perm_file = boot.PERMISSIONS_FILE
-        self.perm_file = os.path.join(self.tmpdir, "permissions.json")
+        self.perm_file = os.path.join(self.tmpdir, "config", "skills", "hook-permissions", "permissions.json")
+        os.makedirs(os.path.dirname(self.perm_file), exist_ok=True)
         boot.PERMISSIONS_FILE = self.perm_file
 
     def tearDown(self):
@@ -403,7 +404,8 @@ class TestBuildSpawnPermissions(BootTestBase):
     def setUp(self):
         super().setUp()
         self._orig_perm_file = boot.PERMISSIONS_FILE
-        self.perm_file = os.path.join(self.tmpdir, "permissions.json")
+        self.perm_file = os.path.join(self.tmpdir, "config", "skills", "hook-permissions", "permissions.json")
+        os.makedirs(os.path.dirname(self.perm_file), exist_ok=True)
         boot.PERMISSIONS_FILE = self.perm_file
 
     def tearDown(self):

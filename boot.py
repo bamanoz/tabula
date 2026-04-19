@@ -19,6 +19,13 @@ import subprocess
 import sys
 from datetime import date
 
+from skills.lib.prompt_builder import (
+    build_main_system_prompt as build_main_system_prompt_shared,
+    build_subagent_system_prompt as build_subagent_system_prompt_shared,
+    ensure_project_files as ensure_project_files_prompt_builder,
+)
+from skills.lib.provider_selection import resolve_provider
+
 TABULA_HOME = os.environ.get("TABULA_HOME", os.path.join(os.path.expanduser("~"), ".tabula"))
 
 
@@ -40,7 +47,8 @@ def load_env() -> None:
 load_env()
 
 SKILLS_DIR = os.path.join(TABULA_HOME, "skills")
-MEMORY_FILE = os.path.join(TABULA_HOME, "memory", "MEMORY.md")
+CONFIG_SKILLS_DIR = os.path.join(TABULA_HOME, "config", "skills")
+MEMORY_FILE = os.path.join(TABULA_HOME, "data", "memory", "MEMORY.md")
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
 PROJECT_FILES = ["IDENTITY.md", "SOUL.md", "USER.md", "AGENTS.md"]
 CACHE_BOUNDARY = "\n<!-- CACHE_BOUNDARY -->\n"
@@ -49,55 +57,13 @@ if sys.platform == "win32":
 else:
     VENV_PYTHON = os.path.join(TABULA_HOME, ".venv", "bin", "python3")
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
-PERMISSIONS_FILE = os.path.join(TABULA_HOME, "permissions.json")
-TABULA_PROVIDER = os.environ.get("TABULA_PROVIDER", "anthropic").strip().lower() or "anthropic"
-PROVIDER_ALIASES = {
-    "anthropic": "anthropic",
-    "claude": "anthropic",
-    "openai": "openai",
-    "gpt": "openai",
-    "openclaw": "openai",
-    "mock": "mock",
-}
+PERMISSIONS_FILE = os.path.join(CONFIG_SKILLS_DIR, "hook-permissions", "permissions.json")
+MCP_CONFIG = os.path.join(CONFIG_SKILLS_DIR, "mcp", "servers.json")
+SUBAGENT_PROMPT_FILE = os.path.join(TABULA_HOME, "state", "subagent", "prompt.txt")
+TABULA_PROVIDER = os.environ.get("TABULA_PROVIDER")
 
 
-def available_providers() -> list[str]:
-    providers = []
-    if not os.path.isdir(SKILLS_DIR):
-        return providers
-    for root, dirs, files in os.walk(SKILLS_DIR):
-        dirs[:] = [d for d in sorted(dirs) if not d.startswith((".", "__"))]
-        name = os.path.basename(root)
-        if not name.startswith("driver-"):
-            continue
-        provider = name[len("driver-"):]
-        if "run.py" in files and provider not in providers:
-            providers.append(provider)
-    return providers
-
-
-def resolve_provider() -> str:
-    requested = PROVIDER_ALIASES.get(TABULA_PROVIDER)
-    if not requested:
-        raise SystemExit(f"Unknown TABULA_PROVIDER={TABULA_PROVIDER!r}. Use one of: anthropic, openai.")
-
-    providers = available_providers()
-    if requested in providers:
-        return requested
-
-    fallback_order = ["anthropic", "openai"]
-    for provider in fallback_order:
-        if provider in providers:
-            print(
-                f"warning: provider {requested!r} is unavailable, falling back to {provider!r}",
-                file=sys.stderr,
-            )
-            return provider
-
-    raise SystemExit("No LLM provider skills found. Expected skills/driver-anthropic or skills/driver-openai.")
-
-
-ACTIVE_PROVIDER = resolve_provider()
+ACTIVE_PROVIDER = resolve_provider(TABULA_PROVIDER, tabula_home=TABULA_HOME, require_ready=False)
 
 
 def include_skill(name: str) -> bool:
@@ -262,11 +228,8 @@ def discover_slash_commands() -> list[dict]:
     return commands
 
 
-MCP_CONFIG = os.path.join(TABULA_HOME, "mcp", "servers.json")
-
-
 def load_permissions() -> list[dict]:
-    """Load permission rules from ~/.tabula/permissions.json."""
+    """Load permission rules from ~/.tabula/config/skills/hook-permissions/permissions.json."""
     if not os.path.isfile(PERMISSIONS_FILE):
         return []
     try:
@@ -435,10 +398,17 @@ def _section_environment() -> str:
 
 def _is_first_run() -> bool:
     """Check if IDENTITY.md has unfilled fields (still has placeholder text)."""
-    content = _read_project_file("IDENTITY.md")
-    if not content:
+    identity = _read_project_file("IDENTITY.md")
+    user = _read_project_file("USER.md")
+    if not identity:
         return True
-    return "_(pick something" in content or "**Name:**\n" in content
+    placeholders = [
+        "_(pick something",
+        "_(sharp? warm? chaotic? calm? snarky? helpful?)_",
+        "_(what language to respond in by default)_",
+        "_(What do they care about? What projects are they working on?",
+    ]
+    return any(token in identity for token in placeholders[:3]) or placeholders[3] in user
 
 
 FIRST_RUN_INSTRUCTION = (
@@ -452,64 +422,11 @@ FIRST_RUN_INSTRUCTION = (
 
 
 def build_system_prompt(skills: list[str], mcp_tools: dict[str, list[dict]] | None = None) -> str:
-    """Assemble full system prompt for the main driver.
-
-    Structure:
-      Static (cacheable): identity, tools, guidelines, safety, project files
-      CACHE_BOUNDARY
-      Dynamic: skills, memory, MCP tools, environment
-    """
-    static = [
-        _read_template("SYSTEM.md"),
-    ]
-
-    if _is_first_run():
-        static.append(FIRST_RUN_INSTRUCTION)
-
-    static.extend([
-        _read_template("TOOLS.md"),
-        _read_template("GUIDELINES.md"),
-        _read_template("SAFETY.md"),
-    ])
-
-    project = _section_project_files(subagent=False)
-    if project:
-        static.append(project)
-
-    dynamic = [_section_skills(skills)]
-
-    memory = _section_memory()
-    if memory:
-        dynamic.append(memory)
-
-    if mcp_tools:
-        dynamic.append(format_mcp_tools(mcp_tools))
-
-    dynamic.append(_section_environment())
-
-    return "\n\n".join(static) + CACHE_BOUNDARY + "\n\n".join(dynamic)
+    return build_main_system_prompt_shared(provider=ACTIVE_PROVIDER, skills=skills, mcp_tools=mcp_tools)
 
 
 def build_subagent_prompt() -> str:
-    """Assemble a minimal system prompt for subagents.
-
-    Includes: identity, tools, guidelines, safety, AGENTS.md, environment.
-    Excludes: SOUL.md, USER.md, skills, memory, MCP tools.
-    """
-    sections = [
-        _read_template("SYSTEM.md"),
-        _read_template("TOOLS.md"),
-        _read_template("GUIDELINES.md"),
-        _read_template("SAFETY.md"),
-    ]
-
-    project = _section_project_files(subagent=True)
-    if project:
-        sections.append(project)
-
-    sections.append(_section_environment())
-
-    return "\n\n".join(sections)
+    return build_subagent_system_prompt_shared(provider=ACTIVE_PROVIDER)
 
 
 def has_crontab() -> bool:
@@ -541,7 +458,7 @@ def build_spawn() -> list[str]:
         leaf = os.path.basename(rel_path)
         if not leaf.startswith("hook-"):
             continue
-        # hook-permissions only spawns when permissions.json exists
+        # hook-permissions only spawns when its permissions config file exists
         if leaf == "hook-permissions" and not os.path.isfile(PERMISSIONS_FILE):
             continue
         run_py = os.path.join(SKILLS_DIR, rel_path, "run.py")
@@ -551,7 +468,7 @@ def build_spawn() -> list[str]:
 
 
 def main():
-    ensure_project_files()
+    ensure_project_files_prompt_builder()
     skills = scan_skills()
     mcp_tools = discover_mcp_tools()
     skill_tools = discover_skill_tools()
@@ -561,16 +478,11 @@ def main():
         skill_tools = filter_denied_tools(skill_tools, permissions)
     config = {
         "url": TABULA_URL,
-        "system_prompt": build_system_prompt(skills, mcp_tools),
+        "system_prompt": "",
         "spawn": build_spawn(),
         "tools": skill_tools,
         "commands": slash_commands,
     }
-
-    # Write subagent prompt to file for subagent skills to read
-    subagent_prompt_path = os.path.join(TABULA_HOME, ".subagent_prompt")
-    with open(subagent_prompt_path, "w") as f:
-        f.write(build_subagent_prompt())
 
     json.dump(config, sys.stdout, ensure_ascii=False)
     sys.stdout.write("\n")

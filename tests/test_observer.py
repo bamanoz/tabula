@@ -10,7 +10,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.request
 from contextlib import closing
 from pathlib import Path
 
@@ -25,6 +24,17 @@ MODIFYING_HOOK_NAMES = {
     "session_start",
     "before_spawn",
 }
+
+
+def http_get_text(url: str, timeout: int = 5) -> str:
+    result = subprocess.run(
+        ["curl", "-fsS", "--max-time", str(timeout), url],
+        capture_output=True,
+        text=True,
+        timeout=timeout + 2,
+        check=True,
+    )
+    return result.stdout
 
 
 def get_free_port() -> int:
@@ -90,9 +100,8 @@ def start_observer(home: str, tabula_port: int, observer_port: int) -> subproces
     deadline = time.time() + 10
     while time.time() < deadline:
         try:
-            resp = urllib.request.urlopen(f"http://127.0.0.1:{observer_port}/metrics", timeout=1)
-            if resp.status == 200:
-                return proc
+            http_get_text(f"http://127.0.0.1:{observer_port}/metrics", timeout=1)
+            return proc
         except Exception:
             time.sleep(0.3)
     proc.terminate()
@@ -100,8 +109,7 @@ def start_observer(home: str, tabula_port: int, observer_port: int) -> subproces
 
 
 def get_metrics(observer_port: int) -> dict:
-    resp = urllib.request.urlopen(f"http://127.0.0.1:{observer_port}/metrics", timeout=5)
-    return json.loads(resp.read())
+    return json.loads(http_get_text(f"http://127.0.0.1:{observer_port}/metrics", timeout=5))
 
 
 def connect_gateway(tabula_port: int, session: str = "s1"):

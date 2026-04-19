@@ -6,26 +6,19 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
 ROOT = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from skills.lib import SkillConfigError, load_skill_config
 from skills.lib.driver_runtime import DriverConfig, DriverRuntime
 from skills.lib.providers import MockConfig, MockProvider
 
 
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
 VERBOSE = os.environ.get("TABULA_VERBOSE", "") == "1"
-SUBAGENT_COUNT = int(os.environ.get("TABULA_MOCK_SUBAGENTS", "3"))
-MOCK_TURNS = int(os.environ.get("TABULA_MOCK_TURNS", "5"))
-MOCK_SLEEP_MS = int(os.environ.get("TABULA_MOCK_SLEEP_MS", "25"))
-DEFAULT_WAVES = int(os.environ.get("TABULA_MOCK_WAVES", "1"))
-DEFAULT_FANOUTS = [
-    max(1, int(part))
-    for part in os.environ.get("TABULA_MOCK_FANOUTS", "").split(",")
-    if part.strip()
-] or None
 
 
 def log(msg: str):
@@ -34,17 +27,35 @@ def log(msg: str):
         sys.stderr.flush()
 
 
+def load_mock_settings() -> dict:
+    settings = load_skill_config(Path(__file__).resolve().parent)
+    fanouts = settings.get("default_fanouts")
+    return {
+        "subagent_count": settings["subagent_count"],
+        "max_turns": settings["max_turns"],
+        "sleep_ms": settings["sleep_ms"],
+        "default_waves": settings["default_waves"],
+        "default_fanouts": [max(1, int(item)) for item in fanouts] if fanouts else None,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Tabula LLM driver (mock)")
     parser.add_argument("--session", default="main", help="Session to join")
     args = parser.parse_args()
 
+    try:
+        settings = load_mock_settings()
+    except SkillConfigError as e:
+        log(f"ERROR: {e}")
+        sys.exit(1)
+
     mock_config = MockConfig(
-        subagent_count=SUBAGENT_COUNT,
-        mock_turns=MOCK_TURNS,
-        mock_sleep_ms=MOCK_SLEEP_MS,
-        default_waves=DEFAULT_WAVES,
-        default_fanouts=DEFAULT_FANOUTS,
+        subagent_count=settings["subagent_count"],
+        mock_turns=settings["max_turns"],
+        mock_sleep_ms=settings["sleep_ms"],
+        default_waves=settings["default_waves"],
+        default_fanouts=settings["default_fanouts"],
     )
 
     runtime = DriverRuntime(

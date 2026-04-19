@@ -248,7 +248,7 @@ User-editable files in `~/.tabula/` are injected into the system prompt:
 - `AGENTS.md` — workspace instructions and behavioral rules (main + subagents)
 
 Subagents receive a minimal prompt (no skills, memory, SOUL, or USER).
-The subagent runtime reads `~/.tabula/.subagent_prompt` written by boot.py at startup.
+The subagent runtime reads `~/.tabula/state/subagent/prompt.txt` written by boot.py at startup.
 
 ## Creating new skills
 

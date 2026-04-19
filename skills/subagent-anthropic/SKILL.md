@@ -22,16 +22,63 @@ Do NOT use a subagent when:
 
 ## Usage
 
-```
+```bash
 SPAWN python3 skills/subagent-anthropic/run.py --id <id> --parent-session <session> --task "<task description>"
 ```
+
+## Config File
+
+Path:
+
+    ~/.tabula/config/global.toml
+
+Example:
+
+```toml
+[anthropic]
+model = "claude-sonnet-4-6"
+base_url = "https://api.anthropic.com"
+api_key = { source = "store", id = "driver-anthropic.api_key" }
+```
+
+## Secrets
+
+Path:
+
+    ~/.tabula/secrets.json
+
+The loader checks `subagent-anthropic.api_key` first, then shared
+`driver-anthropic.api_key`.
+
+## Configuration
+
+| Key | Type | Default | Secret | Canonical env | Aliases | Notes |
+|---|---|---|---|---|---|---|
+| `api_key` | `string` | -- | yes | `TABULA_SKILL_SUBAGENT_ANTHROPIC_API_KEY` | `ANTHROPIC_API_KEY` | Store fallback order: `subagent-anthropic.api_key`, then `driver-anthropic.api_key` |
+| `base_url` | `string` | `https://api.anthropic.com` | no | `TABULA_SKILL_SUBAGENT_ANTHROPIC_BASE_URL` | `ANTHROPIC_BASE_URL` | Anthropic-compatible base URL |
+| `model` | `string` | `claude-sonnet-4-6` | no | `TABULA_SKILL_SUBAGENT_ANTHROPIC_MODEL` | `ANTHROPIC_MODEL` | `--model` can still override at process start |
+
+## Runtime Environment
+
+| Variable | Required | Description |
+|---|---|---|
+| `TABULA_URL` | yes | Kernel WebSocket URL |
+| `TABULA_SPAWN_TOKEN` | no | Spawn token passed by kernel when subagent auth is enabled |
+
+## Precedence
+
+1. env (`TABULA_SKILL_*`, then legacy alias)
+2. `~/.tabula/config/global.toml`
+3. `~/.tabula/secrets.json` for `api_key`
+4. schema defaults
+5. `--model` overrides the resolved model for the current process
 
 ## Arguments
 
 - `--id` (required) — unique identifier for correlation. Results arrive as messages with this id.
 - `--parent-session` (required) — your session name, where results will be delivered. Use the session name from your system prompt.
 - `--task` (required) — what the subagent should do. Be specific — subagents don't see your conversation history.
-- `--model` (optional) — override LLM model (default: from ANTHROPIC_MODEL env, or claude-sonnet-4-6).
+- `--model` (optional) — override configured model for the current process.
 - `--timeout` (optional) — idle timeout in seconds (default: 0 = oneshot). With the default, the subagent exits immediately after completing the task. Set `--timeout 120` to keep it alive for follow-up messages.
 
 ## How it works

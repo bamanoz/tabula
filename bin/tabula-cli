@@ -1,9 +1,9 @@
 #!/bin/bash
 # Launch Tabula CLI gateway (connects to a running kernel).
-# Usage: tabula-cli [--resume SESSION_ID]
+# Usage: tabula-cli [--resume SESSION_ID] [--provider PROVIDER]
 # Configuration via environment variables:
 #   TABULA_HOME     — workspace directory (default: ~/.tabula)
-#   TABULA_PROVIDER — LLM provider for the driver (default: anthropic)
+#   TABULA_PROVIDER — configured default provider (legacy default: anthropic)
 set -e
 
 TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
@@ -42,7 +42,4 @@ if [ ! -f "$VENV_PYTHON" ]; then
   exit 1
 fi
 
-PROVIDER="${TABULA_PROVIDER:-anthropic}"
-DRIVER="$VENV_PYTHON skills/driver-${PROVIDER}/run.py"
-
-exec "$VENV_PYTHON" "$TABULA_HOME/skills/gateway-cli/run.py" --driver "$DRIVER" "$@"
+exec "$VENV_PYTHON" "$TABULA_HOME/skills/gateway-cli/run.py" "$@"

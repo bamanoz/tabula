@@ -48,7 +48,11 @@ Read file contents with line numbers. Supports pagination via `offset` and `limi
 ### write_file
 Create a new file or overwrite an existing one. Creates parent directories automatically.
 
+- Does not require a prior `read_file`
+- Marks the file as read for later `str_replace` operations in the same session
+
 ### str_replace
 Replace an exact substring in a file. Use for targeted edits without rewriting the whole file.
 - Fails if `old_string` is not found
 - Fails if `old_string` appears more than once (unless `replace_all: true`)
+- Requires the file to be read first in the current session

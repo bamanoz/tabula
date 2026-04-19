@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tabula LLM driver backed by OpenAI Responses API."""
+"""Tabula LLM driver backed by OpenAI Chat Completions API."""
 
 from __future__ import annotations
 
@@ -7,21 +7,16 @@ import argparse
 import os
 import signal
 import sys
+from pathlib import Path
 
 ROOT = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from skills.lib import load_env
+from skills.lib import SkillConfigError, load_skill_config
 from skills.lib.driver_runtime import DriverConfig, DriverRuntime
-from skills.lib.providers import OpenAISession
+from skills.lib.providers import OpenAIChatCompletionsSession
 
-load_env()
-
-
-BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
-API_KEY = os.environ.get("OPENAI_API_KEY", "")
-MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.4")
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
 VERBOSE = os.environ.get("TABULA_VERBOSE", "") == "1"
 
@@ -32,22 +27,33 @@ def log(msg: str):
         sys.stderr.flush()
 
 
+def load_driver_settings() -> dict:
+    settings = load_skill_config(Path(__file__).resolve().parent)
+    return {
+        "api_key": settings["api_key"],
+        "base_url": settings["base_url"],
+        "model": settings["model"],
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Tabula LLM driver (OpenAI)")
     parser.add_argument("--session", default="main", help="Session to join")
     args = parser.parse_args()
 
-    if not API_KEY:
-        log("ERROR: OPENAI_API_KEY not set")
+    try:
+        settings = load_driver_settings()
+    except SkillConfigError as e:
+        log(f"ERROR: {e}")
         sys.exit(1)
 
     runtime = DriverRuntime(
         DriverConfig(name="openai", url=TABULA_URL, session=args.session),
-        provider_factory=lambda prompt, tools: OpenAISession(
+        provider_factory=lambda prompt, tools: OpenAIChatCompletionsSession(
             system_prompt=prompt,
-            model=MODEL,
-            api_key=API_KEY,
-            base_url=BASE_URL,
+            model=settings["model"],
+            api_key=settings["api_key"],
+            base_url=settings["base_url"],
             tools=tools,
         ),
         logger=log,

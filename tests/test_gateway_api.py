@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import importlib.util
 import os
 import sys
@@ -44,6 +45,78 @@ def _load_gateway_api_module():
     assert spec.loader is not None
     spec.loader.exec_module(mod)
     return mod
+
+
+def _load_gateway_api_module_for_home(home: str, extra_env: dict[str, str] | None = None):
+    env = {"TABULA_HOME": home}
+    if extra_env:
+        env.update(extra_env)
+    with patch.dict(os.environ, env, clear=True):
+        return _load_gateway_api_module()
+
+
+def _write_global_config(home: Path, *, provider: str | None = None, extra: str = ""):
+    cfg_dir = home / "config"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    parts = []
+    if provider:
+        parts.append(f'provider = "{provider}"')
+    if extra:
+        parts.append(extra.strip())
+    if parts:
+        (cfg_dir / "global.toml").write_text("\n\n".join(parts) + "\n", encoding='utf-8')
+
+
+def _write_fake_driver(home: Path, provider: str, *, ready: bool = True):
+    driver_dir = home / "skills" / f"driver-{provider}"
+    driver_dir.mkdir(parents=True, exist_ok=True)
+    (driver_dir / "run.py").write_text("#!/usr/bin/env python3\n")
+
+    if provider == "openai":
+        alias = "OPENAI_API_KEY"
+        default_base = "https://api.openai.com/v1"
+        default_model = "gpt-5.4"
+    else:
+        alias = "ANTHROPIC_API_KEY"
+        default_base = "https://api.anthropic.com"
+        default_model = "claude-sonnet-4-6"
+
+    (driver_dir / "SKILL.config.json").write_text(
+        json.dumps(
+            {
+                "id": f"driver-{provider}",
+                "config": {
+                    "entries": [
+                        {
+                            "key": "api_key",
+                            "type": "string",
+                            "secret": True,
+                            "required": True,
+                            "env": f"TABULA_SKILL_DRIVER_{provider.upper()}_API_KEY",
+                            "env_aliases": [alias],
+                            "store_id": f"driver-{provider}.api_key",
+                        },
+                        {
+                            "key": "base_url",
+                            "type": "string",
+                            "default": default_base,
+                            "env": f"TABULA_SKILL_DRIVER_{provider.upper()}_BASE_URL",
+                        },
+                        {
+                            "key": "model",
+                            "type": "string",
+                            "default": default_model,
+                            "env": f"TABULA_SKILL_DRIVER_{provider.upper()}_MODEL",
+                        },
+                    ]
+                },
+            }
+        ),
+        encoding='utf-8',
+    )
+
+    if ready:
+        (home / "secrets.json").write_text(json.dumps({f"driver-{provider}.api_key": f"sk-{provider}"}) + "\n", encoding='utf-8')
 
 
 class DummyThread:
@@ -100,9 +173,9 @@ class TestGatewayAPIPaths(unittest.TestCase):
     def test_gateway_uses_absolute_driver_command(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
+            _write_fake_driver(home, "openai")
             driver = home / "skills" / "driver-openai" / "run.py"
-            driver.parent.mkdir(parents=True)
-            driver.write_text("#!/usr/bin/env python3\n")
+            _write_global_config(home, provider="openai")
 
             with patch.dict(os.environ, {"TABULA_HOME": str(home), "TABULA_PROVIDER": "openai"}, clear=False):
                 mod = _load_gateway_api_module()
@@ -114,18 +187,76 @@ class TestGatewayAPIPaths(unittest.TestCase):
     def test_missing_driver_script_raises_clear_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"TABULA_HOME": tmp, "TABULA_PROVIDER": "openai"}, clear=False):
-                mod = _load_gateway_api_module()
-                with self.assertRaisesRegex(RuntimeError, "driver script not found"):
-                    mod.GatewayAPI()
+                with self.assertRaisesRegex(Exception, "driver script not found"):
+                    _load_gateway_api_module()
+
+
+class TestGatewayAPIConfigImport(unittest.TestCase):
+    def test_module_import_reads_skill_config_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            _write_fake_driver(home, "openai")
+            _write_global_config(home, provider="openai", extra=
+                '\n'.join([
+                    '[gateway.api]',
+                    'auth_token = { source = "store", id = "gateway-api.auth_token" }',
+                    '',
+                    '[gateway.api.session]',
+                    'idle_ttl = 111',
+                    'max_age = 222',
+                    'cleanup_interval = 7',
+                    '',
+                ]))
+            (home / "secrets.json").write_text('{"gateway-api.auth_token":"secret-token"}\n', encoding='utf-8')
+
+            mod = _load_gateway_api_module_for_home(str(home))
+
+            self.assertEqual(mod.PROVIDER_OVERRIDE, None)
+            self.assertEqual(mod.ACTIVE_PROVIDER, "openai")
+            self.assertEqual(mod.AUTH_TOKEN, "secret-token")
+            self.assertEqual(mod.SESSION_IDLE_TTL, 111.0)
+            self.assertEqual(mod.SESSION_MAX_AGE, 222.0)
+            self.assertEqual(mod.SESSION_CLEANUP_INTERVAL, 7.0)
+
+    def test_module_import_env_overrides_skill_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            _write_fake_driver(home, "openai")
+            _write_global_config(home, provider="anthropic", extra=
+                '\n'.join([
+                    '[gateway.api]',
+                    'provider_override = "openai"',
+                    'auth_token = { source = "store", id = "gateway-api.auth_token" }',
+                    '',
+                    '[gateway.api.session]',
+                    'idle_ttl = 111',
+                    'max_age = 222',
+                    'cleanup_interval = 7',
+                    '',
+                ]))
+            (home / "secrets.json").write_text('{"gateway-api.auth_token":"secret-token"}\n', encoding='utf-8')
+
+            mod = _load_gateway_api_module_for_home(
+                str(home),
+                {
+                    "TABULA_SKILL_GATEWAY_API_AUTH_TOKEN": "env-token",
+                    "TABULA_SKILL_GATEWAY_API_SESSION_IDLE_TTL": "15",
+                },
+            )
+
+            self.assertEqual(mod.PROVIDER_OVERRIDE, "openai")
+            self.assertEqual(mod.ACTIVE_PROVIDER, "openai")
+            self.assertEqual(mod.AUTH_TOKEN, "env-token")
+            self.assertEqual(mod.SESSION_IDLE_TTL, 15.0)
 
 
 class TestSessionStateConnect(unittest.TestCase):
     def test_connect_declares_runtime_message_contract(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
+            _write_fake_driver(home, "anthropic")
             driver = home / "skills" / "driver-anthropic" / "run.py"
-            driver.parent.mkdir(parents=True)
-            driver.write_text("#!/usr/bin/env python3\n")
+            _write_global_config(home, provider="anthropic")
 
             with patch.dict(os.environ, {"TABULA_HOME": str(home), "TABULA_PROVIDER": "anthropic"}, clear=False):
                 mod = _load_gateway_api_module()
@@ -153,11 +284,10 @@ class TestGatewayAPIConcurrency(unittest.TestCase):
     def _load_with_driver(self, provider: str = "anthropic"):
         tmp = tempfile.TemporaryDirectory()
         home = Path(tmp.name)
-        driver = home / "skills" / f"driver-{provider}" / "run.py"
-        driver.parent.mkdir(parents=True)
-        driver.write_text("#!/usr/bin/env python3\n")
+        _write_fake_driver(home, provider)
+        _write_global_config(home, provider=provider)
 
-        with patch.dict(os.environ, {"TABULA_HOME": str(home), "TABULA_PROVIDER": provider}, clear=False):
+        with patch.dict(os.environ, {"TABULA_HOME": str(home)}, clear=False):
             mod = _load_gateway_api_module()
         self.addCleanup(tmp.cleanup)
         return mod
@@ -281,11 +411,10 @@ class TestGatewayAPISessionLifecycle(unittest.TestCase):
     def _load_with_driver(self, provider: str = "anthropic"):
         tmp = tempfile.TemporaryDirectory()
         home = Path(tmp.name)
-        driver = home / "skills" / f"driver-{provider}" / "run.py"
-        driver.parent.mkdir(parents=True)
-        driver.write_text("#!/usr/bin/env python3\n")
+        _write_fake_driver(home, provider)
+        _write_global_config(home, provider=provider)
 
-        with patch.dict(os.environ, {"TABULA_HOME": str(home), "TABULA_PROVIDER": provider}, clear=False):
+        with patch.dict(os.environ, {"TABULA_HOME": str(home)}, clear=False):
             mod = _load_gateway_api_module()
         self.addCleanup(tmp.cleanup)
         return mod

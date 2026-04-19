@@ -19,6 +19,12 @@ cp "$REPO_ROOT/examples/boot-cicd.py" "$TABULA_HOME/"
 # Templates
 rsync -a --delete "$REPO_ROOT/templates/" "$TABULA_HOME/templates/"
 
+# Global config
+mkdir -p "$TABULA_HOME/config"
+if [ ! -f "$TABULA_HOME/config/global.toml" ]; then
+  cp "$REPO_ROOT/config/global.toml" "$TABULA_HOME/config/global.toml"
+fi
+
 # Service units
 rsync -a --delete "$REPO_ROOT/service/" "$TABULA_HOME/service/"
 
@@ -114,6 +120,8 @@ fi
 
 PATH_LINE="export PATH=\"$TABULA_HOME/bin:\$PATH\""
 HOME_LINE="export TABULA_HOME=\"$TABULA_HOME\""
+TABULA_PATH_VALUE="$TABULA_HOME/.venv/bin:$TABULA_HOME/bin:$PATH"
+TABULA_PATH_LINE="export TABULA_PATH=\"$TABULA_PATH_VALUE\""
 
 if [ -n "$SHELL_RC" ]; then
   if ! grep -qF 'TABULA_HOME' "$SHELL_RC"; then
@@ -121,6 +129,7 @@ if [ -n "$SHELL_RC" ]; then
     echo "# Tabula" >> "$SHELL_RC"
     echo "$HOME_LINE" >> "$SHELL_RC"
     echo "$PATH_LINE" >> "$SHELL_RC"
+    echo "$TABULA_PATH_LINE" >> "$SHELL_RC"
     echo "Added to $SHELL_RC"
   else
     echo "Already configured in $SHELL_RC"
@@ -128,13 +137,15 @@ if [ -n "$SHELL_RC" ]; then
 
   # Apply in current shell
   export TABULA_HOME="$TABULA_HOME"
+  export TABULA_PATH="$TABULA_PATH_VALUE"
   export PATH="$TABULA_HOME/bin:$PATH"
   echo "Environment updated for current session"
 else
   echo "Could not detect shell rc file. Add manually:"
   echo "  $HOME_LINE"
   echo "  $PATH_LINE"
+  echo "  $TABULA_PATH_LINE"
 fi
 
 echo ""
-echo "Installed. Ready to assist!"
+echo "Installed."

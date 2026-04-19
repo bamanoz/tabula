@@ -33,3 +33,7 @@ Run: `python3 skills/pair/run.py discord revoke 123456789`
 1. Parse gateway name and action from "User request"
 2. Execute the corresponding command via EXEC tool (not SPAWN — this is a quick CLI, not a daemon)
 3. Show the result to the user
+
+## Storage Layout
+
+- Pairing state: `~/.tabula/data/pair/<gateway>.json`

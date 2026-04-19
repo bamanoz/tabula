@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from uuid import uuid4
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -33,8 +34,11 @@ TABULA_HOME = _resolve_tabula_home()
 if TABULA_HOME not in sys.path:
     sys.path.insert(0, TABULA_HOME)
 
-from skills.lib import load_env
+os.environ.setdefault("TABULA_HOME", TABULA_HOME)
+
+from skills.lib import load_skill_config
 from skills.lib.kernel_client import KernelConnection
+from skills.lib.provider_selection import ProviderSelectionError, build_driver_command, ensure_provider_ready, resolve_provider
 from skills.lib.protocol import (
     MSG_CANCEL, MSG_CONNECT, MSG_DONE, MSG_ERROR, MSG_JOIN, MSG_MEMBER_JOINED,
     MSG_MESSAGE, MSG_STREAM_DELTA, MSG_STREAM_END, MSG_STREAM_START,
@@ -42,25 +46,21 @@ from skills.lib.protocol import (
     TOOL_SPAWN, TOOL_KILL,
 )
 
-load_env()
-
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
-AUTH_TOKEN = os.environ.get("TABULA_API_AUTH", "")
 VERBOSE = os.environ.get("TABULA_VERBOSE", "") == "1"
-PROVIDER = os.environ.get("TABULA_PROVIDER", "anthropic")
-SESSION_IDLE_TTL = float(os.environ.get("TABULA_API_SESSION_IDLE_TTL", "900"))
-SESSION_MAX_AGE = float(os.environ.get("TABULA_API_SESSION_MAX_AGE", "21600"))
-SESSION_CLEANUP_INTERVAL = float(os.environ.get("TABULA_API_SESSION_CLEANUP_INTERVAL", "30"))
 
-# Provider alias resolution (same as boot.py)
-PROVIDER_ALIASES = {
-    "anthropic": "anthropic",
-    "claude": "anthropic",
-    "openai": "openai",
-    "gpt": "openai",
-    "openclaw": "openai",
-}
-ACTIVE_PROVIDER = PROVIDER_ALIASES.get(PROVIDER, PROVIDER)
+
+def load_gateway_settings() -> dict:
+    return load_skill_config(Path(__file__).resolve().parent)
+
+
+SETTINGS = load_gateway_settings()
+AUTH_TOKEN = SETTINGS["auth_token"]
+PROVIDER_OVERRIDE = SETTINGS["provider_override"] or None
+SESSION_IDLE_TTL = SETTINGS["session.idle_ttl"]
+SESSION_MAX_AGE = SETTINGS["session.max_age"]
+SESSION_CLEANUP_INTERVAL = SETTINGS["session.cleanup_interval"]
+ACTIVE_PROVIDER = resolve_provider(PROVIDER_OVERRIDE, tabula_home=TABULA_HOME, require_ready=False)
 
 
 def _shell_join(parts: list[str]) -> str:
@@ -74,10 +74,11 @@ def _driver_script_path(provider: str) -> str:
 
 
 def _driver_command(provider: str) -> str:
-    script = _driver_script_path(provider)
-    if not os.path.isfile(script):
-        raise RuntimeError(f"driver script not found: {script}")
-    return _shell_join([sys.executable, script])
+    return build_driver_command(provider, tabula_home=TABULA_HOME, python_executable=sys.executable)
+
+
+def ensure_gateway_provider_ready() -> None:
+    ensure_provider_ready(resolve_provider(PROVIDER_OVERRIDE, tabula_home=TABULA_HOME, require_ready=False), tabula_home=TABULA_HOME)
 
 
 def log(msg: str):
@@ -252,6 +253,8 @@ class GatewayAPI:
     """Manages sessions and provides the HTTP handler."""
 
     def __init__(self, cleanup_interval: float | None = None):
+        self.active_provider = resolve_provider(PROVIDER_OVERRIDE, tabula_home=TABULA_HOME, require_ready=False)
+        self.driver_cmd = _driver_command(self.active_provider)
         self.sessions: dict[str, SessionState] = {}
         self._creating: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
@@ -259,7 +262,6 @@ class GatewayAPI:
         self._stop_event = threading.Event()
         self._cleanup_interval = SESSION_CLEANUP_INTERVAL if cleanup_interval is None else cleanup_interval
         self._cleanup_thread: threading.Thread | None = None
-        self.driver_cmd = _driver_command(ACTIVE_PROVIDER)
         if self._cleanup_interval > 0:
             self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
             self._cleanup_thread.start()
@@ -831,6 +833,12 @@ def main():
     parser = argparse.ArgumentParser(description="Tabula OpenAI-compatible API gateway")
     parser.add_argument("--port", type=int, default=8090, help="HTTP port to listen on")
     args = parser.parse_args()
+
+    try:
+        ensure_gateway_provider_ready()
+    except ProviderSelectionError as e:
+        print(f"error: {e}", file=sys.stderr)
+        raise SystemExit(1)
 
     gateway = GatewayAPI()
     server = ThreadingHTTPServer(("0.0.0.0", args.port), make_handler(gateway))

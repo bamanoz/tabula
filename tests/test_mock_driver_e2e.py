@@ -25,7 +25,7 @@ def get_free_port() -> int:
         return sock.getsockname()[1]
 
 
-def setup_test_home(tabula_port: int) -> str:
+def setup_test_home(tabula_port: int, mock_config_toml: str | None = None) -> str:
     home = tempfile.mkdtemp(prefix="tabula-mock-e2e-")
     shutil.copytree(ROOT / "skills", Path(home) / "skills")
     shutil.copytree(ROOT / ".venv", Path(home) / ".venv", dirs_exist_ok=True)
@@ -38,22 +38,51 @@ def setup_test_home(tabula_port: int) -> str:
         "  'spawn': ['.venv/bin/python3 skills/driver-mock/run.py']\n"
         "}, sys.stdout)\n"
     )
+    if mock_config_toml is not None:
+        cfg_dir = Path(home) / "config" / "skills"
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        (cfg_dir / "driver-mock.toml").write_text(mock_config_toml, encoding="utf-8")
     return home
 
 
-def start_kernel(home: str, tabula_port: int, subagents: int = 4, turns: int = 6, sleep_ms: int = 10) -> subprocess.Popen:
+def start_kernel(
+    home: str,
+    tabula_port: int,
+    subagents: int = 4,
+    turns: int = 6,
+    sleep_ms: int = 10,
+    *,
+    include_mock_env: bool = True,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.Popen:
     env = os.environ.copy()
+    for key in [
+        "TABULA_MOCK_SUBAGENTS",
+        "TABULA_MOCK_TURNS",
+        "TABULA_MOCK_SLEEP_MS",
+        "TABULA_MOCK_WAVES",
+        "TABULA_MOCK_FANOUTS",
+        "TABULA_SKILL_DRIVER_MOCK_SUBAGENT_COUNT",
+        "TABULA_SKILL_DRIVER_MOCK_MAX_TURNS",
+        "TABULA_SKILL_DRIVER_MOCK_SLEEP_MS",
+        "TABULA_SKILL_DRIVER_MOCK_DEFAULT_WAVES",
+        "TABULA_SKILL_DRIVER_MOCK_DEFAULT_FANOUTS",
+    ]:
+        env.pop(key, None)
     env["TABULA_HOME"] = home
     env["TABULA_URL"] = f"ws://127.0.0.1:{tabula_port}/ws"
+    env["TABULA_BOOT"] = "python3 boot.py"
     env["TABULA_PROVIDER"] = "mock"
     env["TABULA_VERBOSE"] = "1"
-    env["TABULA_MOCK_SUBAGENTS"] = str(subagents)
-    env["TABULA_MOCK_TURNS"] = str(turns)
-    env["TABULA_MOCK_SLEEP_MS"] = str(sleep_ms)
-    env["TABULA_MOCK_WAIT_SEC"] = "10"
+    if include_mock_env:
+        env["TABULA_MOCK_SUBAGENTS"] = str(subagents)
+        env["TABULA_MOCK_TURNS"] = str(turns)
+        env["TABULA_MOCK_SLEEP_MS"] = str(sleep_ms)
+    if extra_env:
+        env.update(extra_env)
 
     proc = subprocess.Popen(
-        ["go", "run", "./cmd/tabula"],
+        ["go", "run", "./cmd/tabula", "serve"],
         cwd=ROOT,
         env=env,
         stdout=subprocess.DEVNULL,
@@ -278,7 +307,7 @@ def test_mock_driver_partial_spawn_failure_is_aggregated():
         shutil.rmtree(home, ignore_errors=True)
 
 
-def test_mock_driver_ignores_concurrent_user_message():
+def test_mock_driver_rejects_concurrent_user_message_when_session_is_busy():
     tabula_port = get_free_port()
     home = setup_test_home(tabula_port)
     proc = None
@@ -290,10 +319,24 @@ def test_mock_driver_ignores_concurrent_user_message():
 
         conn.send(json.dumps({"type": "message", "text": "primary request"}))
         conn.send(json.dumps({"type": "message", "text": "secondary request"}))
-        output = collect_turn(conn, timeout=10)
+        conn.settimeout(10)
+        saw_busy_error = False
+        saw_done = False
+        output_chunks: list[str] = []
+        while not saw_done:
+            msg = json.loads(conn.recv())
+            msg_type = msg.get("type")
+            if msg_type == "stream_delta":
+                output_chunks.append(msg.get("text", ""))
+            elif msg_type == "error":
+                assert "session busy" in msg.get("text", "")
+                saw_busy_error = True
+            elif msg_type == "done":
+                saw_done = True
+        output = "".join(output_chunks)
 
         assert "request: primary request" in output
-        assert "busy, ignoring concurrent user message" in output
+        assert saw_busy_error
         assert "secondary request" not in output
     finally:
         if conn is not None:
@@ -320,6 +363,87 @@ def test_mock_driver_timeout_aggregates_missing_subagent_results():
         assert "received: 6/6" in output
         assert "spawn failed via" in output
         assert "too many active subagents" in output
+    finally:
+        if conn is not None:
+            conn.close()
+        if proc is not None:
+            proc.terminate()
+            proc.wait(timeout=10)
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_mock_driver_reads_skill_config_file_without_env_file():
+    tabula_port = get_free_port()
+    home = setup_test_home(
+        tabula_port,
+        mock_config_toml='\n'.join([
+            'subagent_count = 2',
+            'max_turns = 7',
+            'sleep_ms = 1',
+            'default_waves = 2',
+            '',
+        ]),
+    )
+    proc = None
+    conn = None
+    try:
+        proc = start_kernel(home, tabula_port, include_mock_env=False)
+        conn = connect_client(tabula_port)
+        wait_for_driver_ready()
+
+        conn.send(json.dumps({"type": "message", "text": "file config runtime"}))
+        output = collect_turn(conn, timeout=10)
+
+        assert "spawning wave 1/2 with 2 mock subagents" in output
+        assert "spawning wave 2/2 with 2 mock subagents" in output
+        assert "waves: 2" in output
+        assert "received: 4/4" in output
+        assert "turns=7" in output
+    finally:
+        if conn is not None:
+            conn.close()
+        if proc is not None:
+            proc.terminate()
+            proc.wait(timeout=10)
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def test_mock_driver_env_overrides_skill_config_file():
+    tabula_port = get_free_port()
+    home = setup_test_home(
+        tabula_port,
+        mock_config_toml='\n'.join([
+            'subagent_count = 2',
+            'max_turns = 7',
+            'sleep_ms = 1',
+            'default_waves = 2',
+            '',
+        ]),
+    )
+    proc = None
+    conn = None
+    try:
+        proc = start_kernel(
+            home,
+            tabula_port,
+            include_mock_env=False,
+            extra_env={
+                'TABULA_SKILL_DRIVER_MOCK_SUBAGENT_COUNT': '4',
+                'TABULA_SKILL_DRIVER_MOCK_MAX_TURNS': '3',
+                'TABULA_SKILL_DRIVER_MOCK_DEFAULT_WAVES': '1',
+            },
+        )
+        conn = connect_client(tabula_port)
+        wait_for_driver_ready()
+
+        conn.send(json.dumps({"type": "message", "text": "env override runtime"}))
+        output = collect_turn(conn, timeout=10)
+
+        assert "spawning wave 1/1 with 4 mock subagents" in output
+        assert "waves: 1" in output
+        assert "received: 4/4" in output
+        assert "turns=3" in output
+        assert "wave 2/2" not in output
     finally:
         if conn is not None:
             conn.close()

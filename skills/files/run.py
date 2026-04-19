@@ -75,9 +75,6 @@ def tool_write_file(params: dict) -> str:
     if not path:
         return json.dumps({"error": "path is required"})
 
-    if os.path.isfile(path) and not _was_read(path):
-        return json.dumps({"error": "file exists but was not read first — use read_file before overwriting"})
-
     try:
         parent = os.path.dirname(path)
         if parent:

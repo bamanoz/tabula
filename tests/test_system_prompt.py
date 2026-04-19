@@ -24,19 +24,27 @@ def with_tabula_home(fn):
     orig_home = boot.TABULA_HOME
     orig_skills = boot.SKILLS_DIR
     orig_mem = boot.MEMORY_FILE
+    orig_subagent_prompt = boot.SUBAGENT_PROMPT_FILE
 
     def wrapper(*args, **kwargs):
         with tempfile.TemporaryDirectory() as tmp:
+            old_env = dict(os.environ)
+            os.environ["TABULA_HOME"] = tmp
+            os.environ["TABULA_PROVIDER"] = "openai"
             boot.TABULA_HOME = tmp
             boot.SKILLS_DIR = os.path.join(tmp, "skills")
-            boot.MEMORY_FILE = os.path.join(tmp, "memory", "MEMORY.md")
+            boot.MEMORY_FILE = os.path.join(tmp, "data", "memory", "MEMORY.md")
+            boot.SUBAGENT_PROMPT_FILE = os.path.join(tmp, "state", "subagent", "prompt.txt")
             os.makedirs(os.path.join(tmp, "skills"), exist_ok=True)
             try:
                 return fn(tmp, *args, **kwargs)
             finally:
+                os.environ.clear()
+                os.environ.update(old_env)
                 boot.TABULA_HOME = orig_home
                 boot.SKILLS_DIR = orig_skills
                 boot.MEMORY_FILE = orig_mem
+                boot.SUBAGENT_PROMPT_FILE = orig_subagent_prompt
 
     wrapper.__name__ = fn.__name__
     wrapper.__doc__ = fn.__doc__
@@ -189,8 +197,8 @@ def test_project_files_subagent_no_agents(tmp):
 def test_section_memory_present(tmp):
     """Memory section reads from MEMORY.md."""
     import boot
-    mem_dir = Path(tmp, "memory")
-    mem_dir.mkdir()
+    mem_dir = Path(tmp, "data", "memory")
+    mem_dir.mkdir(parents=True)
     (mem_dir / "MEMORY.md").write_text("User prefers Russian responses.")
 
     text = boot._section_memory()
@@ -210,8 +218,8 @@ def test_section_memory_absent(tmp):
 def test_section_memory_empty_file(tmp):
     """Empty memory file — empty string."""
     import boot
-    mem_dir = Path(tmp, "memory")
-    mem_dir.mkdir()
+    mem_dir = Path(tmp, "data", "memory")
+    mem_dir.mkdir(parents=True)
     (mem_dir / "MEMORY.md").write_text("")
 
     text = boot._section_memory()
@@ -253,8 +261,8 @@ def test_full_prompt_structure(tmp):
 def test_full_prompt_with_memory(tmp):
     """Memory appears in dynamic part."""
     import boot
-    mem_dir = Path(tmp, "memory")
-    mem_dir.mkdir()
+    mem_dir = Path(tmp, "data", "memory")
+    mem_dir.mkdir(parents=True)
     (mem_dir / "MEMORY.md").write_text("important fact")
 
     prompt = boot.build_system_prompt([])
@@ -269,7 +277,7 @@ def test_full_prompt_with_mcp(tmp):
     mcp = {"test-server": [{"name": "search", "description": "Search stuff", "inputSchema": {"properties": {"q": {"type": "string"}}}}]}
     prompt = boot.build_system_prompt([], mcp)
     _, dynamic = prompt.split(boot.CACHE_BOUNDARY)
-    assert "## MCP Tools" in dynamic
+    assert "## MCP tools" in dynamic
     assert "search" in dynamic
 
 
@@ -311,8 +319,8 @@ def test_subagent_prompt_no_skills(tmp):
 def test_subagent_prompt_no_memory(tmp):
     """Subagent prompt has no memory section."""
     import boot
-    mem_dir = Path(tmp, "memory")
-    mem_dir.mkdir()
+    mem_dir = Path(tmp, "data", "memory")
+    mem_dir.mkdir(parents=True)
     (mem_dir / "MEMORY.md").write_text("important fact")
 
     prompt = boot.build_subagent_prompt()
@@ -349,12 +357,12 @@ def test_subagent_prompt_no_cache_boundary(tmp):
 
 @with_tabula_home
 def test_config_has_no_subagent_prompt(tmp):
-    """Config output should NOT include system_prompt_subagent (it's file-based)."""
+    """Config output should NOT include system_prompt_subagent."""
     import boot
     skills = boot.scan_skills()
     config = {
         "url": "ws://localhost:8089/ws",
-        "system_prompt": boot.build_system_prompt(skills),
+        "system_prompt": "",
         "spawn": [],
         "tools": [],
         "commands": [],
@@ -363,16 +371,11 @@ def test_config_has_no_subagent_prompt(tmp):
 
 
 @with_tabula_home
-def test_subagent_prompt_written_to_file(tmp):
-    """boot.main() writes .subagent_prompt file to TABULA_HOME."""
-    import boot
-    prompt_path = os.path.join(tmp, ".subagent_prompt")
-    # Simulate what main() does
-    with open(prompt_path, "w") as f:
-        f.write(boot.build_subagent_prompt())
-
-    assert os.path.isfile(prompt_path)
-    content = Path(prompt_path).read_text()
+def test_subagent_prompt_built_dynamically(tmp):
+    """Subagent prompt is built dynamically by skills/lib/prompt_builder."""
+    from skills.lib.prompt_builder import build_subagent_system_prompt
+    make_skill(os.path.join(tmp, "skills"), "driver-openai", 'name: driver-openai\ndescription: "OpenAI driver"')
+    content = build_subagent_system_prompt(provider="openai")
     assert "Tabula" in content
     assert "## Tools" in content
     assert "## Available skills" not in content

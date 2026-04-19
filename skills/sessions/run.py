@@ -16,18 +16,30 @@ import os
 import sys
 import time
 import urllib.request
+from pathlib import Path
 
 SKILL_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+os.environ.setdefault("TABULA_HOME", ROOT)
+
+from skills.lib import load_skill_config
+from skills.lib.paths import skill_data_dir, skill_logs_dir
 from skills.lib.protocol import MSG_MESSAGE
 
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
 TABULA_HOME = os.environ.get("TABULA_HOME", os.path.join(os.path.expanduser("~"), ".tabula"))
-IDLE_TIMEOUT = int(os.environ.get("TABULA_SESSION_IDLE_SEC", "300"))
-POLL_INTERVAL = float(os.environ.get("TABULA_SESSION_POLL_SEC", "2"))
+
+
+def load_sessions_settings() -> dict:
+    return load_skill_config(Path(__file__).resolve().parent)
+
+
+SETTINGS = load_sessions_settings()
+IDLE_TIMEOUT = SETTINGS["idle_timeout"]
+POLL_INTERVAL = SETTINGS["poll_interval"]
 
 
 def _http_base() -> str:
@@ -98,7 +110,7 @@ def cmd_send(args):
 
 def cmd_history(args):
     """Show conversation history for a session."""
-    history_file = os.path.join(TABULA_HOME, "sessions", args.session, "history.jsonl")
+    history_file = str(skill_data_dir("sessions") / args.session / "history.jsonl")
     if not os.path.isfile(history_file):
         print(f"No history for session {args.session!r}.", file=sys.stderr)
         sys.exit(1)
@@ -239,7 +251,7 @@ class SessionRegistry:
 def cmd_daemon(_args):
     """Run the session registry daemon."""
     global _log_file
-    log_path = os.path.join(TABULA_HOME, "sessions", "daemon.log")
+    log_path = str(skill_logs_dir("sessions") / "daemon.log")
     try:
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         _log_file = open(log_path, "a")

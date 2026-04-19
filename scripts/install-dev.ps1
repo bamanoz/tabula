@@ -128,4 +128,4 @@ $env:Path = "$BinDir;$env:Path"
 Write-Host "Environment updated for current session"
 
 Write-Host ""
-Write-Host "Installed. Ready to assist!"
+Write-Host "Installed."

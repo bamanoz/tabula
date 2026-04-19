@@ -31,6 +31,7 @@ load_tabula_env() {
 load_tabula_env
 
 export TABULA_HOME
-export TABULA_BOOT="${TABULA_BOOT:-python3 \"$TABULA_HOME/boot.py\"}"
+export TABULA_BOOT="${TABULA_BOOT:-\"$TABULA_HOME/.venv/bin/python3\" \"$TABULA_HOME/boot.py\"}"
+export TABULA_PATH="${TABULA_PATH:-$TABULA_HOME/.venv/bin:$TABULA_HOME/bin:$PATH}"
 
 exec "$TABULA_HOME/bin/tabula" serve "$@"

@@ -12,6 +12,7 @@ ROOT = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from skills.lib.paths import skill_config_dir
 from skills.lib.kernel_client import KernelConnection
 from skills.lib.protocol import (
     MSG_CONNECT, MSG_HOOK, MSG_HOOK_RESULT, HOOK_PASS, HOOK_BLOCK,
@@ -19,7 +20,7 @@ from skills.lib.protocol import (
 )
 
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
-PERMISSIONS_FILE = os.path.join(ROOT, "permissions.json")
+PERMISSIONS_FILE = str(skill_config_dir("hook-permissions") / "permissions.json")
 
 
 def load_rules(path: str = PERMISSIONS_FILE) -> list[dict]:

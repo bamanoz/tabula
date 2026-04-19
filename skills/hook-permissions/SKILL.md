@@ -4,7 +4,7 @@ description: "Permission enforcement via before_tool_call hook"
 ---
 # hook-permissions
 
-Enforces tool permission rules defined in `~/.tabula/permissions.json`.
+Enforces tool permission rules defined in `~/.tabula/config/skills/hook-permissions/permissions.json`.
 
 ## How it works
 
@@ -13,7 +13,7 @@ evaluates rules and blocks denied operations before they execute.
 
 ## Configuration
 
-Create `~/.tabula/permissions.json`:
+Create `~/.tabula/config/skills/hook-permissions/permissions.json`:
 
 ```json
 {
@@ -53,3 +53,10 @@ Allow only specific commands, deny everything else:
   ]
 }
 ```
+
+## Storage Layout
+
+- Permission rules: `~/.tabula/config/skills/hook-permissions/permissions.json`
+
+`boot.py` reads the same file to decide whether `hook-permissions` should be
+spawned and to filter fully denied tools from the prompt.

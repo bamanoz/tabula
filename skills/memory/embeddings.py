@@ -8,12 +8,33 @@ Falls back gracefully when API is unavailable.
 import json
 import math
 import os
+import sys
 import urllib.request
 import urllib.error
+from pathlib import Path
 
-API_KEY = os.environ.get("TABULA_EMBEDDING_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
-MODEL = os.environ.get("TABULA_EMBEDDING_MODEL", "text-embedding-3-small")
-BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com")
+ROOT = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+os.environ.setdefault("TABULA_HOME", ROOT)
+
+from skills.lib import load_skill_config
+
+
+def load_embedding_settings() -> dict:
+    settings = load_skill_config(Path(__file__).resolve().parent)
+    return {
+        "api_key": settings["embedding.api_key"],
+        "model": settings["embedding.model"],
+        "base_url": settings["embedding.base_url"],
+    }
+
+
+SETTINGS = load_embedding_settings()
+API_KEY = SETTINGS["api_key"]
+MODEL = SETTINGS["model"]
+BASE_URL = SETTINGS["base_url"]
 API_URL = f"{BASE_URL}/v1/embeddings"
 
 

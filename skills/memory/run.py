@@ -13,10 +13,10 @@ import os
 import re
 import sys
 import uuid
+from pathlib import Path
 
 SKILL_DIR = os.path.dirname(os.path.abspath(__file__))
 TABULA_HOME = os.environ.get("TABULA_HOME", os.path.join(os.path.expanduser("~"), ".tabula"))
-DATA_DIR = os.path.join(TABULA_HOME, "memory")
 
 # Ensure sibling modules are importable regardless of cwd
 SKILLS_ROOT = os.path.join(os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula")), "skills")
@@ -24,7 +24,10 @@ if SKILLS_ROOT not in sys.path:
     sys.path.insert(0, SKILLS_ROOT)
 
 from lib.filelock import lock_file, unlock_file
-INDEX_PATH = os.path.join(DATA_DIR, "index.json")
+from lib.paths import skill_data_dir, skill_state_dir
+
+DATA_DIR = str(skill_data_dir("memory"))
+INDEX_PATH = str(skill_state_dir("memory") / "index.json")
 MEMORY_PATH = os.path.join(DATA_DIR, "MEMORY.md")
 
 CATEGORIES = {"fact", "preference", "decision", "entity", "note"}
@@ -41,7 +44,7 @@ def load_index() -> dict:
 
 
 def save_index(index: dict):
-    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(INDEX_PATH), exist_ok=True)
     tmp = INDEX_PATH + ".tmp"
     with open(tmp, "w") as f:
         lock_file(f)
@@ -123,6 +126,12 @@ def daily_file() -> str:
     return os.path.join(DATA_DIR, f"{date}.md")
 
 
+def entry_file_path(filename: str) -> str:
+    if filename == "MEMORY.md":
+        return MEMORY_PATH
+    return os.path.join(DATA_DIR, filename)
+
+
 def all_markdown_files() -> list[str]:
     """List all markdown files in data directory."""
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -146,7 +155,7 @@ def keyword_search(query: str, entries: list[dict]) -> list[tuple[dict, float]]:
         text = f"{entry['title']} {' '.join(entry.get('tags', []))} {entry.get('category', '')}".lower()
 
         # Also read content from file for deeper matching
-        filepath = os.path.join(DATA_DIR, entry["file"])
+        filepath = entry_file_path(entry["file"])
         content = read_entry_from_file(filepath, entry["id"])
         if content:
             text += " " + content.lower()
@@ -260,7 +269,7 @@ def cmd_search(args):
 
     output = []
     for entry, score in final:
-        filepath = os.path.join(DATA_DIR, entry["file"])
+        filepath = entry_file_path(entry["file"])
         content = read_entry_from_file(filepath, entry["id"])
         output.append({
             "id": entry["id"],
@@ -310,7 +319,7 @@ def cmd_get(args):
         print(json.dumps({"error": f"not found: {args.id}"}))
         sys.exit(1)
 
-    filepath = os.path.join(DATA_DIR, entry["file"])
+    filepath = entry_file_path(entry["file"])
     content = read_entry_from_file(filepath, entry["id"])
 
     print(json.dumps({
@@ -333,7 +342,7 @@ def cmd_delete(args):
         sys.exit(1)
 
     # Remove from file
-    filepath = os.path.join(DATA_DIR, entry["file"])
+    filepath = entry_file_path(entry["file"])
     delete_entry_from_file(filepath, entry["id"])
 
     # Remove from index

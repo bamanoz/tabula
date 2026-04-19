@@ -151,9 +151,10 @@ def run_hook_listener(url: str):
 
 def poll_sessions(url: str):
     snapshot_url = sessions_url(url)
+    opener = urlrequest.build_opener(urlrequest.ProxyHandler({}))
     while True:
         try:
-            with urlrequest.urlopen(snapshot_url, timeout=1) as resp:
+            with opener.open(snapshot_url, timeout=1) as resp:
                 metrics.reconcile_snapshot(json.loads(resp.read()))
         except Exception:
             pass
