@@ -9,9 +9,52 @@ import sys
 import tempfile
 from pathlib import Path
 
+from tests.flat_surface import materialize_flat_surface
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+def _load_boot_module():
+    import importlib.util
+    import types
+
+    materialize_flat_surface(ROOT, source_root=ROOT)
+
+    old_env = dict(os.environ)
+    os.environ["TABULA_HOME"] = str(ROOT)
+    os.environ["TABULA_PROVIDER"] = os.environ.get("TABULA_PROVIDER", "openai")
+
+    for name in list(sys.modules.keys()):
+        if name == "skills" or name.startswith("skills."):
+            sys.modules.pop(name, None)
+
+    skills_pkg = types.ModuleType("skills")
+    skills_pkg.__path__ = [str(ROOT / "skills")]
+    sys.modules["skills"] = skills_pkg
+
+    lib_init = ROOT / "skills" / "lib" / "__init__.py"
+    lib_spec = importlib.util.spec_from_file_location(
+        "skills.lib",
+        lib_init,
+        submodule_search_locations=[str(ROOT / "skills" / "lib")],
+    )
+    lib_mod = importlib.util.module_from_spec(lib_spec)
+    assert lib_spec.loader is not None
+    sys.modules["skills.lib"] = lib_mod
+    lib_spec.loader.exec_module(lib_mod)
+
+    boot_path = ROOT / "distrib" / "assistant" / "boot.py"
+    spec = importlib.util.spec_from_file_location("tabula_main_boot", boot_path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        os.environ.clear()
+        os.environ.update(old_env)
+    return mod
 
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -19,7 +62,7 @@ if str(ROOT) not in sys.path:
 
 def with_tabula_home(fn):
     """Run function with a temporary TABULA_HOME, restoring boot module state after."""
-    import boot
+    boot = _load_boot_module()
 
     orig_home = boot.TABULA_HOME
     orig_skills = boot.SKILLS_DIR
@@ -35,9 +78,15 @@ def with_tabula_home(fn):
             boot.SKILLS_DIR = os.path.join(tmp, "skills")
             boot.MEMORY_FILE = os.path.join(tmp, "data", "memory", "MEMORY.md")
             boot.SUBAGENT_PROMPT_FILE = os.path.join(tmp, "state", "subagent", "prompt.txt")
+            boot.TEMPLATES_DIR = os.path.join(tmp, "templates")
             os.makedirs(os.path.join(tmp, "skills"), exist_ok=True)
+            os.makedirs(os.path.join(tmp, "templates"), exist_ok=True)
+            for name in ["SYSTEM.md", "TOOLS.md", "GUIDELINES.md", "SAFETY.md", "AGENTS.md", "IDENTITY.md", "SOUL.md", "USER.md"]:
+                src = ROOT / "distrib" / "assistant" / "templates" / name
+                Path(tmp, "templates", name).write_text(src.read_text())
+            materialize_flat_surface(Path(tmp), source_root=Path(tmp))
             try:
-                return fn(tmp, *args, **kwargs)
+                return fn(tmp, boot, *args, **kwargs)
             finally:
                 os.environ.clear()
                 os.environ.update(old_env)
@@ -63,7 +112,7 @@ def make_skill(skills_dir: str, name: str, frontmatter: str, body: str = "Skill 
 
 def test_system_template():
     """System template mentions Tabula."""
-    import boot
+    boot = _load_boot_module()
     text = boot._read_template("SYSTEM.md")
     assert "Tabula" in text
     assert "multi-agent" in text
@@ -71,15 +120,27 @@ def test_system_template():
 
 def test_section_tools():
     """Tools template documents all kernel tools."""
-    import boot
+    boot = _load_boot_module()
     text = boot._read_template("TOOLS.md")
-    for tool in ["EXEC", "SPAWN", "KILL", "LIST"]:
+    for tool in ["shell_exec", "process_spawn", "process_kill", "process_list"]:
         assert f"**{tool}**" in text
+
+
+def test_section_tools_respects_hidden_builtins(monkeypatch):
+    """Tools template only documents enabled built-ins."""
+    monkeypatch.setenv("TABULA_KERNEL_TOOLS", "shell_exec,process_list")
+    from skills.lib.prompt_builder import _render_tools_template
+
+    text = _render_tools_template()
+    assert "**shell_exec**" in text
+    assert "**process_list**" in text
+    assert "**process_spawn**" not in text
+    assert "**process_kill**" not in text
 
 
 def test_section_guidelines():
     """Guidelines template has actionable rules."""
-    import boot
+    boot = _load_boot_module()
     text = boot._read_template("GUIDELINES.md")
     assert "## Guidelines" in text
     assert "Act first" in text
@@ -88,7 +149,7 @@ def test_section_guidelines():
 
 def test_section_safety():
     """Safety template warns about destructive actions and secrets."""
-    import boot
+    boot = _load_boot_module()
     text = boot._read_template("SAFETY.md")
     assert "## Safety" in text
     assert "destructive" in text.lower()
@@ -97,7 +158,7 @@ def test_section_safety():
 
 def test_section_environment():
     """Environment section includes provider, date, and working directory."""
-    import boot
+    boot = _load_boot_module()
     text = boot._section_environment()
     assert "## Environment" in text
     assert "Provider:" in text
@@ -107,7 +168,7 @@ def test_section_environment():
 
 def test_section_skills_with_data():
     """Skills section lists all skills."""
-    import boot
+    boot = _load_boot_module()
     text = boot._section_skills(["**weather**: Get weather", "**timer**: Set timer"])
     assert "## Available skills" in text
     assert "**weather**" in text
@@ -116,7 +177,7 @@ def test_section_skills_with_data():
 
 def test_section_skills_empty():
     """Empty skills produces fallback message."""
-    import boot
+    boot = _load_boot_module()
     text = boot._section_skills([])
     assert "No skills" in text
 
@@ -125,9 +186,8 @@ def test_section_skills_empty():
 
 
 @with_tabula_home
-def test_project_files_all_present(tmp):
+def test_project_files_all_present(tmp, boot):
     """All project files are read and injected."""
-    import boot
     Path(tmp, "IDENTITY.md").write_text("Name: Tabby")
     Path(tmp, "SOUL.md").write_text("Be chill and helpful.")
     Path(tmp, "USER.md").write_text("Name: Test User")
@@ -145,17 +205,15 @@ def test_project_files_all_present(tmp):
 
 
 @with_tabula_home
-def test_project_files_none_present(tmp):
+def test_project_files_none_present(tmp, boot):
     """No project files — empty string returned."""
-    import boot
     text = boot._section_project_files(subagent=False)
     assert text == ""
 
 
 @with_tabula_home
-def test_project_files_partial(tmp):
+def test_project_files_partial(tmp, boot):
     """Only existing files are included."""
-    import boot
     Path(tmp, "SOUL.md").write_text("Sharp and direct.")
 
     text = boot._section_project_files(subagent=False)
@@ -165,9 +223,8 @@ def test_project_files_partial(tmp):
 
 
 @with_tabula_home
-def test_project_files_subagent_only_agents(tmp):
+def test_project_files_subagent_only_agents(tmp, boot):
     """Subagent gets only AGENTS.md, not IDENTITY, SOUL or USER."""
-    import boot
     Path(tmp, "IDENTITY.md").write_text("Name: Tabby")
     Path(tmp, "SOUL.md").write_text("Be quirky.")
     Path(tmp, "USER.md").write_text("Name: Test")
@@ -181,9 +238,8 @@ def test_project_files_subagent_only_agents(tmp):
 
 
 @with_tabula_home
-def test_project_files_subagent_no_agents(tmp):
+def test_project_files_subagent_no_agents(tmp, boot):
     """Subagent with no AGENTS.md gets empty string."""
-    import boot
     Path(tmp, "SOUL.md").write_text("Be quirky.")
 
     text = boot._section_project_files(subagent=True)
@@ -194,9 +250,8 @@ def test_project_files_subagent_no_agents(tmp):
 
 
 @with_tabula_home
-def test_section_memory_present(tmp):
+def test_section_memory_present(tmp, boot):
     """Memory section reads from MEMORY.md."""
-    import boot
     mem_dir = Path(tmp, "data", "memory")
     mem_dir.mkdir(parents=True)
     (mem_dir / "MEMORY.md").write_text("User prefers Russian responses.")
@@ -207,17 +262,15 @@ def test_section_memory_present(tmp):
 
 
 @with_tabula_home
-def test_section_memory_absent(tmp):
+def test_section_memory_absent(tmp, boot):
     """No memory file — empty string."""
-    import boot
     text = boot._section_memory()
     assert text == ""
 
 
 @with_tabula_home
-def test_section_memory_empty_file(tmp):
+def test_section_memory_empty_file(tmp, boot):
     """Empty memory file — empty string."""
-    import boot
     mem_dir = Path(tmp, "data", "memory")
     mem_dir.mkdir(parents=True)
     (mem_dir / "MEMORY.md").write_text("")
@@ -230,9 +283,8 @@ def test_section_memory_empty_file(tmp):
 
 
 @with_tabula_home
-def test_full_prompt_structure(tmp):
+def test_full_prompt_structure(tmp, boot):
     """Full prompt has all sections in order with cache boundary."""
-    import boot
     make_skill(os.path.join(tmp, "skills"), "weather", 'name: weather\ndescription: "Weather"')
     Path(tmp, "SOUL.md").write_text("Be direct.")
 
@@ -258,9 +310,8 @@ def test_full_prompt_structure(tmp):
 
 
 @with_tabula_home
-def test_full_prompt_with_memory(tmp):
+def test_full_prompt_with_memory(tmp, boot):
     """Memory appears in dynamic part."""
-    import boot
     mem_dir = Path(tmp, "data", "memory")
     mem_dir.mkdir(parents=True)
     (mem_dir / "MEMORY.md").write_text("important fact")
@@ -271,9 +322,8 @@ def test_full_prompt_with_memory(tmp):
 
 
 @with_tabula_home
-def test_full_prompt_with_mcp(tmp):
+def test_full_prompt_with_mcp(tmp, boot):
     """MCP tools appear in dynamic part."""
-    import boot
     mcp = {"test-server": [{"name": "search", "description": "Search stuff", "inputSchema": {"properties": {"q": {"type": "string"}}}}]}
     prompt = boot.build_system_prompt([], mcp)
     _, dynamic = prompt.split(boot.CACHE_BOUNDARY)
@@ -282,9 +332,8 @@ def test_full_prompt_with_mcp(tmp):
 
 
 @with_tabula_home
-def test_full_prompt_no_project_files(tmp):
+def test_full_prompt_no_project_files(tmp, boot):
     """Prompt works fine without any project files."""
-    import boot
     prompt = boot.build_system_prompt([])
     assert boot.CACHE_BOUNDARY in prompt
     assert "Tabula" in prompt
@@ -295,9 +344,8 @@ def test_full_prompt_no_project_files(tmp):
 
 
 @with_tabula_home
-def test_subagent_prompt_minimal(tmp):
+def test_subagent_prompt_minimal(tmp, boot):
     """Subagent prompt has identity, tools, guidelines, safety, environment."""
-    import boot
     prompt = boot.build_subagent_prompt()
     assert "Tabula" in prompt
     assert "## Tools" in prompt
@@ -307,18 +355,16 @@ def test_subagent_prompt_minimal(tmp):
 
 
 @with_tabula_home
-def test_subagent_prompt_no_skills(tmp):
+def test_subagent_prompt_no_skills(tmp, boot):
     """Subagent prompt has no skills section."""
-    import boot
-    make_skill(os.path.join(tmp, "skills"), "weather", 'name: weather\ndescription: "Weather"')
+    make_skill(os.path.join(tmp, "distrib", "main", "skills"), "weather", 'name: weather\ndescription: "Weather"')
     prompt = boot.build_subagent_prompt()
     assert "## Available skills" not in prompt
 
 
 @with_tabula_home
-def test_subagent_prompt_no_memory(tmp):
+def test_subagent_prompt_no_memory(tmp, boot):
     """Subagent prompt has no memory section."""
-    import boot
     mem_dir = Path(tmp, "data", "memory")
     mem_dir.mkdir(parents=True)
     (mem_dir / "MEMORY.md").write_text("important fact")
@@ -329,9 +375,8 @@ def test_subagent_prompt_no_memory(tmp):
 
 
 @with_tabula_home
-def test_subagent_prompt_no_soul_or_user(tmp):
+def test_subagent_prompt_no_soul_or_user(tmp, boot):
     """Subagent prompt excludes IDENTITY.md, SOUL.md and USER.md."""
-    import boot
     Path(tmp, "IDENTITY.md").write_text("Name: Tabby")
     Path(tmp, "SOUL.md").write_text("Be quirky.")
     Path(tmp, "USER.md").write_text("Name: Test")
@@ -345,9 +390,8 @@ def test_subagent_prompt_no_soul_or_user(tmp):
 
 
 @with_tabula_home
-def test_subagent_prompt_no_cache_boundary(tmp):
+def test_subagent_prompt_no_cache_boundary(tmp, boot):
     """Subagent prompt has no cache boundary (all static)."""
-    import boot
     prompt = boot.build_subagent_prompt()
     assert boot.CACHE_BOUNDARY not in prompt
 
@@ -356,13 +400,11 @@ def test_subagent_prompt_no_cache_boundary(tmp):
 
 
 @with_tabula_home
-def test_config_has_no_subagent_prompt(tmp):
+def test_config_has_no_subagent_prompt(tmp, boot):
     """Config output should NOT include system_prompt_subagent."""
-    import boot
     skills = boot.scan_skills()
     config = {
         "url": "ws://localhost:8089/ws",
-        "system_prompt": "",
         "spawn": [],
         "tools": [],
         "commands": [],
@@ -371,7 +413,7 @@ def test_config_has_no_subagent_prompt(tmp):
 
 
 @with_tabula_home
-def test_subagent_prompt_built_dynamically(tmp):
+def test_subagent_prompt_built_dynamically(tmp, boot):
     """Subagent prompt is built dynamically by skills/lib/prompt_builder."""
     from skills.lib.prompt_builder import build_subagent_system_prompt
     make_skill(os.path.join(tmp, "skills"), "driver-openai", 'name: driver-openai\ndescription: "OpenAI driver"')
@@ -382,9 +424,8 @@ def test_subagent_prompt_built_dynamically(tmp):
 
 
 @with_tabula_home
-def test_config_prompts_differ(tmp):
+def test_config_prompts_differ(tmp, boot):
     """Main and subagent prompts are different."""
-    import boot
     make_skill(os.path.join(tmp, "skills"), "weather", 'name: weather\ndescription: "Weather"')
     Path(tmp, "SOUL.md").write_text("Be direct.")
 
@@ -403,24 +444,21 @@ def test_config_prompts_differ(tmp):
 
 
 @with_tabula_home
-def test_read_project_file_exists(tmp):
+def test_read_project_file_exists(tmp, boot):
     """Existing project file is read."""
-    import boot
     Path(tmp, "SOUL.md").write_text("Be chill.")
     assert boot._read_project_file("SOUL.md") == "Be chill."
 
 
 @with_tabula_home
-def test_read_project_file_missing(tmp):
+def test_read_project_file_missing(tmp, boot):
     """Missing project file returns empty string."""
-    import boot
     assert boot._read_project_file("SOUL.md") == ""
 
 
 @with_tabula_home
-def test_read_project_file_whitespace(tmp):
+def test_read_project_file_whitespace(tmp, boot):
     """Project file content is stripped."""
-    import boot
     Path(tmp, "USER.md").write_text("  \nName: Test\n  \n")
     assert boot._read_project_file("USER.md") == "Name: Test"
 
@@ -429,9 +467,8 @@ def test_read_project_file_whitespace(tmp):
 
 
 @with_tabula_home
-def test_ensure_creates_defaults(tmp):
+def test_ensure_creates_defaults(tmp, boot):
     """ensure_project_files creates all default files."""
-    import boot
     boot.ensure_project_files()
     for name in ["IDENTITY.md", "SOUL.md", "USER.md", "AGENTS.md"]:
         path = Path(tmp, name)
@@ -440,9 +477,8 @@ def test_ensure_creates_defaults(tmp):
 
 
 @with_tabula_home
-def test_ensure_does_not_overwrite(tmp):
+def test_ensure_does_not_overwrite(tmp, boot):
     """ensure_project_files does not overwrite existing files."""
-    import boot
     Path(tmp, "SOUL.md").write_text("Custom soul.")
     boot.ensure_project_files()
     assert Path(tmp, "SOUL.md").read_text() == "Custom soul."
@@ -452,9 +488,8 @@ def test_ensure_does_not_overwrite(tmp):
 
 
 @with_tabula_home
-def test_ensure_default_identity_content(tmp):
+def test_ensure_default_identity_content(tmp, boot):
     """Default IDENTITY.md has template fields."""
-    import boot
     boot.ensure_project_files()
     content = Path(tmp, "IDENTITY.md").read_text()
     assert "**Name:**" in content
@@ -463,9 +498,8 @@ def test_ensure_default_identity_content(tmp):
 
 
 @with_tabula_home
-def test_ensure_default_soul_content(tmp):
+def test_ensure_default_soul_content(tmp, boot):
     """Default SOUL.md has key phrases."""
-    import boot
     boot.ensure_project_files()
     content = Path(tmp, "SOUL.md").read_text()
     assert "genuinely helpful" in content
@@ -474,9 +508,8 @@ def test_ensure_default_soul_content(tmp):
 
 
 @with_tabula_home
-def test_ensure_default_user_content(tmp):
+def test_ensure_default_user_content(tmp, boot):
     """Default USER.md has template fields."""
-    import boot
     boot.ensure_project_files()
     content = Path(tmp, "USER.md").read_text()
     assert "**Name:**" in content
@@ -484,9 +517,8 @@ def test_ensure_default_user_content(tmp):
 
 
 @with_tabula_home
-def test_ensure_default_agents_content(tmp):
+def test_ensure_default_agents_content(tmp, boot):
     """Default AGENTS.md has first run and session startup rules."""
-    import boot
     boot.ensure_project_files()
     content = Path(tmp, "AGENTS.md").read_text()
     assert "First Run" in content
@@ -495,9 +527,8 @@ def test_ensure_default_agents_content(tmp):
 
 
 @with_tabula_home
-def test_ensure_injected_into_prompt(tmp):
+def test_ensure_injected_into_prompt(tmp, boot):
     """Default project files appear in full prompt after ensure."""
-    import boot
     boot.ensure_project_files()
     prompt = boot.build_system_prompt([])
     assert "genuinely helpful" in prompt

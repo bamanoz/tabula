@@ -22,9 +22,43 @@ def _load_module(path: Path, name: str):
     return mod
 
 
+def _load_mcp_module(path: Path, module_name: str):
+    import types
+
+    package = types.ModuleType("mcp")
+    package.__path__ = [str(path.parent)]
+    sys_modules = __import__("sys").modules
+    sys_modules["mcp"] = package
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        path,
+        submodule_search_locations=[str(path.parent)],
+    )
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys_modules[module_name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _load_boot_module():
+    old = dict(os.environ)
+    os.environ["TABULA_HOME"] = str(ROOT)
+    os.environ["TABULA_PROVIDER"] = os.environ.get("TABULA_PROVIDER", "openai")
+    spec = importlib.util.spec_from_file_location("tabula_main_boot", ROOT / "distrib" / "assistant" / "boot.py")
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        os.environ.clear()
+        os.environ.update(old)
+    return mod
+
+
 class TestSkillPathLayout(unittest.TestCase):
     def test_boot_managed_paths_follow_new_layout(self):
-        import boot
+        boot = _load_boot_module()
 
         with tempfile.TemporaryDirectory() as tmp:
             orig_home = boot.TABULA_HOME
@@ -51,7 +85,7 @@ class TestSkillPathLayout(unittest.TestCase):
                 boot.SUBAGENT_PROMPT_FILE = orig_sub
 
     def test_pair_auth_file_uses_data_dir(self):
-        pair_path = ROOT / "skills" / "pair" / "run.py"
+        pair_path = ROOT / "distrib" / "assistant" / "skills" / "pair" / "run.py"
         with tempfile.TemporaryDirectory() as tmp:
             old = dict(os.environ)
             try:
@@ -89,7 +123,7 @@ class TestSkillPathLayout(unittest.TestCase):
                 os.environ.update(old)
 
     def test_cron_jobs_use_data_dir(self):
-        cron_path = ROOT / "skills" / "cron" / "run.py"
+        cron_path = ROOT / "distrib" / "assistant" / "skills" / "cron" / "run.py"
         with tempfile.TemporaryDirectory() as tmp:
             old = dict(os.environ)
             try:
@@ -102,7 +136,7 @@ class TestSkillPathLayout(unittest.TestCase):
                 os.environ.update(old)
 
     def test_hook_permissions_uses_config_skills_dir(self):
-        hook_path = ROOT / "skills" / "hook-permissions" / "run.py"
+        hook_path = ROOT / "distrib" / "assistant" / "skills" / "hook-permissions" / "run.py"
         with tempfile.TemporaryDirectory() as tmp:
             old = dict(os.environ)
             try:
@@ -123,14 +157,14 @@ class TestSkillPathLayout(unittest.TestCase):
             try:
                 os.environ.clear()
                 os.environ["TABULA_HOME"] = tmp
-                mod = _load_module(ROOT / "skills" / "mcp" / "pool.py", "skills.mcp.pool_test")
+                mod = _load_mcp_module(ROOT / "distrib" / "assistant" / "skills" / "mcp" / "pool.py", "mcp.pool")
                 self.assertEqual(mod.CONFIG_FILE, os.path.join(tmp, "config", "skills", "mcp", "servers.json"))
             finally:
                 os.environ.clear()
                 os.environ.update(old)
 
     def test_memory_paths_use_data_and_state_dirs(self):
-        memory_path = ROOT / "skills" / "memory" / "run.py"
+        memory_path = ROOT / "distrib" / "assistant" / "skills" / "memory" / "run.py"
         with tempfile.TemporaryDirectory() as tmp:
             old = dict(os.environ)
             try:

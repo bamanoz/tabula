@@ -35,11 +35,26 @@ const (
 type KernelTool string
 
 const (
-	ToolEXEC KernelTool = "EXEC"
-	ToolSPAWN KernelTool = "SPAWN"
-	ToolKILL  KernelTool = "KILL"
-	ToolLIST  KernelTool = "LIST"
+	ToolShellExec    KernelTool = "shell_exec"
+	ToolProcessSpawn KernelTool = "process_spawn"
+	ToolProcessKill  KernelTool = "process_kill"
+	ToolProcessList  KernelTool = "process_list"
 )
+
+var DefaultKernelTools = []KernelTool{
+	ToolShellExec,
+	ToolProcessSpawn,
+	ToolProcessKill,
+	ToolProcessList,
+}
+
+func DefaultKernelToolNames() []string {
+	names := make([]string, 0, len(DefaultKernelTools))
+	for _, tool := range DefaultKernelTools {
+		names = append(names, string(tool))
+	}
+	return names
+}
 
 // HookAction constants for hook responses.
 type HookAction string

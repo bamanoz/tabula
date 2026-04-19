@@ -153,6 +153,45 @@ func TestHookSessionStartCanBlockJoin(t *testing.T) {
 	}
 }
 
+func TestHookSessionStartCanInjectInitContext(t *testing.T) {
+	env := newTestEnv(t)
+
+	hook := env.connectHook("ctx", []HookSubscription{
+		{Event: "session_start", Priority: 100},
+	})
+
+	conn := env.connect("cli", []string{"message"}, []string{"init"})
+
+	go func() {
+		writeJSON(t, conn, Message{Type: "join", Session: "s1"})
+	}()
+
+	hookMsg := readMsg(t, hook)
+	if hookMsg.Type != "hook" || hookMsg.Name != "session_start" {
+		t.Fatalf("expected hook/session_start, got %s/%s", hookMsg.Type, hookMsg.Name)
+	}
+
+	writeJSON(t, hook, Message{
+		Type:    "hook_result",
+		ID:      hookMsg.ID,
+		Action:  "modify",
+		Payload: json.RawMessage(`{"context":"extra join context"}`),
+	})
+
+	joined := readMsg(t, conn)
+	if joined.Type != "joined" {
+		t.Fatalf("expected joined, got %s", joined.Type)
+	}
+
+	init := readMsg(t, conn)
+	if init.Type != "init" {
+		t.Fatalf("expected init, got %s", init.Type)
+	}
+	if init.Context != "extra join context" {
+		t.Fatalf("expected init context, got %q", init.Context)
+	}
+}
+
 // --- Modifying hook tests ---
 
 func TestHookModifying_PassThrough(t *testing.T) {
@@ -355,9 +394,9 @@ func TestHookNone_MessagePassesThrough(t *testing.T) {
 // newTestEnvWithSkillTool creates a test env with a skill tool "echo_tool" that just echoes input.
 func newTestEnvWithSkillTool(t *testing.T) *testEnv {
 	t.Helper()
-	toolsJSON := json.RawMessage(`[{"name":"EXEC","description":"run cmd","params":{"command":{"type":"string","description":"cmd"}},"required":["command"]},{"name":"echo_tool","description":"echo","params":{"text":{"type":"string","description":"text"}},"required":["text"]}]`)
+	toolsJSON := json.RawMessage(`[{"name":"shell_exec","description":"run cmd","params":{"command":{"type":"string","description":"cmd"}},"required":["command"]},{"name":"echo_tool","description":"echo","params":{"text":{"type":"string","description":"text"}},"required":["text"]}]`)
 	skillExec := map[string]string{"echo_tool": "echo"}
-	hub := NewHub("test system prompt", toolsJSON, skillExec, 3, 5, nil)
+	hub := NewHub(toolsJSON, skillExec, 3, 5, nil)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
@@ -376,7 +415,7 @@ func newTestEnvWithSkillTool(t *testing.T) *testEnv {
 	return &testEnv{Hub: hub, Server: server, t: t}
 }
 
-func TestBeforeToolCallHookFiresForEXEC(t *testing.T) {
+func TestBeforeToolCallHookFiresForShellExec(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on windows")
 	}
@@ -391,11 +430,11 @@ func TestBeforeToolCallHookFiresForEXEC(t *testing.T) {
 		[]string{"tool_result"},
 	)
 
-	// Send EXEC tool_use
+	// Send shell_exec tool_use
 	go func() {
 		writeJSON(t, drv, Message{
 			Type:  "tool_use",
-			Name:  "EXEC",
+			Name:  "shell_exec",
 			ID:    "t1",
 			Input: json.RawMessage(`{"command":"echo hi"}`),
 		})
@@ -410,8 +449,8 @@ func TestBeforeToolCallHookFiresForEXEC(t *testing.T) {
 	json.Unmarshal(hookMsg.Payload, &payload)
 	var tool string
 	json.Unmarshal(payload["tool"], &tool)
-	if tool != "EXEC" {
-		t.Fatalf("expected tool EXEC, got %s", tool)
+	if tool != "shell_exec" {
+		t.Fatalf("expected tool shell_exec, got %s", tool)
 	}
 
 	// Pass through
@@ -468,7 +507,7 @@ func TestBeforeToolCallHookFiresForSkillTool(t *testing.T) {
 	}
 }
 
-func TestBeforeToolCallHookCanBlockEXEC(t *testing.T) {
+func TestBeforeToolCallHookCanBlockShellExec(t *testing.T) {
 	env := newTestEnv(t)
 
 	hook := env.connectHook("perm", []HookSubscription{
@@ -483,7 +522,7 @@ func TestBeforeToolCallHookCanBlockEXEC(t *testing.T) {
 	go func() {
 		writeJSON(t, drv, Message{
 			Type:  "tool_use",
-			Name:  "EXEC",
+			Name:  "shell_exec",
 			ID:    "t3",
 			Input: json.RawMessage(`{"command":"rm -rf /"}`),
 		})
@@ -563,7 +602,7 @@ func TestSecurityHookTimeoutBlocksToolCall(t *testing.T) {
 	go func() {
 		writeJSON(t, drv, Message{
 			Type:  "tool_use",
-			Name:  "EXEC",
+			Name:  "shell_exec",
 			ID:    "t1",
 			Input: json.RawMessage(`{"command":"echo hello"}`),
 		})
@@ -597,7 +636,7 @@ func TestSecurityHookTimeoutBlocksSpawn(t *testing.T) {
 	go func() {
 		writeJSON(t, drv, Message{
 			Type:  "tool_use",
-			Name:  "SPAWN",
+			Name:  "process_spawn",
 			ID:    "s1",
 			Input: json.RawMessage(`{"command":"sleep 60"}`),
 		})

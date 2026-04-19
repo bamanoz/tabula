@@ -20,20 +20,20 @@ if str(ROOT) not in sys.path:
 from skills.lib.config import SkillConfigError, load_skill_config
 
 
-DRIVER_OPENAI_DIR = ROOT / "skills" / "driver-openai"
+DRIVER_OPENAI_DIR = ROOT / "distrib" / "assistant" / "skills" / "driver-openai"
 DRIVER_OPENAI_PATH = DRIVER_OPENAI_DIR / "run.py"
-DRIVER_MOCK_DIR = ROOT / "skills" / "driver-mock"
-SUBAGENT_OPENAI_DIR = ROOT / "skills" / "subagent-openai"
+DRIVER_MOCK_DIR = ROOT / "testing" / "skills" / "driver-mock"
+SUBAGENT_OPENAI_DIR = ROOT / "distrib" / "assistant" / "skills" / "subagent-openai"
 SUBAGENT_OPENAI_PATH = SUBAGENT_OPENAI_DIR / "run.py"
-DRIVER_ANTHROPIC_DIR = ROOT / "skills" / "driver-anthropic"
+DRIVER_ANTHROPIC_DIR = ROOT / "distrib" / "assistant" / "skills" / "driver-anthropic"
 DRIVER_ANTHROPIC_PATH = DRIVER_ANTHROPIC_DIR / "run.py"
-SUBAGENT_ANTHROPIC_DIR = ROOT / "skills" / "subagent-anthropic"
+SUBAGENT_ANTHROPIC_DIR = ROOT / "distrib" / "assistant" / "skills" / "subagent-anthropic"
 SUBAGENT_ANTHROPIC_PATH = SUBAGENT_ANTHROPIC_DIR / "run.py"
-HOOK_LOGGER_DIR = ROOT / "skills" / "hook-logger"
+HOOK_LOGGER_DIR = ROOT / "distrib" / "assistant" / "skills" / "hook-logger"
 HOOK_LOGGER_PATH = HOOK_LOGGER_DIR / "run.py"
-MEMORY_DIR = ROOT / "skills" / "memory"
+MEMORY_DIR = ROOT / "distrib" / "assistant" / "skills" / "memory"
 MEMORY_EMBEDDINGS_PATH = MEMORY_DIR / "embeddings.py"
-MCP_DIR = ROOT / "skills" / "mcp"
+MCP_DIR = ROOT / "distrib" / "assistant" / "skills" / "mcp"
 MCP_DAEMON_PATH = MCP_DIR / "daemon.py"
 
 
@@ -86,8 +86,16 @@ def _load_memory_embeddings_module():
 
 
 def _load_mcp_daemon_module():
-    sys.modules.pop("skills.mcp.daemon", None)
-    return importlib.import_module("skills.mcp.daemon")
+    spec = importlib.util.spec_from_file_location(
+        "mcp.daemon",
+        MCP_DAEMON_PATH,
+        submodule_search_locations=[str(MCP_DIR)],
+    )
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules["mcp.daemon"] = mod
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def _write_global_toml(home: Path, text: str):

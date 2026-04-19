@@ -42,15 +42,17 @@ esac
 if [ -d "$TABULA_HOME" ]; then
   info "Removing $TABULA_HOME..."
 
-  # Always remove: bin, skills, templates, service, venv, logs, boot.py, config defaults
+  # Always remove: bin, distrib, skills, bundles, testing, service, venv, logs, boot scripts
   rm -rf \
     "$TABULA_HOME/bin" \
+    "$TABULA_HOME/distrib" \
     "$TABULA_HOME/skills" \
-    "$TABULA_HOME/templates" \
+    "$TABULA_HOME/testing" \
+    "$TABULA_HOME/bundles" \
     "$TABULA_HOME/service" \
     "$TABULA_HOME/.venv" \
     "$TABULA_HOME/logs" \
-    "$TABULA_HOME/boot.py" \
+    "$TABULA_HOME/boot-cicd.py" \
     "$TABULA_HOME/tabula.yaml"
 
   if [ "$remove_all" = true ]; then

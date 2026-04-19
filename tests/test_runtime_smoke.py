@@ -20,8 +20,7 @@ def test_kernel_boot_connect_init_and_done_smoke():
     tabula_port = get_free_port()
     home = create_test_home(
         tabula_port,
-        system_prompt="runtime smoke prompt",
-        spawn=[".venv/bin/python3 skills/driver-mock/run.py"],
+        spawn=[".venv/bin/python3 testing/skills/driver-mock/run.py"],
     )
     proc = None
     conn = None
@@ -42,10 +41,10 @@ def test_kernel_boot_connect_init_and_done_smoke():
         assert connected["type"] == "connected"
         assert joined["type"] == "joined"
         assert init_msg["type"] == "init"
-        assert init_msg["prompt"] == "runtime smoke prompt"
+        assert init_msg.get("context", "") == ""
 
         tools = init_msg["tools"]
-        assert {tool["name"] for tool in tools} >= {"EXEC", "SPAWN", "KILL", "LIST"}
+        assert {tool["name"] for tool in tools} >= {"shell_exec", "process_spawn", "process_kill", "process_list"}
 
         conn.send(json.dumps({"type": "message", "text": "smoke test request"}))
         output = collect_turn_text(conn, timeout=10)
@@ -62,8 +61,7 @@ def test_kernel_rejects_concurrent_root_message_until_turn_finishes():
     tabula_port = get_free_port()
     home = create_test_home(
         tabula_port,
-        system_prompt="runtime busy smoke prompt",
-        spawn=[".venv/bin/python3 skills/driver-mock/run.py"],
+        spawn=[".venv/bin/python3 testing/skills/driver-mock/run.py"],
     )
     proc = None
     conn = None

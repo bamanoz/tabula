@@ -21,6 +21,8 @@ from pathlib import Path
 
 import websocket as ws_client
 
+from tests.runtime_harness import populate_installed_home
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -33,8 +35,8 @@ def get_free_port() -> int:
 
 def setup_test_home(port: int) -> tuple[str, str]:
     home = tempfile.mkdtemp(prefix="tabula-hook-real-")
-    shutil.copytree(ROOT / "skills", Path(home) / "skills")
-    shutil.copytree(ROOT / ".venv", Path(home) / ".venv", dirs_exist_ok=True)
+    home_path = Path(home)
+    populate_installed_home(home_path)
 
     log_file = os.path.join(home, "hooks.jsonl")
     venv_py = os.path.join(home, ".venv", "bin", "python3")
@@ -44,11 +46,11 @@ def setup_test_home(port: int) -> tuple[str, str]:
         "import json, sys\n"
         "json.dump({\n"
         f"  'url': 'ws://127.0.0.1:{port}/ws',\n"
-        "  'system_prompt': 'You are Tabula, an AI agent. You have kernel tools: EXEC, SPAWN, KILL, LIST. Be helpful, concise, and respond in Russian.',\n"
         "  'spawn': [\n"
         f"    '{venv_py} skills/driver-anthropic/run.py',\n"
         f"    '{venv_py} skills/hook-logger/run.py --log-file {log_file}',\n"
-        "  ]\n"
+        "  ],\n"
+        "  'tools': []\n"
         "}, sys.stdout)\n"
     )
     return home, log_file

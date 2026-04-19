@@ -55,7 +55,7 @@ if "requests" not in sys.modules:
 import importlib.util
 
 def _load_gateway_module():
-    gw_path = os.path.join(ROOT, "skills", "gateway-telegram", "run.py")
+    gw_path = os.path.join(ROOT, "distrib", "assistant", "skills", "gateway-telegram", "run.py")
     spec = importlib.util.spec_from_file_location("gateway_run", gw_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -737,7 +737,7 @@ class TestSessionAskStream(unittest.TestCase):
 
         self.session.conn.send.assert_called_once_with({
             "type": "tool_use",
-            "name": "KILL",
+            "name": "process_kill",
             "id": "kill-driver",
             "input": {"pid": 4321},
         })

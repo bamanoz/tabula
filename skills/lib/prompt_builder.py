@@ -8,15 +8,26 @@ import os
 import subprocess
 import sys
 from datetime import date
-from pathlib import Path
 
+from skills.lib.paths import skills_dir as skills_dir_path, templates_dir as templates_dir_path, tabula_home as tabula_home_path
+from skills.lib.protocol import (
+    DEFAULT_KERNEL_TOOLS,
+    TOOL_SHELL_EXEC,
+    TOOL_PROCESS_SPAWN,
+    TOOL_PROCESS_KILL,
+    TOOL_PROCESS_LIST,
+)
 from skills.lib.provider_selection import resolve_provider
 
 
-TEMPLATES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "templates")
-TEMPLATES_DIR = os.path.normpath(TEMPLATES_DIR)
 PROJECT_FILES = ["IDENTITY.md", "SOUL.md", "USER.md", "AGENTS.md"]
 CACHE_BOUNDARY = "\n<!-- CACHE_BOUNDARY -->\n"
+KERNEL_TOOL_LINES = {
+    TOOL_SHELL_EXEC: "**shell_exec** — run a shell command. Output capped at 16KB.",
+    TOOL_PROCESS_SPAWN: "**process_spawn** — start a background process. Returns PID.",
+    TOOL_PROCESS_KILL: "**process_kill** — terminate a spawned process by PID.",
+    TOOL_PROCESS_LIST: "**process_list** — list spawned processes in the current session, including their `alive=` status.",
+}
 
 
 def current_provider() -> str:
@@ -24,11 +35,27 @@ def current_provider() -> str:
 
 
 def tabula_home() -> str:
-    return os.environ.get("TABULA_HOME", os.path.join(os.path.expanduser("~"), ".tabula"))
+    return str(tabula_home_path())
 
 
 def skills_dir() -> str:
-    return os.path.join(tabula_home(), "skills")
+    return str(skills_dir_path())
+
+
+def templates_dir() -> str:
+    return str(templates_dir_path())
+
+
+def kernel_tools() -> list[str]:
+    raw = os.environ.get("TABULA_KERNEL_TOOLS", "")
+    if not raw.strip():
+        return list(DEFAULT_KERNEL_TOOLS)
+    tools = []
+    for item in raw.split(","):
+        name = item.strip()
+        if name in KERNEL_TOOL_LINES and name not in tools:
+            tools.append(name)
+    return tools
 
 
 def memory_file() -> str:
@@ -124,9 +151,32 @@ def scan_skills(provider: str | None = None) -> list[str]:
 
 
 def _read_template(name: str) -> str:
-    path = os.path.join(TEMPLATES_DIR, name)
+    if name == "TOOLS.md":
+        return _render_tools_template()
+    path = os.path.join(templates_dir(), name)
     with open(path) as f:
         return f.read().strip()
+
+
+def _render_tools_template() -> str:
+    lines = ["## Tools", ""]
+    enabled = kernel_tools()
+    for tool in enabled:
+        line = KERNEL_TOOL_LINES.get(tool)
+        if line:
+            lines.append(line)
+    if enabled:
+        lines.append("")
+    if TOOL_SHELL_EXEC in enabled:
+        lines.append("Use shell_exec for quick commands (CLI scripts, cat, ls, python3 skills/...). process_spawn is only for long-running daemons (gateways, servers, watchers).")
+        if TOOL_PROCESS_SPAWN in enabled:
+            lines.append("NEVER use process_spawn for a command that exits immediately — that's what shell_exec is for.")
+        lines.append("If shell_exec is blocked by a hook, do NOT silently fall back to process_spawn — tell the user the command was denied.")
+        lines.append("To learn about a skill: shell_exec cat skills/<name>/SKILL.md")
+        lines.append("To discover skills: shell_exec ls skills/")
+    elif TOOL_PROCESS_SPAWN in enabled:
+        lines.append("process_spawn is available only for long-running daemons or background workers.")
+    return "\n".join(lines).strip()
 
 
 def _read_project_file(name: str) -> str:
@@ -142,7 +192,7 @@ def ensure_project_files():
         dest = os.path.join(tabula_home(), name)
         if os.path.exists(dest):
             continue
-        src = os.path.join(TEMPLATES_DIR, name)
+        src = os.path.join(templates_dir(), name)
         if not os.path.isfile(src):
             continue
         with open(src) as f:
@@ -223,7 +273,7 @@ FIRST_RUN_INSTRUCTION = (
     "Before doing anything else, greet the user and start a conversation to set up together:\n"
     "1. Ask what they'd like to call you and what vibe they want\n"
     "2. Ask about them — name, timezone, what they're working on\n"
-    "3. Update IDENTITY.md, USER.md, and SOUL.md via EXEC based on what you agree on\n"
+    "3. Update IDENTITY.md, USER.md, and SOUL.md using the available command-execution tool based on what you agree on\n"
     "Do NOT fill these files silently. Do NOT skip this. Start with a greeting and questions."
 )
 

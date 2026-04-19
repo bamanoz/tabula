@@ -6,7 +6,7 @@ Minimal boot script that spawns only the LLM driver for non-interactive use.
 No session registry, no MCP, no hooks — just the driver.
 
 Usage:
-  TABULA_HOME=/path/to/work TABULA_BOOT=python3 boot-cicd.py tabula run --prompt "..."
+  TABULA_HOME=/path/to/work TABULA_BOOT="python3 boot-cicd.py" tabula run --prompt "..."
 """
 from __future__ import annotations
 
@@ -40,7 +40,6 @@ def load_env() -> None:
 
 load_env()
 
-SKILLS_DIR = os.path.join(TABULA_HOME, "skills")
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
 
 from skills.lib.provider_selection import build_driver_command, resolve_provider
@@ -54,19 +53,11 @@ def find_driver() -> str | None:
     return build_driver_command(provider, tabula_home=TABULA_HOME, python_executable=VENV_PYTHON) + " --session main"
 
 
-def build_system_prompt() -> str:
-    """Build a minimal system prompt for CI/CD use."""
-    return (
-        "You are a helpful assistant. Answer the user's question concisely."
-    )
-
-
 def main():
     driver = find_driver()
 
     config = {
         "url": TABULA_URL,
-        "system_prompt": build_system_prompt(),
         "spawn": [driver],
         "tools": [],
         "commands": [],

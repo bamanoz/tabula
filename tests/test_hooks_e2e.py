@@ -15,6 +15,9 @@ from pathlib import Path
 
 import websocket as ws_client
 
+from tests.runtime_harness import populate_installed_home
+from tests.runtime_harness import write_boot_script
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -27,16 +30,9 @@ def get_free_port() -> int:
 
 def setup_test_home(tabula_port: int) -> str:
     home = tempfile.mkdtemp(prefix="tabula-hook-e2e-")
-    shutil.copytree(ROOT / "skills", Path(home) / "skills")
-    shutil.copytree(ROOT / ".venv", Path(home) / ".venv", dirs_exist_ok=True)
-    (Path(home) / "boot.py").write_text(
-        "import json, sys\n"
-        "json.dump({\n"
-        f"  'url': 'ws://127.0.0.1:{tabula_port}/ws',\n"
-        "  'system_prompt': 'hook test prompt',\n"
-        "  'spawn': []\n"
-        "}, sys.stdout)\n"
-    )
+    home_path = Path(home)
+    populate_installed_home(home_path)
+    write_boot_script(home_path, tabula_port=tabula_port, spawn=[])
     return home
 
 
@@ -315,8 +311,8 @@ def test_hook_logger_skill():
             "import json, sys\n"
             "json.dump({\n"
             f"  'url': 'ws://127.0.0.1:{port}/ws',\n"
-            "  'system_prompt': 'hook test prompt',\n"
-            f"  'spawn': ['.venv/bin/python3 skills/hook-logger/run.py --log-file {log_file}']\n"
+            f"  'spawn': ['.venv/bin/python3 skills/hook-logger/run.py --log-file {log_file}'],\n"
+            "  'tools': []\n"
             "}, sys.stdout)\n"
         )
         proc = start_kernel(home, port)

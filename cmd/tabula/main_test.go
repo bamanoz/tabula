@@ -103,3 +103,46 @@ func TestLoadEnvFileDoesNotOverrideExistingValues(t *testing.T) {
 		t.Fatalf("expected existing TABULA_PROVIDER to win, got %q", got)
 	}
 }
+
+func TestFilterKernelTools_DefaultKeepsAllBuiltins(t *testing.T) {
+	filtered, err := filterKernelTools(embeddedToolsJSON, nil)
+	if err != nil {
+		t.Fatalf("filterKernelTools: %v", err)
+	}
+	if len(filtered) != 4 {
+		t.Fatalf("expected 4 builtin tools, got %d", len(filtered))
+	}
+}
+
+func TestFilterKernelTools_RespectsBootSelection(t *testing.T) {
+	filtered, err := filterKernelTools(embeddedToolsJSON, []string{"shell_exec", "process_list"})
+	if err != nil {
+		t.Fatalf("filterKernelTools: %v", err)
+	}
+	var names []string
+	for _, raw := range filtered {
+		var tool struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(raw, &tool); err != nil {
+			t.Fatalf("unmarshal tool: %v", err)
+		}
+		names = append(names, tool.Name)
+	}
+	if len(names) != 2 || names[0] != "shell_exec" || names[1] != "process_list" {
+		t.Fatalf("unexpected filtered builtin names: %#v", names)
+	}
+}
+
+func TestLoadToolMetas_ParsesEmbeddedToolNames(t *testing.T) {
+	metas, err := loadToolMetas(embeddedToolsJSON)
+	if err != nil {
+		t.Fatalf("loadToolMetas: %v", err)
+	}
+	if len(metas) != 4 {
+		t.Fatalf("expected 4 tool metas, got %d", len(metas))
+	}
+	if metas[0].Name != "shell_exec" || metas[1].Name != "process_spawn" || metas[2].Name != "process_kill" || metas[3].Name != "process_list" {
+		t.Fatalf("unexpected tool metas: %#v", metas)
+	}
+}

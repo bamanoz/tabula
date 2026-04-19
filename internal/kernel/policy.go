@@ -39,7 +39,7 @@ func (pe *PolicyEngine) CanConnect(token string) (int, error) {
 	return entry.depth, nil
 }
 
-// CanJoin runs the session_start hook and returns (prompt, blocked).
+// CanJoin runs the session_start hook and returns (context, blocked).
 // Returns ("", true) if the hook blocks the join.
 func (pe *PolicyEngine) CanJoin(session string, clientName string) (string, bool) {
 	hookPayload, _ := json.Marshal(map[string]string{
@@ -51,12 +51,11 @@ func (pe *PolicyEngine) CanJoin(session string, clientName string) (string, bool
 		return "", true
 	}
 
-	prompt := pe.hub.systemPrompt
 	var hookData struct{ Context string }
 	if json.Unmarshal(result, &hookData) == nil && hookData.Context != "" {
-		prompt += "\n\n" + hookData.Context
+		return hookData.Context, false
 	}
-	return prompt, false
+	return "", false
 }
 
 // CanSend checks whether a client is allowed to send a message.
@@ -121,7 +120,7 @@ func (pe *PolicyEngine) CanUseTool(toolName string, toolID string, input json.Ra
 func (pe *PolicyEngine) CanSpawn(sender *Client, command string, toolID string, session string) error {
 	// Security hook (fail-closed).
 	hookPayload, _ := json.Marshal(map[string]string{
-		"tool": string(ToolSPAWN), "id": toolID, "command": command,
+		"tool": string(ToolProcessSpawn), "id": toolID, "command": command,
 	})
 	if _, ok := pe.hub.dispatchHook("before_spawn", hookPayload, session); !ok {
 		return &PolicyError{Reason: "spawn blocked by hook"}

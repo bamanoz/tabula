@@ -93,9 +93,9 @@ class TestProviderSelection(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             self._make_driver(home, "openai")
-            (home / "config" / "skills").mkdir(parents=True)
-            (home / "config" / "skills" / "driver-openai.toml").write_text(
-                'model = "gpt-5.4"\nbase_url = "https://api.openai.com/v1"\napi_key = { source = "store", id = "driver-openai.api_key" }\n',
+            (home / "config").mkdir(parents=True)
+            (home / "config" / "global.toml").write_text(
+                '[driver.openai]\nmodel = "gpt-5.4"\nbase_url = "https://api.openai.com/v1"\napi_key = { source = "store", id = "driver-openai.api_key" }\n',
                 encoding="utf-8",
             )
             (home / "secrets.json").write_text(json.dumps({"driver-openai.api_key": "sk-openai"}) + "\n", encoding="utf-8")

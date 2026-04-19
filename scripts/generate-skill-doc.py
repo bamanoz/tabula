@@ -2,8 +2,8 @@
 """Generate a standard SKILL.md scaffold from SKILL.config.json.
 
 Usage:
-    python3 scripts/generate-skill-doc.py skills/driver-openai
-    python3 scripts/generate-skill-doc.py skills/driver-openai --output skills/driver-openai/SKILL.generated.md
+    python3 scripts/generate-skill-doc.py distrib/main/skills/driver-openai
+    python3 scripts/generate-skill-doc.py distrib/main/skills/driver-openai --output distrib/main/skills/driver-openai/SKILL.generated.md
 """
 
 from __future__ import annotations

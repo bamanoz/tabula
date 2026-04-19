@@ -58,7 +58,10 @@ class SubagentRuntime:
         init_msg = self.conn.recv()
         if init_msg is None or init_msg.get("type") != MSG_INIT:
             raise RuntimeError("did not receive init")
-        prompt = init_msg.get("prompt", "") or build_subagent_system_prompt(provider=self.config.provider)
+        prompt = build_subagent_system_prompt(provider=self.config.provider)
+        context = init_msg.get("context", "").strip()
+        if context:
+            prompt += f"\n\n{context}"
         self.provider = self.provider_factory(prompt, init_msg.get("tools", []))
 
     def _run_active_task(self, text: str) -> str:

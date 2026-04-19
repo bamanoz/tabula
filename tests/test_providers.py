@@ -21,6 +21,7 @@ from skills.lib.providers import (
     kernel_to_openai_chat_tools,
     kernel_to_openai_tools,
 )
+from skills.lib import providers
 
 
 class TestKernelToOpenAITools(unittest.TestCase):
@@ -119,7 +120,7 @@ class TestOpenAIErrorReporting(unittest.TestCase):
             fp=io.BytesIO(b'{"error":{"message":"internal error"}}'),
         )
 
-        with patch("skills.lib.providers.urllib.request.urlopen", side_effect=err):
+        with patch.object(providers._HTTP_OPENER, "open", side_effect=err):
             with self.assertRaises(RuntimeError) as ctx:
                 session.generate(lambda _text: None)
 
@@ -153,25 +154,25 @@ class TestOpenAIStreamingState(unittest.TestCase):
             'data: {"type":"response.created","response":{"id":"resp_123"}}\n',
             '\n',
             'event: response.output_item.added\n',
-            'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"EXEC","arguments":""}}\n',
+            'data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"shell_exec","arguments":""}}\n',
             '\n',
             'event: response.function_call_arguments.done\n',
             'data: {"type":"response.function_call_arguments.done","item_id":"fc_1","arguments":"{\\"command\\":\\"pwd\\"}"}\n',
             '\n',
             'event: response.output_item.done\n',
-            'data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"EXEC","arguments":"{\\"command\\":\\"pwd\\"}"}}\n',
+            'data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"shell_exec","arguments":"{\\"command\\":\\"pwd\\"}"}}\n',
             '\n',
             'event: response.completed\n',
             'data: {"type":"response.completed","response":{"id":"resp_123","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}\n',
             '\n',
         ])
 
-        with patch("skills.lib.providers.urllib.request.urlopen", return_value=response):
+        with patch.object(providers._HTTP_OPENER, "open", return_value=response):
             outcome = session.generate(lambda _text: None)
 
         self.assertEqual(len(outcome.tool_calls), 1)
         self.assertEqual(outcome.tool_calls[0].id, "call_1")
-        self.assertEqual(outcome.tool_calls[0].name, "EXEC")
+        self.assertEqual(outcome.tool_calls[0].name, "shell_exec")
         self.assertEqual(outcome.tool_calls[0].input, {"command": "pwd"})
         self.assertEqual(
             session.last_response_output,
@@ -179,7 +180,7 @@ class TestOpenAIStreamingState(unittest.TestCase):
                 "type": "function_call",
                 "id": "fc_1",
                 "call_id": "call_1",
-                "name": "EXEC",
+                "name": "shell_exec",
                 "arguments": '{"command":"pwd"}',
                 "status": "completed",
             }],
@@ -206,7 +207,7 @@ class TestOpenAIChatCompletionsSession(unittest.TestCase):
             '\n',
         ])
 
-        with patch("skills.lib.providers.urllib.request.urlopen", return_value=response):
+        with patch.object(providers._HTTP_OPENER, "open", return_value=response):
             outcome = session.generate(lambda _text: None)
 
         self.assertEqual(len(outcome.tool_calls), 1)

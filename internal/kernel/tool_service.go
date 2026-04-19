@@ -36,13 +36,29 @@ func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 	msg.Input = effectiveInput
 
 	switch KernelTool(toolName) {
-	case ToolEXEC:
+	case ToolShellExec:
+		if !s.hub.IsBuiltinEnabled(ToolShellExec) {
+			s.hub.sendToolResult(session, toolID, fmt.Sprintf("ERROR: unknown tool %s", toolName))
+			return
+		}
 		s.handleExec(session, toolID, msg.Input)
-	case ToolSPAWN:
+	case ToolProcessSpawn:
+		if !s.hub.IsBuiltinEnabled(ToolProcessSpawn) {
+			s.hub.sendToolResult(session, toolID, fmt.Sprintf("ERROR: unknown tool %s", toolName))
+			return
+		}
 		s.handleSpawn(sender, toolID, msg.Input)
-	case ToolKILL:
+	case ToolProcessKill:
+		if !s.hub.IsBuiltinEnabled(ToolProcessKill) {
+			s.hub.sendToolResult(session, toolID, fmt.Sprintf("ERROR: unknown tool %s", toolName))
+			return
+		}
 		s.handleKill(session, toolID, msg.Input)
-	case ToolLIST:
+	case ToolProcessList:
+		if !s.hub.IsBuiltinEnabled(ToolProcessList) {
+			s.hub.sendToolResult(session, toolID, fmt.Sprintf("ERROR: unknown tool %s", toolName))
+			return
+		}
 		s.handleList(session, toolID)
 	default:
 		s.handleDynamicTool(session, toolID, toolName, msg.Input)
@@ -78,7 +94,7 @@ func (s *ToolService) handleSpawn(sender *Client, toolID string, input json.RawM
 
 	s.hub.sendToolResult(sender.session, toolID, fmt.Sprintf("PID %d", result.PID))
 	spawnHookPayload, _ := json.Marshal(map[string]any{
-		"tool": string(ToolSPAWN), "id": toolID, "command": parsed.Command, "pid": result.PID,
+		"tool": string(ToolProcessSpawn), "id": toolID, "command": parsed.Command, "pid": result.PID,
 	})
 	s.hub.dispatchHook("after_spawn", spawnHookPayload, sender.session)
 }

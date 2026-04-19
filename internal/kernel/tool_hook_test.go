@@ -25,7 +25,7 @@ func TestBeforeToolCallHookCanModifyToolInput(t *testing.T) {
 	go func() {
 		writeJSON(t, drv, Message{
 			Type:  "tool_use",
-			Name:  "EXEC",
+			Name:  "shell_exec",
 			ID:    "t-modify",
 			Input: json.RawMessage(`{"command":"echo original"}`),
 		})
@@ -41,7 +41,7 @@ func TestBeforeToolCallHookCanModifyToolInput(t *testing.T) {
 		ID:     hookMsg.ID,
 		Action: "modify",
 		Payload: json.RawMessage(`{
-			"tool":"EXEC",
+			"tool":"shell_exec",
 			"id":"t-modify",
 			"input":{"command":"echo rewritten"}
 		}`),

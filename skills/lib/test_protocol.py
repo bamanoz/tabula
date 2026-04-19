@@ -3,7 +3,10 @@
 
 import unittest
 
-import protocol
+try:
+    import protocol
+except ModuleNotFoundError:
+    from . import protocol
 
 
 class TestProtocolVersion(unittest.TestCase):
@@ -55,13 +58,24 @@ class TestHookActions(unittest.TestCase):
 
 class TestKernelTools(unittest.TestCase):
     def test_tool_constants(self):
-        for name in ["TOOL_EXEC", "TOOL_SPAWN", "TOOL_KILL", "TOOL_LIST"]:
+        for name in ["TOOL_SHELL_EXEC", "TOOL_PROCESS_SPAWN", "TOOL_PROCESS_KILL", "TOOL_PROCESS_LIST"]:
             val = getattr(protocol, name)
             self.assertIsInstance(val, str)
             self.assertTrue(len(val) > 0)
 
+    def test_expected_tool_names(self):
+        self.assertEqual(protocol.TOOL_SHELL_EXEC, "shell_exec")
+        self.assertEqual(protocol.TOOL_PROCESS_SPAWN, "process_spawn")
+        self.assertEqual(protocol.TOOL_PROCESS_KILL, "process_kill")
+        self.assertEqual(protocol.TOOL_PROCESS_LIST, "process_list")
+
     def test_no_duplicate_tool_names(self):
-        values = [protocol.TOOL_EXEC, protocol.TOOL_SPAWN, protocol.TOOL_KILL, protocol.TOOL_LIST]
+        values = [
+            protocol.TOOL_SHELL_EXEC,
+            protocol.TOOL_PROCESS_SPAWN,
+            protocol.TOOL_PROCESS_KILL,
+            protocol.TOOL_PROCESS_LIST,
+        ]
         self.assertEqual(len(values), len(set(values)))
 
 

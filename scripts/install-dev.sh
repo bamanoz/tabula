@@ -8,16 +8,59 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV="$TABULA_HOME/.venv"
 
+link_runtime_surface() {
+  local src_dir="$1"
+  local dst_dir="$2"
+  shift 2
+  local preserve=("$@")
+  mkdir -p "$dst_dir"
+  for existing in "$dst_dir"/*; do
+    [ -e "$existing" ] || continue
+    local keep=false
+    for name in "${preserve[@]}"; do
+      if [ "$(basename "$existing")" = "$name" ]; then
+        keep=true
+        break
+      fi
+    done
+    [ "$keep" = true ] && continue
+    rm -rf "$existing"
+  done
+  if [ -d "$src_dir" ]; then
+    for entry in "$src_dir"/*; do
+      [ -e "$entry" ] || continue
+      ln -sfn "../${entry#"$TABULA_HOME/"}" "$dst_dir/$(basename "$entry")"
+    done
+  fi
+}
+
 echo "Installing Tabula to $TABULA_HOME..."
 
 mkdir -p "$TABULA_HOME" "$BIN_DIR"
 
-# Boot scripts
-cp "$REPO_ROOT/boot.py" "$TABULA_HOME/"
+# Remove legacy root-level runtime layout from earlier installs.
+rm -rf \
+  "$TABULA_HOME/boot.py" \
+  "$TABULA_HOME/templates" \
+  "$TABULA_HOME/skills" \
+  "$TABULA_HOME/testing" \
+  "$TABULA_HOME/distrib"
+
 cp "$REPO_ROOT/examples/boot-cicd.py" "$TABULA_HOME/"
 
-# Templates
-rsync -a --delete "$REPO_ROOT/templates/" "$TABULA_HOME/templates/"
+# Shared skill library
+mkdir -p "$TABULA_HOME/skills"
+rsync -a --delete \
+  --exclude '__pycache__' \
+  --exclude '*.pyc' \
+  "$REPO_ROOT/skills/lib/" "$TABULA_HOME/skills/lib/"
+
+# Test/dev runtime skills
+mkdir -p "$TABULA_HOME/testing"
+rsync -a --delete \
+  --exclude '__pycache__' \
+  --exclude '*.pyc' \
+  "$REPO_ROOT/testing/skills/" "$TABULA_HOME/testing/skills/"
 
 # Global config
 mkdir -p "$TABULA_HOME/config"
@@ -27,58 +70,6 @@ fi
 
 # Service units
 rsync -a --delete "$REPO_ROOT/service/" "$TABULA_HOME/service/"
-
-# Skills
-rsync -a --delete \
-  --exclude '__pycache__' \
-  --exclude '*.pyc' \
-  --exclude '.venv' \
-  --exclude 'driver-mock' \
-  --exclude 'subagent-mock' \
-  "$REPO_ROOT/skills/" "$TABULA_HOME/skills/"
-
-# Bundles (optional thematic skill collections)
-# BUNDLES=all for everything, BUNDLES=caveman,foo for specific ones, empty = skip
-BUNDLES="${BUNDLES:-}"
-if [ -n "$BUNDLES" ]; then
-  if [ "$BUNDLES" = "all" ]; then
-    rsync -a --delete \
-      --exclude '__pycache__' \
-      --exclude '*.pyc' \
-      "$REPO_ROOT/bundles/" "$TABULA_HOME/bundles/"
-    echo "All bundles installed"
-  else
-    mkdir -p "$TABULA_HOME/bundles"
-    IFS=',' read -ra wanted <<< "$BUNDLES"
-    for name in "${wanted[@]}"; do
-      if [ -d "$REPO_ROOT/bundles/$name" ]; then
-        rsync -a --delete \
-          --exclude '__pycache__' \
-          --exclude '*.pyc' \
-          "$REPO_ROOT/bundles/$name/" "$TABULA_HOME/bundles/$name/"
-        echo "Bundle installed: $name"
-      else
-        echo "warning: bundle '$name' not found, skipping"
-      fi
-    done
-  fi
-fi
-
-# Symlink bundle skills into skills/ flat (remove stale symlinks first)
-for link in "$TABULA_HOME/skills"/*/; do
-  [ -L "${link%/}" ] && rm -f "${link%/}"
-done
-if [ -d "$TABULA_HOME/bundles" ]; then
-  for bundle in "$TABULA_HOME/bundles"/*/; do
-    [ -d "$bundle" ] || continue
-    bundle_name=$(basename "$bundle")
-    for skill in "$bundle"/*/; do
-      [ -d "$skill" ] || continue
-      skill_name=$(basename "$skill")
-      ln -sfn "../bundles/$bundle_name/$skill_name" "$TABULA_HOME/skills/$skill_name"
-    done
-  done
-fi
 
 # Memory directory (don't overwrite existing data)
 mkdir -p "$TABULA_HOME/memory"
@@ -103,10 +94,13 @@ if [ "$(uname)" = "Darwin" ]; then
 fi
 
 # Launch scripts
-for script in tabula-server tabula-api tabula-cli; do
+for script in tabula-server tabula-api tabula-cli tabula-install-distro; do
   cp "$REPO_ROOT/bin/$script" "$BIN_DIR/$script"
   chmod +x "$BIN_DIR/$script"
 done
+cp "$REPO_ROOT/scripts/install-distro.py" "$BIN_DIR/install-distro.py"
+
+"$VENV/bin/python3" "$BIN_DIR/install-distro.py" --home "$TABULA_HOME" "$REPO_ROOT/distrib/assistant"
 
 # Add to PATH
 SHELL_RC=""

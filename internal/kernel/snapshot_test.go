@@ -7,7 +7,7 @@ import (
 )
 
 func TestSnapshotSessionsUsesRecordedPID(t *testing.T) {
-	hub := NewHub("test system prompt", json.RawMessage(`[]`), nil, 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
 
 	sess := hub.sessions.GetOrCreate("s1")
 	sess.AddClient("driver")

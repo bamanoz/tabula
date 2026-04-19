@@ -9,77 +9,60 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent $ScriptDir
 $Venv = Join-Path $TabulaHome ".venv"
 
+function New-FlatRuntimeSurface {
+    param(
+        [string]$SourceDir,
+        [string]$DestDir,
+        [string]$TabulaHome,
+        [string[]]$Preserve = @()
+    )
+
+    New-Item -ItemType Directory -Force -Path $DestDir | Out-Null
+    Get-ChildItem -Force -Path $DestDir | ForEach-Object {
+        if ($Preserve -contains $_.Name) {
+            return
+        }
+        Remove-Item -Recurse -Force $_.FullName
+    }
+    if (-not (Test-Path $SourceDir)) {
+        return
+    }
+    Get-ChildItem -Force -Path $SourceDir | ForEach-Object {
+        $rel = $_.FullName.Substring($TabulaHome.Length + 1).Replace('\', '/')
+        $target = Join-Path $DestDir $_.Name
+        New-Item -ItemType Junction -Path $target -Target (Join-Path $TabulaHome $rel) | Out-Null
+    }
+}
+
 Write-Host "Installing Tabula to $TabulaHome..."
 
 New-Item -ItemType Directory -Force -Path $TabulaHome, $BinDir | Out-Null
 
-# Boot scripts
-Copy-Item (Join-Path $RepoRoot "boot.py") -Destination $TabulaHome -Force
+# Remove legacy root-level runtime layout from earlier installs.
+foreach ($legacy in @("boot.py", "templates", "skills", "testing", "distrib")) {
+    $legacyPath = Join-Path $TabulaHome $legacy
+    if (Test-Path $legacyPath) { Remove-Item -Recurse -Force $legacyPath }
+}
+
 Copy-Item (Join-Path $RepoRoot "examples" "boot-cicd.py") -Destination (Join-Path $TabulaHome "boot-cicd.py") -Force
 
-# Templates
-$TemplatesDest = Join-Path $TabulaHome "templates"
-if (Test-Path $TemplatesDest) { Remove-Item -Recurse -Force $TemplatesDest }
-Copy-Item (Join-Path $RepoRoot "templates") -Destination $TemplatesDest -Recurse -Force
+# Shared skill library
+$SkillsDest = Join-Path $TabulaHome "skills"
+if (Test-Path $SkillsDest) { Remove-Item -Recurse -Force $SkillsDest }
+New-Item -ItemType Directory -Force -Path $SkillsDest | Out-Null
+Copy-Item (Join-Path $RepoRoot "skills" "lib") -Destination (Join-Path $SkillsDest "lib") -Recurse -Force
+Get-ChildItem -Path $SkillsDest -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
+
+# Test/dev runtime skills
+$TestingDest = Join-Path $TabulaHome "testing"
+if (Test-Path $TestingDest) { Remove-Item -Recurse -Force $TestingDest }
+Copy-Item (Join-Path $RepoRoot "testing") -Destination $TestingDest -Recurse -Force
+Get-ChildItem -Path $TestingDest -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
 
 # Service units
 $ServiceDest = Join-Path $TabulaHome "service"
 if (Test-Path $ServiceDest) { Remove-Item -Recurse -Force $ServiceDest }
 Copy-Item (Join-Path $RepoRoot "service") -Destination $ServiceDest -Recurse -Force
-
-# Skills (mirror directory, exclude test/mock skills)
-$SkillsDest = Join-Path $TabulaHome "skills"
-if (Test-Path $SkillsDest) { Remove-Item -Recurse -Force $SkillsDest }
-Copy-Item (Join-Path $RepoRoot "skills") -Destination $SkillsDest -Recurse -Force
-# Remove mock skills
-Remove-Item -Recurse -Force (Join-Path $SkillsDest "driver-mock") -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force (Join-Path $SkillsDest "subagent-mock") -ErrorAction SilentlyContinue
-# Clean pycache
-Get-ChildItem -Path $SkillsDest -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
-
-# Bundles (optional thematic skill collections)
-# $env:BUNDLES = "all" for everything, "caveman,foo" for specific ones, empty = skip
-$Requested = $env:BUNDLES
-if ($Requested) {
-    $BundlesDest = Join-Path $TabulaHome "bundles"
-    if ($Requested -eq "all") {
-        if (Test-Path $BundlesDest) { Remove-Item -Recurse -Force $BundlesDest }
-        Copy-Item (Join-Path $RepoRoot "bundles") -Destination $BundlesDest -Recurse -Force
-        Get-ChildItem -Path $BundlesDest -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
-        Write-Host "All bundles installed"
-    } else {
-        New-Item -ItemType Directory -Force -Path $BundlesDest | Out-Null
-        $Wanted = $Requested -split ","
-        foreach ($name in $Wanted) {
-            $src = Join-Path $RepoRoot "bundles" $name
-            if (Test-Path $src) {
-                $dest = Join-Path $BundlesDest $name
-                if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
-                Copy-Item $src -Destination $dest -Recurse -Force
-                Get-ChildItem -Path $dest -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
-                Write-Host "Bundle installed: $name"
-            } else {
-                Write-Host "warning: bundle '$name' not found, skipping"
-            }
-        }
-    }
-}
-
-# Symlink bundle skills into skills/ (junctions)
-Get-ChildItem -Path $SkillsDest -Directory | Where-Object {
-    $_.Attributes -band [IO.FileAttributes]::ReparsePoint
-} | ForEach-Object { Remove-Item $_.FullName -Force }
-$BundlesDest = Join-Path $TabulaHome "bundles"
-if (Test-Path $BundlesDest) {
-    Get-ChildItem -Path $BundlesDest -Directory | ForEach-Object {
-        Get-ChildItem -Path $_.FullName -Directory | ForEach-Object {
-            $link = Join-Path $SkillsDest $_.Name
-            if (-not (Test-Path $link)) {
-                New-Item -ItemType Junction -Path $link -Target $_.FullName | Out-Null
-            }
-        }
-    }
-}
 
 # Memory directory (don't overwrite existing data)
 New-Item -ItemType Directory -Force -Path (Join-Path $TabulaHome "memory") | Out-Null
@@ -102,9 +85,13 @@ go build -o $BinPath ./cmd/tabula/
 Pop-Location
 
 # Launch scripts
-foreach ($script in @("tabula-server.ps1", "tabula-cli.ps1", "tabula-api.ps1")) {
+foreach ($script in @("tabula-server.ps1", "tabula-cli.ps1", "tabula-api.ps1", "tabula-install-distro.ps1")) {
     Copy-Item (Join-Path $RepoRoot "bin" $script) -Destination (Join-Path $BinDir $script) -Force
 }
+Copy-Item (Join-Path $RepoRoot "scripts" "install-distro.py") -Destination (Join-Path $BinDir "install-distro.py") -Force
+
+$PythonRuntime = Join-Path $Venv "Scripts" "python.exe"
+& $PythonRuntime (Join-Path $BinDir "install-distro.py") --home $TabulaHome (Join-Path $RepoRoot "distrib" "assistant")
 
 # Add to PATH
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")

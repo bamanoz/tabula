@@ -15,6 +15,9 @@ from pathlib import Path
 
 import websocket as ws_client
 
+from tests.runtime_harness import populate_installed_home
+from tests.runtime_harness import write_boot_script
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -27,21 +30,23 @@ def get_free_port() -> int:
 
 def setup_test_home(tabula_port: int, mock_config_toml: str | None = None) -> str:
     home = tempfile.mkdtemp(prefix="tabula-mock-e2e-")
-    shutil.copytree(ROOT / "skills", Path(home) / "skills")
-    shutil.copytree(ROOT / ".venv", Path(home) / ".venv", dirs_exist_ok=True)
-    (Path(home) / "tabula.yaml").write_text("boot: python3 boot.py\n")
-    (Path(home) / "boot.py").write_text(
-        "import json, sys\n"
-        "json.dump({\n"
-        f"  'url': 'ws://127.0.0.1:{tabula_port}/ws',\n"
-        "  'system_prompt': 'mock test prompt',\n"
-        "  'spawn': ['.venv/bin/python3 skills/driver-mock/run.py']\n"
-        "}, sys.stdout)\n"
+    home_path = Path(home)
+    populate_installed_home(home_path)
+    (home_path / "tabula.yaml").write_text("boot: python3 boot.py\n")
+    write_boot_script(
+        home_path,
+        tabula_port=tabula_port,
+        spawn=[".venv/bin/python3 testing/skills/driver-mock/run.py"],
     )
     if mock_config_toml is not None:
-        cfg_dir = Path(home) / "config" / "skills"
+        cfg_dir = Path(home) / "config"
         cfg_dir.mkdir(parents=True, exist_ok=True)
-        (cfg_dir / "driver-mock.toml").write_text(mock_config_toml, encoding="utf-8")
+        lines = [line for line in mock_config_toml.splitlines() if line.strip()]
+        mapped = []
+        for line in lines:
+            key, value = [part.strip() for part in line.split("=", 1)]
+            mapped.append(f"driver.mock.{key} = {value}")
+        (cfg_dir / "global.toml").write_text("\n".join(mapped) + "\n", encoding="utf-8")
     return home
 
 

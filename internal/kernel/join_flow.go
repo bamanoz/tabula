@@ -55,21 +55,21 @@ func (h *Hub) applyJoinPlan(c *Client, plan joinPlan) {
 }
 
 func (h *Hub) finalizeJoinPlan(c *Client, plan *joinPlan) {
-	prompt, blocked := h.policy.CanJoin(plan.session, c.name)
+	context, blocked := h.policy.CanJoin(plan.session, c.name)
 	if blocked {
 		plan.blockedReason = "session blocked by hook"
 		return
 	}
 
 	if c.canReceive(string(MsgInit)) {
-		plan.init = h.initMessage(prompt)
+		plan.init = h.initMessage(context)
 	}
 }
 
-func (h *Hub) initMessage(prompt string) *Message {
+func (h *Hub) initMessage(context string) *Message {
 	return &Message{
-		Type:   string(MsgInit),
-		Prompt: prompt,
-		Tools:  h.toolsJSON,
+		Type:    string(MsgInit),
+		Context: context,
+		Tools:   h.toolsJSON,
 	}
 }

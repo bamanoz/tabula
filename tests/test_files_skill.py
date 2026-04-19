@@ -16,7 +16,18 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from skills.files.run import tool_read_file, tool_str_replace, tool_write_file
+import importlib.util
+
+
+FILES_RUN_PATH = ROOT / "distrib" / "assistant" / "skills" / "files" / "run.py"
+spec = importlib.util.spec_from_file_location("tabula_files_run", FILES_RUN_PATH)
+_files = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(_files)
+
+tool_read_file = _files.tool_read_file
+tool_str_replace = _files.tool_str_replace
+tool_write_file = _files.tool_write_file
 
 
 class TestFilesSkill(unittest.TestCase):

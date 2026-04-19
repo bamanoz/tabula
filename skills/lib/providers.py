@@ -10,6 +10,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 
+_HTTP_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 @dataclass
 class ToolCall:
     id: str
@@ -298,7 +301,7 @@ class AnthropicSession(ProviderSession):
         )
 
         try:
-            resp = urllib.request.urlopen(req, timeout=300)
+            resp = _HTTP_OPENER.open(req, timeout=300)
         except urllib.error.HTTPError as err:
             raise RuntimeError(_http_error_message(err)) from err
         self._current_resp = resp
@@ -472,7 +475,7 @@ class OpenAISession(ProviderSession):
         )
 
         try:
-            resp = urllib.request.urlopen(req, timeout=300)
+            resp = _HTTP_OPENER.open(req, timeout=300)
         except urllib.error.HTTPError as err:
             raise RuntimeError(_http_error_message(err)) from err
         self._current_resp = resp
@@ -664,7 +667,7 @@ class OpenAIChatCompletionsSession(ProviderSession):
         )
 
         try:
-            resp = urllib.request.urlopen(req, timeout=120)
+            resp = _HTTP_OPENER.open(req, timeout=120)
             data = json.loads(resp.read())
             summary_text = (
                 data.get("choices", [{}])[0]
@@ -715,7 +718,7 @@ class OpenAIChatCompletionsSession(ProviderSession):
         )
 
         try:
-            resp = urllib.request.urlopen(req, timeout=300)
+            resp = _HTTP_OPENER.open(req, timeout=300)
         except urllib.error.HTTPError as err:
             raise RuntimeError(_http_error_message(err)) from err
         self._current_resp = resp
@@ -810,6 +813,8 @@ import re
 import shlex
 import sys
 
+from .paths import testing_skills_dir
+
 
 def _venv_python() -> str:
     """Return path to venv python, falling back to current interpreter."""
@@ -822,7 +827,7 @@ def _venv_python() -> str:
 
 class _MockState(enum.Enum):
     IDLE = "idle"
-    SPAWN = "spawn"
+    PROCESS_SPAWN = "process_spawn"
     TOOLS_SENT = "tools_sent"
     ENTER_COLLECTION = "enter_collection"
     FINISH = "finish"
@@ -891,7 +896,7 @@ class MockProvider(ProviderSession):
         for index, agent_id in enumerate(sorted(agent_ids), start=1):
             tool_id = f"spawn_{agent_id}"
             command = " ".join([
-                _venv_python(), "skills/subagent-mock/run.py",
+                _venv_python(), str(testing_skills_dir() / "subagent-mock" / "run.py"),
                 "--id", shlex.quote(agent_id),
                 "--parent-session", self._session,
                 "--task", shlex.quote(self._user_text),
@@ -899,7 +904,7 @@ class MockProvider(ProviderSession):
                 "--max-turns", str(self.config.mock_turns),
                 "--sleep-ms", str(self.config.mock_sleep_ms),
             ])
-            calls.append(ToolCall(id=tool_id, name="SPAWN", input={"command": command}))
+            calls.append(ToolCall(id=tool_id, name="process_spawn", input={"command": command}))
         return calls
 
     def _build_wave_agent_ids_for(self, wave_no: int) -> list[str]:
@@ -943,7 +948,7 @@ class MockProvider(ProviderSession):
                 self._output_buffer.append(
                     f"mock driver: wave {self._wave_no - 1} complete, launching next wave\n"
                 )
-                self._state = _MockState.SPAWN
+                self._state = _MockState.PROCESS_SPAWN
             else:
                 self._state = _MockState.FINISH
             return
@@ -960,7 +965,7 @@ class MockProvider(ProviderSession):
         self._output_buffer = []
         self._user_text, self._wave_counts = self._parse_request(text)
         self._wave_no = 1
-        self._state = _MockState.SPAWN
+        self._state = _MockState.PROCESS_SPAWN
 
     def add_tool_results(self, results: list[ToolResult]):
         for result in results:
@@ -974,7 +979,7 @@ class MockProvider(ProviderSession):
             self._state = _MockState.ENTER_COLLECTION
             return TurnOutcome(final_text="", tool_calls=[])
 
-        if self._state == _MockState.SPAWN:
+        if self._state == _MockState.PROCESS_SPAWN:
             agent_ids = self._build_wave_agent_ids()
             self._current_wave_ids = agent_ids
             count = self._wave_counts[self._wave_no - 1]

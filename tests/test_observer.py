@@ -15,9 +15,12 @@ from pathlib import Path
 
 import websocket as ws_client
 
+from tests.runtime_harness import populate_installed_home
+from tests.runtime_harness import write_boot_script
+
 
 ROOT = Path(__file__).resolve().parents[1]
-OBSERVER_SCRIPT = ROOT / "skills" / "observer" / "run.py"
+OBSERVER_SCRIPT = ROOT / "distrib" / "assistant" / "skills" / "observer" / "run.py"
 MODIFYING_HOOK_NAMES = {
     "before_message",
     "before_tool_call",
@@ -45,17 +48,10 @@ def get_free_port() -> int:
 
 def setup_test_home(tabula_port: int, observer_port: int) -> str:
     home = tempfile.mkdtemp(prefix="tabula-observer-")
-    shutil.copytree(ROOT / "skills", Path(home) / "skills")
-    shutil.copytree(ROOT / ".venv", Path(home) / ".venv", dirs_exist_ok=True)
+    home_path = Path(home)
+    populate_installed_home(home_path)
     boot_script = Path(home) / "boot.py"
-    boot_script.write_text(
-        "import json, sys\n"
-        "json.dump({\n"
-        f"  'url': 'ws://127.0.0.1:{tabula_port}/ws',\n"
-        "  'system_prompt': 'observer test prompt',\n"
-        "  'spawn': []\n"
-        "}, sys.stdout)\n"
-    )
+    write_boot_script(home_path, tabula_port=tabula_port, spawn=[])
     return home
 
 
@@ -376,15 +372,15 @@ def test_tool_call_count_tracked():
         conn.send(json.dumps({
             "type": "tool_use",
             "id": "exec-1",
-            "name": "EXEC",
+            "name": "shell_exec",
             "input": {"command": "printf observer-tool"},
         }))
         result = recv_msg(conn, timeout=10)
         assert result is not None and result["type"] == "tool_result", f"unexpected tool result: {result}"
 
-        metrics = wait_for(lambda: metrics_when_tool_calls(obs_port, "EXEC", 1), timeout=5)
-        assert metrics is not None, "observer did not record EXEC completion"
-        exec_metrics = metrics["tools"]["EXEC"]
+        metrics = wait_for(lambda: metrics_when_tool_calls(obs_port, "shell_exec", 1), timeout=5)
+        assert metrics is not None, "observer did not record shell_exec completion"
+        exec_metrics = metrics["tools"]["shell_exec"]
         assert exec_metrics["calls"] == 1
         assert exec_metrics["errors"] == 0
         print("  PASS: test_tool_call_count_tracked")
@@ -403,19 +399,19 @@ def test_tool_call_count_tracked():
 def test_spawn_tracking():
     """Observer tracks spawn events from after_spawn plus snapshot reconciliation.
 
-    The mock driver uses SPAWN tool, which fires after_spawn; /sessions fills alive state.
+    The mock driver uses process_spawn, which fires after_spawn; /sessions fills alive state.
     We boot with the mock driver spawned, then send it a message to trigger spawning.
     """
     port = get_free_port()
     obs_port = get_free_port()
     home = setup_test_home(port, obs_port)
-    # Boot script spawns mock driver which will use SPAWN tool.
+    # Boot script spawns mock driver which will use process_spawn.
     (Path(home) / "boot.py").write_text(
         "import json, sys\n"
         "json.dump({\n"
         f"  'url': 'ws://127.0.0.1:{port}/ws',\n"
-        "  'system_prompt': 'spawn test',\n"
-        f"  'spawn': ['.venv/bin/python3 skills/driver-mock/run.py --session main']\n"
+        f"  'spawn': ['.venv/bin/python3 testing/skills/driver-mock/run.py --session main'],\n"
+        "  'tools': []\n"
         "}, sys.stdout)\n"
     )
     kernel_proc = None

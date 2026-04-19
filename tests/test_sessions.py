@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SESSIONS_PATH = ROOT / "skills" / "sessions" / "run.py"
+SESSIONS_PATH = ROOT / "distrib" / "assistant" / "skills" / "sessions" / "run.py"
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))

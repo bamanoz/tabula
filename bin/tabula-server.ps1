@@ -29,6 +29,8 @@ function Load-TabulaEnv {
 Load-TabulaEnv
 
 if (-not $env:TABULA_BOOT) {
-    $env:TABULA_BOOT = "python `"$env:TABULA_HOME\boot.py`""
+    $VenvPython = Join-Path $env:TABULA_HOME ".venv" "Scripts" "python.exe"
+    $BootScript = Join-Path $env:TABULA_HOME "boot.py"
+    $env:TABULA_BOOT = "`"$VenvPython`" `"$BootScript`""
 }
 & (Join-Path $env:TABULA_HOME "bin" "tabula.exe") serve @args

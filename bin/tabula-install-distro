@@ -1,0 +1,10 @@
+#!/bin/bash
+set -euo pipefail
+
+TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
+PYTHON_BIN="$TABULA_HOME/.venv/bin/python3"
+if [ ! -x "$PYTHON_BIN" ]; then
+  PYTHON_BIN="python3"
+fi
+
+exec "$PYTHON_BIN" "$TABULA_HOME/bin/install-distro.py" --home "$TABULA_HOME" "$@"

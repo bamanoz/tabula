@@ -13,14 +13,14 @@ Requires Python 3.11+. Installs to `~/.tabula/` (override with `TABULA_HOME`).
 
 To install a specific version: `VERSION=v1.0.0 bash install.sh`
 
-To install with optional bundles: `BUNDLES=caveman bash install.sh`
+To install a different distro later: `tabula-install-distro <local-path-or-github-tree-url>`
 
 <details>
 <summary>Windows</summary>
 
 ```powershell
 irm https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.ps1 | iex
-# With bundles: $env:BUNDLES='caveman'; irm ... | iex
+# Install a different distro later: tabula-install-distro <local-path-or-github-tree-url>
 ```
 </details>
 
@@ -32,12 +32,12 @@ git clone https://github.com/bamanoz/tabula.git && cd tabula
 ./scripts/install-dev.sh    # macOS/Linux
 # or
 ./scripts/install-dev.ps1   # Windows
-# With bundles: BUNDLES=caveman ./scripts/install-dev.sh
+# Then optionally switch distro: tabula-install-distro <local-path-or-github-tree-url>
 ```
 
 Requires Go 1.26+ and Python 3.11+.
 
-Source install copies `boot.py`, `boot-cicd.py`, skills, templates, service units, and launchers into `TABULA_HOME`, then builds `bin/tabula`.
+Source install copies the assistant distro, builds a flat runtime surface in `TABULA_HOME` (`boot.py`, `templates/`, `skills/`), installs service units and launchers, and then builds `bin/tabula`.
 </details>
 
 <details>
@@ -53,7 +53,7 @@ Source install copies `boot.py`, `boot-cicd.py`, skills, templates, service unit
 ├── boot.py                 # Skill discovery & prompt assembly
 ├── boot-cicd.py            # Minimal CI/CD boot script
 ├── templates/              # System prompt templates
-├── skills/                 # Installed skills (+ symlinks to bundles)
+├── skills/                 # Installed flat runtime skills (+ shared lib + bundle links)
 ├── bundles/                # Optional skill bundles (if installed)
 ├── memory/                 # Persistent memory
 ├── logs/                   # Kernel logs
@@ -151,7 +151,7 @@ The kernel is a Go binary — a WebSocket server that routes messages between sk
 
 ### Bundles
 
-Bundles are optional thematic skill packages. They live in `bundles/` and are symlinked into `skills/` at install time, so the agent sees a flat layout.
+Bundles are optional thematic skill packages. They live in `bundles/`, and the installed runtime exposes selected bundle skills through the flat `skills/` surface.
 
 | Bundle | Skills | Description |
 |--------|--------|-------------|
@@ -163,10 +163,10 @@ Install with: `BUNDLES=caveman bash install.sh` or `BUNDLES=all` for everything.
 
 | Tool | Description |
 |------|-------------|
-| `EXEC` | Run a command, return stdout (capped at 16KB) |
-| `SPAWN` | Start a background process, return PID |
-| `KILL` | Stop a process by PID |
-| `LIST` | List spawned processes |
+| `shell_exec` | Run a shell command, return stdout (capped at 16KB) |
+| `process_spawn` | Start a background process, return PID |
+| `process_kill` | Stop a process by PID |
+| `process_list` | List spawned processes |
 
 ### API gateway
 

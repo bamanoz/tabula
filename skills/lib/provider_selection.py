@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from skills.lib import SkillConfigError, load_global_config, load_skill_config
+from skills.lib.paths import skills_dir
 
 
 PROVIDER_ALIASES = {
@@ -52,7 +53,10 @@ def normalize_provider(requested: str | None, *, default_provider: str | None = 
 
 
 def provider_skill_dir(provider: str, *, tabula_home: str | Path | None = None) -> Path:
-    return _tabula_home(tabula_home) / "skills" / f"driver-{provider}"
+    if tabula_home is not None:
+        home = _tabula_home(tabula_home)
+        return home / "skills" / f"driver-{provider}"
+    return skills_dir() / f"driver-{provider}"
 
 
 def provider_script_path(provider: str, *, tabula_home: str | Path | None = None) -> Path:

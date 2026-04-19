@@ -15,7 +15,7 @@ case "$LAYER" in
     exec "$PYTHON_BIN" -m pytest -m e2e tests -q
     ;;
   contract)
-    PYTHONPATH="skills/lib${PYTHONPATH:+:$PYTHONPATH}" exec "$PYTHON_BIN" -m pytest -m contract skills/lib/test_protocol.py skills/hook-permissions/test_permissions.py -q
+    PYTHONPATH="skills/lib${PYTHONPATH:+:$PYTHONPATH}" exec "$PYTHON_BIN" -m pytest -m contract skills/lib/test_protocol.py distrib/main/skills/hook-permissions/test_permissions.py -q
     ;;
   all)
     "$0" unit
@@ -25,7 +25,7 @@ case "$LAYER" in
     ;;
   list)
     "$PYTHON_BIN" -m pytest --collect-only tests -q
-    PYTHONPATH="skills/lib${PYTHONPATH:+:$PYTHONPATH}" exec "$PYTHON_BIN" -m pytest --collect-only skills/lib/test_protocol.py skills/hook-permissions/test_permissions.py -q
+    PYTHONPATH="skills/lib${PYTHONPATH:+:$PYTHONPATH}" exec "$PYTHON_BIN" -m pytest --collect-only skills/lib/test_protocol.py distrib/main/skills/hook-permissions/test_permissions.py -q
     ;;
   *)
     echo "usage: scripts/test-python.sh [unit|smoke|e2e|contract|all|list]" >&2

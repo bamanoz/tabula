@@ -12,17 +12,24 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
-GATEWAY_CLI_PATH = ROOT / "skills" / "gateway-cli" / "run.py"
+GATEWAY_CLI_PATH = ROOT / "distrib" / "assistant" / "skills" / "gateway-cli" / "run.py"
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
 def _load_gateway_cli_module():
+    old_env = dict(os.environ)
+    os.environ["TABULA_HOME"] = str(ROOT)
+    os.environ["TABULA_PROVIDER"] = "anthropic"
     spec = importlib.util.spec_from_file_location("tabula_gateway_cli_run", GATEWAY_CLI_PATH)
     mod = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
-    spec.loader.exec_module(mod)
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        os.environ.clear()
+        os.environ.update(old_env)
     return mod
 
 
@@ -43,7 +50,8 @@ class _FakeConn:
 class TestGatewayCliDriverSpawn(unittest.TestCase):
     def test_spawn_driver_requires_member_joined_after_pid(self):
         mod = _load_gateway_cli_module()
-        with patch.object(mod, "KernelConnection", return_value=_FakeConn([])):
+        with patch.dict(os.environ, {"TABULA_HOME": str(ROOT), "TABULA_PROVIDER": "anthropic"}, clear=False), \
+             patch.object(mod, "KernelConnection", return_value=_FakeConn([])):
             gateway = mod.Gateway(driver_cmd="python3 skills/driver-anthropic/run.py")
         gateway.session_id = "sess-test"
         gateway.conn = _FakeConn([
@@ -59,7 +67,8 @@ class TestGatewayCliDriverSpawn(unittest.TestCase):
 
     def test_spawn_driver_succeeds_after_pid_and_member_joined(self):
         mod = _load_gateway_cli_module()
-        with patch.object(mod, "KernelConnection", return_value=_FakeConn([])):
+        with patch.dict(os.environ, {"TABULA_HOME": str(ROOT), "TABULA_PROVIDER": "anthropic"}, clear=False), \
+             patch.object(mod, "KernelConnection", return_value=_FakeConn([])):
             gateway = mod.Gateway(driver_cmd="python3 skills/driver-anthropic/run.py")
         gateway.session_id = "sess-test"
         gateway.conn = _FakeConn([

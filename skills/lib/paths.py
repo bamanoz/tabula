@@ -23,6 +23,42 @@ def tabula_home() -> Path:
     return Path(os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula")))
 
 
+def distrib_assistant_dir() -> Path:
+    return tabula_home() / "distrib" / "assistant"
+
+
+def flat_boot_file() -> Path:
+    return tabula_home() / "boot.py"
+
+
+def distrib_assistant_boot_file() -> Path:
+    return distrib_assistant_dir() / "boot.py"
+
+
+def templates_dir() -> Path:
+    return tabula_home() / "templates"
+
+
+def distrib_assistant_templates_dir() -> Path:
+    return distrib_assistant_dir() / "templates"
+
+
+def skills_dir() -> Path:
+    return tabula_home() / "skills"
+
+
+def distrib_assistant_skills_dir() -> Path:
+    return distrib_assistant_dir() / "skills"
+
+
+def bundles_dir() -> Path:
+    return tabula_home() / "bundles"
+
+
+def testing_skills_dir() -> Path:
+    return tabula_home() / "testing" / "skills"
+
+
 def secrets_file() -> Path:
     return tabula_home() / "secrets.json"
 

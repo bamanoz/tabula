@@ -13,8 +13,11 @@ from pathlib import Path
 
 import websocket as ws_client
 
+from tests.flat_surface import reset_and_materialize_flat_surface
+
 
 ROOT = Path(__file__).resolve().parents[1]
+_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def get_free_port() -> int:
@@ -23,26 +26,45 @@ def get_free_port() -> int:
         return sock.getsockname()[1]
 
 
+def populate_installed_home(home_path: Path) -> None:
+    shutil.copytree(ROOT / "distrib", home_path / "distrib", symlinks=True)
+    shutil.copytree(ROOT / "skills", home_path / "skills", symlinks=True)
+    shutil.copytree(ROOT / "testing", home_path / "testing", symlinks=True)
+    shutil.copytree(ROOT / "bundles", home_path / "bundles", symlinks=True)
+    shutil.copytree(ROOT / ".venv", home_path / ".venv", dirs_exist_ok=True)
+    reset_and_materialize_flat_surface(home_path, source_root=home_path)
+
+
+def write_boot_script(
+    home_path: Path,
+    *,
+    tabula_port: int,
+    spawn: list[str],
+    tools: list[dict] | None = None,
+) -> None:
+    config = {
+        "url": f"ws://127.0.0.1:{tabula_port}/ws",
+        "spawn": spawn,
+        "tools": tools or [],
+    }
+    (home_path / "boot.py").write_text(
+        "import json, sys\n"
+        f"json.dump({config!r}, sys.stdout)\n",
+        encoding="utf-8",
+    )
+
+
 def create_test_home(
     tabula_port: int,
     *,
-    system_prompt: str,
     spawn: list[str],
     prefix: str = "tabula-runtime-smoke-",
 ) -> str:
     home = tempfile.mkdtemp(prefix=prefix)
     home_path = Path(home)
-    shutil.copytree(ROOT / "skills", home_path / "skills")
-    shutil.copytree(ROOT / ".venv", home_path / ".venv", dirs_exist_ok=True)
+    populate_installed_home(home_path)
     (home_path / "tabula.yaml").write_text("boot: python3 boot.py\n")
-    (home_path / "boot.py").write_text(
-        "import json, sys\n"
-        "json.dump({\n"
-        f"  'url': 'ws://127.0.0.1:{tabula_port}/ws',\n"
-        f"  'system_prompt': {json.dumps(system_prompt)},\n"
-        f"  'spawn': {json.dumps(spawn)}\n"
-        "}, sys.stdout)\n"
-    )
+    write_boot_script(home_path, tabula_port=tabula_port, spawn=spawn)
     return home
 
 
@@ -50,7 +72,7 @@ def start_kernel(home: str, tabula_port: int, *, extra_env: dict[str, str] | Non
     env = os.environ.copy()
     env["TABULA_HOME"] = home
     env["TABULA_URL"] = f"ws://127.0.0.1:{tabula_port}/ws"
-    env["TABULA_BOOT"] = f"python3 {Path(home) / 'boot.py'}"
+    env["TABULA_BOOT"] = "python3 boot.py"
     env["TABULA_PROVIDER"] = env.get("TABULA_PROVIDER", "mock")
     if extra_env:
         env.update(extra_env)
@@ -119,7 +141,7 @@ def wait_for_session_client(
     last_error = None
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=1) as response:
+            with _NO_PROXY_OPENER.open(url, timeout=1) as response:
                 snapshot = json.loads(response.read().decode("utf-8"))
             clients = snapshot.get(session, {}).get("clients", [])
             if client_name in clients:
