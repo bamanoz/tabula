@@ -184,7 +184,7 @@ def _make_driver_runtime(history_entries: list[dict], system_prompt: str = "test
     from skills.lib.driver_runtime import DriverRuntime, DriverConfig
 
     tmpdir = tempfile.mkdtemp(prefix="tabula-test-")
-    session_dir = Path(tmpdir) / "sessions" / "test-session"
+    session_dir = Path(tmpdir) / "data" / "sessions" / "test-session"
     session_dir.mkdir(parents=True)
     history_path = session_dir / "history.jsonl"
 

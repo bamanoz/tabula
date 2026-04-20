@@ -7,10 +7,61 @@ import shutil
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
-# Import boot module from repo root
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-import boot
+from tests.flat_surface import materialize_flat_surface
+
+ROOT = os.path.join(os.path.dirname(__file__), "..")
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+
+def _load_boot_module():
+    import importlib.util
+    import types
+
+    root = os.path.abspath(ROOT)
+    materialize_flat_surface(Path(root), source_root=Path(root))
+    old_env = dict(os.environ)
+    os.environ["TABULA_HOME"] = root
+    os.environ["TABULA_PROVIDER"] = os.environ.get("TABULA_PROVIDER", "openai")
+
+    for name in list(sys.modules.keys()):
+        if name == "skills" or (name.startswith("skills.") and not name.startswith("skills.lib")):
+            sys.modules.pop(name, None)
+
+    skills_pkg = types.ModuleType("skills")
+    skills_pkg.__path__ = [os.path.join(root, "skills")]
+    sys.modules["skills"] = skills_pkg
+
+    if "skills.lib" in sys.modules:
+        lib_mod = sys.modules["skills.lib"]
+    else:
+        lib_init = os.path.join(root, "skills", "lib", "__init__.py")
+        lib_spec = importlib.util.spec_from_file_location(
+            "skills.lib",
+            lib_init,
+            submodule_search_locations=[os.path.join(root, "skills", "lib")],
+        )
+        lib_mod = importlib.util.module_from_spec(lib_spec)
+        assert lib_spec.loader is not None
+        sys.modules["skills.lib"] = lib_mod
+        lib_spec.loader.exec_module(lib_mod)
+    skills_pkg.lib = lib_mod
+
+    boot_path = os.path.join(ROOT, "distrib", "assistant", "boot.py")
+    spec = importlib.util.spec_from_file_location("tabula_main_boot", boot_path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        os.environ.clear()
+        os.environ.update(old_env)
+    return mod
+
+
+boot = _load_boot_module()
 
 
 class BootTestBase(unittest.TestCase):
@@ -187,7 +238,7 @@ class TestDiscoverSkillTools(BootTestBase):
         self.assertEqual(tools[0]["description"], "Second")
 
     def test_kernel_tool_collision(self):
-        self._write_skill("bad", '---\ntools: [{"name": "EXEC", "description": "Oops"}]\n---\n')
+        self._write_skill("bad", '---\ntools: [{"name": "shell_exec", "description": "Oops"}]\n---\n')
         tools = boot.discover_skill_tools()
         self.assertEqual(len(tools), 0)
 
@@ -320,7 +371,8 @@ class TestLoadPermissions(BootTestBase):
     def setUp(self):
         super().setUp()
         self._orig_perm_file = boot.PERMISSIONS_FILE
-        self.perm_file = os.path.join(self.tmpdir, "permissions.json")
+        self.perm_file = os.path.join(self.tmpdir, "config", "skills", "hook-permissions", "permissions.json")
+        os.makedirs(os.path.dirname(self.perm_file), exist_ok=True)
         boot.PERMISSIONS_FILE = self.perm_file
 
     def tearDown(self):
@@ -330,12 +382,12 @@ class TestLoadPermissions(BootTestBase):
     def test_valid(self):
         with open(self.perm_file, "w") as f:
             json.dump({"rules": [
-                {"tool": "EXEC", "command": "rm *", "effect": "deny"},
+                {"tool": "shell_exec", "command": "rm *", "effect": "deny"},
                 {"tool": "*", "effect": "allow"},
             ]}, f)
         rules = boot.load_permissions()
         self.assertEqual(len(rules), 2)
-        self.assertEqual(rules[0]["tool"], "EXEC")
+        self.assertEqual(rules[0]["tool"], "shell_exec")
         self.assertEqual(rules[0]["effect"], "deny")
 
     def test_missing(self):
@@ -360,7 +412,7 @@ class TestFilterDeniedTools(unittest.TestCase):
         tools = [
             {"name": "write_file", "description": "Write"},
             {"name": "read_file", "description": "Read"},
-            {"name": "EXEC", "description": "Exec"},
+            {"name": "shell_exec", "description": "Exec"},
         ]
         perms = [
             {"tool": "write_file", "effect": "deny"},
@@ -370,17 +422,17 @@ class TestFilterDeniedTools(unittest.TestCase):
         names = [t["name"] for t in filtered]
         self.assertNotIn("write_file", names)
         self.assertIn("read_file", names)
-        self.assertIn("EXEC", names)
+        self.assertIn("shell_exec", names)
 
     def test_keeps_conditional_deny(self):
-        tools = [{"name": "EXEC", "description": "Exec"}]
+        tools = [{"name": "shell_exec", "description": "Exec"}]
         perms = [
-            {"tool": "EXEC", "command": "rm *", "effect": "deny"},
+            {"tool": "shell_exec", "command": "rm *", "effect": "deny"},
             {"tool": "*", "effect": "allow"},
         ]
         filtered = boot.filter_denied_tools(tools, perms)
         self.assertEqual(len(filtered), 1)
-        self.assertEqual(filtered[0]["name"], "EXEC")
+        self.assertEqual(filtered[0]["name"], "shell_exec")
 
     def test_glob_deny(self):
         tools = [
@@ -394,7 +446,7 @@ class TestFilterDeniedTools(unittest.TestCase):
         self.assertEqual(names, ["read_file"])
 
     def test_empty_permissions(self):
-        tools = [{"name": "EXEC", "description": "Exec"}]
+        tools = [{"name": "shell_exec", "description": "Exec"}]
         filtered = boot.filter_denied_tools(tools, [])
         self.assertEqual(len(filtered), 1)
 
@@ -403,7 +455,8 @@ class TestBuildSpawnPermissions(BootTestBase):
     def setUp(self):
         super().setUp()
         self._orig_perm_file = boot.PERMISSIONS_FILE
-        self.perm_file = os.path.join(self.tmpdir, "permissions.json")
+        self.perm_file = os.path.join(self.tmpdir, "config", "skills", "hook-permissions", "permissions.json")
+        os.makedirs(os.path.dirname(self.perm_file), exist_ok=True)
         boot.PERMISSIONS_FILE = self.perm_file
 
     def tearDown(self):
@@ -425,6 +478,101 @@ class TestBuildSpawnPermissions(BootTestBase):
         procs = boot.build_spawn()
         perm_procs = [p for p in procs if "hook-permissions" in p]
         self.assertEqual(len(perm_procs), 0)
+
+
+class TestBootConfigShape(unittest.TestCase):
+    def test_config_shape_has_no_system_prompt(self):
+        config = {
+            "url": "ws://localhost:8089/ws",
+            "spawn": [],
+            "kernel_tools": ["shell_exec", "process_spawn", "process_kill", "process_list"],
+            "tools": [],
+            "commands": [],
+        }
+        self.assertNotIn("system_prompt", config)
+
+    def test_default_kernel_tools_exposed(self):
+        self.assertEqual(boot.discover_kernel_tools(), ["shell_exec", "process_spawn", "process_kill", "process_list"])
+
+    def test_kernel_tools_can_be_restricted_by_env(self):
+        old = os.environ.get("TABULA_KERNEL_TOOLS")
+        try:
+            os.environ["TABULA_KERNEL_TOOLS"] = "shell_exec,process_list"
+            self.assertEqual(boot.discover_kernel_tools(), ["shell_exec", "process_list"])
+        finally:
+            if old is None:
+                os.environ.pop("TABULA_KERNEL_TOOLS", None)
+            else:
+                os.environ["TABULA_KERNEL_TOOLS"] = old
+
+    def test_unknown_kernel_tool_fails_strictly(self):
+        old = os.environ.get("TABULA_KERNEL_TOOLS")
+        try:
+            os.environ["TABULA_KERNEL_TOOLS"] = "shell_exec,nope_tool"
+            with self.assertRaises(SystemExit) as ctx:
+                boot.discover_kernel_tools()
+            self.assertIn("unknown kernel tool(s): nope_tool", str(ctx.exception))
+        finally:
+            if old is None:
+                os.environ.pop("TABULA_KERNEL_TOOLS", None)
+            else:
+                os.environ["TABULA_KERNEL_TOOLS"] = old
+
+    def test_discover_slash_commands_hides_incompatible_skills(self):
+        old = os.environ.get("TABULA_KERNEL_TOOLS")
+        try:
+            os.environ["TABULA_KERNEL_TOOLS"] = "shell_exec"
+            commands = boot.discover_slash_commands()
+            names = {cmd["name"] for cmd in commands}
+            self.assertNotIn("timer", names)
+            self.assertNotIn("subagent-openai", names)
+            self.assertNotIn("subagent-anthropic", names)
+        finally:
+            if old is None:
+                os.environ.pop("TABULA_KERNEL_TOOLS", None)
+            else:
+                os.environ["TABULA_KERNEL_TOOLS"] = old
+
+
+class TestLoadEnv(BootTestBase):
+    def setUp(self):
+        super().setUp()
+        self._orig_tabula_home = boot.TABULA_HOME
+        self._orig_provider = os.environ.get("TABULA_PROVIDER")
+        self._orig_model = os.environ.get("OPENAI_MODEL")
+        boot.TABULA_HOME = self.tmpdir
+
+    def tearDown(self):
+        boot.TABULA_HOME = self._orig_tabula_home
+        if self._orig_provider is None:
+            os.environ.pop("TABULA_PROVIDER", None)
+        else:
+            os.environ["TABULA_PROVIDER"] = self._orig_provider
+        if self._orig_model is None:
+            os.environ.pop("OPENAI_MODEL", None)
+        else:
+            os.environ["OPENAI_MODEL"] = self._orig_model
+        super().tearDown()
+
+    def test_load_env_populates_missing_values(self):
+        with open(os.path.join(self.tmpdir, ".env"), "w") as f:
+            f.write("TABULA_PROVIDER=openai\nOPENAI_MODEL=gpt-5.4\n")
+
+        os.environ.pop("TABULA_PROVIDER", None)
+        os.environ.pop("OPENAI_MODEL", None)
+        boot.load_env()
+
+        self.assertEqual(os.environ.get("TABULA_PROVIDER"), "openai")
+        self.assertEqual(os.environ.get("OPENAI_MODEL"), "gpt-5.4")
+
+    def test_load_env_does_not_override_existing_shell_env(self):
+        with open(os.path.join(self.tmpdir, ".env"), "w") as f:
+            f.write("TABULA_PROVIDER=anthropic\n")
+
+        os.environ["TABULA_PROVIDER"] = "openai"
+        boot.load_env()
+
+        self.assertEqual(os.environ.get("TABULA_PROVIDER"), "openai")
 
 
 if __name__ == "__main__":

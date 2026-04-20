@@ -76,6 +76,9 @@ func serveCmd() int {
 		tabulaHome = filepath.Join(home, ".tabula")
 	}
 
+	// Load .env before reading any other configuration.
+	loadEnvFile(filepath.Join(tabulaHome, ".env"))
+
 	// Setup structured logging
 	logFile := os.Getenv("TABULA_LOG_FILE")
 	if logFile == "" {
@@ -97,7 +100,7 @@ func serveCmd() int {
 	slog.Info("working directory", "path", tabulaHome)
 
 	// Restore full PATH from install-time snapshot
-	savedPath := readEnvKey(filepath.Join(tabulaHome, ".env"), "TABULA_PATH")
+	savedPath := os.Getenv("TABULA_PATH")
 	if savedPath != "" {
 		os.Setenv("PATH", savedPath)
 		slog.Info("PATH restored from TABULA_PATH", "path", savedPath)
@@ -117,11 +120,11 @@ func serveCmd() int {
 		fmt.Fprintf(os.Stderr, "error: boot failed: %v\n", err)
 		return 1
 	}
-	slog.Info("boot config loaded", "url", bootConfig.URL, "prompt_bytes", len(bootConfig.SystemPrompt), "spawn_count", len(bootConfig.Spawn))
+	slog.Info("boot config loaded", "url", bootConfig.URL, "spawn_count", len(bootConfig.Spawn))
 
 	// Load and merge tools
-	var kernelTools []json.RawMessage
-	if err := json.Unmarshal(embeddedToolsJSON, &kernelTools); err != nil {
+	kernelTools, err := filterKernelTools(embeddedToolsJSON, bootConfig.KernelTools)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: invalid embedded kernel.tools.json: %v\n", err)
 		return 1
 	}
@@ -171,7 +174,7 @@ func serveCmd() int {
 	slog.Info("initializing kernel")
 	maxSpawnDepth := envInt("TABULA_MAX_SPAWN_DEPTH", 3)
 	maxChildren := envInt("TABULA_MAX_CHILDREN_PER_SESSION", 5)
-	hub := kernel.NewHub(bootConfig.SystemPrompt, toolsJSON, skillExec, maxSpawnDepth, maxChildren, logger.Logger)
+	hub := kernel.NewHub(toolsJSON, skillExec, maxSpawnDepth, maxChildren, logger.Logger)
 	hub.StartReaper()
 
 	// Start HTTP/WebSocket server
@@ -285,6 +288,8 @@ func runCmd(args []string) int {
 		tabulaHome = filepath.Join(home, ".tabula")
 	}
 
+	loadEnvFile(filepath.Join(tabulaHome, ".env"))
+
 	// Setup logging.
 	logFile := os.Getenv("TABULA_LOG_FILE")
 	if logFile == "" {
@@ -305,7 +310,7 @@ func runCmd(args []string) int {
 	}
 
 	// Restore PATH.
-	savedPath := readEnvKey(filepath.Join(tabulaHome, ".env"), "TABULA_PATH")
+	savedPath := os.Getenv("TABULA_PATH")
 	if savedPath != "" {
 		os.Setenv("PATH", savedPath)
 	}
@@ -325,8 +330,8 @@ func runCmd(args []string) int {
 	}
 
 	// Load tools.
-	var kernelTools []json.RawMessage
-	if err := json.Unmarshal(embeddedToolsJSON, &kernelTools); err != nil {
+	kernelTools, err := filterKernelTools(embeddedToolsJSON, bootConfig.KernelTools)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: invalid embedded kernel.tools.json: %v\n", err)
 		return 1
 	}
@@ -374,7 +379,7 @@ func runCmd(args []string) int {
 	// Init hub.
 	maxSpawnDepth := envInt("TABULA_MAX_SPAWN_DEPTH", 3)
 	maxChildren := envInt("TABULA_MAX_CHILDREN_PER_SESSION", 5)
-	hub := kernel.NewHub(bootConfig.SystemPrompt, toolsJSON, skillExec, maxSpawnDepth, maxChildren, logger.Logger)
+	hub := kernel.NewHub(toolsJSON, skillExec, maxSpawnDepth, maxChildren, logger.Logger)
 	hub.StartReaper()
 
 	// Start HTTP/WebSocket server (driver needs WebSocket).
@@ -534,6 +539,18 @@ type skillToolExec struct {
 	Exec string `json:"exec"`
 }
 
+type toolMeta struct {
+	Name string `json:"name"`
+}
+
+func loadToolMetas(raw json.RawMessage) ([]toolMeta, error) {
+	var parsed []toolMeta
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, err
+	}
+	return parsed, nil
+}
+
 func parseSkillExecMap(raw json.RawMessage) ([]skillToolExec, error) {
 	var parsed []skillToolExec
 	if err := json.Unmarshal(raw, &parsed); err != nil {
@@ -542,30 +559,70 @@ func parseSkillExecMap(raw json.RawMessage) ([]skillToolExec, error) {
 	return parsed, nil
 }
 
-// readEnvKey reads a single KEY=VALUE from a .env file.
-func readEnvKey(path, key string) string {
+// loadEnvFile loads KEY=VALUE entries from a .env file without overriding shell env.
+func loadEnvFile(path string) {
 	f, err := os.Open(path)
 	if err != nil {
-		return ""
+		return
 	}
 	defer f.Close()
-	prefix := key + "="
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(line, prefix) {
-			return line[len(prefix):]
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
 		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if _, exists := os.LookupEnv(key); exists {
+			continue
+		}
+		os.Setenv(key, strings.TrimSpace(value))
 	}
-	return ""
 }
 
 // BootConfig holds the parsed output of the boot script.
 type BootConfig struct {
-	URL          string          `json:"url"`
-	SystemPrompt string          `json:"system_prompt"`
-	Spawn        []string        `json:"spawn"`
-	Tools        json.RawMessage `json:"tools"`
+	URL         string          `json:"url"`
+	Spawn       []string        `json:"spawn"`
+	KernelTools []string        `json:"kernel_tools"`
+	Tools       json.RawMessage `json:"tools"`
+}
+
+func filterKernelTools(raw json.RawMessage, enabled []string) ([]json.RawMessage, error) {
+	allowed := map[string]bool{}
+	if len(enabled) == 0 {
+		enabled = []string{"shell_exec", "process_spawn", "process_kill", "process_list"}
+	}
+	for _, name := range enabled {
+		allowed[strings.TrimSpace(name)] = true
+	}
+
+	var all []json.RawMessage
+	if err := json.Unmarshal(raw, &all); err != nil {
+		return nil, err
+	}
+	metas, err := loadToolMetas(raw)
+	if err != nil {
+		return nil, err
+	}
+	if len(metas) != len(all) {
+		return nil, fmt.Errorf("kernel tool metadata count mismatch")
+	}
+
+	filtered := make([]json.RawMessage, 0, len(all))
+	for i, item := range all {
+		if allowed[metas[i].Name] {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered, nil
 }
 
 // runBoot executes the boot command and parses its JSON output.

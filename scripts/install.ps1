@@ -54,6 +54,46 @@ function Check-Python {
     return $py
 }
 
+function Install-PythonDeps {
+    $RequirementsUrl = "https://raw.githubusercontent.com/$Repo/$Version/scripts/requirements-runtime.txt"
+    $RequirementsPath = Join-Path $TmpDir "requirements-runtime.txt"
+
+    Info "Installing Python dependencies..."
+    $Pip = Join-Path $Venv "Scripts" "pip.exe"
+    & $Pip install -q --upgrade pip
+    try {
+        Invoke-WebRequest $RequirementsUrl -OutFile $RequirementsPath
+        & $Pip install -q -r $RequirementsPath
+    } catch {
+        & $Pip install -q websocket-client prompt_toolkit rich
+    }
+    Ok "Python dependencies installed"
+}
+
+function New-FlatRuntimeSurface {
+    param(
+        [string]$SourceDir,
+        [string]$DestDir,
+        [string]$TabulaHome,
+        [string[]]$Preserve = @()
+    )
+
+    New-Item -ItemType Directory -Force -Path $DestDir | Out-Null
+    Get-ChildItem -Force -Path $DestDir | ForEach-Object {
+        if ($Preserve -contains $_.Name) {
+            return
+        }
+        Remove-Item -Recurse -Force $_.FullName
+    }
+    if (-not (Test-Path $SourceDir)) {
+        return
+    }
+    Get-ChildItem -Force -Path $SourceDir | ForEach-Object {
+        $target = Join-Path $DestDir $_.Name
+        New-Item -ItemType Junction -Force -Path $target -Target $_.FullName | Out-Null
+    }
+}
+
 # ── Service install ─────────────────────────────────────────────
 
 function Install-Service {
@@ -119,7 +159,13 @@ try {
 
     # Install
     Info "Installing to $TabulaHome..."
-    New-Item -ItemType Directory -Force -Path $TabulaHome, $BinDir, (Join-Path $TabulaHome "memory") | Out-Null
+    New-Item -ItemType Directory -Force -Path $TabulaHome, $BinDir | Out-Null
+
+    # Remove legacy root-level runtime layout from older installs.
+    foreach ($legacy in @("boot.py", "templates", "distrib", "skills", "testing")) {
+        $legacyPath = Join-Path $TabulaHome $legacy
+        if (Test-Path $legacyPath) { Remove-Item -Recurse -Force $legacyPath }
+    }
 
     # Extract binary from zip
     Expand-Archive -Path (Join-Path $TmpDir $BinaryArchive) -DestinationPath $TmpDir -Force
@@ -136,50 +182,17 @@ try {
 
     # Extract skills tarball
     tar -xzf (Join-Path $TmpDir $SkillsArchive) -C $TabulaHome
+    $BootCicd = Join-Path $TabulaHome "examples" "boot-cicd.py"
+    if (Test-Path $BootCicd) {
+        Copy-Item $BootCicd -Destination (Join-Path $TabulaHome "boot-cicd.py") -Force
+    }
+    $InstalledBinDir = Join-Path $TabulaHome "bin"
+    Copy-Item (Join-Path $InstalledBinDir "tabula-install-distro.ps1") -Destination (Join-Path $BinDir "tabula-install-distro.ps1") -Force -ErrorAction SilentlyContinue
+    Copy-Item (Join-Path $TabulaHome "scripts" "install-distro.py") -Destination (Join-Path $BinDir "install-distro.py") -Force
+    Copy-Item (Join-Path $TabulaHome "distrib" "assistant" "boot.py") -Destination (Join-Path $TabulaHome "boot.py") -Force
+    New-FlatRuntimeSurface -SourceDir (Join-Path $TabulaHome "distrib" "assistant" "templates") -DestDir (Join-Path $TabulaHome "templates") -TabulaHome $TabulaHome
+    New-FlatRuntimeSurface -SourceDir (Join-Path $TabulaHome "distrib" "assistant" "skills") -DestDir (Join-Path $TabulaHome "skills") -TabulaHome $TabulaHome -Preserve @("lib")
     Ok "Skills and config installed"
-
-    # Install bundles (optional)
-    $BundlesDir = Join-Path $TabulaHome "bundles"
-    $Requested = $env:BUNDLES
-    if (-not $Requested) {
-        # No bundles requested — remove any that were unpacked
-        if (Test-Path $BundlesDir) { Remove-Item -Recurse -Force $BundlesDir }
-    } elseif ($Requested -ne "all") {
-        # Keep only requested bundles
-        $Wanted = $Requested -split ","
-        if (Test-Path $BundlesDir) {
-            Get-ChildItem -Path $BundlesDir -Directory | ForEach-Object {
-                if ($_.Name -notin $Wanted) {
-                    Remove-Item -Recurse -Force $_.FullName
-                }
-            }
-            # Remove bundles dir if empty
-            if (-not (Get-ChildItem -Path $BundlesDir -Directory)) {
-                Remove-Item -Force $BundlesDir -ErrorAction SilentlyContinue
-            }
-        }
-    }
-    if ((Test-Path $BundlesDir) -and (Get-ChildItem -Path $BundlesDir -Directory)) {
-        $installed = (Get-ChildItem -Path $BundlesDir -Directory).Name -join ", "
-        Ok "Bundles installed: $installed"
-    }
-
-    # Symlink bundle skills into skills/ (junctions, no admin required)
-    $SkillsDir = Join-Path $TabulaHome "skills"
-    Get-ChildItem -Path $SkillsDir -Directory | Where-Object {
-        $_.Attributes -band [IO.FileAttributes]::ReparsePoint
-    } | ForEach-Object { Remove-Item $_.FullName -Force }
-    if (Test-Path $BundlesDir) {
-        Get-ChildItem -Path $BundlesDir -Directory | ForEach-Object {
-            $bundleName = $_.Name
-            Get-ChildItem -Path $_.FullName -Directory | ForEach-Object {
-                $link = Join-Path $SkillsDir $_.Name
-                if (-not (Test-Path $link)) {
-                    New-Item -ItemType Junction -Path $link -Target $_.FullName | Out-Null
-                }
-            }
-        }
-    }
 
     # Restore user config if it existed
     if ($HadConfig) {
@@ -194,14 +207,13 @@ try {
         & $Python -m venv $Venv
     }
 
-    Info "Installing Python dependencies..."
-    $Pip = Join-Path $Venv "Scripts" "pip.exe"
-    & $Pip install -q --upgrade pip
-    & $Pip install -q websocket-client prompt_toolkit rich
-    Ok "Python dependencies installed"
+    Install-PythonDeps
+
+    $PythonRuntime = Join-Path $Venv "Scripts" "python.exe"
+    & $PythonRuntime (Join-Path $BinDir "install-distro.py") --home $TabulaHome (Join-Path $TabulaHome "distrib" "assistant")
 
     # Copy PowerShell launch scripts
-    foreach ($script in @("tabula-server.ps1", "tabula-cli.ps1", "tabula-api.ps1")) {
+    foreach ($script in @("tabula-server.ps1", "tabula-cli.ps1", "tabula-api.ps1", "tabula-install-distro.ps1")) {
         $src = Join-Path $TabulaHome "bin" $script
         if (Test-Path $src) {
             Copy-Item $src -Destination (Join-Path $BinDir $script) -Force
@@ -242,11 +254,9 @@ try {
     Write-Host "Add your API key to $EnvFile :"
     Write-Host "  echo ANTHROPIC_API_KEY=sk-... >> $EnvFile"
     Write-Host ""
-    if (-not $env:BUNDLES) {
-        Write-Host "Optional bundles (caveman, etc.):"
-        Write-Host "  `$env:BUNDLES='caveman'; irm ... | iex"
-        Write-Host ""
-    }
+    Write-Host "Install a different distro later:"
+    Write-Host "  tabula-install-distro <local-path-or-github-tree-url>"
+    Write-Host ""
     Write-Host "Then connect:"
     Write-Host "  tabula-cli"
     Write-Host ""

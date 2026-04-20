@@ -1,0 +1,27 @@
+{
+  "id": "sessions",
+  "config": {
+    "entries": [
+      {
+        "key": "idle_timeout",
+        "type": "int",
+        "default": 300,
+        "global_key": "sessions.idle_timeout",
+        "env": "TABULA_SKILL_SESSIONS_IDLE_TIMEOUT",
+        "env_aliases": [
+          "TABULA_SESSION_IDLE_SEC"
+        ]
+      },
+      {
+        "key": "poll_interval",
+        "type": "float",
+        "default": 2,
+        "global_key": "sessions.poll_interval",
+        "env": "TABULA_SKILL_SESSIONS_POLL_INTERVAL",
+        "env_aliases": [
+          "TABULA_SESSION_POLL_SEC"
+        ]
+      }
+    ]
+  }
+}

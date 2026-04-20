@@ -49,10 +49,16 @@ HOOK_BLOCK = "block"
 HOOK_CLAIM = "claim"
 
 # -- Kernel tools ---------------------------------------------------------------
-TOOL_EXEC = "EXEC"
-TOOL_SPAWN = "SPAWN"
-TOOL_KILL = "KILL"
-TOOL_LIST = "LIST"
+TOOL_SHELL_EXEC = "shell_exec"
+TOOL_PROCESS_SPAWN = "process_spawn"
+TOOL_PROCESS_KILL = "process_kill"
+TOOL_PROCESS_LIST = "process_list"
+DEFAULT_KERNEL_TOOLS = [
+    TOOL_SHELL_EXEC,
+    TOOL_PROCESS_SPAWN,
+    TOOL_PROCESS_KILL,
+    TOOL_PROCESS_LIST,
+]
 
 # -- Hook events ----------------------------------------------------------------
 HOOK_BEFORE_MESSAGE = "before_message"

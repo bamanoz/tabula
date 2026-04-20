@@ -10,8 +10,8 @@ import (
 const maxExecOutput = 16 * 1024 // 16KB
 
 type ToolService struct {
-	hub      *Hub
-	process  *ProcessManager
+	hub     *Hub
+	process *ProcessManager
 }
 
 func NewToolService(hub *Hub) *ToolService {
@@ -28,19 +28,37 @@ func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 
 	s.hub.Logger.Debug("tool_use", "tool", toolName, "session", session, "id", toolID)
 
-	if _, ok := s.hub.policy.CanUseTool(toolName, toolID, msg.Input, session); !ok {
+	effectiveInput, ok := s.hub.policy.CanUseTool(toolName, toolID, msg.Input, session)
+	if !ok {
 		s.hub.sendToolResult(session, toolID, "ERROR: blocked by hook")
 		return
 	}
+	msg.Input = effectiveInput
 
 	switch KernelTool(toolName) {
-	case ToolEXEC:
+	case ToolShellExec:
+		if !s.hub.IsBuiltinEnabled(ToolShellExec) {
+			s.hub.sendToolResult(session, toolID, fmt.Sprintf("ERROR: unknown tool %s", toolName))
+			return
+		}
 		s.handleExec(session, toolID, msg.Input)
-	case ToolSPAWN:
+	case ToolProcessSpawn:
+		if !s.hub.IsBuiltinEnabled(ToolProcessSpawn) {
+			s.hub.sendToolResult(session, toolID, fmt.Sprintf("ERROR: unknown tool %s", toolName))
+			return
+		}
 		s.handleSpawn(sender, toolID, msg.Input)
-	case ToolKILL:
+	case ToolProcessKill:
+		if !s.hub.IsBuiltinEnabled(ToolProcessKill) {
+			s.hub.sendToolResult(session, toolID, fmt.Sprintf("ERROR: unknown tool %s", toolName))
+			return
+		}
 		s.handleKill(session, toolID, msg.Input)
-	case ToolLIST:
+	case ToolProcessList:
+		if !s.hub.IsBuiltinEnabled(ToolProcessList) {
+			s.hub.sendToolResult(session, toolID, fmt.Sprintf("ERROR: unknown tool %s", toolName))
+			return
+		}
 		s.handleList(session, toolID)
 	default:
 		s.handleDynamicTool(session, toolID, toolName, msg.Input)
@@ -76,7 +94,7 @@ func (s *ToolService) handleSpawn(sender *Client, toolID string, input json.RawM
 
 	s.hub.sendToolResult(sender.session, toolID, fmt.Sprintf("PID %d", result.PID))
 	spawnHookPayload, _ := json.Marshal(map[string]any{
-		"tool": string(ToolSPAWN), "id": toolID, "command": parsed.Command, "pid": result.PID,
+		"tool": string(ToolProcessSpawn), "id": toolID, "command": parsed.Command, "pid": result.PID,
 	})
 	s.hub.dispatchHook("after_spawn", spawnHookPayload, sender.session)
 }

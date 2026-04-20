@@ -37,6 +37,7 @@ func (ps *ProcessSupervisor) Register(cmd *exec.Cmd, command, session string) *S
 // Used by ProcessManager when the process is started via a ProcessLauncher.
 func (ps *ProcessSupervisor) RegisterWithPID(pid int, cmd *exec.Cmd, command, session string) *SpawnedProcess {
 	proc := &SpawnedProcess{
+		PID:     pid,
 		Cmd:     cmd,
 		Command: command,
 		Alive:   true,

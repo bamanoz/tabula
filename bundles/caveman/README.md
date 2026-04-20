@@ -1,6 +1,6 @@
 # Caveman skills for Tabula
 
-[Caveman](https://github.com/JuliusBrussee/caveman) integrated into Tabula as a reference skill bundle — demonstrates all skill types: prompt-only, tool, and hook.
+[Caveman](https://github.com/JuliusBrussee/caveman) integrated into Tabula as an optional reference skill bundle — demonstrates prompt-only, tool, and hook skills.
 
 > why use many token when few do trick
 

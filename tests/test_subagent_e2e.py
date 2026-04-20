@@ -17,6 +17,9 @@ from pathlib import Path
 
 import websocket as ws_client
 
+from tests.runtime_harness import populate_installed_home
+from tests.runtime_harness import write_boot_script
+
 
 ROOT = Path(__file__).resolve().parents[1]
 VENV_PYTHON = os.path.join(ROOT, ".venv", "bin", "python3")
@@ -85,17 +88,10 @@ def get_free_port() -> int:
 
 def setup_test_home(tabula_port: int) -> str:
     home = tempfile.mkdtemp(prefix="tabula-e2e-")
-    shutil.copytree(ROOT / "skills", Path(home) / "skills")
-    shutil.copytree(ROOT / ".venv", Path(home) / ".venv", dirs_exist_ok=True)
-    (Path(home) / "tabula.yaml").write_text("boot: python3 boot.py\n")
-    (Path(home) / "boot.py").write_text(
-        "import json, os, sys\n"
-        "json.dump({\n"
-        f"  'url': 'ws://127.0.0.1:{tabula_port}/ws',\n"
-        "  'system_prompt': 'test system prompt',\n"
-        "  'spawn': []\n"
-        "}, sys.stdout)\n"
-    )
+    home_path = Path(home)
+    populate_installed_home(home_path)
+    (home_path / "tabula.yaml").write_text("boot: python3 boot.py\n")
+    write_boot_script(home_path, tabula_port=tabula_port, spawn=[])
     return home
 
 
@@ -103,13 +99,14 @@ def start_kernel(home: str, api_port: int, tabula_port: int) -> subprocess.Popen
     env = os.environ.copy()
     env["TABULA_HOME"] = home
     env["TABULA_URL"] = f"ws://127.0.0.1:{tabula_port}/ws"
+    env["TABULA_BOOT"] = f"python3 {Path(home) / 'boot.py'}"
     env["ANTHROPIC_API_KEY"] = "mock-key"
     env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{api_port}"
     env["TABULA_PROVIDER"] = "anthropic"
     env["TABULA_VERBOSE"] = "1"
 
     proc = subprocess.Popen(
-        ["go", "run", "./cmd/tabula"],
+        ["go", "run", "./cmd/tabula", "serve"],
         cwd=ROOT,
         env=env,
         stdout=subprocess.DEVNULL,
@@ -174,7 +171,7 @@ def test_subagent_initial_task():
                 {
                     "type": "tool_use",
                     "id": "spawn-1",
-                    "name": "SPAWN",
+                    "name": "process_spawn",
                     "input": {
                         "command": f"{VENV_PYTHON} skills/subagent-anthropic/run.py --id task_42 --parent-session main --task 'List files in /tmp' --timeout 5"
                     },
@@ -215,7 +212,7 @@ def test_subagent_followup():
                 {
                     "type": "tool_use",
                     "id": "spawn-2",
-                    "name": "SPAWN",
+                    "name": "process_spawn",
                     "input": {
                         "command": f"{VENV_PYTHON} skills/subagent-anthropic/run.py --id followup_1 --parent-session main --task 'Initial task' --timeout 10"
                     },

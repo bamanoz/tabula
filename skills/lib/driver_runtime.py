@@ -10,12 +10,14 @@ import time
 from dataclasses import dataclass
 
 from .kernel_client import KernelConnection
+from .paths import skill_data_dir
+from .prompt_builder import build_main_system_prompt
 from .protocol import (
     MSG_CONNECT, MSG_CONNECTED, MSG_JOIN, MSG_JOINED, MSG_INIT,
     MSG_MESSAGE, MSG_TOOL_USE, MSG_TOOL_RESULT, MSG_DONE,
     MSG_STREAM_START, MSG_STREAM_DELTA, MSG_STREAM_END,
     MSG_ERROR, MSG_CANCEL, MSG_STATUS, MSG_MEMBER_JOINED,
-    TOOL_SPAWN,
+    TOOL_PROCESS_SPAWN,
 )
 from .providers import ProviderSession, ToolCall, ToolResult
 
@@ -69,11 +71,10 @@ class DriverRuntime:
 
         # History persistence
         self._history_file = None
-        tabula_home = os.environ.get("TABULA_HOME", os.path.join(os.path.expanduser("~"), ".tabula"))
-        history_dir = os.path.join(tabula_home, "sessions", config.session)
+        history_dir = skill_data_dir("sessions") / config.session
         try:
             os.makedirs(history_dir, exist_ok=True)
-            self._history_file = open(os.path.join(history_dir, "history.jsonl"), "a")
+            self._history_file = open(history_dir / "history.jsonl", "a")
         except OSError as e:
             logger(f"cannot open history file: {e}")
 
@@ -183,7 +184,7 @@ class DriverRuntime:
 
         spawn_ids = set()
         for tool in outcome.tool_calls:
-            if tool.name == TOOL_SPAWN:
+            if tool.name == TOOL_PROCESS_SPAWN:
                 spawn_id = extract_spawn_id(tool.input.get("command", ""))
                 if spawn_id:
                     spawn_ids.add(spawn_id)
@@ -192,7 +193,7 @@ class DriverRuntime:
         if spawn_ids:
             self._spawn_ids_this_turn.update(spawn_ids)
             self._known_subagent_ids.update(spawn_ids)
-            self.log(f"detected SPAWN ids: {sorted(spawn_ids)}")
+            self.log(f"detected process_spawn ids: {sorted(spawn_ids)}")
 
         if outcome.tool_calls:
             self._expected_tool_ids = [tool.id for tool in outcome.tool_calls]
@@ -274,7 +275,10 @@ class DriverRuntime:
         self._needs_turn = True
 
     def handle_init(self, msg: dict):
-        prompt = msg.get("prompt", "")
+        prompt = build_main_system_prompt(provider=self.config.name)
+        context = msg.get("context", "").strip()
+        if context:
+            prompt += f"\n\n{context}"
         # Inject session identity so LLM uses correct --parent-session
         prompt += f"\n\nYour session name is `{self.config.session}`."
         self.provider = self.provider_factory(prompt, msg.get("tools", []))
@@ -364,7 +368,7 @@ class DriverRuntime:
         if pid_match and tool_id in self._tool_to_spawn_id:
             self._pid_to_agent_id[int(pid_match.group(1))] = self._tool_to_spawn_id[tool_id]
         elif not pid_match and tool_id in self._tool_to_spawn_id:
-            # SPAWN failed — record as failed subagent result so collection doesn't hang
+            # process_spawn failed — record as failed subagent result so collection doesn't hang
             agent_id = self._tool_to_spawn_id[tool_id]
             self._record_subagent_result(agent_id, f"<error>spawn failed via {tool_id}: {output}</error>")
 

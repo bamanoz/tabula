@@ -10,6 +10,9 @@ func TestSessionLifecycle(t *testing.T) {
 	if s.State != SessionIdle {
 		t.Fatalf("new session should be idle, got %s", s.State)
 	}
+	if s.LastActiveAt.IsZero() {
+		t.Fatal("new session should record last activity")
+	}
 
 	s.AddClient("alice")
 	if s.State != SessionActive {
@@ -32,6 +35,38 @@ func TestSessionLifecycle(t *testing.T) {
 	s.RemoveClient("bob")
 	if s.State != SessionIdle {
 		t.Fatalf("session with no clients should be idle, got %s", s.State)
+	}
+}
+
+func TestSessionTurnLifecycle(t *testing.T) {
+	s := newSession("turn-1")
+	s.AddClient("gateway")
+
+	if !s.BeginTurn() {
+		t.Fatal("expected first turn to start")
+	}
+	if !s.IsBusy() {
+		t.Fatal("session should be busy while turn is in flight")
+	}
+	if s.BeginTurn() {
+		t.Fatal("second turn should be rejected while busy")
+	}
+	if !s.RequestCancel() {
+		t.Fatal("cancel should be accepted for inflight turn")
+	}
+	if !s.CancelRequested() {
+		t.Fatal("session should record cancel request")
+	}
+	if s.RequestCancel() {
+		t.Fatal("duplicate cancel should be rejected")
+	}
+
+	s.EndTurn()
+	if s.IsBusy() {
+		t.Fatal("session should become idle after turn ends")
+	}
+	if s.CancelRequested() {
+		t.Fatal("cancel state should reset after turn ends")
 	}
 }
 

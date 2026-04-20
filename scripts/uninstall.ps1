@@ -29,8 +29,8 @@ if ($task) {
 if (Test-Path $TabulaHome) {
     Info "Removing $TabulaHome..."
 
-    # Always remove: bin, skills, templates, service, venv, logs, boot.py, config
-    foreach ($item in @("bin", "skills", "templates", "service", ".venv", "logs", "boot.py", "tabula.yaml")) {
+    # Always remove: bin, distrib, skills, testing, bundles, service, venv, logs, boot scripts
+    foreach ($item in @("bin", "distrib", "skills", "testing", "bundles", "service", ".venv", "logs", "boot-cicd.py", "tabula.yaml")) {
         $path = Join-Path $TabulaHome $item
         if (Test-Path $path) { Remove-Item -Recurse -Force $path }
     }
@@ -39,7 +39,7 @@ if (Test-Path $TabulaHome) {
         Remove-Item -Recurse -Force $TabulaHome
         Ok "Removed $TabulaHome (including user data)"
     } else {
-        Ok "Removed installed files (kept memory/, IDENTITY.md, etc.)"
+        Ok "Removed installed files (kept data/, IDENTITY.md, etc.)"
         Write-Host "  To remove everything: Remove-Item -Recurse -Force '$TabulaHome'"
     }
 }

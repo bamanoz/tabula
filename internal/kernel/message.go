@@ -12,7 +12,7 @@ type Message struct {
 	Text     string          `json:"text,omitempty"`
 	Input    json.RawMessage `json:"input,omitempty"`
 	Output   string          `json:"output,omitempty"`
-	Prompt   string          `json:"prompt,omitempty"`
+	Context  string          `json:"context,omitempty"`
 	Tools    json.RawMessage `json:"tools,omitempty"`
 	Sends    []string        `json:"sends,omitempty"`
 	Receives []string        `json:"receives,omitempty"`

@@ -17,8 +17,8 @@ type Hub struct {
 	policy          *PolicyEngine
 	tools           *ToolService
 	toolExec        map[string]string // tool name → exec command for skill tools
-	systemPrompt    string
 	toolsJSON       json.RawMessage
+	enabledBuiltins map[string]bool
 	Logger          *slog.Logger
 	MaxSpawnDepth   int
 	MaxChildren     int
@@ -27,7 +27,7 @@ type Hub struct {
 }
 
 // NewHub creates a new Hub.
-func NewHub(systemPrompt string, toolsJSON json.RawMessage, skillExec map[string]string, maxSpawnDepth int, maxChildren int, logger *slog.Logger) *Hub {
+func NewHub(toolsJSON json.RawMessage, skillExec map[string]string, maxSpawnDepth int, maxChildren int, logger *slog.Logger) *Hub {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -41,8 +41,8 @@ func NewHub(systemPrompt string, toolsJSON json.RawMessage, skillExec map[string
 		tokens:          NewSpawnTokenStore(),
 		hooks:           NewHookEngine(logger),
 		toolExec:        skillExec,
-		systemPrompt:    systemPrompt,
 		toolsJSON:       toolsJSON,
+		enabledBuiltins: parseEnabledBuiltins(toolsJSON),
 		Logger:          logger,
 		MaxSpawnDepth:   maxSpawnDepth,
 		MaxChildren:     maxChildren,
@@ -52,6 +52,24 @@ func NewHub(systemPrompt string, toolsJSON json.RawMessage, skillExec map[string
 	hub.policy = NewPolicyEngine(hub)
 	hub.tools = NewToolService(hub)
 	return hub
+}
+
+func parseEnabledBuiltins(toolsJSON json.RawMessage) map[string]bool {
+	enabled := map[string]bool{}
+	var tools []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(toolsJSON, &tools); err != nil {
+		return enabled
+	}
+	for _, tool := range tools {
+		enabled[tool.Name] = true
+	}
+	return enabled
+}
+
+func (h *Hub) IsBuiltinEnabled(name KernelTool) bool {
+	return h.enabledBuiltins[string(name)]
 }
 
 // Register adds a client to the hub.
@@ -82,6 +100,9 @@ func (h *Hub) onClientDisconnect(c *Client) {
 	sess, ok := h.sessions.Get(c.session)
 	if !ok {
 		return
+	}
+	if sess.IsBusy() && c.canSend(string(MsgDone)) {
+		sess.EndTurn()
 	}
 	sess.RemoveClient(c.name)
 	if sess.ClientCount() == 0 {

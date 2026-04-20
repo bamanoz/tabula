@@ -39,4 +39,5 @@ func (h *Hub) broadcastProcessError(session string, pid int, command string, exi
 		Type: string(MsgError),
 		Text: fmt.Sprintf("process %d crashed (exit %d)", pid, exitCode),
 	}, nil)
+	h.completeSessionTurn(session)
 }

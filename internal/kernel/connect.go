@@ -1,20 +1,21 @@
 package kernel
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 )
 
 // connectPlan holds the complete result of a connect computation.
 type connectPlan struct {
-	name          string
-	sends         []string
-	receives      []string
-	hooks         []HookSubscription
-	depth         int
-	clientID      int
-	errorMsg      string
-	connectedMsg  *Message
+	name         string
+	sends        []string
+	receives     []string
+	hooks        []HookSubscription
+	depth        int
+	clientID     int
+	errorMsg     string
+	connectedMsg *Message
 }
 
 // buildConnectPlan performs pure computation for a connect:
@@ -89,6 +90,15 @@ func (h *Hub) handleJoin(c *Client, msg *Message) {
 }
 
 func (h *Hub) handleCancel(session string) {
+	if session == "" {
+		return
+	}
+	sess, ok := h.sessions.Get(session)
+	if !ok || !sess.RequestCancel() {
+		return
+	}
+	payload, _ := json.Marshal(map[string]string{"session": session})
+	h.dispatchHook("cancel", payload, session)
 	h.broadcastToSession(session, string(MsgCancel), &Message{Type: string(MsgCancel)}, nil)
 	h.forEachProcess(func(pid int, proc *SpawnedProcess) {
 		if proc.Alive && proc.Session == session {

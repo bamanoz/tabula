@@ -68,7 +68,7 @@ type localProcessHandle struct {
 	devNull *os.File
 }
 
-func (h *localProcessHandle) PID() int     { return h.cmd.Process.Pid }
+func (h *localProcessHandle) PID() int      { return h.cmd.Process.Pid }
 func (h *localProcessHandle) Signal() error { return h.cmd.Process.Signal(os.Interrupt) }
 func (h *localProcessHandle) Kill() error   { return h.cmd.Process.Kill() }
 func (h *localProcessHandle) Wait() error {
@@ -180,7 +180,7 @@ func (pm *ProcessManager) execTool(session, toolID, toolName, logMsg string, exe
 
 // RunCommand executes a shell command asynchronously and sends the result.
 func (pm *ProcessManager) RunCommand(session, toolID, command string) {
-	pm.execTool(session, toolID, string(ToolEXEC), "exec completed", func() ([]byte, error) {
+	pm.execTool(session, toolID, string(ToolShellExec), "exec completed", func() ([]byte, error) {
 		return pm.launcher.Run(command)
 	})
 }

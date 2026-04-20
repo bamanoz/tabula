@@ -39,7 +39,7 @@ func (pe *PolicyEngine) CanConnect(token string) (int, error) {
 	return entry.depth, nil
 }
 
-// CanJoin runs the session_start hook and returns (prompt, blocked).
+// CanJoin runs the session_start hook and returns (context, blocked).
 // Returns ("", true) if the hook blocks the join.
 func (pe *PolicyEngine) CanJoin(session string, clientName string) (string, bool) {
 	hookPayload, _ := json.Marshal(map[string]string{
@@ -51,12 +51,11 @@ func (pe *PolicyEngine) CanJoin(session string, clientName string) (string, bool
 		return "", true
 	}
 
-	prompt := pe.hub.systemPrompt
 	var hookData struct{ Context string }
 	if json.Unmarshal(result, &hookData) == nil && hookData.Context != "" {
-		prompt += "\n\n" + hookData.Context
+		return hookData.Context, false
 	}
-	return prompt, false
+	return "", false
 }
 
 // CanSend checks whether a client is allowed to send a message.
@@ -100,14 +99,28 @@ func (pe *PolicyEngine) CanUseTool(toolName string, toolID string, input json.Ra
 	hookPayload, _ := json.Marshal(map[string]any{
 		"tool": toolName, "id": toolID, "input": input,
 	})
-	return pe.hub.dispatchHook("before_tool_call", hookPayload, session)
+	result, ok := pe.hub.dispatchHook("before_tool_call", hookPayload, session)
+	if !ok {
+		return nil, false
+	}
+
+	var modified struct {
+		Input json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(result, &modified); err != nil {
+		return input, true
+	}
+	if modified.Input == nil {
+		return input, true
+	}
+	return modified.Input, true
 }
 
 // CanSpawn validates the before_spawn hook and resource limits (depth, MaxChildren).
 func (pe *PolicyEngine) CanSpawn(sender *Client, command string, toolID string, session string) error {
 	// Security hook (fail-closed).
 	hookPayload, _ := json.Marshal(map[string]string{
-		"tool": string(ToolSPAWN), "id": toolID, "command": command,
+		"tool": string(ToolProcessSpawn), "id": toolID, "command": command,
 	})
 	if _, ok := pe.hub.dispatchHook("before_spawn", hookPayload, session); !ok {
 		return &PolicyError{Reason: "spawn blocked by hook"}

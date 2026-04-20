@@ -17,6 +17,9 @@ from pathlib import Path
 
 import websocket as ws_client
 
+from tests.runtime_harness import populate_installed_home
+from tests.runtime_harness import write_boot_script
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -111,17 +114,15 @@ def create_mock_mcp_home(tabula_port: int | None = None) -> str:
     home = tempfile.mkdtemp(prefix="tabula-mcp-e2e-")
     hp = Path(home)
 
-    # Copy skills
-    shutil.copytree(ROOT / "skills", hp / "skills")
-    shutil.copytree(ROOT / ".venv", hp / ".venv", dirs_exist_ok=True)
+    populate_installed_home(hp)
 
     # Write mock MCP server script
     mock_server = hp / "mock_mcp_server.py"
     mock_server.write_text(MOCK_MCP_SERVER_SCRIPT)
 
     # MCP config
-    mcp_dir = hp / "mcp"
-    mcp_dir.mkdir()
+    mcp_dir = hp / "config" / "skills" / "mcp"
+    mcp_dir.mkdir(parents=True)
     (mcp_dir / "servers.json").write_text(json.dumps({
         "servers": {
             "mock": {
@@ -133,13 +134,10 @@ def create_mock_mcp_home(tabula_port: int | None = None) -> str:
 
     if tabula_port is not None:
         (hp / "tabula.yaml").write_text("boot: python3 boot.py\n")
-        (hp / "boot.py").write_text(
-            "import json, sys\n"
-            "json.dump({\n"
-            f"  'url': 'ws://127.0.0.1:{tabula_port}/ws',\n"
-            "  'system_prompt': 'mcp test prompt',\n"
-            "  'spawn': ['.venv/bin/python3 skills/driver-mock/run.py']\n"
-            "}, sys.stdout)\n"
+        write_boot_script(
+            hp,
+            tabula_port=tabula_port,
+            spawn=[".venv/bin/python3 testing/skills/driver-mock/run.py"],
         )
 
     return home
@@ -150,8 +148,8 @@ def run_mcp_cli(home: str, *args: str, timeout: int = 15) -> subprocess.Complete
     env = os.environ.copy()
     env["TABULA_HOME"] = home
     return subprocess.run(
-        [sys.executable, str(ROOT / "skills" / "mcp" / "run.py"), *args],
-        cwd=ROOT,
+        [sys.executable, str(Path(home) / "skills" / "mcp" / "run.py"), *args],
+        cwd=home,
         env=env,
         capture_output=True,
         text=True,
@@ -227,11 +225,13 @@ def test_no_config():
     """discover with no config should return empty."""
     home = tempfile.mkdtemp(prefix="tabula-mcp-noconfig-")
     try:
+        hp = Path(home)
+        populate_installed_home(hp)
         env = os.environ.copy()
         env["TABULA_HOME"] = home
         result = subprocess.run(
-            [sys.executable, str(ROOT / "skills" / "mcp" / "run.py"), "discover"],
-            cwd=ROOT,
+            [sys.executable, str(Path(home) / "skills" / "mcp" / "run.py"), "discover"],
+            cwd=home,
             env=env,
             capture_output=True,
             text=True,
@@ -252,6 +252,7 @@ def start_kernel(home: str, tabula_port: int) -> subprocess.Popen:
     env = os.environ.copy()
     env["TABULA_HOME"] = home
     env["TABULA_URL"] = f"ws://127.0.0.1:{tabula_port}/ws"
+    env["TABULA_BOOT"] = f"python3 {Path(home) / 'boot.py'}"
     env["TABULA_PROVIDER"] = "mock"
     env["TABULA_VERBOSE"] = "1"
     env["TABULA_MOCK_SUBAGENTS"] = "0"
@@ -259,7 +260,7 @@ def start_kernel(home: str, tabula_port: int) -> subprocess.Popen:
     env["TABULA_MOCK_SLEEP_MS"] = "5"
 
     proc = subprocess.Popen(
-        ["go", "run", "./cmd/tabula"],
+        ["go", "run", "./cmd/tabula", "serve"],
         cwd=ROOT,
         env=env,
         stdout=subprocess.DEVNULL,
@@ -308,8 +309,8 @@ def recv_json(conn, timeout=10):
     return json.loads(conn.recv())
 
 
-def test_exec_mcp_call():
-    """EXEC tool should be able to call MCP bridge and get results."""
+def test_shell_exec_mcp_call():
+    """shell_exec tool should be able to call MCP bridge and get results."""
     tabula_port = get_free_port()
     home = create_mock_mcp_home(tabula_port)
     proc = None
@@ -319,12 +320,12 @@ def test_exec_mcp_call():
         conn = connect_tool_client(tabula_port)
         time.sleep(0.5)
 
-        # Use EXEC to call MCP bridge
+        # Use shell_exec to call MCP bridge
         mcp_cmd = f"{sys.executable} skills/mcp/run.py call mock echo " + """'{"text": "kernel e2e test"}'"""
         conn.send(json.dumps({
             "type": "tool_use",
             "id": "exec-mcp-1",
-            "name": "EXEC",
+            "name": "shell_exec",
             "input": {"command": mcp_cmd},
         }))
 
@@ -341,8 +342,8 @@ def test_exec_mcp_call():
         shutil.rmtree(home, ignore_errors=True)
 
 
-def test_exec_mcp_add():
-    """EXEC MCP add tool should return correct result."""
+def test_shell_exec_mcp_add():
+    """shell_exec MCP add tool should return correct result."""
     tabula_port = get_free_port()
     home = create_mock_mcp_home(tabula_port)
     proc = None
@@ -356,7 +357,7 @@ def test_exec_mcp_add():
         conn.send(json.dumps({
             "type": "tool_use",
             "id": "exec-mcp-2",
-            "name": "EXEC",
+            "name": "shell_exec",
             "input": {"command": mcp_cmd},
         }))
 
@@ -382,14 +383,14 @@ def start_pool_daemon(home: str) -> subprocess.Popen:
     env = os.environ.copy()
     env["TABULA_HOME"] = home
     proc = subprocess.Popen(
-        [sys.executable, str(ROOT / "skills" / "mcp" / "run.py"), "pool"],
-        cwd=ROOT,
+        [sys.executable, str(Path(home) / "skills" / "mcp" / "run.py"), "pool"],
+        cwd=home,
         env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
     # Wait for URL file to appear
-    url_file = os.path.join(home, "mcp", "pool.url")
+    url_file = os.path.join(home, "run", "mcp", "pool.url")
     deadline = time.time() + 5
     while time.time() < deadline:
         if os.path.exists(url_file):

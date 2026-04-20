@@ -1,22 +1,22 @@
 [
   {
-    "name": "EXEC",
-    "description": "Run a command synchronously and return its stdout. Use for one-shot commands (reading files, listing directories, etc).",
+    "name": "shell_exec",
+    "description": "Run a shell command synchronously and return its combined output. Use for one-shot commands like reading files or listing directories.",
     "params": {
       "command": { "type": "string", "description": "Command to execute" }
     },
     "required": ["command"]
   },
   {
-    "name": "SPAWN",
-    "description": "Start a long-running process. Returns its PID. The process gets TABULA_SOCKET env var and can connect to the kernel.",
+    "name": "process_spawn",
+    "description": "Start a long-running process. Returns its PID. The process inherits TABULA_URL/TABULA_HOME and receives TABULA_SPAWN_TOKEN so it can connect to the kernel.",
     "params": {
       "command": { "type": "string", "description": "Command to execute" }
     },
     "required": ["command"]
   },
   {
-    "name": "KILL",
+    "name": "process_kill",
     "description": "Stop a running process by PID.",
     "params": {
       "pid": { "type": "integer", "description": "Process ID to kill" }
@@ -24,7 +24,7 @@
     "required": ["pid"]
   },
   {
-    "name": "LIST",
+    "name": "process_list",
     "description": "List all spawned processes with PID, command, and alive status.",
     "params": {},
     "required": []

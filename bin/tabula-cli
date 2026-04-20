@@ -1,12 +1,39 @@
 #!/bin/bash
 # Launch Tabula CLI gateway (connects to a running kernel).
-# Usage: tabula-cli [--resume SESSION_ID]
+# Usage: tabula-cli [--resume SESSION_ID] [--provider PROVIDER]
 # Configuration via environment variables:
 #   TABULA_HOME     — workspace directory (default: ~/.tabula)
-#   TABULA_PROVIDER — LLM provider for the driver (default: anthropic)
+#   TABULA_PROVIDER — configured default provider (legacy default: anthropic)
 set -e
 
 TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
+
+load_tabula_env() {
+  local env_file="$TABULA_HOME/.env"
+  [ -f "$env_file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|'#'*) continue ;;
+    esac
+    local key="${line%%=*}"
+    local value="${line#*=}"
+    key="${key#${key%%[![:space:]]*}}"
+    key="${key%${key##*[![:space:]]}}"
+    value="${value#${value%%[![:space:]]*}}"
+    value="${value%${value##*[![:space:]]}}"
+    [ -n "$key" ] || continue
+    case "$key" in
+      [A-Za-z_][A-Za-z0-9_]*) ;;
+      *) continue ;;
+    esac
+    if [ -z "${!key+x}" ]; then
+      export "$key=$value"
+    fi
+  done < "$env_file"
+}
+
+load_tabula_env
+
 VENV_PYTHON="$TABULA_HOME/.venv/bin/python3"
 
 if [ ! -f "$VENV_PYTHON" ]; then
@@ -15,7 +42,4 @@ if [ ! -f "$VENV_PYTHON" ]; then
   exit 1
 fi
 
-PROVIDER="${TABULA_PROVIDER:-anthropic}"
-DRIVER="$VENV_PYTHON skills/driver-${PROVIDER}/run.py"
-
-exec "$VENV_PYTHON" "$TABULA_HOME/skills/gateway-cli/run.py" --driver "$DRIVER" "$@"
+exec "$VENV_PYTHON" "$TABULA_HOME/skills/gateway-cli/run.py" "$@"

@@ -3,14 +3,13 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash
 #   VERSION=v1.0.0 curl -fsSL ... | bash
-#   BUNDLES=caveman curl -fsSL ... | bash
-#   BUNDLES=all curl -fsSL ... | bash
 set -euo pipefail
 
 REPO="bamanoz/tabula"
 TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
 BIN_DIR="$TABULA_HOME/bin"
 VENV="$TABULA_HOME/.venv"
+DISTRO="${TABULA_DISTRO:-assistant}"
 
 # Auth header for private repos (optional)
 AUTH_HEADER=()
@@ -89,6 +88,19 @@ check_python() {
   ok "Python ${major}.${minor}"
 }
 
+install_python_deps() {
+  local requirements_url="https://raw.githubusercontent.com/${REPO}/${VERSION}/scripts/requirements-runtime.txt"
+
+  info "Installing Python dependencies..."
+  "$VENV/bin/pip" install -q --upgrade pip
+  if curl -fsSL -o "$tmp/requirements-runtime.txt" "$requirements_url"; then
+    "$VENV/bin/pip" install -q -r "$tmp/requirements-runtime.txt"
+  else
+    "$VENV/bin/pip" install -q websocket-client prompt_toolkit rich
+  fi
+  ok "Python dependencies installed"
+}
+
 # ── save PATH ────────────────────────────────────────────────────
 
 save_path_to_env() {
@@ -107,83 +119,6 @@ save_path_to_env() {
     printf '%s\n' "$path_line" > "$env_file"
   fi
   ok "Saved login PATH to .env"
-}
-
-# ── bundles ──────────────────────────────────────────────────────
-
-install_bundles() {
-  local bundles_dir="$TABULA_HOME/bundles"
-  local requested="${BUNDLES:-}"
-
-  if [ -z "$requested" ]; then
-    # No bundles requested — remove any that were unpacked from tar
-    rm -rf "$bundles_dir"
-    return
-  fi
-
-  if [ "$requested" = "all" ]; then
-    ok "All bundles installed"
-    return
-  fi
-
-  # Keep only requested bundles, remove the rest
-  IFS=',' read -ra wanted <<< "$requested"
-  for dir in "$bundles_dir"/*/; do
-    [ -d "$dir" ] || continue
-    local name
-    name=$(basename "$dir")
-    local keep=false
-    for w in "${wanted[@]}"; do
-      if [ "$w" = "$name" ]; then
-        keep=true
-        break
-      fi
-    done
-    if [ "$keep" = false ]; then
-      rm -rf "$dir"
-    fi
-  done
-
-  # Remove bundles dir if empty
-  rmdir "$bundles_dir" 2>/dev/null || true
-
-  # List what was installed
-  if [ -d "$bundles_dir" ]; then
-    local installed=()
-    for dir in "$bundles_dir"/*/; do
-      [ -d "$dir" ] && installed+=("$(basename "$dir")")
-    done
-    if [ ${#installed[@]} -gt 0 ]; then
-      ok "Bundles installed: ${installed[*]}"
-    fi
-  fi
-}
-
-# ── link bundles into skills/ ────────────────────────────────────
-
-link_bundles() {
-  local bundles_dir="$TABULA_HOME/bundles"
-  local skills_dir="$TABULA_HOME/skills"
-
-  # Remove stale bundle symlinks from skills/
-  for link in "$skills_dir"/*/; do
-    [ -L "${link%/}" ] && rm -f "${link%/}"
-  done
-
-  # Symlink each skill inside each bundle into skills/ (flat)
-  if [ -d "$bundles_dir" ]; then
-    for bundle in "$bundles_dir"/*/; do
-      [ -d "$bundle" ] || continue
-      local bundle_name
-      bundle_name=$(basename "$bundle")
-      for skill in "$bundle"/*/; do
-        [ -d "$skill" ] || continue
-        local skill_name
-        skill_name=$(basename "$skill")
-        ln -sfn "../bundles/$bundle_name/$skill_name" "$skills_dir/$skill_name"
-      done
-    done
-  fi
 }
 
 # ── service install ──────────────────────────────────────────────
@@ -337,7 +272,15 @@ for a in data.get('assets', []):
 
   # Install
   info "Installing to $TABULA_HOME..."
-  mkdir -p "$BIN_DIR" "$TABULA_HOME/memory"
+  mkdir -p "$BIN_DIR"
+
+  # Remove legacy root-level runtime layout from older installs.
+  rm -rf \
+    "$TABULA_HOME/boot.py" \
+    "$TABULA_HOME/templates" \
+    "$TABULA_HOME/distrib" \
+    "$TABULA_HOME/skills" \
+    "$TABULA_HOME/testing"
 
   tar -xzf "$tmp/$binary_archive" -C "$tmp"
   install -m 755 "$tmp/tabula" "$BIN_DIR/tabula"
@@ -347,12 +290,13 @@ for a in data.get('assets', []):
   ok "Binary installed"
 
   tar -xzf "$tmp/$skills_archive" -C "$TABULA_HOME"
-  chmod +x "$BIN_DIR/tabula-server" "$BIN_DIR/tabula-cli" "$BIN_DIR/tabula-api" 2>/dev/null || true
+  if [ -f "$TABULA_HOME/examples/boot-cicd.py" ]; then
+    cp "$TABULA_HOME/examples/boot-cicd.py" "$TABULA_HOME/boot-cicd.py"
+  fi
+  install -m 755 "$TABULA_HOME/bin/tabula-install-distro" "$BIN_DIR/tabula-install-distro"
+  install -m 755 "$TABULA_HOME/scripts/install-distro.py" "$BIN_DIR/install-distro.py"
+  chmod +x "$BIN_DIR/tabula-server" "$BIN_DIR/tabula-cli" "$BIN_DIR/tabula-api" "$BIN_DIR/tabula-install-distro" 2>/dev/null || true
   ok "Skills and config installed"
-
-  # Install bundles (optional) and symlink into skills/
-  install_bundles
-  link_bundles
 
   # Python
   check_python
@@ -362,10 +306,15 @@ for a in data.get('assets', []):
     "$PYTHON_BIN" -m venv "$VENV"
   fi
 
-  info "Installing Python dependencies..."
-  "$VENV/bin/pip" install -q --upgrade pip
-  "$VENV/bin/pip" install -q websocket-client prompt_toolkit rich
-  ok "Python dependencies installed"
+  install_python_deps
+
+  "$VENV/bin/python3" "$BIN_DIR/install-distro.py" --home "$TABULA_HOME" "$TABULA_HOME/distrib/$DISTRO"
+
+  POST_INSTALL="$TABULA_HOME/distrib/$DISTRO/install.sh"
+  if [ -f "$POST_INSTALL" ]; then
+    info "Running post-install hook: $DISTRO"
+    TABULA_HOME="$TABULA_HOME" bash "$POST_INSTALL"
+  fi
 
   # Shell
   configure_shell
@@ -387,10 +336,8 @@ for a in data.get('assets', []):
   printf '\n\033[1;32mTabula %s installed!\033[0m\n\n' "$VERSION"
   printf 'Add your API key:\n'
   printf '  echo "ANTHROPIC_API_KEY=sk-..." >> %s\n\n' "$env_file"
-  if [ -z "${BUNDLES:-}" ]; then
-    printf 'Optional bundles (caveman, etc.):\n'
-    printf '  BUNDLES=caveman %s\n\n' "$0"
-  fi
+  printf 'Install a different distro later:\n'
+  printf '  tabula-install-distro <local-path-or-github-tree-url>\n\n'
   printf 'Then connect:\n'
   printf '  tabula-cli\n\n'
 }

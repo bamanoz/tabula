@@ -30,8 +30,8 @@ type testEnv struct {
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 
-	toolsJSON := json.RawMessage(`[{"name":"EXEC","description":"run cmd","params":{"command":{"type":"string","description":"cmd"}},"required":["command"]},{"name":"SPAWN","description":"spawn","params":{"command":{"type":"string","description":"cmd"}},"required":["command"]},{"name":"KILL","description":"kill","params":{"pid":{"type":"integer","description":"pid"}},"required":["pid"]},{"name":"LIST","description":"list","params":{},"required":[]}]`)
-	hub := NewHub("test system prompt", toolsJSON, nil, 3, 5, nil)
+	toolsJSON := json.RawMessage(`[{"name":"shell_exec","description":"run cmd","params":{"command":{"type":"string","description":"cmd"}},"required":["command"]},{"name":"process_spawn","description":"spawn","params":{"command":{"type":"string","description":"cmd"}},"required":["command"]},{"name":"process_kill","description":"kill","params":{"pid":{"type":"integer","description":"pid"}},"required":["pid"]},{"name":"process_list","description":"list","params":{},"required":[]}]`)
+	hub := NewHub(toolsJSON, nil, 3, 5, nil)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
@@ -237,11 +237,49 @@ func TestInitOnJoin(t *testing.T) {
 	if init.Type != "init" {
 		t.Fatalf("expected init, got %s", init.Type)
 	}
-	if init.Prompt != "test system prompt" {
-		t.Errorf("expected system prompt, got %q", init.Prompt)
+	if init.Context != "" {
+		t.Errorf("expected empty init context, got %q", init.Context)
 	}
 	if len(init.Tools) == 0 {
 		t.Error("expected tools, got empty")
+	}
+}
+
+func TestHiddenBuiltinNotExposedOrExecutable(t *testing.T) {
+	toolsJSON := json.RawMessage(`[{"name":"shell_exec","description":"run cmd","params":{"command":{"type":"string","description":"cmd"}},"required":["command"]}]`)
+	hub := NewHub(toolsJSON, nil, 3, 5, nil)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := testUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Logf("upgrade error: %v", err)
+			return
+		}
+		NewClient(hub, conn)
+	})
+	server := httptest.NewServer(mux)
+	defer func() {
+		hub.Shutdown()
+		server.Close()
+	}()
+	env := &testEnv{Hub: hub, Server: server, t: t}
+
+	conn := env.connectAndJoin("driver", "main", []string{"tool_use"}, []string{"init", "tool_result"})
+	init := readMsg(t, conn)
+	if init.Type != "init" {
+		t.Fatalf("expected init, got %s", init.Type)
+	}
+	if strings.Contains(string(init.Tools), `"process_spawn"`) || strings.Contains(string(init.Tools), `"process_kill"`) || strings.Contains(string(init.Tools), `"process_list"`) {
+		t.Fatalf("unexpected hidden builtin leaked in init tools: %s", string(init.Tools))
+	}
+
+	writeJSON(t, conn, Message{Type: "tool_use", ID: "hidden-1", Name: string(ToolProcessSpawn), Input: json.RawMessage(`{"command":"sleep 1"}`)})
+	result := readMsg(t, conn)
+	if result.Type != "tool_result" {
+		t.Fatalf("expected tool_result, got %s", result.Type)
+	}
+	if !strings.Contains(result.Output, "unknown tool process_spawn") {
+		t.Fatalf("expected hidden builtin to be rejected, got %q", result.Output)
 	}
 }
 
@@ -384,7 +422,7 @@ func TestExecBasic(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "t1",
-		Name:  "EXEC",
+		Name:  string(ToolShellExec),
 		Input: json.RawMessage(`{"command":"echo hello"}`),
 	})
 
@@ -407,7 +445,7 @@ func TestExecErrorExit(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "t2",
-		Name:  "EXEC",
+		Name:  string(ToolShellExec),
 		Input: json.RawMessage(`{"command":"exit 1"}`),
 	})
 
@@ -428,7 +466,7 @@ func TestExecOutputTruncation(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "t3",
-		Name:  "EXEC",
+		Name:  string(ToolShellExec),
 		Input: json.RawMessage(`{"command":"python3 -c \"print('A'*32768)\""}`),
 	})
 
@@ -453,7 +491,7 @@ func TestExecStderrMerged(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "t4",
-		Name:  "EXEC",
+		Name:  string(ToolShellExec),
 		Input: json.RawMessage(`{"command":"python3 -c \"import sys; sys.stderr.write('stderr_text\\n')\""}`),
 	})
 
@@ -483,13 +521,13 @@ func TestExecAsyncNonBlocking(t *testing.T) {
 	writeJSON(t, conn1, Message{
 		Type:  "tool_use",
 		ID:    "e1",
-		Name:  "EXEC",
+		Name:  string(ToolShellExec),
 		Input: json.RawMessage(`{"command":"sleep 0.5 && echo done1"}`),
 	})
 	writeJSON(t, conn2, Message{
 		Type:  "tool_use",
 		ID:    "e2",
-		Name:  "EXEC",
+		Name:  string(ToolShellExec),
 		Input: json.RawMessage(`{"command":"sleep 0.5 && echo done2"}`),
 	})
 
@@ -520,7 +558,7 @@ func TestSpawnListKill(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "s1",
-		Name:  "SPAWN",
+		Name:  string(ToolProcessSpawn),
 		Input: json.RawMessage(`{"command":"sleep 60"}`),
 	})
 	spawnMsg := readMsg(t, conn)
@@ -532,7 +570,7 @@ func TestSpawnListKill(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "l1",
-		Name:  "LIST",
+		Name:  string(ToolProcessList),
 		Input: json.RawMessage(`{}`),
 	})
 	listMsg := readMsg(t, conn)
@@ -551,7 +589,7 @@ func TestSpawnListKill(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "k1",
-		Name:  "KILL",
+		Name:  string(ToolProcessKill),
 		Input: json.RawMessage(fmt.Sprintf(`{"pid":%d}`, pid)),
 	})
 	killMsg := readMsg(t, conn)
@@ -563,7 +601,7 @@ func TestSpawnListKill(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "l2",
-		Name:  "LIST",
+		Name:  string(ToolProcessList),
 		Input: json.RawMessage(`{}`),
 	})
 	listMsg2 := readMsg(t, conn)
@@ -592,7 +630,7 @@ func TestSpawnSessionTracking(t *testing.T) {
 	writeJSON(t, connA, Message{
 		Type:  "tool_use",
 		ID:    "s1",
-		Name:  "SPAWN",
+		Name:  string(ToolProcessSpawn),
 		Input: json.RawMessage(`{"command":"sh -c 'exit 42'"}`),
 	})
 	spawnMsg := readMsg(t, connA) // tool_result with PID
@@ -649,7 +687,7 @@ func TestInvalidExecCommand(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "x1",
-		Name:  "EXEC",
+		Name:  string(ToolShellExec),
 		Input: json.RawMessage(`{}`),
 	})
 	msg := readMsg(t, conn)
@@ -793,7 +831,7 @@ func TestCancel(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "s1",
-		Name:  "SPAWN",
+		Name:  string(ToolProcessSpawn),
 		Input: json.RawMessage(`{"command":"sleep 60"}`),
 	})
 	spawnMsg := readMsg(t, conn)
@@ -838,7 +876,7 @@ func TestCancelScopedToSession(t *testing.T) {
 	writeJSON(t, connA, Message{
 		Type:  "tool_use",
 		ID:    "s1",
-		Name:  "SPAWN",
+		Name:  string(ToolProcessSpawn),
 		Input: json.RawMessage(`{"command":"sleep 60"}`),
 	})
 	spawnA := readMsg(t, connA)
@@ -854,7 +892,7 @@ func TestCancelScopedToSession(t *testing.T) {
 	writeJSON(t, connB, Message{
 		Type:  "tool_use",
 		ID:    "s2",
-		Name:  "SPAWN",
+		Name:  string(ToolProcessSpawn),
 		Input: json.RawMessage(`{"command":"sleep 60"}`),
 	})
 	spawnB := readMsg(t, connB)
@@ -881,6 +919,87 @@ func TestCancelScopedToSession(t *testing.T) {
 	}
 }
 
+func TestSessionBusyBlocksConcurrentRootMessagesAndResetsAfterCancel(t *testing.T) {
+	env := newTestEnv(t)
+	gateway := env.connectAndJoin("gateway", "main",
+		[]string{"message", "cancel"},
+		[]string{"error"})
+	driver := env.connectAndJoinWithDepth("driver", "main", 1,
+		[]string{"done"},
+		[]string{"message", "cancel"})
+
+	writeJSON(t, gateway, Message{Type: "message", Text: "first"})
+	first := readMsg(t, driver)
+	if first.Type != "message" || first.Text != "first" {
+		t.Fatalf("expected first turn message, got %+v", first)
+	}
+
+	sess, ok := env.Hub.sessions.Get("main")
+	if !ok {
+		t.Fatal("session main should exist")
+	}
+	if !sess.IsBusy() {
+		t.Fatal("session should be busy after first root message")
+	}
+
+	writeJSON(t, gateway, Message{Type: "cancel"})
+	cancel := readMsg(t, driver)
+	if cancel.Type != "cancel" {
+		t.Fatalf("expected cancel to reach driver, got %+v", cancel)
+	}
+	if !sess.CancelRequested() {
+		t.Fatal("session should remember cancel request while turn is inflight")
+	}
+
+	writeJSON(t, gateway, Message{Type: "message", Text: "second"})
+	errMsg := readMsg(t, gateway)
+	if errMsg.Type != "error" || !strings.Contains(errMsg.Text, "session busy") {
+		t.Fatalf("expected busy error, got %+v", errMsg)
+	}
+
+	writeJSON(t, driver, Message{Type: "done"})
+	time.Sleep(50 * time.Millisecond)
+	if sess.IsBusy() {
+		t.Fatal("session should stop being busy after done")
+	}
+	if sess.CancelRequested() {
+		t.Fatal("cancel state should reset after done")
+	}
+
+	writeJSON(t, gateway, Message{Type: "message", Text: "third"})
+	third := readMsg(t, driver)
+	if third.Type != "message" || third.Text != "third" {
+		t.Fatalf("expected turn to resume after done, got %+v", third)
+	}
+}
+
+func TestChildMessagesStillRouteWhileParentTurnIsBusy(t *testing.T) {
+	env := newTestEnv(t)
+	gateway := env.connectAndJoin("gateway", "main",
+		[]string{"message"},
+		[]string{"error"})
+	driver := env.connectAndJoinWithDepth("driver", "main", 1,
+		[]string{"done"},
+		[]string{"message"})
+	child := env.connectAndJoinWithDepth("subagent", "main", 2,
+		[]string{"message"},
+		[]string{})
+
+	writeJSON(t, gateway, Message{Type: "message", Text: "root turn"})
+	root := readMsg(t, driver)
+	if root.Type != "message" || root.Text != "root turn" {
+		t.Fatalf("expected root turn message, got %+v", root)
+	}
+
+	writeJSON(t, child, Message{Type: "message", ID: "agent-1", Text: "child result"})
+	childMsg := readMsg(t, driver)
+	if childMsg.Type != "message" || childMsg.ID != "agent-1" || childMsg.Text != "child result" {
+		t.Fatalf("expected child message to route during busy turn, got %+v", childMsg)
+	}
+
+	writeJSON(t, driver, Message{Type: "done"})
+}
+
 func TestExecWithSpecialCharacters(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.connectAndJoin("driver", "main",
@@ -891,7 +1010,7 @@ func TestExecWithSpecialCharacters(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "t5",
-		Name:  "EXEC",
+		Name:  string(ToolShellExec),
 		Input: json.RawMessage(`{"command":"echo 'hello world'"}`),
 	})
 
@@ -920,7 +1039,7 @@ func TestToolResultRoutedToCorrectSession(t *testing.T) {
 	writeJSON(t, connA, Message{
 		Type:  "tool_use",
 		ID:    "ta1",
-		Name:  "EXEC",
+		Name:  string(ToolShellExec),
 		Input: json.RawMessage(`{"command":"echo from_a"}`),
 	})
 
@@ -975,7 +1094,7 @@ func TestParallelToolUseSameSession(t *testing.T) {
 		writeJSON(t, conn, Message{
 			Type:  "tool_use",
 			ID:    fmt.Sprintf("batch-%d", i),
-			Name:  "EXEC",
+			Name:  string(ToolShellExec),
 			Input: json.RawMessage(fmt.Sprintf(`{"command":"sleep 0.3 && echo result-%d"}`, i)),
 		})
 	}
@@ -1018,19 +1137,19 @@ func TestParallelSpawnAndExec(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "spawn-1",
-		Name:  "SPAWN",
+		Name:  string(ToolProcessSpawn),
 		Input: json.RawMessage(`{"command":"sleep 60"}`),
 	})
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "exec-1",
-		Name:  "EXEC",
+		Name:  string(ToolShellExec),
 		Input: json.RawMessage(`{"command":"echo fast"}`),
 	})
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "spawn-2",
-		Name:  "SPAWN",
+		Name:  string(ToolProcessSpawn),
 		Input: json.RawMessage(`{"command":"sleep 60"}`),
 	})
 
@@ -1068,7 +1187,7 @@ func TestParallelSpawnAndExec(t *testing.T) {
 		writeJSON(t, conn, Message{
 			Type:  "tool_use",
 			ID:    "kill-" + id,
-			Name:  "KILL",
+			Name:  string(ToolProcessKill),
 			Input: json.RawMessage(fmt.Sprintf(`{"pid":%d}`, pid)),
 		})
 		readMsg(t, conn) // kill result
@@ -1092,7 +1211,7 @@ func TestLongRunningExecBatch(t *testing.T) {
 		writeJSON(t, conn, Message{
 			Type:  "tool_use",
 			ID:    fmt.Sprintf("slow-%d", i),
-			Name:  "EXEC",
+			Name:  string(ToolShellExec),
 			Input: json.RawMessage(fmt.Sprintf(`{"command":"sleep 0.5 && echo done-%d"}`, i)),
 		})
 	}
@@ -1136,11 +1255,11 @@ func TestToolResultsNotLeakedAcrossSessions(t *testing.T) {
 
 	// Both sessions fire EXEC at the same time
 	writeJSON(t, connA, Message{
-		Type: "tool_use", ID: "a1", Name: "EXEC",
+		Type: "tool_use", ID: "a1", Name: string(ToolShellExec),
 		Input: json.RawMessage(`{"command":"sleep 0.2 && echo from-a"}`),
 	})
 	writeJSON(t, connB, Message{
-		Type: "tool_use", ID: "b1", Name: "EXEC",
+		Type: "tool_use", ID: "b1", Name: string(ToolShellExec),
 		Input: json.RawMessage(`{"command":"sleep 0.2 && echo from-b"}`),
 	})
 
@@ -1176,7 +1295,7 @@ func TestSpawnDeniedAtMaxDepth(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "s1",
-		Name:  "SPAWN",
+		Name:  string(ToolProcessSpawn),
 		Input: json.RawMessage(`{"command":"sleep 60"}`),
 	})
 	msg := readMsg(t, conn)
@@ -1196,7 +1315,7 @@ func TestSpawnAllowedBelowMaxDepth(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "s1",
-		Name:  "SPAWN",
+		Name:  string(ToolProcessSpawn),
 		Input: json.RawMessage(`{"command":"sleep 60"}`),
 	})
 	msg := readMsg(t, conn)
@@ -1210,7 +1329,7 @@ func TestSpawnAllowedBelowMaxDepth(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "k1",
-		Name:  "KILL",
+		Name:  string(ToolProcessKill),
 		Input: json.RawMessage(fmt.Sprintf(`{"pid":%d}`, pid)),
 	})
 	readMsg(t, conn)
@@ -1229,7 +1348,7 @@ func TestSpawnDeniedAtMaxChildren(t *testing.T) {
 		writeJSON(t, conn, Message{
 			Type:  "tool_use",
 			ID:    fmt.Sprintf("s%d", i),
-			Name:  "SPAWN",
+			Name:  string(ToolProcessSpawn),
 			Input: json.RawMessage(`{"command":"sleep 60"}`),
 		})
 		msg := readMsg(t, conn)
@@ -1245,7 +1364,7 @@ func TestSpawnDeniedAtMaxChildren(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "overflow",
-		Name:  "SPAWN",
+		Name:  string(ToolProcessSpawn),
 		Input: json.RawMessage(`{"command":"sleep 60"}`),
 	})
 	msg := readMsg(t, conn)
@@ -1257,7 +1376,7 @@ func TestSpawnDeniedAtMaxChildren(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "k1",
-		Name:  "KILL",
+		Name:  string(ToolProcessKill),
 		Input: json.RawMessage(fmt.Sprintf(`{"pid":%d}`, pids[0])),
 	})
 	readMsg(t, conn) // kill result
@@ -1265,7 +1384,7 @@ func TestSpawnDeniedAtMaxChildren(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "retry",
-		Name:  "SPAWN",
+		Name:  string(ToolProcessSpawn),
 		Input: json.RawMessage(`{"command":"sleep 60"}`),
 	})
 	retryMsg := readMsg(t, conn)
@@ -1281,7 +1400,7 @@ func TestSpawnDeniedAtMaxChildren(t *testing.T) {
 		writeJSON(t, conn, Message{
 			Type:  "tool_use",
 			ID:    fmt.Sprintf("cleanup-%d", i),
-			Name:  "KILL",
+			Name:  string(ToolProcessKill),
 			Input: json.RawMessage(fmt.Sprintf(`{"pid":%d}`, pid)),
 		})
 		readMsg(t, conn)
@@ -1300,7 +1419,7 @@ func TestSpawnTokenPropagatedInEnv(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "s1",
-		Name:  "SPAWN",
+		Name:  string(ToolProcessSpawn),
 		Input: json.RawMessage(`{"command":"echo $TABULA_SPAWN_TOKEN > /tmp/tabula_token_test.txt"}`),
 	})
 	spawnMsg := readMsg(t, conn)
@@ -1315,7 +1434,7 @@ func TestSpawnTokenPropagatedInEnv(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "e1",
-		Name:  "EXEC",
+		Name:  string(ToolShellExec),
 		Input: json.RawMessage(`{"command":"cat /tmp/tabula_token_test.txt"}`),
 	})
 	execMsg := readMsg(t, conn)
@@ -1336,7 +1455,7 @@ func TestSpawnTokenPropagatedInEnv(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "e2",
-		Name:  "EXEC",
+		Name:  string(ToolShellExec),
 		Input: json.RawMessage(`{"command":"rm -f /tmp/tabula_token_test.txt"}`),
 	})
 	readMsg(t, conn)
@@ -1360,7 +1479,7 @@ func TestSpawnChildrenCountedPerSession(t *testing.T) {
 		writeJSON(t, connA, Message{
 			Type:  "tool_use",
 			ID:    fmt.Sprintf("a%d", i),
-			Name:  "SPAWN",
+			Name:  string(ToolProcessSpawn),
 			Input: json.RawMessage(`{"command":"sleep 60"}`),
 		})
 		readMsg(t, connA)
@@ -1370,7 +1489,7 @@ func TestSpawnChildrenCountedPerSession(t *testing.T) {
 	writeJSON(t, connB, Message{
 		Type:  "tool_use",
 		ID:    "b1",
-		Name:  "SPAWN",
+		Name:  string(ToolProcessSpawn),
 		Input: json.RawMessage(`{"command":"sleep 60"}`),
 	})
 	msg := readMsg(t, connB)
@@ -1444,7 +1563,7 @@ func TestNoTokenMeansDepthZero(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "s1",
-		Name:  "SPAWN",
+		Name:  string(ToolProcessSpawn),
 		Input: json.RawMessage(`{"command":"sleep 60"}`),
 	})
 	msg := readMsg(t, conn)
@@ -1464,7 +1583,7 @@ func TestKillScopedToSession(t *testing.T) {
 	writeJSON(t, connA, Message{
 		Type:  "tool_use",
 		ID:    "s1",
-		Name:  "SPAWN",
+		Name:  string(ToolProcessSpawn),
 		Input: json.RawMessage(`{"command":"sleep 60"}`),
 	})
 	spawnMsg := readMsg(t, connA)
@@ -1479,7 +1598,7 @@ func TestKillScopedToSession(t *testing.T) {
 	writeJSON(t, connB, Message{
 		Type:  "tool_use",
 		ID:    "k1",
-		Name:  "KILL",
+		Name:  string(ToolProcessKill),
 		Input: json.RawMessage(fmt.Sprintf(`{"pid":%d}`, pid)),
 	})
 	killMsg := readMsg(t, connB)
@@ -1491,7 +1610,7 @@ func TestKillScopedToSession(t *testing.T) {
 	writeJSON(t, connA, Message{
 		Type:  "tool_use",
 		ID:    "k2",
-		Name:  "KILL",
+		Name:  string(ToolProcessKill),
 		Input: json.RawMessage(fmt.Sprintf(`{"pid":%d}`, pid)),
 	})
 	killMsg2 := readMsg(t, connA)
@@ -1511,7 +1630,7 @@ func TestListScopedToSession(t *testing.T) {
 	writeJSON(t, connA, Message{
 		Type:  "tool_use",
 		ID:    "s1",
-		Name:  "SPAWN",
+		Name:  string(ToolProcessSpawn),
 		Input: json.RawMessage(`{"command":"sleep 60"}`),
 	})
 	readMsg(t, connA) // PID
@@ -1524,7 +1643,7 @@ func TestListScopedToSession(t *testing.T) {
 	writeJSON(t, connB, Message{
 		Type:  "tool_use",
 		ID:    "s2",
-		Name:  "SPAWN",
+		Name:  string(ToolProcessSpawn),
 		Input: json.RawMessage(`{"command":"sleep 61"}`),
 	})
 	readMsg(t, connB) // PID
@@ -1533,7 +1652,7 @@ func TestListScopedToSession(t *testing.T) {
 	writeJSON(t, connA, Message{
 		Type:  "tool_use",
 		ID:    "l1",
-		Name:  "LIST",
+		Name:  string(ToolProcessList),
 		Input: json.RawMessage(`{}`),
 	})
 	listA := readMsg(t, connA)
@@ -1548,7 +1667,7 @@ func TestListScopedToSession(t *testing.T) {
 	writeJSON(t, connB, Message{
 		Type:  "tool_use",
 		ID:    "l2",
-		Name:  "LIST",
+		Name:  string(ToolProcessList),
 		Input: json.RawMessage(`{}`),
 	})
 	listB := readMsg(t, connB)
@@ -1572,7 +1691,7 @@ func TestShutdownGraceful(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "s1",
-		Name:  "SPAWN",
+		Name:  string(ToolProcessSpawn),
 		Input: json.RawMessage(`{"command":"sleep 60"}`),
 	})
 	msg := readMsg(t, conn)
@@ -1795,7 +1914,7 @@ func TestValidateValidMessages(t *testing.T) {
 		{Type: "connect", Name: "test", Sends: []string{"message"}},
 		{Type: "join", Session: "main"},
 		{Type: "message", Text: "hello"},
-		{Type: "tool_use", ID: "t1", Name: "EXEC"},
+		{Type: "tool_use", ID: "t1", Name: string(ToolShellExec)},
 		{Type: "hook_result", ID: "h1", Action: "pass"},
 		{Type: "done"},
 		{Type: "cancel"},

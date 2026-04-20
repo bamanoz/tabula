@@ -1,7 +1,7 @@
 #!/bin/bash
 # Tabula uninstaller — removes service, binary, skills, and optionally user data.
 # Usage: bash uninstall.sh [--all]
-#   --all  also removes memory/, IDENTITY.md, SOUL.md, USER.md, AGENTS.md
+#   --all  also removes data/ (memory palace etc.), IDENTITY.md, SOUL.md, USER.md, AGENTS.md
 set -e
 
 TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
@@ -42,22 +42,28 @@ esac
 if [ -d "$TABULA_HOME" ]; then
   info "Removing $TABULA_HOME..."
 
-  # Always remove: bin, skills, templates, service, venv, logs, boot.py, config defaults
+  # Always remove: runtime layout, bin, distrib, skills, bundles, testing,
+  # service, venv, logs, runtime state/data caches, top-level boot wrappers.
   rm -rf \
     "$TABULA_HOME/bin" \
+    "$TABULA_HOME/distrib" \
     "$TABULA_HOME/skills" \
     "$TABULA_HOME/templates" \
+    "$TABULA_HOME/testing" \
+    "$TABULA_HOME/bundles" \
     "$TABULA_HOME/service" \
+    "$TABULA_HOME/state" \
+    "$TABULA_HOME/run" \
     "$TABULA_HOME/.venv" \
     "$TABULA_HOME/logs" \
     "$TABULA_HOME/boot.py" \
-    "$TABULA_HOME/tabula.yaml"
+    "$TABULA_HOME/boot-cicd.py"
 
   if [ "$remove_all" = true ]; then
     rm -rf "$TABULA_HOME"
     ok "Removed $TABULA_HOME (including user data)"
   else
-    ok "Removed installed files (kept memory/, IDENTITY.md, etc.)"
+    ok "Removed installed files (kept data/, config/, secrets.json, IDENTITY.md, etc.)"
     printf '  To remove everything: rm -rf %s\n' "$TABULA_HOME"
   fi
 fi

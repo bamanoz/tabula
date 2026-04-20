@@ -8,6 +8,7 @@ from collections import deque
 from dataclasses import dataclass
 
 from .kernel_client import KernelConnection
+from .prompt_builder import build_subagent_system_prompt
 from .protocol import (
     MSG_CONNECT, MSG_JOIN, MSG_INIT, MSG_MESSAGE, MSG_TOOL_USE, MSG_TOOL_RESULT,
     MSG_DONE,
@@ -21,6 +22,7 @@ TOOL_RESULT_TIMEOUT = 120
 @dataclass
 class SubagentConfig:
     name: str
+    provider: str
     url: str
     session_name: str
     parent_session: str
@@ -56,20 +58,11 @@ class SubagentRuntime:
         init_msg = self.conn.recv()
         if init_msg is None or init_msg.get("type") != MSG_INIT:
             raise RuntimeError("did not receive init")
-        prompt = self._load_subagent_prompt() or init_msg.get("prompt", "")
+        prompt = build_subagent_system_prompt(provider=self.config.provider)
+        context = init_msg.get("context", "").strip()
+        if context:
+            prompt += f"\n\n{context}"
         self.provider = self.provider_factory(prompt, init_msg.get("tools", []))
-
-    def _load_subagent_prompt(self) -> str:
-        """Read subagent prompt from TABULA_HOME/.subagent_prompt if it exists."""
-        home = os.environ.get("TABULA_HOME", "")
-        if not home:
-            return ""
-        path = os.path.join(home, ".subagent_prompt")
-        try:
-            with open(path) as f:
-                return f.read().strip()
-        except FileNotFoundError:
-            return ""
 
     def _run_active_task(self, text: str) -> str:
         if not self.provider:
