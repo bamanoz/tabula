@@ -7,6 +7,14 @@ VERSION="${1:?usage: package-skills.sh <version>}"
 mkdir -p extra
 
 tar -czf "extra/tabula-skills-${VERSION}.tar.gz" \
+  --exclude='distrib/*/__pycache__' \
+  --exclude='distrib/*/*.pyc' \
+  --exclude='distrib/*/*/__pycache__' \
+  --exclude='distrib/*/*/*.pyc' \
+  --exclude='distrib/*/*/*/__pycache__' \
+  --exclude='distrib/*/*/*/*.pyc' \
+  --exclude='distrib/*/*/*/*/__pycache__' \
+  --exclude='distrib/*/*/*/*/*.pyc' \
   --exclude='distrib/assistant/skills/*/__pycache__' \
   --exclude='distrib/assistant/skills/*/.pytest_cache' \
   --exclude='distrib/assistant/skills/*/.pytest_cache/**' \
@@ -28,6 +36,7 @@ tar -czf "extra/tabula-skills-${VERSION}.tar.gz" \
   distrib/ \
   skills/lib/ \
   bundles/ \
+  config/global.toml \
   examples/boot-cicd.py \
   bin/tabula-server \
   bin/tabula-server.ps1 \
