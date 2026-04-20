@@ -99,7 +99,7 @@ Examples:
 
 - `~/.tabula/config/global.toml`
 - `~/.tabula/data/sessions/<session>/history.jsonl`
-- `~/.tabula/state/memory/index.json`
+- `~/.tabula/data/memory/palace/` (MemPalace ChromaDB + SQLite)
 - `~/.tabula/run/mcp/pool.url`
 - `~/.tabula/logs/hook-logger/hooks.jsonl`
 
@@ -110,7 +110,6 @@ owns directly:
 
 - `~/.tabula/config/skills/hook-permissions/permissions.json`
 - `~/.tabula/config/skills/mcp/servers.json`
-- `~/.tabula/data/memory/MEMORY.md`
 - `~/.tabula/state/subagent/prompt.txt`
 
 ## Boot System
@@ -154,9 +153,8 @@ The system prompt is split into **static** and **dynamic** sections separated by
 
 **Dynamic sections** (per-session):
 6. `## Available skills` — one-liner per skill with description
-7. `## Long-term memory` — from `~/.tabula/data/memory/MEMORY.md`
-8. `## MCP Tools` — discovered MCP server tools
-9. `## Environment` — provider, date, working directory
+7. `## MCP Tools` — discovered MCP server tools
+8. `## Environment` — provider, date, working directory
 
 ### Templates
 
@@ -384,7 +382,7 @@ Optional: `--timeout N` (0=oneshot, default). Results delivered as messages to p
 |-------|-------------|
 | `cron` | Scheduled tasks. Uses OS crontab or built-in daemon. |
 | `files` | Read, write, and edit files. Tools: `read_file`, `write_file`, `str_replace`. |
-| `memory` | Persistent memory. Categories: fact, preference, decision, entity, note. `--long-term` injects into system prompt. |
+| `memory` | Persistent memory via MemPalace (local ChromaDB + SQLite KG). Wing/room/drawer model. No API keys. |
 | `pair` | Universal pairing for gateways (Telegram, etc.). |
 | `sessions` | Cross-session messaging. Messages arrive as `<cross_session>` XML tags. |
 | `hook-logger` | JSONL audit log of all hook events to `~/.tabula/logs/hook-logger/hooks.jsonl`. |

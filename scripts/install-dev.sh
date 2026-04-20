@@ -1,44 +1,50 @@
 #!/bin/bash
 # Install Tabula from source into ~/.tabula/.
+#
+# Usage:
+#   bash scripts/install-dev.sh                     # install assistant distro
+#   bash scripts/install-dev.sh --distro guardian   # install another distro
+#
+# The selected distro is activated via install-distro.py, which manages all
+# symlink fan-out under ~/.tabula/{boot.py,templates,skills}. After the distro
+# is installed, an optional distro-specific post-install hook
+# (distrib/<name>/install.sh) is executed if present.
 set -euo pipefail
+
+DISTRO="assistant"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --distro) DISTRO="$2"; shift 2 ;;
+    --distro=*) DISTRO="${1#*=}"; shift ;;
+    -h|--help)
+      sed -n '2,8p' "$0"
+      exit 0
+      ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
 
 TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
 BIN_DIR="$TABULA_HOME/bin"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV="$TABULA_HOME/.venv"
+DISTRO_SRC="$REPO_ROOT/distrib/$DISTRO"
 
-link_runtime_surface() {
-  local src_dir="$1"
-  local dst_dir="$2"
-  shift 2
-  local preserve=("$@")
-  mkdir -p "$dst_dir"
-  for existing in "$dst_dir"/*; do
-    [ -e "$existing" ] || continue
-    local keep=false
-    for name in "${preserve[@]}"; do
-      if [ "$(basename "$existing")" = "$name" ]; then
-        keep=true
-        break
-      fi
-    done
-    [ "$keep" = true ] && continue
-    rm -rf "$existing"
-  done
-  if [ -d "$src_dir" ]; then
-    for entry in "$src_dir"/*; do
-      [ -e "$entry" ] || continue
-      ln -sfn "../${entry#"$TABULA_HOME/"}" "$dst_dir/$(basename "$entry")"
-    done
-  fi
-}
+if [ ! -d "$DISTRO_SRC" ]; then
+  echo "error: distro $DISTRO not found at $DISTRO_SRC" >&2
+  exit 1
+fi
 
-echo "Installing Tabula to $TABULA_HOME..."
+echo "==> Stopping any running tabula kernel"
+pkill -f "$TABULA_HOME/bin/tabula serve" 2>/dev/null || true
+sleep 0.3
 
+echo "==> Installing Tabula to $TABULA_HOME (distro: $DISTRO)"
 mkdir -p "$TABULA_HOME" "$BIN_DIR"
 
-# Remove legacy root-level runtime layout from earlier installs.
+# Wipe legacy root-level runtime layout from older installs. install-distro.py
+# rebuilds the symlink fan-out from distrib/active/ on every run.
 rm -rf \
   "$TABULA_HOME/boot.py" \
   "$TABULA_HOME/templates" \
@@ -48,21 +54,17 @@ rm -rf \
 
 cp "$REPO_ROOT/examples/boot-cicd.py" "$TABULA_HOME/"
 
-# Shared skill library
+# Shared skill library (preserved by install-distro.py during distro swaps)
 mkdir -p "$TABULA_HOME/skills"
-rsync -a --delete \
-  --exclude '__pycache__' \
-  --exclude '*.pyc' \
+rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
   "$REPO_ROOT/skills/lib/" "$TABULA_HOME/skills/lib/"
 
 # Test/dev runtime skills
 mkdir -p "$TABULA_HOME/testing"
-rsync -a --delete \
-  --exclude '__pycache__' \
-  --exclude '*.pyc' \
+rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
   "$REPO_ROOT/testing/skills/" "$TABULA_HOME/testing/skills/"
 
-# Global config
+# Global config (don't overwrite user edits)
 mkdir -p "$TABULA_HOME/config"
 if [ ! -f "$TABULA_HOME/config/global.toml" ]; then
   cp "$REPO_ROOT/config/global.toml" "$TABULA_HOME/config/global.toml"
@@ -71,24 +73,18 @@ fi
 # Service units
 rsync -a --delete "$REPO_ROOT/service/" "$TABULA_HOME/service/"
 
-# Memory directory (don't overwrite existing data)
-mkdir -p "$TABULA_HOME/memory"
-
 # Python venv with dependencies
 if [ ! -d "$VENV" ]; then
-  echo "Creating Python venv..."
+  echo "==> Creating Python venv"
   python3 -m venv "$VENV"
 fi
 "$VENV/bin/pip" install -q --upgrade pip
 "$VENV/bin/pip" install -q -r "$SCRIPT_DIR/requirements-dev.txt"
-echo "Python dependencies installed"
+echo "    Python dependencies installed"
 
 # Go binary
-echo "Building Go binary..."
-(
-  cd "$REPO_ROOT"
-  go build -o "$BIN_DIR/tabula" ./cmd/tabula/
-)
+echo "==> Building Go binary"
+( cd "$REPO_ROOT" && go build -o "$BIN_DIR/tabula" ./cmd/tabula/ )
 if [ "$(uname)" = "Darwin" ]; then
   codesign --force --sign - "$BIN_DIR/tabula" 2>/dev/null || true
 fi
@@ -100,9 +96,18 @@ for script in tabula-server tabula-api tabula-cli tabula-install-distro; do
 done
 cp "$REPO_ROOT/scripts/install-distro.py" "$BIN_DIR/install-distro.py"
 
-"$VENV/bin/python3" "$BIN_DIR/install-distro.py" --home "$TABULA_HOME" "$REPO_ROOT/distrib/assistant"
+# Install + activate the chosen distro
+echo "==> Installing distro: $DISTRO"
+"$VENV/bin/python3" "$BIN_DIR/install-distro.py" --home "$TABULA_HOME" "$DISTRO_SRC"
 
-# Add to PATH
+# Optional distro-specific post-install hook (e.g. guardian builds a sandbox image).
+POST_INSTALL="$DISTRO_SRC/install.sh"
+if [ -f "$POST_INSTALL" ]; then
+  echo "==> Running post-install hook: $DISTRO"
+  TABULA_HOME="$TABULA_HOME" REPO_ROOT="$REPO_ROOT" bash "$POST_INSTALL"
+fi
+
+# PATH config
 SHELL_RC=""
 if [ -n "${ZSH_VERSION:-}" ] || [ -f "$HOME/.zshrc" ]; then
   SHELL_RC="$HOME/.zshrc"
@@ -119,27 +124,25 @@ TABULA_PATH_LINE="export TABULA_PATH=\"$TABULA_PATH_VALUE\""
 
 if [ -n "$SHELL_RC" ]; then
   if ! grep -qF 'TABULA_HOME' "$SHELL_RC"; then
-    echo "" >> "$SHELL_RC"
-    echo "# Tabula" >> "$SHELL_RC"
-    echo "$HOME_LINE" >> "$SHELL_RC"
-    echo "$PATH_LINE" >> "$SHELL_RC"
-    echo "$TABULA_PATH_LINE" >> "$SHELL_RC"
-    echo "Added to $SHELL_RC"
+    {
+      echo ""
+      echo "# Tabula"
+      echo "$HOME_LINE"
+      echo "$PATH_LINE"
+      echo "$TABULA_PATH_LINE"
+    } >> "$SHELL_RC"
+    echo "    Added to $SHELL_RC"
   else
-    echo "Already configured in $SHELL_RC"
+    echo "    Already configured in $SHELL_RC"
   fi
-
-  # Apply in current shell
   export TABULA_HOME="$TABULA_HOME"
   export TABULA_PATH="$TABULA_PATH_VALUE"
   export PATH="$TABULA_HOME/bin:$PATH"
-  echo "Environment updated for current session"
 else
   echo "Could not detect shell rc file. Add manually:"
-  echo "  $HOME_LINE"
-  echo "  $PATH_LINE"
-  echo "  $TABULA_PATH_LINE"
+  printf '  %s\n  %s\n  %s\n' "$HOME_LINE" "$PATH_LINE" "$TABULA_PATH_LINE"
 fi
 
-echo ""
-echo "Installed."
+echo
+echo "Installed. Active distro: $DISTRO"
+echo "  Active link: $TABULA_HOME/distrib/active -> $(readlink "$TABULA_HOME/distrib/active" 2>/dev/null || echo '?')"

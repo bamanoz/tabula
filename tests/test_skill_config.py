@@ -32,7 +32,6 @@ SUBAGENT_ANTHROPIC_PATH = SUBAGENT_ANTHROPIC_DIR / "run.py"
 HOOK_LOGGER_DIR = ROOT / "distrib" / "assistant" / "skills" / "hook-logger"
 HOOK_LOGGER_PATH = HOOK_LOGGER_DIR / "run.py"
 MEMORY_DIR = ROOT / "distrib" / "assistant" / "skills" / "memory"
-MEMORY_EMBEDDINGS_PATH = MEMORY_DIR / "embeddings.py"
 MCP_DIR = ROOT / "distrib" / "assistant" / "skills" / "mcp"
 MCP_DAEMON_PATH = MCP_DIR / "daemon.py"
 
@@ -71,14 +70,6 @@ def _load_subagent_anthropic_module():
 
 def _load_hook_logger_module():
     spec = importlib.util.spec_from_file_location("tabula_hook_logger_run", HOOK_LOGGER_PATH)
-    mod = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def _load_memory_embeddings_module():
-    spec = importlib.util.spec_from_file_location("tabula_memory_embeddings", MEMORY_EMBEDDINGS_PATH)
     mod = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(mod)
@@ -502,58 +493,6 @@ class TestSkillConfig(unittest.TestCase):
                 mod = _load_hook_logger_module()
 
             self.assertEqual(mod.DEFAULT_LOG, "/tmp/env-hooks.jsonl")
-
-    def test_memory_embeddings_load_from_shared_openai_secret(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            _write_global_toml(home, '\n'.join([
-                '[memory.embedding]',
-                'model = "text-embedding-3-small"',
-                'base_url = "https://embeddings.example"',
-                '',
-            ]))
-            (home / "secrets.json").write_text(
-                '{"driver-openai.api_key":"sk-shared-openai"}\n',
-                encoding='utf-8',
-            )
-
-            with patch.dict(os.environ, {"TABULA_HOME": str(home)}, clear=True):
-                mod = _load_memory_embeddings_module()
-
-            self.assertEqual(mod.API_KEY, "sk-shared-openai")
-            self.assertEqual(mod.MODEL, "text-embedding-3-small")
-            self.assertEqual(mod.BASE_URL, "https://embeddings.example")
-            self.assertEqual(mod.API_URL, "https://embeddings.example/v1/embeddings")
-
-    def test_memory_embeddings_env_overrides_config(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            _write_global_toml(home, '\n'.join([
-                '[memory.embedding]',
-                'model = "file-model"',
-                'base_url = "https://file.example"',
-                '',
-            ]))
-            (home / "secrets.json").write_text(
-                '{"memory.embedding_api_key":"sk-file-openai"}\n',
-                encoding='utf-8',
-            )
-
-            with patch.dict(
-                os.environ,
-                {
-                    "TABULA_HOME": str(home),
-                    "TABULA_SKILL_MEMORY_EMBEDDING_MODEL": "env-model",
-                    "OPENAI_BASE_URL": "https://env.example",
-                    "OPENAI_API_KEY": "sk-env-openai",
-                },
-                clear=True,
-            ):
-                mod = _load_memory_embeddings_module()
-
-            self.assertEqual(mod.API_KEY, "sk-env-openai")
-            self.assertEqual(mod.MODEL, "env-model")
-            self.assertEqual(mod.BASE_URL, "https://env.example")
 
     def test_mcp_daemon_reads_pool_settings_from_skill_config(self):
         with tempfile.TemporaryDirectory() as tmp:

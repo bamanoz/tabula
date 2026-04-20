@@ -1,23 +1,18 @@
 #!/usr/bin/env python3
 """Telegram gateway for Tabula.
 
-Polls Telegram Bot API, bridges messages to the kernel.
-Each chat_id gets its own session + driver.
-
-Streaming: uses sendMessageDraft for incremental response display,
-then final sendMessage to save to chat history.
-
-Pairing flow:
-  /start -> generates token -> admin approves via pair.py
+Bridges Telegram chats to Tabula sessions. Each chat_id gets its own session +
+driver. Uses python-telegram-bot for polling/handlers and `sendMessageDraft`
+via a custom Bot API request for incremental response display.
 """
+
 from __future__ import annotations
 
-import json
+import asyncio
 import importlib.util
 import os
 import queue
 import re
-import shlex
 import sys
 import threading
 import time
@@ -32,13 +27,50 @@ if ROOT not in sys.path:
 from skills.lib import load_skill_config
 from skills.lib.kernel_client import KernelConnection
 from skills.lib.paths import ensure_parent, skill_run_dir
-from skills.lib.provider_selection import ProviderSelectionError, build_driver_command, ensure_provider_ready, resolve_provider
-from skills.lib.protocol import (
-    MSG_CANCEL, MSG_CONNECT, MSG_JOIN, MSG_JOINED, MSG_TOOL_USE, MSG_MESSAGE,
-    MSG_TOOL_RESULT, MSG_MEMBER_JOINED, MSG_ERROR,
-    MSG_STREAM_START, MSG_STREAM_DELTA, MSG_STREAM_END, MSG_DONE,
-    TOOL_PROCESS_SPAWN, TOOL_PROCESS_KILL,
+from skills.lib.provider_selection import (
+    ProviderSelectionError,
+    build_driver_command,
+    ensure_provider_ready,
+    resolve_provider,
 )
+from skills.lib.protocol import (
+    MSG_CANCEL,
+    MSG_CONNECT,
+    MSG_DONE,
+    MSG_ERROR,
+    MSG_JOIN,
+    MSG_MEMBER_JOINED,
+    MSG_MESSAGE,
+    MSG_STREAM_DELTA,
+    MSG_STREAM_END,
+    MSG_STREAM_START,
+    MSG_TOOL_RESULT,
+    MSG_TOOL_USE,
+    TOOL_PROCESS_KILL,
+    TOOL_PROCESS_SPAWN,
+)
+
+try:
+    from telegram import Bot, BotCommand, Update
+    from telegram.error import TelegramError
+    from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+except ModuleNotFoundError as err:
+    raise RuntimeError(
+        "python-telegram-bot package is required. Install scripts/requirements-runtime.txt."
+    ) from err
+
+
+class _RequestsCompat:
+    RequestException = TelegramError
+
+    def get(self, *args, **kwargs):
+        raise NotImplementedError("requests.get compatibility shim is not used at runtime")
+
+    def post(self, *args, **kwargs):
+        raise NotImplementedError("requests.post compatibility shim is not used at runtime")
+
+
+requests = _RequestsCompat()
 
 
 def _load_pair_module():
@@ -62,13 +94,12 @@ def _pair_module():
         _pair = _load_pair_module()
     return _pair
 
-import requests
 
 # -- Config --------------------------------------------------------------------
 
-GATEWAY_NAME  = "telegram"
-TABULA_URL    = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
-TABULA_HOME   = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
+GATEWAY_NAME = "telegram"
+TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
+TABULA_HOME = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
 
 
 def load_gateway_settings() -> dict:
@@ -78,17 +109,17 @@ def load_gateway_settings() -> dict:
 SETTINGS = load_gateway_settings()
 
 PROVIDER_OVERRIDE = SETTINGS["provider_override"] or None
-ACTIVE_PROVIDER  = resolve_provider(PROVIDER_OVERRIDE, tabula_home=TABULA_HOME, require_ready=False)
+ACTIVE_PROVIDER = resolve_provider(PROVIDER_OVERRIDE, tabula_home=TABULA_HOME, require_ready=False)
 
-VENV_PYTHON  = os.path.join(TABULA_HOME, ".venv", "bin", "python3")
-POLL_TIMEOUT = 30   # long-poll seconds
+VENV_PYTHON = os.path.join(TABULA_HOME, ".venv", "bin", "python3")
 API_TIMEOUT = SETTINGS["api_timeout"]
-TOKEN_TTL    = 1800 # pairing token lifetime, seconds
-ASK_TIMEOUT  = 300  # max wait for LLM response, seconds
-DRAFT_THROTTLE = 0.1  # seconds between sendMessageDraft calls
+TOKEN_TTL = 1800
+ASK_TIMEOUT = 300
+DRAFT_THROTTLE = 0.1
 SESSION_IDLE_TTL = SETTINGS["session.idle_ttl"]
 SESSION_MAX_AGE = SETTINGS["session.max_age"]
 SESSION_CLEANUP_INTERVAL = SETTINGS["session.cleanup_interval"]
+
 
 # -- Logging -------------------------------------------------------------------
 
@@ -103,53 +134,53 @@ def _driver_command() -> str:
 
 
 def ensure_gateway_provider_ready() -> None:
-    ensure_provider_ready(resolve_provider(PROVIDER_OVERRIDE, tabula_home=TABULA_HOME, require_ready=False), tabula_home=TABULA_HOME)
+    ensure_provider_ready(
+        resolve_provider(PROVIDER_OVERRIDE, tabula_home=TABULA_HOME, require_ready=False),
+        tabula_home=TABULA_HOME,
+    )
+
 
 # -- Auth (delegates to skills/pair) -------------------------------------------
 
 def is_authorized(chat_id: int) -> bool:
     return _pair_module().is_authorized(GATEWAY_NAME, chat_id)
 
+
 def create_pairing_token(chat_id: int, username: str) -> str:
     return _pair_module().create_token(GATEWAY_NAME, chat_id, username, ttl=TOKEN_TTL)
+
 
 # -- Markdown converter --------------------------------------------------------
 
 _TGV2_SPECIAL = r'_*[]()~`>#+=|{}.!-'
 
+
 def escape_tgv2(s: str) -> str:
     """Escape special chars for Telegram MarkdownV2 plain text."""
     return re.sub(r'([' + re.escape(_TGV2_SPECIAL) + r'])', r'\\\1', s)
 
-def md_to_tgv2(text: str) -> str:
-    """Convert standard Markdown (from LLM) to Telegram MarkdownV2.
 
-    Strategy:
-    - Extract code blocks and inline code first (preserve as-is)
-    - Convert bold (**text** -> *text*) and italic (*text* -> _text_)
-    - Convert headings (# Heading -> *Heading*)
-    - Escape all MarkdownV2 special chars outside formatting
-    """
+def md_to_tgv2(text: str) -> str:
+    """Convert standard Markdown (from LLM) to Telegram MarkdownV2."""
     parts = []
     pattern = re.compile(r'(```[\s\S]*?```|`[^`\n]+`)')
     last = 0
-    for m in pattern.finditer(text):
-        before = text[last:m.start()]
+    for match in pattern.finditer(text):
+        before = text[last:match.start()]
         parts.append(_convert_markup(before))
-        parts.append(m.group(0))
-        last = m.end()
+        parts.append(match.group(0))
+        last = match.end()
     parts.append(_convert_markup(text[last:]))
     return "".join(parts)
 
 
 def _convert_markup(text: str) -> str:
-    """Convert non-code markdown markup to TGv2, escaping plain text."""
     lines = text.split('\n')
     converted_lines = []
     for line in lines:
-        m = re.match(r'^(#{1,6})\s+(.*)', line)
-        if m:
-            heading_text = _convert_inline(m.group(2))
+        match = re.match(r'^(#{1,6})\s+(.*)', line)
+        if match:
+            heading_text = _convert_inline(match.group(2))
             converted_lines.append(f'*{heading_text}*')
         else:
             converted_lines.append(_convert_inline(line))
@@ -157,23 +188,22 @@ def _convert_markup(text: str) -> str:
 
 
 def _convert_inline(text: str) -> str:
-    """Convert inline bold/italic, escape plain text segments."""
     result = []
     pattern = re.compile(r'(\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_)')
     last = 0
-    for m in pattern.finditer(text):
-        result.append(escape_tgv2(text[last:m.start()]))
-        full = m.group(0)
+    for match in pattern.finditer(text):
+        result.append(escape_tgv2(text[last:match.start()]))
+        full = match.group(0)
         if full.startswith('**'):
-            inner = escape_tgv2(m.group(2))
+            inner = escape_tgv2(match.group(2))
             result.append(f'*{inner}*')
         elif full.startswith('*'):
-            inner = escape_tgv2(m.group(3))
+            inner = escape_tgv2(match.group(3))
             result.append(f'_{inner}_')
         elif full.startswith('_'):
-            inner = escape_tgv2(m.group(4))
+            inner = escape_tgv2(match.group(4))
             result.append(f'_{inner}_')
-        last = m.end()
+        last = match.end()
     result.append(escape_tgv2(text[last:]))
     return ''.join(result)
 
@@ -182,16 +212,16 @@ def _convert_inline(text: str) -> str:
 
 class SessionState:
     def __init__(self, session_id: str):
-        self.session_id  = session_id
-        self.conn        = KernelConnection(TABULA_URL)
+        self.session_id = session_id
+        self.conn = KernelConnection(TABULA_URL)
         self.driver_pid: int | None = None
         self.events: queue.Queue[tuple[str, str]] = queue.Queue()
-        self.alive       = True
+        self.alive = True
         self._thread: threading.Thread | None = None
-        self.turn_lock   = threading.Lock()
+        self.turn_lock = threading.Lock()
         self._state_lock = threading.Lock()
         now = time.monotonic()
-        self.created_at  = now
+        self.created_at = now
         self.last_used_at = now
         self.inflight_turn_id: str | None = None
         self.cancel_requested = False
@@ -199,36 +229,46 @@ class SessionState:
 
     def connect(self):
         driver_cmd = _driver_command()
-        self.conn.send({
-            "type": MSG_CONNECT,
-            "name": f"tg-{self.session_id}",
-            "sends": [MSG_MESSAGE, MSG_CANCEL, MSG_TOOL_USE],
-            "receives": [MSG_STREAM_START, MSG_STREAM_DELTA, MSG_STREAM_END, MSG_DONE, MSG_ERROR, MSG_TOOL_RESULT, MSG_MEMBER_JOINED],
-        })
-        self.conn.recv()  # connected
+        self.conn.send(
+            {
+                "type": MSG_CONNECT,
+                "name": f"tg-{self.session_id}",
+                "sends": [MSG_MESSAGE, MSG_CANCEL, MSG_TOOL_USE],
+                "receives": [
+                    MSG_STREAM_START,
+                    MSG_STREAM_DELTA,
+                    MSG_STREAM_END,
+                    MSG_DONE,
+                    MSG_ERROR,
+                    MSG_TOOL_RESULT,
+                    MSG_MEMBER_JOINED,
+                ],
+            }
+        )
+        self.conn.recv()
         self.conn.send({"type": MSG_JOIN, "session": self.session_id})
-        self.conn.recv()  # joined
+        self.conn.recv()
 
-        # Spawn driver
-        self.conn.send({
-            "type": MSG_TOOL_USE,
-            "name": TOOL_PROCESS_SPAWN,
-            "id": "spawn-driver",
-            "input": {"command": f"{driver_cmd} --session {self.session_id}"},
-        })
+        self.conn.send(
+            {
+                "type": MSG_TOOL_USE,
+                "name": TOOL_PROCESS_SPAWN,
+                "id": "spawn-driver",
+                "input": {"command": f"{driver_cmd} --session {self.session_id}"},
+            }
+        )
         deadline = time.time() + 15
         while time.time() < deadline:
             msg = self.conn.recv(timeout=15)
             if msg is None:
                 raise RuntimeError("lost connection while spawning driver")
             if msg.get("type") == MSG_TOOL_RESULT and msg.get("id") == "spawn-driver":
-                m = re.match(r"PID (\d+)", msg.get("output", ""))
-                if m:
-                    self.driver_pid = int(m.group(1))
+                match = re.match(r"PID (\d+)", msg.get("output", ""))
+                if match:
+                    self.driver_pid = int(match.group(1))
                     break
                 raise RuntimeError(f"driver spawn failed: {msg.get('output')}")
 
-        # Wait for driver to join
         deadline = time.time() + 10
         while time.time() < deadline:
             msg = self.conn.recv(timeout=10)
@@ -268,9 +308,9 @@ class SessionState:
             if msg is None:
                 self.events.put(("disconnect", ""))
                 return
-            t = msg.get("type")
-            if t in (MSG_STREAM_START, MSG_STREAM_DELTA, MSG_STREAM_END, MSG_DONE, MSG_ERROR):
-                self.events.put((t, msg.get("text", "")))
+            msg_type = msg.get("type")
+            if msg_type in (MSG_STREAM_START, MSG_STREAM_DELTA, MSG_STREAM_END, MSG_DONE, MSG_ERROR):
+                self.events.put((msg_type, msg.get("text", "")))
 
     def _drain_events(self):
         while True:
@@ -342,8 +382,14 @@ class SessionState:
 
         if driver_pid is not None:
             try:
-                self.conn.send({"type": MSG_TOOL_USE, "name": TOOL_PROCESS_KILL, "id": "kill-driver",
-                                "input": {"pid": driver_pid}})
+                self.conn.send(
+                    {
+                        "type": MSG_TOOL_USE,
+                        "name": TOOL_PROCESS_KILL,
+                        "id": "kill-driver",
+                        "input": {"pid": driver_pid},
+                    }
+                )
             except Exception:
                 pass
         self.conn.close()
@@ -369,13 +415,13 @@ def _discover_slash_commands() -> list[dict]:
         if end == -1:
             continue
         frontmatter = raw[3:end]
-        body = raw[end+3:].strip()
+        body = raw[end + 3 :].strip()
         if not re.search(r'user-invocable:\s*true', frontmatter, re.I):
             continue
-        m = re.search(r'^name:\s*(.+)$', frontmatter, re.M)
-        skill_name = m.group(1).strip() if m else name
-        m = re.search(r'^description:\s*(.+)$', frontmatter, re.M)
-        description = m.group(1).strip().strip('"') if m else ""
+        match = re.search(r'^name:\s*(.+)$', frontmatter, re.M)
+        skill_name = match.group(1).strip() if match else name
+        match = re.search(r'^description:\s*(.+)$', frontmatter, re.M)
+        description = match.group(1).strip().strip('"') if match else ""
         commands.append({"name": skill_name, "description": description, "body": body})
     return commands
 
@@ -383,67 +429,134 @@ def _discover_slash_commands() -> list[dict]:
 # -- Bot instance (one per token) ----------------------------------------------
 
 class BotInstance:
-    """One Telegram bot token = one BotInstance with its own polling loop."""
+    """One Telegram bot token = one polling application."""
 
     def __init__(self, token: str, gateway: "TelegramGateway"):
         self.token = token
         self.gateway = gateway
         self.TG_API = f"https://api.telegram.org/bot{token}"
+        self.bot = Bot(token)
+        self.application: Application | None = None
+
+    async def _tg(self, method: str, **kwargs) -> dict:
+        result = await self.bot.do_api_request(
+            method,
+            api_kwargs=kwargs,
+            read_timeout=API_TIMEOUT,
+            write_timeout=API_TIMEOUT,
+            connect_timeout=API_TIMEOUT,
+            pool_timeout=API_TIMEOUT,
+        )
+        return {"ok": True, "result": result}
 
     def tg(self, method: str, **kwargs) -> dict:
-        return requests.post(f"{self.TG_API}/{method}", json=kwargs, timeout=API_TIMEOUT).json()
+        return asyncio.run(self._tg(method, **kwargs))
+
+    async def _send_text(self, chat_id: int, text: str, parse_mode: str = ""):
+        try:
+            payload: dict = {"chat_id": chat_id, "text": text}
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
+            await self._tg("sendMessage", **payload)
+        except TelegramError as err:
+            log(f"sendMessage failed: {err}")
+            if parse_mode:
+                await self._tg("sendMessage", chat_id=chat_id, text=text)
 
     def send_message(self, chat_id: int, text: str, parse_mode: str = ""):
-        kwargs: dict = {"chat_id": chat_id, "text": text}
-        if parse_mode:
-            kwargs["parse_mode"] = parse_mode
-        resp = self.tg("sendMessage", **kwargs)
-        if not resp.get("ok"):
-            log(f"sendMessage failed: {resp}")
-            if parse_mode:
-                resp2 = self.tg("sendMessage", chat_id=chat_id, text=text)
-                if not resp2.get("ok"):
-                    log(f"sendMessage retry failed: {resp2}")
+        asyncio.run(self._send_text(chat_id, text, parse_mode=parse_mode))
+
+    async def _send_typing(self, chat_id: int):
+        await self._tg("sendChatAction", chat_id=chat_id, action="typing")
 
     def send_typing(self, chat_id: int):
-        self.tg("sendChatAction", chat_id=chat_id, action="typing")
+        asyncio.run(self._send_typing(chat_id))
+
+    async def _send_draft(self, chat_id: int, draft_id: str, text: str):
+        await self._tg(
+            "sendMessageDraft",
+            chat_id=chat_id,
+            draft_id=draft_id,
+            text=text,
+            parse_mode="MarkdownV2",
+        )
 
     def send_draft(self, chat_id: int, draft_id: str, text: str):
-        """Send a streaming draft via sendMessageDraft."""
-        self.tg("sendMessageDraft",
-                chat_id=chat_id,
-                draft_id=draft_id,
-                text=text,
-                parse_mode="MarkdownV2")
+        asyncio.run(self._send_draft(chat_id, draft_id, text))
+
+    async def _set_commands(self):
+        if not self.gateway._commands:
+            return
+        commands = [
+            {"command": name, "description": cmd["description"][:256]}
+            for name, cmd in self.gateway._commands.items()
+        ]
+        await self._tg("setMyCommands", commands=commands)
+
+    async def _on_start(self, application: Application):
+        return None
+
+    async def _on_error(self, update: object, context: ContextTypes.DEFAULT_TYPE):
+        log(f"telegram handler error: {context.error}")
+
+    async def _dispatch(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.message is None and update.edited_message is None:
+            return
+        message = update.message or update.edited_message
+        if message is None:
+            return
+
+        data = message.to_dict()
+        key = "edited_message" if update.edited_message is not None and update.message is None else "message"
+        try:
+            await asyncio.to_thread(self.gateway.handle_update, {key: data}, self)
+        except Exception as err:
+            log(f"update handling error: {err}")
+
+    def _build_application(self) -> Application:
+        application = (
+            Application.builder()
+            .token(self.token)
+            .read_timeout(API_TIMEOUT)
+            .write_timeout(API_TIMEOUT)
+            .connect_timeout(API_TIMEOUT)
+            .pool_timeout(API_TIMEOUT)
+            .post_init(self._on_start)
+            .build()
+        )
+        application.add_handler(CommandHandler("start", self._dispatch))
+        application.add_handler(CommandHandler("cancel", self._dispatch))
+        application.add_handler(MessageHandler(filters.TEXT, self._dispatch))
+        application.add_error_handler(self._on_error)
+        return application
 
     def run(self):
+        self.application = self._build_application()
+        self.gateway.register_bot(self)
         try:
-            me = self.tg("getMe").get("result", {})
-        except requests.RequestException as e:
-            log(f"getMe failed: {e}")
-            me = {}
-        log(f"bot @{me.get('username', '?')} started, provider={ACTIVE_PROVIDER}")
-        offset = 0
-        while True:
             try:
-                resp = requests.get(
-                    f"{self.TG_API}/getUpdates",
-                    params={"timeout": POLL_TIMEOUT, "offset": offset},
-                    timeout=POLL_TIMEOUT + 5,
-                ).json()
-                if not resp.get("ok"):
-                    log(f"getUpdates error: {resp}")
-                    time.sleep(5)
-                    continue
-                for update in resp.get("result", []):
-                    offset = update["update_id"] + 1
-                    try:
-                        self.gateway.handle_update(update, bot=self)
-                    except Exception as e:
-                        log(f"update handling error: {e}")
-            except requests.RequestException as e:
-                log(f"network error: {e}")
-                time.sleep(5)
+                me = self.tg("getMe").get("result", {})
+            except TelegramError as err:
+                log(f"getMe failed: {err}")
+                me = {}
+            log(f"bot @{getattr(me, 'username', None) or me.get('username', '?') if isinstance(me, dict) else '?'} started, provider={ACTIVE_PROVIDER}")
+            self.application.run_polling(
+                timeout=int(API_TIMEOUT),
+                allowed_updates=Update.ALL_TYPES,
+                stop_signals=None,
+                close_loop=True,
+            )
+        finally:
+            self.gateway.unregister_bot(self)
+
+    def stop(self):
+        application = self.application
+        if application is None:
+            return
+        try:
+            application.stop_running()
+        except Exception:
+            pass
 
 
 # -- Gateway -------------------------------------------------------------------
@@ -452,11 +565,13 @@ class TelegramGateway:
     def __init__(self, cleanup_interval: float | None = None):
         self.active_provider = resolve_provider(PROVIDER_OVERRIDE, tabula_home=TABULA_HOME, require_ready=False)
         self.driver_cmd = _driver_command()
-        self.sessions:  dict[int, SessionState] = {}
+        self.sessions: dict[int, SessionState] = {}
         self._creating: dict[int, threading.Event] = {}
-        self._lock      = threading.Lock()
+        self._lock = threading.Lock()
         self._commands: dict[str, dict] = {}
-        self._shutdown  = False
+        self._bots: dict[str, BotInstance] = {}
+        self._primary_token: str | None = None
+        self._shutdown = False
         self._stop_event = threading.Event()
         self._cleanup_interval = SESSION_CLEANUP_INTERVAL if cleanup_interval is None else cleanup_interval
         self._cleanup_thread: threading.Thread | None = None
@@ -465,13 +580,27 @@ class TelegramGateway:
             self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
             self._cleanup_thread.start()
 
+    def register_bot(self, bot: BotInstance):
+        with self._lock:
+            self._bots[bot.token] = bot
+            if self._primary_token is None:
+                self._primary_token = bot.token
+
+    def unregister_bot(self, bot: BotInstance):
+        with self._lock:
+            self._bots.pop(bot.token, None)
+            if self._primary_token == bot.token:
+                self._primary_token = next(iter(self._bots), None)
+
+    def is_primary_bot(self, token: str) -> bool:
+        with self._lock:
+            return self._primary_token == token
+
     def _load_slash_commands(self):
         commands = _discover_slash_commands()
         for cmd in commands:
             tg_name = cmd["name"].replace("-", "_")
             self._commands[tg_name] = cmd
-        # Register commands for all bots (done per-bot in BotInstance.run)
-        # We'll register once here using the first bot's token later.
 
     def _get_session(self, chat_id: int) -> SessionState:
         while True:
@@ -575,14 +704,13 @@ class TelegramGateway:
         if not msg:
             return
 
-        chat_id  = msg["chat"]["id"]
-        text     = msg.get("text", "").strip()
+        chat_id = msg["chat"]["id"]
+        text = msg.get("text", "").strip()
         username = msg.get("from", {}).get("username", str(chat_id))
 
         if not text:
             return
 
-        # /start -- pairing flow
         if text == "/start":
             if is_authorized(chat_id):
                 bot.send_message(chat_id, r"You're already authorized\. Just write me something", parse_mode="MarkdownV2")
@@ -590,14 +718,15 @@ class TelegramGateway:
                 token = create_pairing_token(chat_id, username)
                 bot.send_message(
                     chat_id,
-                    r"To get access, you need to go through pairing\." + "\n\n"
-                    r"Your token:" + f"\n\n`{token}`\n\n"
-                    r"Send it to the admin for approval\.",
+                    r"To get access, you need to go through pairing\."
+                    + "\n\n"
+                    + r"Your token:"
+                    + f"\n\n`{token}`\n\n"
+                    + r"Send it to the admin for approval\.",
                     parse_mode="MarkdownV2",
                 )
             return
 
-        # Not authorized
         if not is_authorized(chat_id):
             bot.send_message(
                 chat_id,
@@ -614,7 +743,6 @@ class TelegramGateway:
                 bot.send_message(chat_id, r"No active turn to cancel\.", parse_mode="MarkdownV2")
             return
 
-        # Slash commands (user-invocable skills)
         if text.startswith("/"):
             parts = text[1:].split(None, 1)
             cmd_name = parts[0].split("@")[0].lower()
@@ -630,7 +758,6 @@ class TelegramGateway:
                 ).start()
                 return
 
-        # Authorized -- route to kernel
         log(f"message from chat_id={chat_id} (@{username}): {text[:60]}")
         bot.send_typing(chat_id)
         threading.Thread(
@@ -656,18 +783,17 @@ class TelegramGateway:
                     try:
                         bot.send_draft(chat_id, draft_id, md_to_tgv2(full_text))
                     except Exception:
-                        pass  # ignore draft failures
+                        pass
                     last_draft = now
 
-            # Final message (saved to chat history)
             if full_text:
                 for chunk in _split_text(md_to_tgv2(full_text), 4096):
                     bot.send_message(chat_id, chunk, parse_mode="MarkdownV2")
             else:
                 bot.send_message(chat_id, "_(empty response)_", parse_mode="MarkdownV2")
-        except Exception as e:
-            log(f"error processing message from {chat_id}: {e}")
-            bot.send_message(chat_id, f"Internal error: {escape_tgv2(str(e))}")
+        except Exception as err:
+            log(f"error processing message from {chat_id}: {err}")
+            bot.send_message(chat_id, f"Internal error: {escape_tgv2(str(err))}")
 
     def _cancel_session(self, chat_id: int) -> bool:
         with self._lock:
@@ -682,7 +808,9 @@ class TelegramGateway:
             self._shutdown = True
             thread = self._cleanup_thread
             sessions = list(self.sessions.values())
+            bots = list(self._bots.values())
             self.sessions.clear()
+            self._bots.clear()
             creating = list(self._creating.values())
             self._creating.clear()
 
@@ -692,6 +820,12 @@ class TelegramGateway:
 
         for event in creating:
             event.set()
+
+        for bot in bots:
+            try:
+                bot.stop()
+            except Exception:
+                pass
 
         for session in sessions:
             try:
@@ -741,10 +875,9 @@ def _check_pid_file() -> bool:
     try:
         with open(_PID_FILE) as f:
             pid = int(f.read().strip())
-        os.kill(pid, 0)  # signal 0 = check if alive
+        os.kill(pid, 0)
         return True
     except (ValueError, ProcessLookupError, PermissionError):
-        # Stale PID file — remove it
         try:
             os.remove(_PID_FILE)
         except OSError:
@@ -768,7 +901,10 @@ def _remove_pid_file():
 def main():
     tokens = resolve_bot_tokens()
     if not tokens:
-        sys.exit("gateway-telegram bot tokens are not configured. Set TELEGRAM_BOT_TOKENS, TABULA_SKILL_GATEWAY_TELEGRAM_BOT_TOKENS, or use config/skills/gateway-telegram.toml + secrets.json")
+        sys.exit(
+            "gateway-telegram bot tokens are not configured. Set TELEGRAM_BOT_TOKENS, "
+            "TABULA_SKILL_GATEWAY_TELEGRAM_BOT_TOKENS, or use config/skills/gateway-telegram.toml + secrets.json"
+        )
 
     if _check_pid_file():
         sys.exit("gateway-telegram is already running. Remove ~/.tabula/run/gateway-telegram/gateway-telegram.pid to force start.")
@@ -777,8 +913,8 @@ def main():
     try:
         try:
             _run_gateway(tokens)
-        except ProviderSelectionError as e:
-            sys.exit(f"error: {e}")
+        except ProviderSelectionError as err:
+            sys.exit(f"error: {err}")
     finally:
         _remove_pid_file()
 
@@ -786,8 +922,8 @@ def main():
 def _run_gateway(tokens):
     ensure_gateway_provider_ready()
     gateway = TelegramGateway()
+    bot_threads: list[threading.Thread] = []
 
-    # Register slash commands with the first bot
     if gateway._commands:
         first_bot = BotInstance(tokens[0], gateway)
         tg_commands = [
@@ -800,15 +936,15 @@ def _run_gateway(tokens):
                 log(f"registered {len(tg_commands)} commands with Telegram")
             else:
                 log(f"setMyCommands failed: {resp}")
-        except requests.RequestException as e:
-            log(f"setMyCommands network error: {e}")
+        except requests.RequestException as err:
+            log(f"setMyCommands network error: {err}")
 
-    # Start one polling thread per bot token
     for token in tokens:
         bot = BotInstance(token, gateway)
-        threading.Thread(target=bot.run, daemon=True).start()
+        thread = threading.Thread(target=bot.run, daemon=True)
+        thread.start()
+        bot_threads.append(thread)
 
-    # Keep main thread alive
     try:
         while True:
             time.sleep(3600)

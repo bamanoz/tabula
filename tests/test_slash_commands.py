@@ -26,23 +26,27 @@ def _load_boot_module():
     os.environ["TABULA_PROVIDER"] = os.environ.get("TABULA_PROVIDER", "openai")
 
     for name in list(sys.modules.keys()):
-        if name == "skills" or name.startswith("skills."):
+        if name == "skills" or (name.startswith("skills.") and not name.startswith("skills.lib")):
             sys.modules.pop(name, None)
 
     skills_pkg = types.ModuleType("skills")
     skills_pkg.__path__ = [str(ROOT / "skills")]
     sys.modules["skills"] = skills_pkg
 
-    lib_init = ROOT / "skills" / "lib" / "__init__.py"
-    lib_spec = importlib.util.spec_from_file_location(
-        "skills.lib",
-        lib_init,
-        submodule_search_locations=[str(ROOT / "skills" / "lib")],
-    )
-    lib_mod = importlib.util.module_from_spec(lib_spec)
-    assert lib_spec.loader is not None
-    sys.modules["skills.lib"] = lib_mod
-    lib_spec.loader.exec_module(lib_mod)
+    if "skills.lib" in sys.modules:
+        lib_mod = sys.modules["skills.lib"]
+    else:
+        lib_init = ROOT / "skills" / "lib" / "__init__.py"
+        lib_spec = importlib.util.spec_from_file_location(
+            "skills.lib",
+            lib_init,
+            submodule_search_locations=[str(ROOT / "skills" / "lib")],
+        )
+        lib_mod = importlib.util.module_from_spec(lib_spec)
+        assert lib_spec.loader is not None
+        sys.modules["skills.lib"] = lib_mod
+        lib_spec.loader.exec_module(lib_mod)
+    skills_pkg.lib = lib_mod
 
     boot_path = ROOT / "distrib" / "assistant" / "boot.py"
     spec = importlib.util.spec_from_file_location("tabula_main_boot", boot_path)

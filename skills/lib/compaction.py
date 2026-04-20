@@ -11,8 +11,14 @@ from __future__ import annotations
 import json
 import os
 import re
-import urllib.error
-import urllib.request
+
+from .providers import (
+    _anthropic_client,
+    _openai_client,
+    _openai_output_text,
+    normalize_api_base,
+    provider_error_message,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +60,6 @@ def get_context_window(model: str) -> int:
     """Get context window size for a model."""
     if model in CONTEXT_WINDOWS:
         return CONTEXT_WINDOWS[model]
-    # Fuzzy match: check if model starts with a known prefix
     for known, window in CONTEXT_WINDOWS.items():
         if model.startswith(known.rsplit("-", 1)[0]):
             return window
@@ -66,7 +71,6 @@ def should_compact(messages: list[dict], model: str, system_prompt: str = "") ->
     if len(messages) < KEEP_LAST_MESSAGES + 2:
         return False
     estimated = estimate_tokens(messages)
-    # Include system prompt in the estimate — it's sent with every API call
     if system_prompt:
         estimated += len(system_prompt) // 4
     window = get_context_window(model)
@@ -131,38 +135,26 @@ def compact_messages_anthropic(
     old = messages[:-keep_last]
     recent = messages[-keep_last:]
 
-    # Build the summarization request: full conversation + compaction prompt
     summary_messages = list(old) + [
         {"role": "user", "content": COMPACT_PROMPT},
     ]
 
-    body = {
-        "model": model,
-        "max_tokens": 8192,
-        "system": system_prompt,
-        "messages": summary_messages,
-    }
-
-    req = urllib.request.Request(
-        api_url,
-        data=json.dumps(body).encode(),
-        headers={
-            "Content-Type": "application/json",
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-        },
-    )
-
     try:
-        resp = urllib.request.urlopen(req, timeout=120)
-        data = json.loads(resp.read())
+        client = _anthropic_client(api_key=api_key, base_url=normalize_api_base(api_url, "/v1/messages"))
+        response = client.messages.create(
+            model=model,
+            max_tokens=8192,
+            system=system_prompt,
+            messages=summary_messages,
+            timeout=120,
+        )
         summary_text = ""
-        for block in data.get("content", []):
-            if block.get("type") == "text":
-                summary_text += block["text"]
-    except Exception as e:
+        for block in getattr(response, "content", []) or []:
+            if getattr(block, "type", None) == "text":
+                summary_text += getattr(block, "text", "") or ""
+    except Exception as err:
         if logger:
-            logger(f"compaction API call failed: {e}")
+            logger(f"compaction API call failed: {provider_error_message(err)}")
         return messages, ""
 
     summary_text = _extract_summary(summary_text)
@@ -205,33 +197,21 @@ def compact_messages_openai(
         {"type": "message", "role": "user", "content": COMPACT_PROMPT},
     ]
 
-    body = {
-        "model": model,
-        "instructions": system_prompt,
-        "input": summary_input,
-    }
-
-    req = urllib.request.Request(
-        api_url,
-        data=json.dumps(body).encode(),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-    )
-
     try:
-        resp = urllib.request.urlopen(req, timeout=120)
-        data = json.loads(resp.read())
+        client = _openai_client(api_key=api_key, base_url=normalize_api_base(api_url, "/responses"))
+        response = client.responses.create(
+            model=model,
+            instructions=system_prompt,
+            input=summary_input,
+            timeout=120,
+        )
         summary_text = ""
-        for item in data.get("output", []):
-            if item.get("type") == "message":
-                for part in item.get("content", []):
-                    if part.get("type") == "output_text":
-                        summary_text += part.get("text", "")
-    except Exception as e:
+        for item in getattr(response, "output", []) or []:
+            if getattr(item, "type", None) == "message":
+                summary_text += _openai_output_text(item)
+    except Exception as err:
         if logger:
-            logger(f"compaction API call failed: {e}")
+            logger(f"compaction API call failed: {provider_error_message(err)}")
         return pending_input, ""
 
     summary_text = _extract_summary(summary_text)
@@ -255,7 +235,7 @@ def compact_messages_openai(
 
 def _extract_summary(text: str) -> str:
     """Extract content from <summary> tags, or return full text if no tags."""
-    m = re.search(r"<summary>(.*?)</summary>", text, re.DOTALL)
-    if m:
-        return m.group(1).strip()
+    match = re.search(r"<summary>(.*?)</summary>", text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
     return text.strip()

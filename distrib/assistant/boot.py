@@ -55,7 +55,6 @@ load_env()
 
 SKILLS_DIR = str(flat_skills_dir())
 CONFIG_SKILLS_DIR = os.path.join(TABULA_HOME, "config", "skills")
-MEMORY_FILE = os.path.join(TABULA_HOME, "data", "memory", "MEMORY.md")
 TEMPLATES_DIR = str(flat_templates_dir())
 PROJECT_FILES = ["IDENTITY.md", "SOUL.md", "USER.md", "AGENTS.md"]
 CACHE_BOUNDARY = "\n<!-- CACHE_BOUNDARY -->\n"
@@ -406,23 +405,6 @@ def _section_skills(skills: list[str]) -> str:
         lines.append(doc)
         lines.append("")
     return "\n".join(lines)
-
-
-def _section_memory() -> str:
-    if not os.path.isfile(MEMORY_FILE):
-        return ""
-    with open(MEMORY_FILE) as f:
-        memory = f.read().strip()
-    if not memory:
-        return ""
-    return "\n".join([
-        "## Long-term memory",
-        "",
-        "The following is your persistent memory. Use it to inform your responses.",
-        "To save new memories, use the memory skill commands above.",
-        "",
-        memory,
-    ])
 
 
 def _section_environment() -> str:

@@ -4,13 +4,74 @@
 from __future__ import annotations
 
 import json
-import urllib.error
-import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 
-_HTTP_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+def _import_anthropic():
+    try:
+        import anthropic
+    except ModuleNotFoundError as err:
+        raise RuntimeError(
+            "anthropic package is required. Install scripts/requirements-runtime.txt."
+        ) from err
+    return anthropic
+
+
+def _import_openai():
+    try:
+        import openai
+    except ModuleNotFoundError as err:
+        raise RuntimeError(
+            "openai package is required. Install scripts/requirements-runtime.txt."
+        ) from err
+    return openai
+
+
+def _extract_error_message(data) -> str:
+    if isinstance(data, dict):
+        err = data.get("error")
+        if isinstance(err, dict):
+            message = err.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()
+        message = data.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+        try:
+            return json.dumps(data, ensure_ascii=False)
+        except TypeError:
+            return ""
+    if isinstance(data, str) and data.strip():
+        return data.strip()
+    return ""
+
+
+def provider_error_message(err: Exception) -> str:
+    body = getattr(err, "body", None)
+    message = _extract_error_message(body)
+    if message:
+        return message
+
+    response = getattr(err, "response", None)
+    if response is not None:
+        try:
+            data = response.json()
+        except Exception:
+            data = None
+        message = _extract_error_message(data)
+        if message:
+            return message
+        text = getattr(response, "text", None)
+        message = _extract_error_message(text)
+        if message:
+            return message
+
+    direct = getattr(err, "message", None)
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+
+    return str(err)
 
 
 @dataclass
@@ -33,42 +94,145 @@ class TurnOutcome:
     usage: dict | None = None
 
 
-def iter_sse_events(resp):
-    """Yield parsed SSE events from an HTTP response."""
-    data_lines: list[str] = []
-    event_type = ""
+def normalize_api_base(base_url: str, version_prefix: str) -> str:
+    base = base_url.rstrip("/")
+    if version_prefix and base.endswith(version_prefix):
+        return base[: -len(version_prefix)]
+    return base
 
-    for raw_line in resp:
-        line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
-        if not line:
-            if not data_lines:
-                event_type = ""
-                continue
-            payload = "\n".join(data_lines)
-            if payload != "[DONE]":
-                try:
-                    data = json.loads(payload)
-                except json.JSONDecodeError:
-                    data = {"type": event_type or "message", "data": payload}
-                if event_type and "type" not in data:
-                    data["type"] = event_type
-                yield data
-            data_lines = []
-            event_type = ""
-            continue
-        if line.startswith("event: "):
-            event_type = line[7:]
-            continue
-        if line.startswith("data: "):
-            data_lines.append(line[6:])
 
-    if data_lines:
-        payload = "\n".join(data_lines)
-        if payload != "[DONE]":
-            data = json.loads(payload)
-            if event_type and "type" not in data:
-                data["type"] = event_type
-            yield data
+def ensure_api_base(base_url: str, version_prefix: str) -> str:
+    base = base_url.rstrip("/")
+    if version_prefix and not base.endswith(version_prefix):
+        return f"{base}{version_prefix}"
+    return base
+
+
+def _as_dict(value):
+    if isinstance(value, dict):
+        return {key: _as_dict(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_as_dict(item) for item in value]
+    if hasattr(value, "model_dump"):
+        return _as_dict(value.model_dump(mode="json", exclude_none=True))
+    if hasattr(value, "to_dict"):
+        return _as_dict(value.to_dict())
+    if hasattr(value, "__dict__"):
+        return {
+            key: _as_dict(item)
+            for key, item in vars(value).items()
+            if not key.startswith("_") and item is not None
+        }
+    return value
+
+
+def _parse_json_object(raw: str | None) -> dict:
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _anthropic_client(*, api_key: str, base_url: str):
+    anthropic = _import_anthropic()
+    return anthropic.Anthropic(
+        api_key=api_key,
+        base_url=normalize_api_base(base_url, "/v1"),
+    )
+
+
+def _openai_client(*, api_key: str, base_url: str):
+    openai = _import_openai()
+    return openai.OpenAI(
+        api_key=api_key,
+        base_url=ensure_api_base(base_url, "/v1"),
+    )
+
+
+def _anthropic_usage_dict(usage) -> dict:
+    if usage is None:
+        return {"input_tokens": 0, "output_tokens": 0}
+    return {
+        "input_tokens": (
+            getattr(usage, "input_tokens", 0)
+            + getattr(usage, "cache_creation_input_tokens", 0)
+            + getattr(usage, "cache_read_input_tokens", 0)
+        ),
+        "output_tokens": getattr(usage, "output_tokens", 0),
+    }
+
+
+def _openai_usage_dict(usage) -> dict:
+    if usage is None:
+        return {"input_tokens": 0, "output_tokens": 0}
+    return {
+        "input_tokens": getattr(usage, "input_tokens", 0),
+        "output_tokens": getattr(usage, "output_tokens", 0),
+    }
+
+
+def _openai_chat_usage_dict(usage) -> dict:
+    if usage is None:
+        return {"input_tokens": 0, "output_tokens": 0}
+    return {
+        "input_tokens": getattr(usage, "prompt_tokens", 0),
+        "output_tokens": getattr(usage, "completion_tokens", 0),
+    }
+
+
+def _openai_output_text(item) -> str:
+    text_parts: list[str] = []
+    for part in getattr(item, "content", []) or []:
+        if getattr(part, "type", None) == "output_text":
+            text = getattr(part, "text", "") or ""
+            if text:
+                text_parts.append(text)
+    return "".join(text_parts)
+
+
+def _openai_output_item_to_input(item) -> dict | None:
+    item_type = getattr(item, "type", None)
+    if item_type == "function_call":
+        result = {
+            "type": "function_call",
+            "id": getattr(item, "id", "") or getattr(item, "call_id", ""),
+            "call_id": getattr(item, "call_id", ""),
+            "name": getattr(item, "name", ""),
+            "arguments": getattr(item, "arguments", "") or "",
+        }
+        status = getattr(item, "status", None)
+        if status:
+            result["status"] = status
+        return result
+
+    if item_type == "message":
+        content = []
+        for part in getattr(item, "content", []) or []:
+            if getattr(part, "type", None) == "output_text":
+                content.append(
+                    {
+                        "type": "output_text",
+                        "text": getattr(part, "text", "") or "",
+                    }
+                )
+        result = {
+            "type": "message",
+            "role": getattr(item, "role", "assistant"),
+            "content": content,
+        }
+        item_id = getattr(item, "id", None)
+        if item_id:
+            result["id"] = item_id
+        status = getattr(item, "status", None)
+        if status:
+            result["status"] = status
+        return result
+
+    dumped = _as_dict(item)
+    return dumped if isinstance(dumped, dict) else None
 
 
 def kernel_to_anthropic_tools(kernel_tools: list[dict]) -> list[dict]:
@@ -140,30 +304,6 @@ def kernel_to_openai_chat_tools(kernel_tools: list[dict]) -> list[dict]:
     return result
 
 
-def _http_error_message(err: urllib.error.HTTPError) -> str:
-    try:
-        body = err.read().decode("utf-8", errors="replace").strip()
-    except Exception:
-        body = ""
-    if not body:
-        return str(err)
-    try:
-        data = json.loads(body)
-    except json.JSONDecodeError:
-        return f"{err}: {body}"
-    message = data.get("error", {}).get("message") or data.get("message")
-    if message:
-        return f"{err}: {message}"
-    return f"{err}: {body}"
-
-
-def normalize_api_base(base_url: str, version_prefix: str) -> str:
-    base = base_url.rstrip("/")
-    if base.endswith(version_prefix):
-        return base[: -len(version_prefix)]
-    return base
-
-
 class ProviderSession(ABC):
     def __init__(self, system_prompt: str):
         self.system_prompt = system_prompt
@@ -211,6 +351,7 @@ class AnthropicSession(ProviderSession):
         self.api_key = api_key
         self.base_url = normalize_api_base(base_url, "/v1")
         self.api_url = f"{self.base_url}/v1/messages"
+        self.client = _anthropic_client(api_key=api_key, base_url=base_url)
         self.tools = kernel_to_anthropic_tools(tools)
         self.messages: list[dict] = []
 
@@ -249,22 +390,28 @@ class AnthropicSession(ProviderSession):
                 self.messages.append({"role": "assistant", "content": [{"type": "text", "text": entry["text"]}]})
             elif role == "assistant" and "tool_use" in entry:
                 tu = entry["tool_use"]
-                self.messages.append({
-                    "role": "assistant",
-                    "content": [{"type": "tool_use", "id": tu["id"], "name": tu["name"], "input": tu.get("input", {})}],
-                })
+                self.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "tool_use", "id": tu["id"], "name": tu["name"], "input": tu.get("input", {})}],
+                    }
+                )
             elif role == "tool":
-                self.messages.append({
-                    "role": "user",
-                    "content": [{"type": "tool_result", "tool_use_id": entry["tool_use_id"], "content": entry.get("output", "")}],
-                })
+                self.messages.append(
+                    {
+                        "role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": entry["tool_use_id"], "content": entry.get("output", "")}],
+                    }
+                )
 
     def needs_compact(self) -> bool:
         from .compaction import should_compact
+
         return should_compact(self.messages, self.model, self.system_prompt)
 
     def compact(self, logger=None) -> str:
-        from .compaction import should_compact, compact_messages_anthropic
+        from .compaction import compact_messages_anthropic, should_compact
+
         if not should_compact(self.messages, self.model, self.system_prompt):
             return ""
         new_messages, summary = compact_messages_anthropic(
@@ -280,112 +427,75 @@ class AnthropicSession(ProviderSession):
         return summary
 
     def generate(self, on_text_delta) -> TurnOutcome:
-        body = {
+        kwargs = {
             "model": self.model,
             "max_tokens": 4096,
             "system": self.system_prompt,
             "messages": self.messages,
-            "stream": True,
+            "timeout": 600,
         }
         if self.tools:
-            body["tools"] = self.tools
+            kwargs["tools"] = self.tools
 
-        req = urllib.request.Request(
-            self.api_url,
-            data=json.dumps(body).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
-            },
-        )
-
+        text_parts: list[str] = []
+        final_message = None
         try:
-            resp = _HTTP_OPENER.open(req, timeout=300)
-        except urllib.error.HTTPError as err:
-            raise RuntimeError(_http_error_message(err)) from err
-        self._current_resp = resp
-        fp = getattr(resp, "fp", None)
-        raw = getattr(fp, "raw", None)
-        sock = getattr(raw, "_sock", None)
-        if sock:
-            sock.settimeout(600)
+            stream_manager = self.client.messages.stream(**kwargs)
+            with stream_manager as stream:
+                self._current_resp = stream
+                for event in stream:
+                    if getattr(event, "type", None) == "text":
+                        delta = getattr(event, "text", "") or ""
+                        if delta:
+                            text_parts.append(delta)
+                            on_text_delta(delta)
+                final_message = stream.get_final_message()
+        except Exception as err:
+            raise RuntimeError(provider_error_message(err)) from err
+        finally:
+            self._current_resp = None
 
         content_blocks: list[dict] = []
         tool_calls: list[ToolCall] = []
-        text_parts: list[str] = []
-        current_text = ""
-        current_tool = None
-        usage: dict = {"input_tokens": 0, "output_tokens": 0}
-
-        try:
-            for data in iter_sse_events(resp):
-                event_type = data.get("type")
-
-                if event_type == "message_start":
-                    msg_usage = data.get("message", {}).get("usage", {})
-                    usage["input_tokens"] = (
-                        msg_usage.get("input_tokens", 0)
-                        + msg_usage.get("cache_creation_input_tokens", 0)
-                        + msg_usage.get("cache_read_input_tokens", 0)
+        for block in getattr(final_message, "content", []) or []:
+            if getattr(block, "type", None) == "text":
+                text = getattr(block, "text", "") or ""
+                content_blocks.append({"type": "text", "text": text})
+            elif getattr(block, "type", None) == "tool_use":
+                input_data = getattr(block, "input", {})
+                if not isinstance(input_data, dict):
+                    input_data = {}
+                content_block = {
+                    "type": "tool_use",
+                    "id": getattr(block, "id", ""),
+                    "name": getattr(block, "name", ""),
+                    "input": input_data,
+                }
+                content_blocks.append(content_block)
+                tool_calls.append(
+                    ToolCall(
+                        id=content_block["id"],
+                        name=content_block["name"],
+                        input=content_block["input"],
                     )
+                )
 
-                elif event_type == "message_delta":
-                    delta_usage = data.get("usage", {})
-                    if delta_usage.get("output_tokens"):
-                        usage["output_tokens"] = delta_usage["output_tokens"]
-
-                elif event_type == "content_block_start":
-                    block = data["content_block"]
-                    if block["type"] == "text":
-                        current_text = ""
-                    elif block["type"] == "tool_use":
-                        current_tool = {
-                            "id": block["id"],
-                            "name": block["name"],
-                            "input_json": "",
-                        }
-
-                elif event_type == "content_block_delta":
-                    delta = data["delta"]
-                    if delta["type"] == "text_delta":
-                        current_text += delta["text"]
-                        text_parts.append(delta["text"])
-                        on_text_delta(delta["text"])
-                    elif delta["type"] == "input_json_delta" and current_tool:
-                        current_tool["input_json"] += delta["partial_json"]
-
-                elif event_type == "content_block_stop":
-                    if current_tool:
-                        try:
-                            input_data = json.loads(current_tool["input_json"]) if current_tool["input_json"] else {}
-                        except json.JSONDecodeError:
-                            input_data = {}
-                        block = {
-                            "type": "tool_use",
-                            "id": current_tool["id"],
-                            "name": current_tool["name"],
-                            "input": input_data,
-                        }
-                        content_blocks.append(block)
-                        tool_calls.append(ToolCall(id=block["id"], name=block["name"], input=block["input"]))
-                        current_tool = None
-                    elif current_text:
-                        content_blocks.append({"type": "text", "text": current_text})
-                        current_text = ""
-
-        finally:
-            self._current_resp = None
-            try:
-                resp.close()
-            except Exception:
-                pass
-
-        if not content_blocks and text_parts:
-            content_blocks.append({"type": "text", "text": "".join(text_parts)})
+        final_text = "".join(text_parts)
+        if not final_text:
+            final_text = "".join(
+                block["text"]
+                for block in content_blocks
+                if block.get("type") == "text"
+            )
+        if not content_blocks and final_text:
+            content_blocks.append({"type": "text", "text": final_text})
 
         self.messages.append({"role": "assistant", "content": content_blocks})
-        return TurnOutcome(final_text="".join(text_parts), tool_calls=tool_calls, usage=usage)
+        return TurnOutcome(
+            final_text=final_text,
+            tool_calls=tool_calls,
+            usage=_anthropic_usage_dict(getattr(final_message, "usage", None)),
+        )
 
 
 class OpenAISession(ProviderSession):
@@ -393,8 +503,9 @@ class OpenAISession(ProviderSession):
         super().__init__(system_prompt)
         self.model = model
         self.api_key = api_key
-        self.base_url = normalize_api_base(base_url, "/v1")
-        self.api_url = f"{self.base_url}/v1/responses"
+        self.base_url = ensure_api_base(base_url, "/v1")
+        self.api_url = f"{self.base_url}/responses"
+        self.client = _openai_client(api_key=api_key, base_url=base_url)
         self.tools = kernel_to_openai_tools(tools)
         self.previous_response_id: str | None = None
         self.pending_input: list[dict] = []
@@ -428,16 +539,15 @@ class OpenAISession(ProviderSession):
                 self.pending_input.append({"role": "user", "content": entry["text"]})
             elif role == "assistant" and "text" in entry:
                 self.pending_input.append({"role": "assistant", "content": entry["text"]})
-            # OpenAI-compatible endpoints may reject replayed function_call/
-            # function_call_output items without an original response chain.
-            # For resumed sessions, text history is the safest portable subset.
 
     def needs_compact(self) -> bool:
         from .compaction import should_compact
+
         return should_compact(self.pending_input, self.model, self.system_prompt)
 
     def compact(self, logger=None) -> str:
-        from .compaction import should_compact, compact_messages_openai
+        from .compaction import compact_messages_openai, should_compact
+
         if not should_compact(self.pending_input, self.model, self.system_prompt):
             return ""
         new_input, summary = compact_messages_openai(
@@ -453,122 +563,116 @@ class OpenAISession(ProviderSession):
         return summary
 
     def generate(self, on_text_delta) -> TurnOutcome:
-        body = {
+        kwargs = {
             "model": self.model,
             "instructions": self.system_prompt,
             "input": self.pending_input,
             "parallel_tool_calls": True,
-            "stream": True,
+            "timeout": 600,
         }
         if self.tools:
-            body["tools"] = self.tools
+            kwargs["tools"] = self.tools
         if self.previous_response_id:
-            body["previous_response_id"] = self.previous_response_id
-
-        req = urllib.request.Request(
-            self.api_url,
-            data=json.dumps(body).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}",
-            },
-        )
-
-        try:
-            resp = _HTTP_OPENER.open(req, timeout=300)
-        except urllib.error.HTTPError as err:
-            raise RuntimeError(_http_error_message(err)) from err
-        self._current_resp = resp
-        fp = getattr(resp, "fp", None)
-        raw = getattr(fp, "raw", None)
-        sock = getattr(raw, "_sock", None)
-        if sock:
-            sock.settimeout(600)
+            kwargs["previous_response_id"] = self.previous_response_id
 
         response_id = None
-        completed_output: list[dict] = []
+        final_response = None
         text_parts: list[str] = []
         tool_state: dict[str, dict] = {}
         tool_order: list[str] = []
-        usage: dict = {"input_tokens": 0, "output_tokens": 0}
 
         try:
-            for data in iter_sse_events(resp):
-                event_type = data.get("type")
+            stream_manager = self.client.responses.stream(**kwargs)
+            with stream_manager as stream:
+                self._current_resp = stream
+                for event in stream:
+                    event_type = getattr(event, "type", "")
 
-                if event_type == "response.created":
-                    response_id = data.get("response", {}).get("id")
-                elif event_type == "response.output_text.delta":
-                    delta = data.get("delta", "")
-                    if delta:
-                        text_parts.append(delta)
-                        on_text_delta(delta)
-                elif event_type == "response.output_item.added":
-                    item = data.get("item", {})
-                    if item.get("type") == "function_call":
-                        item_id = item.get("id") or data.get("item_id") or str(data.get("output_index"))
-                        if item_id not in tool_state:
-                            tool_order.append(item_id)
-                        tool_state[item_id] = {
-                            "call_id": item.get("call_id", ""),
-                            "name": item.get("name", ""),
-                            "arguments": item.get("arguments", "") or "",
-                        }
-                elif event_type == "response.function_call_arguments.delta":
-                    item_id = data.get("item_id")
-                    if item_id in tool_state:
-                        tool_state[item_id]["arguments"] += data.get("delta", "")
-                elif event_type == "response.function_call_arguments.done":
-                    item_id = data.get("item_id")
-                    if item_id in tool_state and data.get("arguments") is not None:
-                        tool_state[item_id]["arguments"] = data["arguments"]
-                elif event_type == "response.output_item.done":
-                    item = data.get("item", {})
-                    if item.get("type") == "function_call":
-                        item_id = item.get("id") or str(data.get("output_index"))
-                        if item_id not in tool_state:
-                            tool_order.append(item_id)
-                            tool_state[item_id] = {}
-                        tool_state[item_id].update(
-                            {
-                                "call_id": item.get("call_id", tool_state[item_id].get("call_id", "")),
-                                "name": item.get("name", tool_state[item_id].get("name", "")),
-                                "arguments": item.get("arguments", tool_state[item_id].get("arguments", "")),
-                            }
-                        )
-                elif event_type == "response.completed":
-                    response = data.get("response", {})
-                    response_id = response.get("id", response_id)
-                    completed_output = response.get("output", [])
-                    resp_usage = response.get("usage", {})
-                    if resp_usage:
-                        usage["input_tokens"] = resp_usage.get("input_tokens", 0)
-                        usage["output_tokens"] = resp_usage.get("output_tokens", 0)
-                    for item in completed_output:
-                        if item.get("type") == "function_call":
-                            item_id = item.get("id") or item.get("call_id")
-                            if item_id and item_id not in tool_state:
+                    if event_type == "response.created":
+                        response = getattr(event, "response", None)
+                        response_id = getattr(response, "id", response_id)
+
+                    elif event_type == "response.output_text.delta":
+                        delta = getattr(event, "delta", "") or ""
+                        if delta:
+                            text_parts.append(delta)
+                            on_text_delta(delta)
+
+                    elif event_type == "response.output_item.added":
+                        item = getattr(event, "item", None)
+                        if getattr(item, "type", None) == "function_call":
+                            item_id = getattr(item, "id", None) or getattr(event, "item_id", None) or str(getattr(event, "output_index", len(tool_order)))
+                            if item_id not in tool_state:
                                 tool_order.append(item_id)
-                                tool_state[item_id] = {
-                                    "call_id": item.get("call_id", ""),
-                                    "name": item.get("name", ""),
-                                    "arguments": item.get("arguments", "") or "",
+                                tool_state[item_id] = {"call_id": "", "name": "", "arguments": ""}
+                            tool_state[item_id].update(
+                                {
+                                    "call_id": getattr(item, "call_id", "") or tool_state[item_id]["call_id"],
+                                    "name": getattr(item, "name", "") or tool_state[item_id]["name"],
+                                    "arguments": getattr(item, "arguments", "") or tool_state[item_id]["arguments"],
                                 }
-                        elif item.get("type") == "message":
-                            for content in item.get("content", []):
-                                if content.get("type") == "output_text":
-                                    text = content.get("text", "")
-                                    if text and not text_parts:
-                                        text_parts.append(text)
-                elif event_type == "error":
-                    message = data.get("error", {}).get("message") or data.get("message") or "OpenAI stream error"
-                    raise RuntimeError(message)
+                            )
+
+                    elif event_type == "response.function_call_arguments.delta":
+                        item_id = getattr(event, "item_id", None)
+                        if item_id in tool_state:
+                            tool_state[item_id]["arguments"] += getattr(event, "delta", "") or ""
+
+                    elif event_type == "response.function_call_arguments.done":
+                        item_id = getattr(event, "item_id", None)
+                        arguments = getattr(event, "arguments", None)
+                        if item_id in tool_state and arguments is not None:
+                            tool_state[item_id]["arguments"] = arguments
+
+                    elif event_type == "response.output_item.done":
+                        item = getattr(event, "item", None)
+                        if getattr(item, "type", None) == "function_call":
+                            item_id = getattr(item, "id", None) or str(getattr(event, "output_index", len(tool_order)))
+                            if item_id not in tool_state:
+                                tool_order.append(item_id)
+                                tool_state[item_id] = {"call_id": "", "name": "", "arguments": ""}
+                            tool_state[item_id].update(
+                                {
+                                    "call_id": getattr(item, "call_id", "") or tool_state[item_id]["call_id"],
+                                    "name": getattr(item, "name", "") or tool_state[item_id]["name"],
+                                    "arguments": getattr(item, "arguments", "") or tool_state[item_id]["arguments"],
+                                }
+                            )
+
+                    elif event_type == "response.completed":
+                        final_response = getattr(event, "response", None)
+                        response_id = getattr(final_response, "id", response_id)
+
+                    elif event_type in {"error", "response.error", "response.failed"}:
+                        raise RuntimeError(provider_error_message(getattr(event, "error", event)))
+
+                if final_response is None:
+                    final_response = stream.get_final_response()
+        except Exception as err:
+            raise RuntimeError(provider_error_message(err)) from err
         finally:
             self._current_resp = None
-            try:
-                resp.close()
-            except Exception:
-                pass
+
+        completed_output: list[dict] = []
+        final_output = getattr(final_response, "output", []) or []
+        for item in final_output:
+            if getattr(item, "type", None) == "function_call":
+                item_id = getattr(item, "id", None) or getattr(item, "call_id", None)
+                if item_id and item_id not in tool_state:
+                    tool_order.append(item_id)
+                    tool_state[item_id] = {
+                        "call_id": getattr(item, "call_id", "") or "",
+                        "name": getattr(item, "name", "") or "",
+                        "arguments": getattr(item, "arguments", "") or "",
+                    }
+            elif getattr(item, "type", None) == "message" and not text_parts:
+                text = _openai_output_text(item)
+                if text:
+                    text_parts.append(text)
+
+            input_item = _openai_output_item_to_input(item)
+            if input_item is not None:
+                completed_output.append(input_item)
 
         self.pending_input = []
         if response_id:
@@ -590,19 +694,19 @@ class OpenAISession(ProviderSession):
         tool_calls: list[ToolCall] = []
         for item_id in tool_order:
             tool = tool_state[item_id]
-            try:
-                input_data = json.loads(tool.get("arguments") or "{}")
-            except json.JSONDecodeError:
-                input_data = {}
             tool_calls.append(
                 ToolCall(
                     id=tool.get("call_id") or item_id,
                     name=tool.get("name", ""),
-                    input=input_data,
+                    input=_parse_json_object(tool.get("arguments") or "{}"),
                 )
             )
 
-        return TurnOutcome(final_text="".join(text_parts), tool_calls=tool_calls, usage=usage)
+        return TurnOutcome(
+            final_text="".join(text_parts),
+            tool_calls=tool_calls,
+            usage=_openai_usage_dict(getattr(final_response, "usage", None)),
+        )
 
 
 class OpenAIChatCompletionsSession(ProviderSession):
@@ -610,8 +714,9 @@ class OpenAIChatCompletionsSession(ProviderSession):
         super().__init__(system_prompt)
         self.model = model
         self.api_key = api_key
-        self.base_url = normalize_api_base(base_url, "/v1")
-        self.api_url = f"{self.base_url}/v1/chat/completions"
+        self.base_url = ensure_api_base(base_url, "/v1")
+        self.api_url = f"{self.base_url}/chat/completions"
+        self.client = _openai_client(api_key=api_key, base_url=base_url)
         self.tools = kernel_to_openai_chat_tools(tools)
         self.messages: list[dict] = []
 
@@ -638,10 +743,10 @@ class OpenAIChatCompletionsSession(ProviderSession):
                 self.messages.append({"role": "user", "content": entry["text"]})
             elif role == "assistant" and "text" in entry:
                 self.messages.append({"role": "assistant", "content": entry["text"]})
-            # Keep resumed history portable: replay text only.
 
     def needs_compact(self) -> bool:
         from .compaction import should_compact
+
         return should_compact(self.messages, self.model, self.system_prompt)
 
     def compact(self, logger=None) -> str:
@@ -656,27 +761,22 @@ class OpenAIChatCompletionsSession(ProviderSession):
         summary_messages = [{"role": "system", "content": self.system_prompt}] + list(old) + [
             {"role": "user", "content": COMPACT_PROMPT}
         ]
-        body = {"model": self.model, "messages": summary_messages}
-        req = urllib.request.Request(
-            self.api_url,
-            data=json.dumps(body).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}",
-            },
-        )
 
         try:
-            resp = _HTTP_OPENER.open(req, timeout=120)
-            data = json.loads(resp.read())
-            summary_text = (
-                data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=summary_messages,
+                timeout=120,
             )
-        except Exception as e:
+            summary_text = ""
+            for choice in getattr(response, "choices", []) or []:
+                message = getattr(choice, "message", None)
+                content = getattr(message, "content", "") if message is not None else ""
+                if isinstance(content, str):
+                    summary_text += content
+        except Exception as err:
             if logger:
-                logger(f"compaction API call failed: {e}")
+                logger(f"compaction API call failed: {provider_error_message(err)}")
             return ""
 
         summary_text = _extract_summary(summary_text)
@@ -699,91 +799,84 @@ class OpenAIChatCompletionsSession(ProviderSession):
         return summary_text
 
     def generate(self, on_text_delta) -> TurnOutcome:
-        body = {
+        kwargs = {
             "model": self.model,
             "messages": [{"role": "system", "content": self.system_prompt}] + self.messages,
             "stream": True,
             "parallel_tool_calls": True,
+            "stream_options": {"include_usage": True},
+            "timeout": 600,
         }
         if self.tools:
-            body["tools"] = self.tools
-
-        req = urllib.request.Request(
-            self.api_url,
-            data=json.dumps(body).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}",
-            },
-        )
-
-        try:
-            resp = _HTTP_OPENER.open(req, timeout=300)
-        except urllib.error.HTTPError as err:
-            raise RuntimeError(_http_error_message(err)) from err
-        self._current_resp = resp
-        fp = getattr(resp, "fp", None)
-        raw = getattr(fp, "raw", None)
-        sock = getattr(raw, "_sock", None)
-        if sock:
-            sock.settimeout(600)
+            kwargs["tools"] = self.tools
 
         text_parts: list[str] = []
         usage: dict = {"input_tokens": 0, "output_tokens": 0}
         tool_state: dict[int, dict] = {}
+        stream = None
 
         try:
-            for data in iter_sse_events(resp):
-                if data.get("error"):
-                    message = data.get("error", {}).get("message") or data.get("message") or "OpenAI stream error"
-                    raise RuntimeError(message)
+            stream = self.client.chat.completions.create(**kwargs)
+            self._current_resp = stream
+            for chunk in stream:
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage is not None:
+                    usage = _openai_chat_usage_dict(chunk_usage)
 
-                if data.get("usage"):
-                    usage["input_tokens"] = data["usage"].get("prompt_tokens", usage["input_tokens"])
-                    usage["output_tokens"] = data["usage"].get("completion_tokens", usage["output_tokens"])
+                for choice in getattr(chunk, "choices", []) or []:
+                    delta = getattr(choice, "delta", None)
+                    if delta is None:
+                        continue
 
-                for choice in data.get("choices", []):
-                    delta = choice.get("delta", {})
-
-                    content = delta.get("content", "")
+                    content = getattr(delta, "content", "") or ""
                     if content:
                         text_parts.append(content)
                         on_text_delta(content)
 
-                    for tool_delta in delta.get("tool_calls", []):
-                        index = int(tool_delta.get("index", 0))
+                    for tool_delta in getattr(delta, "tool_calls", []) or []:
+                        index = int(getattr(tool_delta, "index", 0) or 0)
                         state = tool_state.setdefault(index, {"id": "", "name": "", "arguments": ""})
-                        if tool_delta.get("id"):
-                            state["id"] = tool_delta["id"]
-                        function = tool_delta.get("function", {})
-                        if function.get("name"):
-                            state["name"] = function["name"]
-                        if function.get("arguments"):
-                            state["arguments"] += function["arguments"]
+                        tool_id = getattr(tool_delta, "id", None)
+                        if tool_id:
+                            state["id"] = tool_id
+                        function = getattr(tool_delta, "function", None)
+                        if function is not None:
+                            name = getattr(function, "name", None)
+                            if name:
+                                state["name"] = name
+                            arguments = getattr(function, "arguments", None)
+                            if arguments:
+                                state["arguments"] += arguments
+        except Exception as err:
+            raise RuntimeError(provider_error_message(err)) from err
         finally:
             self._current_resp = None
-            try:
-                resp.close()
-            except Exception:
-                pass
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
 
         tool_calls: list[ToolCall] = []
         assistant_tool_calls: list[dict] = []
         for index in sorted(tool_state):
             tool = tool_state[index]
-            try:
-                input_data = json.loads(tool.get("arguments") or "{}")
-            except json.JSONDecodeError:
-                input_data = {}
             tool_id = tool.get("id") or f"tool_call_{index}"
-            tool_calls.append(ToolCall(id=tool_id, name=tool.get("name", ""), input=input_data))
+            raw_arguments = tool.get("arguments", "") or "{}"
+            tool_calls.append(
+                ToolCall(
+                    id=tool_id,
+                    name=tool.get("name", ""),
+                    input=_parse_json_object(raw_arguments),
+                )
+            )
             assistant_tool_calls.append(
                 {
                     "id": tool_id,
                     "type": "function",
                     "function": {
                         "name": tool.get("name", ""),
-                        "arguments": tool.get("arguments", "") or "{}",
+                        "arguments": raw_arguments,
                     },
                 }
             )
@@ -851,7 +944,6 @@ class MockProvider(ProviderSession):
         self.config = config
         self.tools_spec = tools
 
-        # Extract session name from system prompt (injected by driver_runtime)
         session_match = re.search(r"Your session name is `([^`]+)`", system_prompt)
         self._session = session_match.group(1) if session_match else "main"
 
@@ -888,21 +980,27 @@ class MockProvider(ProviderSession):
         count = self._wave_counts[self._wave_no - 1]
         if len(self._wave_counts) == 1:
             return [f"mock_{self._turn_no}_{i}" for i in range(1, count + 1)]
-        else:
-            return [f"mock_{self._turn_no}_w{self._wave_no}_{i}" for i in range(1, count + 1)]
+        return [f"mock_{self._turn_no}_w{self._wave_no}_{i}" for i in range(1, count + 1)]
 
     def _build_spawn_tool_calls(self, agent_ids: list[str]) -> list[ToolCall]:
         calls = []
         for index, agent_id in enumerate(sorted(agent_ids), start=1):
             tool_id = f"spawn_{agent_id}"
             command = " ".join([
-                _venv_python(), str(testing_skills_dir() / "subagent-mock" / "run.py"),
-                "--id", shlex.quote(agent_id),
-                "--parent-session", self._session,
-                "--task", shlex.quote(self._user_text),
-                "--index", str(index),
-                "--max-turns", str(self.config.mock_turns),
-                "--sleep-ms", str(self.config.mock_sleep_ms),
+                _venv_python(),
+                str(testing_skills_dir() / "subagent-mock" / "run.py"),
+                "--id",
+                shlex.quote(agent_id),
+                "--parent-session",
+                self._session,
+                "--task",
+                shlex.quote(self._user_text),
+                "--index",
+                str(index),
+                "--max-turns",
+                str(self.config.mock_turns),
+                "--sleep-ms",
+                str(self.config.mock_sleep_ms),
             ])
             calls.append(ToolCall(id=tool_id, name="process_spawn", input={"command": command}))
         return calls
@@ -911,8 +1009,7 @@ class MockProvider(ProviderSession):
         count = self._wave_counts[wave_no - 1]
         if len(self._wave_counts) == 1:
             return [f"mock_{self._turn_no}_{i}" for i in range(1, count + 1)]
-        else:
-            return [f"mock_{self._turn_no}_w{wave_no}_{i}" for i in range(1, count + 1)]
+        return [f"mock_{self._turn_no}_w{wave_no}_{i}" for i in range(1, count + 1)]
 
     def _build_aggregation(self) -> str:
         total_expected = sum(self._wave_counts)
@@ -926,8 +1023,8 @@ class MockProvider(ProviderSession):
         for agent_id in ordered_ids:
             lines.append(f"- {agent_id}: {self._all_results[agent_id]}")
         missing = []
-        for w in range(1, len(self._wave_counts) + 1):
-            for agent_id in self._build_wave_agent_ids_for(w):
+        for wave_no in range(1, len(self._wave_counts) + 1):
+            for agent_id in self._build_wave_agent_ids_for(wave_no):
                 if agent_id not in self._all_results:
                     missing.append(agent_id)
         if missing:
@@ -935,12 +1032,11 @@ class MockProvider(ProviderSession):
         return "\n".join(lines) + "\n"
 
     def add_user_text(self, text: str):
-        # Flushed subagent results from DriverRuntime in XML format
         if self._active and "<subagent_result " in text:
             for part in text.split("\n\n---\n\n"):
-                m = re.match(r'<subagent_result id="([^"]+)">\n(.*)\n</subagent_result>', part, re.DOTALL)
-                if m:
-                    agent_id, result_text = m.group(1), m.group(2)
+                match = re.match(r'<subagent_result id="([^"]+)">\n(.*)\n</subagent_result>', part, re.DOTALL)
+                if match:
+                    agent_id, result_text = match.group(1), match.group(2)
                     self._all_results[agent_id] = result_text
                     self._output_buffer.append(f"mock driver: received result from {agent_id}\n")
             if self._wave_no < len(self._wave_counts):
@@ -958,7 +1054,6 @@ class MockProvider(ProviderSession):
             self._state = _MockState.BUSY_REPLY
             return
 
-        # New request
         self._turn_no += 1
         self._active = True
         self._all_results = {}
@@ -974,8 +1069,6 @@ class MockProvider(ProviderSession):
 
     def generate(self, on_text_delta) -> TurnOutcome:
         if self._state == _MockState.BUSY_REPLY:
-            # Busy text stays in buffer — will be included in final output.
-            # Return empty so DriverRuntime resumes collection.
             self._state = _MockState.ENTER_COLLECTION
             return TurnOutcome(final_text="", tool_calls=[])
 
@@ -988,8 +1081,6 @@ class MockProvider(ProviderSession):
                 f"with {count} mock subagents for request: {self._user_text}\n"
             )
             on_text_delta(header)
-            # Also buffer header so it appears in final output even when
-            # on_text_delta is suppressed (wave 2+ runs with suppress_stream)
             self._output_buffer.append(header)
             calls = self._build_spawn_tool_calls(agent_ids)
             self._state = _MockState.TOOLS_SENT

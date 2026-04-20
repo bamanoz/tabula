@@ -27,23 +27,27 @@ def _load_boot_module():
     os.environ["TABULA_PROVIDER"] = os.environ.get("TABULA_PROVIDER", "openai")
 
     for name in list(sys.modules.keys()):
-        if name == "skills" or name.startswith("skills."):
+        if name == "skills" or (name.startswith("skills.") and not name.startswith("skills.lib")):
             sys.modules.pop(name, None)
 
     skills_pkg = types.ModuleType("skills")
     skills_pkg.__path__ = [str(ROOT / "skills")]
     sys.modules["skills"] = skills_pkg
 
-    lib_init = ROOT / "skills" / "lib" / "__init__.py"
-    lib_spec = importlib.util.spec_from_file_location(
-        "skills.lib",
-        lib_init,
-        submodule_search_locations=[str(ROOT / "skills" / "lib")],
-    )
-    lib_mod = importlib.util.module_from_spec(lib_spec)
-    assert lib_spec.loader is not None
-    sys.modules["skills.lib"] = lib_mod
-    lib_spec.loader.exec_module(lib_mod)
+    if "skills.lib" in sys.modules:
+        lib_mod = sys.modules["skills.lib"]
+    else:
+        lib_init = ROOT / "skills" / "lib" / "__init__.py"
+        lib_spec = importlib.util.spec_from_file_location(
+            "skills.lib",
+            lib_init,
+            submodule_search_locations=[str(ROOT / "skills" / "lib")],
+        )
+        lib_mod = importlib.util.module_from_spec(lib_spec)
+        assert lib_spec.loader is not None
+        sys.modules["skills.lib"] = lib_mod
+        lib_spec.loader.exec_module(lib_mod)
+    skills_pkg.lib = lib_mod
 
     boot_path = ROOT / "distrib" / "assistant" / "boot.py"
     spec = importlib.util.spec_from_file_location("tabula_main_boot", boot_path)
@@ -66,7 +70,6 @@ def with_tabula_home(fn):
 
     orig_home = boot.TABULA_HOME
     orig_skills = boot.SKILLS_DIR
-    orig_mem = boot.MEMORY_FILE
     orig_subagent_prompt = boot.SUBAGENT_PROMPT_FILE
 
     def wrapper(*args, **kwargs):
@@ -76,7 +79,6 @@ def with_tabula_home(fn):
             os.environ["TABULA_PROVIDER"] = "openai"
             boot.TABULA_HOME = tmp
             boot.SKILLS_DIR = os.path.join(tmp, "skills")
-            boot.MEMORY_FILE = os.path.join(tmp, "data", "memory", "MEMORY.md")
             boot.SUBAGENT_PROMPT_FILE = os.path.join(tmp, "state", "subagent", "prompt.txt")
             boot.TEMPLATES_DIR = os.path.join(tmp, "templates")
             os.makedirs(os.path.join(tmp, "skills"), exist_ok=True)
@@ -92,7 +94,6 @@ def with_tabula_home(fn):
                 os.environ.update(old_env)
                 boot.TABULA_HOME = orig_home
                 boot.SKILLS_DIR = orig_skills
-                boot.MEMORY_FILE = orig_mem
                 boot.SUBAGENT_PROMPT_FILE = orig_subagent_prompt
 
     wrapper.__name__ = fn.__name__
@@ -303,39 +304,6 @@ def test_project_files_subagent_no_agents(tmp, boot):
     assert text == ""
 
 
-# ── Memory section tests ─────────────────────────────────────────
-
-
-@with_tabula_home
-def test_section_memory_present(tmp, boot):
-    """Memory section reads from MEMORY.md."""
-    mem_dir = Path(tmp, "data", "memory")
-    mem_dir.mkdir(parents=True)
-    (mem_dir / "MEMORY.md").write_text("User prefers Russian responses.")
-
-    text = boot._section_memory()
-    assert "## Long-term memory" in text
-    assert "User prefers Russian" in text
-
-
-@with_tabula_home
-def test_section_memory_absent(tmp, boot):
-    """No memory file — empty string."""
-    text = boot._section_memory()
-    assert text == ""
-
-
-@with_tabula_home
-def test_section_memory_empty_file(tmp, boot):
-    """Empty memory file — empty string."""
-    mem_dir = Path(tmp, "data", "memory")
-    mem_dir.mkdir(parents=True)
-    (mem_dir / "MEMORY.md").write_text("")
-
-    text = boot._section_memory()
-    assert text == ""
-
-
 # ── Full prompt tests ─────────────────────────────────────────────
 
 
@@ -364,18 +332,6 @@ def test_full_prompt_structure(tmp, boot):
     assert "## Available skills" in dynamic
     assert "**weather**" in dynamic
     assert "## Environment" in dynamic
-
-
-@with_tabula_home
-def test_full_prompt_with_memory(tmp, boot):
-    """Memory appears in dynamic part."""
-    mem_dir = Path(tmp, "data", "memory")
-    mem_dir.mkdir(parents=True)
-    (mem_dir / "MEMORY.md").write_text("important fact")
-
-    prompt = boot.build_system_prompt([])
-    _, dynamic = prompt.split(boot.CACHE_BOUNDARY)
-    assert "important fact" in dynamic
 
 
 @with_tabula_home
@@ -417,18 +373,6 @@ def test_subagent_prompt_no_skills(tmp, boot):
     make_skill(os.path.join(tmp, "distrib", "main", "skills"), "weather", 'name: weather\ndescription: "Weather"')
     prompt = boot.build_subagent_prompt()
     assert "## Available skills" not in prompt
-
-
-@with_tabula_home
-def test_subagent_prompt_no_memory(tmp, boot):
-    """Subagent prompt has no memory section."""
-    mem_dir = Path(tmp, "data", "memory")
-    mem_dir.mkdir(parents=True)
-    (mem_dir / "MEMORY.md").write_text("important fact")
-
-    prompt = boot.build_subagent_prompt()
-    assert "## Long-term memory" not in prompt
-    assert "important fact" not in prompt
 
 
 @with_tabula_home

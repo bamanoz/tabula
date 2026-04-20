@@ -159,7 +159,7 @@ try {
 
     # Install
     Info "Installing to $TabulaHome..."
-    New-Item -ItemType Directory -Force -Path $TabulaHome, $BinDir, (Join-Path $TabulaHome "memory") | Out-Null
+    New-Item -ItemType Directory -Force -Path $TabulaHome, $BinDir | Out-Null
 
     # Remove legacy root-level runtime layout from older installs.
     foreach ($legacy in @("boot.py", "templates", "distrib", "skills", "testing")) {

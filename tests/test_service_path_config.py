@@ -28,4 +28,5 @@ def test_install_dev_persists_tabula_path_for_future_shells():
     assert 'TABULA_PATH_VALUE="$TABULA_HOME/.venv/bin:$TABULA_HOME/bin:$PATH"' in script
     assert 'TABULA_PATH_LINE=' in script
     assert 'export TABULA_PATH=' in script
-    assert 'echo "$TABULA_PATH_LINE" >> "$SHELL_RC"' in script
+    assert 'echo "$TABULA_PATH_LINE"' in script
+    assert '>> "$SHELL_RC"' in script

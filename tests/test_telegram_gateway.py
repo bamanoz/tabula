@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import os
 import queue
 import sys
@@ -269,38 +270,44 @@ class TestBotInstance(unittest.TestCase):
     def test_tg_api_url(self):
         self.assertEqual(self.bot.TG_API, "https://api.telegram.org/bot123:ABC")
 
-    @patch.object(_gw, "requests")
-    def test_tg_calls_post(self, mock_requests):
-        mock_requests.post.return_value.json.return_value = {"ok": True, "result": {}}
-        result = self.bot.tg("getMe")
-        mock_requests.post.assert_called_once()
-        call_args = mock_requests.post.call_args
-        self.assertIn("123:ABC", call_args[0][0])
-        self.assertIn("getMe", call_args[0][0])
-        self.assertEqual(result, {"ok": True, "result": {}})
+    def test_tg_calls_post(self):
+        async def fake_tg(method, **kwargs):
+            return {"ok": True, "result": {"username": "tabula_bot"}}
 
-    @patch.object(_gw, "requests")
-    def test_send_message_with_parse_mode(self, mock_requests):
-        mock_requests.post.return_value.json.return_value = {"ok": True}
-        self.bot.send_message(42, "hello", parse_mode="MarkdownV2")
-        call_kwargs = mock_requests.post.call_args[1]
-        self.assertEqual(call_kwargs["json"]["chat_id"], 42)
-        self.assertEqual(call_kwargs["json"]["parse_mode"], "MarkdownV2")
+        with patch.object(self.bot, "_tg", side_effect=fake_tg):
+            result = self.bot.tg("getMe")
+        self.assertEqual(result, {"ok": True, "result": {"username": "tabula_bot"}})
 
-    @patch.object(_gw, "requests")
-    def test_send_draft(self, mock_requests):
-        mock_requests.post.return_value.json.return_value = {"ok": True}
-        self.bot.send_draft(42, "draft-1", "streaming text")
-        call_kwargs = mock_requests.post.call_args[1]
-        self.assertEqual(call_kwargs["json"]["chat_id"], 42)
-        self.assertEqual(call_kwargs["json"]["draft_id"], "draft-1")
-        self.assertEqual(call_kwargs["json"]["text"], "streaming text")
+    def test_send_message_with_parse_mode(self):
+        captured = []
+
+        async def fake_tg(method, **kwargs):
+            captured.append((method, kwargs))
+            return {"ok": True, "result": {}}
+
+        with patch.object(self.bot, "_tg", side_effect=fake_tg):
+            self.bot.send_message(42, "hello", parse_mode="MarkdownV2")
+        self.assertEqual(captured, [("sendMessage", {"chat_id": 42, "text": "hello", "parse_mode": "MarkdownV2"})])
+
+    def test_send_draft(self):
+        captured = []
+
+        async def fake_tg(method, **kwargs):
+            captured.append((method, kwargs))
+            return {"ok": True, "result": {}}
+
+        with patch.object(self.bot, "_tg", side_effect=fake_tg):
+            self.bot.send_draft(42, "draft-1", "streaming text")
+        self.assertEqual(captured, [("sendMessageDraft", {"chat_id": 42, "draft_id": "draft-1", "text": "streaming text", "parse_mode": "MarkdownV2"})])
 
     @patch.object(_gw, "log")
     def test_run_survives_getme_network_error(self, mock_log):
         request_error = _gw.requests.RequestException("timeout")
         with patch.object(self.bot, "tg", side_effect=request_error), \
-             patch.object(_gw.requests, "get", side_effect=KeyboardInterrupt):
+             patch.object(self.bot, "_build_application") as mock_build:
+            fake_app = MagicMock()
+            fake_app.run_polling.side_effect = KeyboardInterrupt
+            mock_build.return_value = fake_app
             with self.assertRaises(KeyboardInterrupt):
                 self.bot.run()
 

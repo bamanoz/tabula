@@ -1,3 +1,7 @@
 websocket-client
 prompt_toolkit
 rich
+mempalace
+anthropic
+openai
+python-telegram-bot

@@ -9,6 +9,7 @@ REPO="bamanoz/tabula"
 TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
 BIN_DIR="$TABULA_HOME/bin"
 VENV="$TABULA_HOME/.venv"
+DISTRO="${TABULA_DISTRO:-assistant}"
 
 # Auth header for private repos (optional)
 AUTH_HEADER=()
@@ -24,32 +25,6 @@ die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 need() {
   command -v "$1" &>/dev/null || die "required tool not found: $1"
-}
-
-link_runtime_surface() {
-  local src_dir="$1"
-  local dst_dir="$2"
-  shift 2
-  local preserve=("$@")
-  mkdir -p "$dst_dir"
-  for existing in "$dst_dir"/*; do
-    [ -e "$existing" ] || continue
-    local keep=false
-    for name in "${preserve[@]}"; do
-      if [ "$(basename "$existing")" = "$name" ]; then
-        keep=true
-        break
-      fi
-    done
-    [ "$keep" = true ] && continue
-    rm -rf "$existing"
-  done
-  if [ -d "$src_dir" ]; then
-    for entry in "$src_dir"/*; do
-      [ -e "$entry" ] || continue
-      ln -sfn "../${entry#"$TABULA_HOME/"}" "$dst_dir/$(basename "$entry")"
-    done
-  fi
 }
 
 # ── detect platform ─────────────────────────────────────────────
@@ -297,7 +272,7 @@ for a in data.get('assets', []):
 
   # Install
   info "Installing to $TABULA_HOME..."
-  mkdir -p "$BIN_DIR" "$TABULA_HOME/memory"
+  mkdir -p "$BIN_DIR"
 
   # Remove legacy root-level runtime layout from older installs.
   rm -rf \
@@ -333,7 +308,13 @@ for a in data.get('assets', []):
 
   install_python_deps
 
-  "$VENV/bin/python3" "$BIN_DIR/install-distro.py" --home "$TABULA_HOME" "$TABULA_HOME/distrib/assistant"
+  "$VENV/bin/python3" "$BIN_DIR/install-distro.py" --home "$TABULA_HOME" "$TABULA_HOME/distrib/$DISTRO"
+
+  POST_INSTALL="$TABULA_HOME/distrib/$DISTRO/install.sh"
+  if [ -f "$POST_INSTALL" ]; then
+    info "Running post-install hook: $DISTRO"
+    TABULA_HOME="$TABULA_HOME" bash "$POST_INSTALL"
+  fi
 
   # Shell
   configure_shell

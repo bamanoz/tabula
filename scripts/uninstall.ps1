@@ -39,7 +39,7 @@ if (Test-Path $TabulaHome) {
         Remove-Item -Recurse -Force $TabulaHome
         Ok "Removed $TabulaHome (including user data)"
     } else {
-        Ok "Removed installed files (kept memory/, IDENTITY.md, etc.)"
+        Ok "Removed installed files (kept data/, IDENTITY.md, etc.)"
         Write-Host "  To remove everything: Remove-Item -Recurse -Force '$TabulaHome'"
     }
 }

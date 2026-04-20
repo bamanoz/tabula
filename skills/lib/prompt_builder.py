@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 from datetime import date
+from pathlib import Path
 
 from skills.lib.paths import skills_dir as skills_dir_path, templates_dir as templates_dir_path, tabula_home as tabula_home_path
 from skills.lib.protocol import (
@@ -59,10 +60,6 @@ def visible_kernel_tool_names(visible_tools: list[dict] | None = None) -> list[s
         if name in KERNEL_TOOL_LINES and name not in names:
             names.append(name)
     return names
-
-
-def memory_file() -> str:
-    return os.path.join(tabula_home(), "data", "memory", "MEMORY.md")
 
 
 def mcp_config_file() -> str:
@@ -203,11 +200,25 @@ def _read_project_file(name: str) -> str:
 
 
 def ensure_project_files():
+    home = Path(tabula_home())
+    tpl = Path(templates_dir())
+    # Skip when TABULA_HOME points at a git checkout (tests/dev runs from
+    # source). In a real install ~/.tabula is not a git repo. This prevents
+    # first-run defaults from polluting the source tree when tests or scripts
+    # set TABULA_HOME=<repo>.
+    if (home / ".git").exists():
+        return
+    try:
+        templates_under_home = tpl.resolve().parent.resolve() == home.resolve()
+    except OSError:
+        templates_under_home = True
+    if not templates_under_home:
+        return
     for name in PROJECT_FILES:
-        dest = os.path.join(tabula_home(), name)
+        dest = os.path.join(home, name)
         if os.path.exists(dest):
             continue
-        src = os.path.join(templates_dir(), name)
+        src = os.path.join(tpl, name)
         if not os.path.isfile(src):
             continue
         with open(src) as f:
@@ -239,24 +250,6 @@ def _section_skills(skills: list[str]) -> str:
         lines.append(doc)
         lines.append("")
     return "\n".join(lines)
-
-
-def _section_memory() -> str:
-    mem_path = memory_file()
-    if not os.path.isfile(mem_path):
-        return ""
-    with open(mem_path) as f:
-        memory = f.read().strip()
-    if not memory:
-        return ""
-    return "\n".join([
-        "## Long-term memory",
-        "",
-        "The following is your persistent memory. Use it to inform your responses.",
-        "To save new memories, use the memory skill commands above.",
-        "",
-        memory,
-    ])
 
 
 def _section_environment(provider: str) -> str:
@@ -350,9 +343,6 @@ def build_main_system_prompt(
     if project:
         static.append(project)
     dynamic = [_section_skills(skills)]
-    memory = _section_memory()
-    if memory:
-        dynamic.append(memory)
     if mcp_tools:
         dynamic.append(format_mcp_tools(mcp_tools))
     dynamic.append(_section_environment(provider))

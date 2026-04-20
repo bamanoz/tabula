@@ -62,24 +62,20 @@ class TestSkillPathLayout(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             orig_home = boot.TABULA_HOME
-            orig_mem = boot.MEMORY_FILE
             orig_perm = boot.PERMISSIONS_FILE
             orig_mcp = boot.MCP_CONFIG
             orig_sub = boot.SUBAGENT_PROMPT_FILE
             try:
                 boot.TABULA_HOME = tmp
-                boot.MEMORY_FILE = os.path.join(tmp, "data", "memory", "MEMORY.md")
                 boot.PERMISSIONS_FILE = os.path.join(tmp, "config", "skills", "hook-permissions", "permissions.json")
                 boot.MCP_CONFIG = os.path.join(tmp, "config", "skills", "mcp", "servers.json")
                 boot.SUBAGENT_PROMPT_FILE = os.path.join(tmp, "state", "subagent", "prompt.txt")
 
-                self.assertTrue(boot.MEMORY_FILE.endswith("data/memory/MEMORY.md"))
                 self.assertTrue(boot.PERMISSIONS_FILE.endswith("config/skills/hook-permissions/permissions.json"))
                 self.assertTrue(boot.MCP_CONFIG.endswith("config/skills/mcp/servers.json"))
                 self.assertTrue(boot.SUBAGENT_PROMPT_FILE.endswith("state/subagent/prompt.txt"))
             finally:
                 boot.TABULA_HOME = orig_home
-                boot.MEMORY_FILE = orig_mem
                 boot.PERMISSIONS_FILE = orig_perm
                 boot.MCP_CONFIG = orig_mcp
                 boot.SUBAGENT_PROMPT_FILE = orig_sub
@@ -163,16 +159,16 @@ class TestSkillPathLayout(unittest.TestCase):
                 os.environ.clear()
                 os.environ.update(old)
 
-    def test_memory_paths_use_data_and_state_dirs(self):
-        memory_path = ROOT / "distrib" / "assistant" / "skills" / "memory" / "run.py"
+    def test_memory_skill_uses_palace_under_tabula_home(self):
+        lib_path = ROOT / "bundles" / "memory" / "_lib.py"
         with tempfile.TemporaryDirectory() as tmp:
             old = dict(os.environ)
             try:
                 os.environ.clear()
                 os.environ["TABULA_HOME"] = tmp
-                mod = _load_module(memory_path, "tabula_memory_run")
-                self.assertEqual(mod.MEMORY_PATH, os.path.join(tmp, "data", "memory", "MEMORY.md"))
-                self.assertEqual(mod.INDEX_PATH, os.path.join(tmp, "state", "memory", "index.json"))
+                mod = _load_module(lib_path, "tabula_memory_lib")
+                self.assertEqual(mod.PALACE_PATH, os.path.join(tmp, "data", "memory", "palace"))
+                self.assertEqual(os.environ.get("MEMPALACE_PALACE_PATH"), mod.PALACE_PATH)
             finally:
                 os.environ.clear()
                 os.environ.update(old)

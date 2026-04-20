@@ -42,11 +42,6 @@ poll_interval = 2
 [hook.logger]
 # log_file = "/Users/you/.tabula/logs/hook-logger/hooks.jsonl"
 
-[memory.embedding]
-api_key = { source = "store", id = "driver-openai.api_key" }
-model = "text-embedding-3-small"
-base_url = "https://api.openai.com"
-
 [mcp.pool]
 url = ""
 host = "0.0.0.0"

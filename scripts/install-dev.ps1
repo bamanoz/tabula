@@ -64,9 +64,6 @@ $ServiceDest = Join-Path $TabulaHome "service"
 if (Test-Path $ServiceDest) { Remove-Item -Recurse -Force $ServiceDest }
 Copy-Item (Join-Path $RepoRoot "service") -Destination $ServiceDest -Recurse -Force
 
-# Memory directory (don't overwrite existing data)
-New-Item -ItemType Directory -Force -Path (Join-Path $TabulaHome "memory") | Out-Null
-
 # Python venv with dependencies
 if (-not (Test-Path $Venv)) {
     Write-Host "Creating Python venv..."
