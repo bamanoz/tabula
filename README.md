@@ -1,30 +1,71 @@
 # Tabula
 
-Tabula is a compact agent kernel: a small Go core that orchestrates Python skills over WebSocket.
-Drivers talk to LLM APIs, gateways talk to people, tool skills do work, and subagents are real child
-processes with their own session scope.
+**The Neovim of AI agents.**
 
-It is closer to a local agent platform than a single chatbot app.
+A small Go kernel, a plain-files home directory, and skills you can read, fork,
+or have the agent write for itself. If you've ever configured Neovim or lived
+inside Emacs, you already know how Tabula feels — except the thing being
+configured is an agent.
 
-- The kernel owns routing, sessions, process lifecycle, and built-in kernel tools.
-- Skills own integrations and domain logic.
-- Boot scripts assemble a distro-specific runtime from `SKILL.md`, templates, and config.
-- Distros let the same kernel power different products.
+## What Tabula is
 
-Tabula is designed to stay inspectable and hackable: small core, explicit process boundaries, simple wire
-protocol, and plain files under `~/.tabula/`.
+Tabula is not a chatbot app and not a framework. It is an **environment** for
+building and living with an agent.
+
+- A small Go kernel owns routing, sessions, processes, and hooks.
+- **Skills** are separate processes that plug into the kernel over WebSocket.
+  They can be written by you, installed from a bundle, or written by the agent
+  itself.
+- Your agent's identity, memory, and config live as plain files under
+  `~/.tabula/`. Like dotfiles, for an agent.
+- **Distros** package a kernel + a set of skills + a personality into a
+  product. Two ship today: `assistant` (general-purpose) and `guardian`
+  (sandboxed code execution). You can build your own.
+
+A Tabula agent is something you own, can inspect, can break, can fix, and can
+grow over years. Not something you rent.
+
+## Why it exists
+
+Most AI-agent tooling today is one of three things:
+
+- **A SaaS chatbot.** Closed, owned by the vendor, can't be extended below
+  the "prompt" layer.
+- **A developer framework** (LangChain, CrewAI, AutoGen, …). A library in one
+  process; every agent looks like another call site.
+- **A single monolithic app** (Open Interpreter, Claude Code, Devin).
+  Opinionated, hard to repurpose.
+
+Tabula is shaped like Linux or Neovim instead: a small, stable kernel with
+clear extension contracts, and a userland you build yourself.
+
+That design makes a few things natural:
+
+- **Self-modification is a normal operation.** A skill is whatever the active
+  distro knows how to discover, describe, and optionally execute. The agent has
+  file-writing and shell tools, so it can create, edit, and install skills for
+  itself using the same mechanisms a human extender would use.
+- **Process isolation is real.** A skill is a real OS process. Crashes don't
+  take down the kernel. Subagents are real child processes with their own
+  session, not fake threads.
+- **State is inspectable.** Everything lives in plain files under
+  `~/.tabula/`. You can `cat`, `diff`, `grep`, and put it in git.
+- **The kernel stays small.** Features live in skills, not in the core. Same
+  reason `grep` is not in `bash`.
 
 ## Status
 
-Tabula is already useful as a local agent runtime, but it is still in the "strong core, maturing ops shell"
-phase.
+Tabula is useful today, but it is in the "strong core, maturing extension
+surface" phase.
 
-- Strong today: compact kernel, process-based skills, distro model, official Anthropic/OpenAI SDK drivers,
-  OpenAI-compatible HTTP gateway, real subagent process isolation, local memory via MemPalace.
-- Still maturing: operator tooling, subagent control/registry, long-running gateway lifecycle hardening,
-  and the general "product shell" around the kernel.
+- **Solid:** kernel, process-based skills, distro model, official Anthropic /
+  OpenAI SDK drivers, OpenAI-compatible HTTP gateway, real subagent processes,
+  local memory via MemPalace.
+- **Maturing:** stable assistant skill-manifest versioning, subagent ops,
+  self-edit safety (git-backed rollback), skill distribution story.
 
-If you want a local-first, inspectable agent system with clear seams, this is what Tabula is for.
+The project favors small, composable primitives over big features. It will
+stay that way.
 
 ## Install
 
@@ -34,15 +75,7 @@ If you want a local-first, inspectable agent system with clear seams, this is wh
 curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash
 ```
 
-Release install:
-
-- downloads the Go binary and runtime assets from GitHub Releases
-- creates `~/.tabula/.venv`
-- installs Python runtime dependencies from `scripts/requirements-runtime.txt`
-- installs the default `assistant` distro
-- attempts to install a user service on macOS/Linux
-
-Requires Python 3.11+.
+Requires Python 3.11+. Installs to `~/.tabula/`.
 
 Install a specific version:
 
@@ -63,7 +96,8 @@ tabula-install-distro <local-path-or-github-tree-url>
 irm https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.ps1 | iex
 ```
 
-Windows support exists, but the main development/test flow today is macOS/Linux-first.
+Windows support exists, but the main development and test flow is
+macOS/Linux-first.
 </details>
 
 ### Install from source
@@ -71,30 +105,13 @@ Windows support exists, but the main development/test flow today is macOS/Linux-
 ```bash
 git clone https://github.com/bamanoz/tabula.git
 cd tabula
-bash scripts/install-dev.sh
-```
-
-Install a different distro from source:
-
-```bash
-bash scripts/install-dev.sh --distro guardian
+bash scripts/install-dev.sh                    # assistant distro
+bash scripts/install-dev.sh --distro guardian  # guardian distro
 ```
 
 Requires Go 1.26+ and Python 3.11+.
 
-Source install:
-
-- builds `bin/tabula`
-- creates `TABULA_HOME/.venv`
-- installs Python dev dependencies from `scripts/requirements-dev.txt`
-- copies shared skill runtime code into `TABULA_HOME/skills/lib`
-- installs the selected distro under `TABULA_HOME/distrib/<name>`
-- refreshes the flat runtime surface (`boot.py`, `templates/`, `skills/`)
-- installs launchers like `tabula-server`, `tabula-cli`, `tabula-api`, `tabula-install-distro`
-
 ## Quick start
-
-The simplest path is `.env`-based config:
 
 ```bash
 echo 'ANTHROPIC_API_KEY=sk-ant-...' >> ~/.tabula/.env
@@ -109,159 +126,121 @@ cat >> ~/.tabula/.env <<'EOF'
 TABULA_PROVIDER=openai
 OPENAI_API_KEY=sk-...
 EOF
-
 tabula-server
 tabula-cli
 ```
 
-Notes:
+If you installed from a release and the user service is already running,
+`tabula-cli` alone may be enough.
 
-- Default provider is `anthropic` unless overridden by `TABULA_PROVIDER` or `config/global.toml`.
-- If you installed from a release and the user service is already running, `tabula-cli` may be enough.
-- `tabula-cli` and `tabula-api` connect to a running kernel; `tabula-server` starts one.
+## The mental model
 
-## Mental model
-
-Typical flow:
+Typical message flow:
 
 ```text
-user -> gateway -> kernel -> driver -> tools / hooks / subagents
+user ──▶ gateway ──▶ kernel ──▶ driver ──▶ tools / hooks / subagents
 ```
 
 Pieces:
 
-- Kernel: small Go server that owns sessions, routing, spawned processes, hooks, and kernel tools.
-- Boot: Python script that emits JSON config describing the runtime to start.
-- Drivers: provider-specific LLM loops.
-- Gateways: CLI, HTTP API, Telegram.
-- Skills: process-based capabilities discovered from the active distro.
-- Subagents: separate child processes running their own driver loop in their own session.
+- **Kernel** — small Go server. Owns sessions, routing, processes, hooks,
+  built-in tools (`shell_exec`, `process_spawn`, `process_kill`,
+  `process_list`).
+- **Boot** — command from `TABULA_BOOT` that emits one JSON config for the
+  kernel. In the built-in distros this is currently implemented in Python.
+- **Drivers** — one provider loop per process (Anthropic, OpenAI).
+- **Gateways** — the mouths and ears: CLI, HTTP API, Telegram.
+- **Skills** — everything else. Tools, hooks, integrations, memory. Their
+  exact format is defined by the active distro, not by the kernel.
+- **Subagents** — real child processes running their own driver in their own
+  session.
 
-Typical installed layout:
+### `~/.tabula/` — the "dotfiles" of your agent
 
 ```text
 ~/.tabula/
-├── bin/
 ├── distrib/
 │   ├── assistant/
 │   ├── guardian/
 │   └── active -> assistant
-├── boot.py -> distrib/active/boot.py
-├── boot-cicd.py
-├── templates/ -> distrib/active/templates
+├── boot.py         -> distrib/active/boot.py
+├── templates/      -> distrib/active/templates
 ├── skills/
 │   ├── lib/
-│   └── ... -> distrib/active/skills/*
+│   └── ...         -> distrib/active/skills/*
 ├── bundles/
 ├── config/global.toml
 ├── secrets.json
 ├── .env
 ├── data/
 ├── logs/
+├── bin/
 └── .venv/
 ```
 
-The important part is the flat runtime surface: the active distro fans out into `boot.py`, `templates/`, and
-`skills/`, while shared runtime code stays in `skills/lib/`.
+The active distro fans out into `boot.py`, `templates/`, and `skills/`.
+Shared runtime code lives in `skills/lib/`. Files like `IDENTITY.md`,
+`SOUL.md`, `AGENTS.md` under `templates/` are the agent's personality — edit
+them, or let the agent edit them.
 
 ## Distros
 
-Tabula ships with more than one runtime surface.
+Distros are how you package a kernel + skills + personality into a product.
 
 ### `assistant`
 
-The default general-purpose distro.
+Default general-purpose agent.
 
-It includes:
-
-- provider drivers: Anthropic and OpenAI
+- providers: Anthropic and OpenAI (official SDKs)
 - gateways: CLI, OpenAI-compatible HTTP API, Telegram
-- tool and support skills: files, sessions, pair, MCP, timer, cron, observer
-- hooks: logger and permissions
-- provider-matched subagents
-- bundle-backed memory tools: `memory-save`, `memory-search`, `memory-admin`
-
-The assistant boot script scans `skills/` recursively, reads `SKILL.md`, follows symlinks into bundles,
-assembles the system prompt, discovers tools, and selects exactly one active driver and one matching
-subagent runtime based on `TABULA_PROVIDER`.
+- tools: `files` (read / write / str_replace), `sessions`, `pair`, `mcp`,
+  `timer`, `cron`, `clawhub`
+- hooks: `hook-logger`, `hook-permissions`
+- observability: `observer`
+- memory: `memory-save`, `memory-search`, `memory-admin` (bundle; backed by
+  MemPalace)
+- subagents: provider-matched, real processes
 
 ### `guardian`
 
-A much narrower distro focused on sandboxed Python execution.
+Focused runtime for sandboxed Python execution.
 
-- exposes a single `execute_code` tool
-- ships a minimal CLI gateway
-- builds a Docker sandbox image during install when Docker is available
+- single tool: `execute_code` (Python 3 in a Docker sandbox)
+- minimal CLI gateway
+- builds its sandbox image during install
+- no files / mcp / sessions / memory / telegram / hooks
 
-Guardian is not a drop-in replacement for the assistant distro. It is a focused runtime for controlled code
-execution inside a dedicated sandbox.
+Guardian is not a lesser assistant — it is a different product sharing the
+same kernel.
 
-## What the assistant distro can do
+More about what each distro contains lives in its own `distrib/<name>/`.
 
-### Providers
+## Documentation
 
-- Anthropic via the official `anthropic` SDK
-- OpenAI via the official `openai` SDK
-- provider selection via `.env`, `config/global.toml`, or explicit overrides in some gateways
-
-### Gateways
-
-- `gateway-cli`: local terminal chat UI
-- `gateway-api`: OpenAI-compatible `/v1/chat/completions` and `/v1/responses`
-- `gateway-telegram`: Telegram bot gateway backed by `python-telegram-bot`
-
-### Tools and support skills
-
-- `files`: `read_file`, `write_file`, `str_replace`
-- `mcp`: bridge to external Model Context Protocol servers
-- `sessions`: cross-session send/list/history
-- `pair`: approve and revoke gateway access
-- `timer` and `cron`: delayed and scheduled work
-- `observer`: HTTP metrics over hook events
-- `hook-logger` and `hook-permissions`: audit and policy
-
-### Memory and bundles
-
-- `memory-save`, `memory-search`, `memory-admin` are provided by the `bundles/memory` bundle
-- memory is backed by MemPalace and stored locally under `data/memory/palace/`
-- the repo also includes the optional `caveman` bundle as an example/reference bundle
-
-### Subagents
-
-Subagents are not fake threads inside one runtime. They are separate spawned processes with their own
-provider loop and their own session scope.
-
-This is one of Tabula's strongest architectural properties.
-
-It also means subagent control and accounting matter a lot, and that part of the system is still simpler than
-the core architecture deserves. Today subagents work and run in parallel, but their operational control plane
-is still fairly minimal.
+- [`docs/PHILOSOPHY.md`](docs/PHILOSOPHY.md) — why Tabula is shaped like Linux / Neovim
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how kernel, boot, distros, and skills fit together
+- [`docs/SKILL_AUTHORING.md`](docs/SKILL_AUTHORING.md) — practical guide to writing skills
+- [`docs/DISTROS.md`](docs/DISTROS.md) — what distros are and what `assistant` / `guardian` mean
 
 ## Common commands
 
-| Command | What it does |
-| --- | --- |
-| `tabula-server` | Start the kernel with sane defaults (`TABULA_BOOT`, `TABULA_PATH`) |
-| `tabula-cli` | Connect the local CLI gateway to a running kernel |
-| `TABULA_API_PORT=8090 tabula-api` | Start the OpenAI-compatible HTTP gateway |
-| `tabula-install-distro <path-or-github-tree-url>` | Install or switch the active distro |
-| `tabula serve` | Low-level kernel server entrypoint |
-| `tabula run --prompt "..."` | One-shot prompt -> response mode |
+| Command                                             | What it does                                 |
+| --------------------------------------------------- | -------------------------------------------- |
+| `tabula-server`                                     | Start the kernel with sane defaults          |
+| `tabula-cli`                                        | Local terminal gateway                       |
+| `TABULA_API_PORT=8090 tabula-api`                   | OpenAI-compatible HTTP gateway               |
+| `tabula-install-distro <path-or-github-tree-url>`   | Install or switch the active distro          |
+| `tabula serve`                                      | Low-level kernel entrypoint                  |
+| `tabula run --prompt "..."`                         | One-shot prompt → response                   |
 
-Direct `tabula serve` and `tabula run` need `TABULA_BOOT` if you are not using the wrapper scripts:
+Direct `tabula serve` and `tabula run` need `TABULA_BOOT`:
 
 ```bash
 TABULA_BOOT='"$HOME/.tabula/.venv/bin/python3" "$HOME/.tabula/boot.py"' tabula serve
 ```
 
-For CI-style minimal runs, use the installed `boot-cicd.py`:
-
-```bash
-TABULA_BOOT='"$HOME/.tabula/.venv/bin/python3" "$HOME/.tabula/boot-cicd.py"' \
-  tabula run --prompt "summarize this file"
-```
-
-`boot-cicd.py` is intentionally small: driver only, minimal runtime surface, no full assistant shell.
+For CI-style minimal runs, `boot-cicd.py` is a driver-only boot without the
+full shell.
 
 ## API gateway
 
@@ -272,54 +251,25 @@ tabula-server
 TABULA_API_PORT=8090 tabula-api
 ```
 
-Example request:
-
 ```bash
 curl http://localhost:8090/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"tabula","messages":[{"role":"user","content":"hello"}]}'
 ```
 
-The gateway is OpenAI-compatible on purpose: existing OpenAI SDK clients can talk to Tabula without needing a
-custom client.
+The gateway is OpenAI-compatible on purpose: any OpenAI SDK client can talk to
+Tabula without a custom client.
 
-## Architecture
+## Configuration
 
-Boot sequence in the assistant distro:
+Three layers, in order of increasing formality:
 
-1. Kernel runs the command from `TABULA_BOOT`.
-2. `boot.py` loads `.env`, scans `skills/`, parses `SKILL.md`, and assembles prompt/tools/commands/spawn list.
-3. Boot prints a single JSON config object.
-4. Kernel starts the WebSocket server and spawns configured skill processes.
-5. Skills connect, declare message types, join sessions, and start exchanging messages.
+- `.env` — local overrides and API keys
+- `config/global.toml` — structured defaults (providers, gateways, sessions,
+  MCP, etc.)
+- `secrets.json` — secret store entries referenced from config
 
-Important properties:
-
-- Skills do not call each other directly. The kernel routes messages between them.
-- Session scope is the basic isolation boundary for conversations.
-- Built-in kernel tools are separate from skill tools.
-- The assistant distro is metadata-driven; skill frontmatter affects prompt injection, tool exposure,
-  slash commands, and compatibility with kernel tools.
-
-Built-in kernel tools currently include:
-
-- `shell_exec`
-- `process_spawn`
-- `process_kill`
-- `process_list`
-
-See `distrib/assistant/boot.py`, `skills/lib/protocol.py`, and `skills/skill-contract/SKILL.md` for the
-actual runtime contract.
-
-## Configuration model
-
-Tabula uses three layers:
-
-- `.env`: easiest place for local overrides and API keys
-- `config/global.toml`: structured defaults for providers, gateways, sessions, MCP, and other runtime settings
-- `secrets.json`: secret store entries referenced from config
-
-In practice, many installs start with just `.env`:
+Most installs start with only `.env`:
 
 ```bash
 # ~/.tabula/.env
@@ -327,7 +277,7 @@ TABULA_PROVIDER=anthropic
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-Structured config example:
+Structured example:
 
 ```toml
 provider = "openai"
@@ -338,72 +288,65 @@ base_url = "https://api.openai.com/v1"
 api_key = { source = "store", id = "driver-openai.api_key" }
 ```
 
-Some useful runtime variables:
+Useful environment variables:
 
-| Variable | Description |
-| --- | --- |
-| `TABULA_HOME` | Tabula home directory, default `~/.tabula` |
-| `TABULA_PROVIDER` | Active provider, usually `anthropic` or `openai` |
-| `TABULA_BOOT` | Boot command used by `tabula serve` / `tabula run` |
-| `TABULA_URL` | Kernel WebSocket URL used by skills |
-| `TABULA_API_PORT` | HTTP port for `tabula-api` |
-| `TABULA_MAX_SPAWN_DEPTH` | Max nested subagent depth |
-| `TABULA_MAX_CHILDREN_PER_SESSION` | Max child subagents per session |
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Provider API keys |
+| Variable                                   | Description                                |
+| ------------------------------------------ | ------------------------------------------ |
+| `TABULA_HOME`                              | Home directory, default `~/.tabula`        |
+| `TABULA_PROVIDER`                          | Active provider                            |
+| `TABULA_BOOT`                              | Boot command for `tabula serve / run`      |
+| `TABULA_URL`                               | Kernel WebSocket URL                       |
+| `TABULA_API_PORT`                          | HTTP port for `tabula-api`                 |
+| `TABULA_MAX_SPAWN_DEPTH`                   | Max nested subagent depth                  |
+| `TABULA_MAX_CHILDREN_PER_SESSION`          | Max child subagents per session            |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`     | Provider API keys                          |
 
-## Adding skills
+## Writing skills
 
-The main extension seam is still simple:
+A common built-in convention, used by the `assistant` distro, is a skill
+directory like this:
 
-1. create a directory in `skills/`
-2. add a `SKILL.md` with frontmatter and human-readable docs
-3. add a `run.py` entrypoint
-4. connect to the kernel via WebSocket and declare what the skill sends/receives
+```text
+my-skill/
+├── SKILL.md     # frontmatter contract + human-readable docs
+└── run.py       # one possible entrypoint used by many built-in skills
+```
 
-If a skill exposes tools, declare them in `SKILL.md` frontmatter. The boot layer discovers them and hands them
-to the active driver.
+In `assistant`, `SKILL.md` frontmatter declares tools, commands,
+compatibility, and spawn policy. Assistant boot discovers skills, parses
+frontmatter, assembles the system prompt, and exposes tools to the active
+driver. Some built-in assistant paths also default to `run.py`, but that is a
+convention of the current distro, not a platform rule.
 
-See `skills/skill-contract/SKILL.md` for the current contract.
+This is the same mechanism the agent uses when it writes a new skill for
+itself — there is no separate "agent-authored skills" path.
+
+See `distrib/assistant/skills/skill-contract/SKILL.md` for the current
+assistant skill convention. Contract versioning across the wire protocol,
+boot output, assistant skill manifests, and `skills/lib/` is still being
+stabilized; don't rely on internal lib APIs yet.
 
 ## Testing
 
-The verification matrix is intentionally split so you can run the right layer for the change:
-
 ```bash
-make test-unit
-make test-smoke
-make test-e2e
-make test-contract
+make test-unit       # fast logic-only
+make test-smoke      # minimal runtime boot / connect / init
+make test-e2e        # hooks, MCP, observer, mock driver, subagents
+make test-contract   # protocol and extension contract checks
 ```
 
-Current layers:
-
-- `unit`: fast logic-only tests
-- `smoke`: minimal runtime boot/connect/init path
-- `e2e`: heavier runtime flows like hooks, MCP, observer, mock driver, and subagents
-- `contract`: protocol and extension contract checks under `skills/`
-- `manual`: real-env and diagnostic helpers run directly
-
-See [`tests/README.md`](tests/README.md) for the current matrix.
+See [`tests/README.md`](tests/README.md).
 
 ## Development
 
-Useful commands:
-
 ```bash
 make build
-make install
+make install            # runs scripts/install-dev.sh
 make test-unit
-make test-smoke
-make test-e2e
-make test-contract
 ```
 
-Notes:
-
-- `make install` runs `scripts/install-dev.sh`
-- runtime Python dependencies live in `scripts/requirements-runtime.txt`
-- source installs use `scripts/requirements-dev.txt`
+Python runtime deps: `scripts/requirements-runtime.txt`.
+Source-install deps: `scripts/requirements-dev.txt`.
 
 ## License
 
