@@ -39,7 +39,7 @@ def _load_slash_commands() -> tuple[dict[str, dict], list[str], dict[str, str]]:
     """
     import importlib.util
 
-    boot_path = os.path.join(ROOT, "distrib", "familiar", "boot.py")
+    boot_path = os.path.join(ROOT, "boot.py")
     spec = importlib.util.spec_from_file_location("tabula_main_boot", boot_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"could not load boot script from {boot_path}")
