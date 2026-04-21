@@ -37,7 +37,9 @@ class TestInstallDistroBundles(unittest.TestCase):
             (target / "skills").mkdir(parents=True, exist_ok=True)
             bundle_root.mkdir(parents=True, exist_ok=True)
             (bundle_root / "version.txt").write_text("new\n", encoding="utf-8")
-            (bundle_root / "_lib.py").write_text("HELPER = 1\n", encoding="utf-8")
+            private_dir = bundle_root / "_memory"
+            private_dir.mkdir(parents=True, exist_ok=True)
+            (private_dir / "lib.py").write_text("HELPER = 1\n", encoding="utf-8")
 
             # The distro references a bundle via a symlink, like the real familiar distro.
             (skills_dir / "memory-save").symlink_to(bundle_root)
@@ -50,7 +52,7 @@ class TestInstallDistroBundles(unittest.TestCase):
 
             self.assertFalse(installed_skill.is_symlink())
             self.assertEqual((installed_skill / "version.txt").read_text(encoding="utf-8"), "new\n")
-            self.assertEqual((installed_skill / "_lib.py").read_text(encoding="utf-8"), "HELPER = 1\n")
+            self.assertEqual((target / "skills" / "_memory" / "lib.py").read_text(encoding="utf-8"), "HELPER = 1\n")
 
 
 if __name__ == "__main__":

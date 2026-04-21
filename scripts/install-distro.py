@@ -112,13 +112,17 @@ def bundle_root_for_skill(path: Path) -> Path | None:
     return Path(*parts[: idx + 2])
 
 
-def copy_bundle_support_files(bundle_root: Path, target_skill_dir: Path) -> None:
+def copy_bundle_support_dirs(bundle_root: Path, target_skills_dir: Path) -> None:
     for entry in bundle_root.iterdir():
-        if entry.is_dir():
+        if not entry.is_dir() or not entry.name.startswith("_"):
             continue
-        if should_ignore_name(entry.name) or entry.name == "README.md":
-            continue
-        shutil.copy2(entry, target_skill_dir / entry.name)
+        target = target_skills_dir / entry.name
+        if target.exists() or target.is_symlink():
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+        copytree_filtered(entry, target)
 
 
 def materialize_linked_skills(source_dir: Path, target_dir: Path) -> None:
@@ -130,6 +134,8 @@ def materialize_linked_skills(source_dir: Path, target_dir: Path) -> None:
         if not entry.is_symlink():
             continue
         resolved = entry.resolve(strict=True)
+        if not resolved.is_dir():
+            continue
         bundle_root = bundle_root_for_skill(resolved)
         if bundle_root is None:
             continue
@@ -140,7 +146,7 @@ def materialize_linked_skills(source_dir: Path, target_dir: Path) -> None:
             else:
                 target.unlink()
         copytree_filtered(resolved, target)
-        copy_bundle_support_files(bundle_root, target)
+        copy_bundle_support_dirs(bundle_root, target_skills_dir)
 
 
 def set_active_distro(home: Path, distro_name: str) -> None:

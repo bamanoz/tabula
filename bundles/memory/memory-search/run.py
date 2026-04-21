@@ -7,7 +7,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from _lib import PALACE_PATH, dispatch, emit, import_mempalace  # noqa: E402
+from _memory.lib import PALACE_PATH, dispatch, emit, import_mempalace  # noqa: E402
 
 
 def tool_memory_search(params: dict) -> None:

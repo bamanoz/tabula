@@ -1,4 +1,4 @@
-.PHONY: build test test-unit test-smoke test-e2e test-contract test-go test-go-unit test-go-smoke test-python test-python-unit test-python-smoke test-python-e2e test-python-contract lint vet install install-dev clean
+.PHONY: build test test-unit test-smoke test-e2e test-contract test-go test-go-unit test-go-smoke test-python test-python-unit test-python-smoke test-python-e2e test-python-contract lint vet install clean
 
 TABULA_HOME ?= .
 VENV_PYTHON = .venv/bin/python3
@@ -67,8 +67,6 @@ vet:
 
 install:
 	bash scripts/install-dev.sh
-
-install-dev: install
 
 # Clean
 
