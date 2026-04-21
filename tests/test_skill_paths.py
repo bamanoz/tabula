@@ -45,7 +45,7 @@ def _load_boot_module():
     old = dict(os.environ)
     os.environ["TABULA_HOME"] = str(ROOT)
     os.environ["TABULA_PROVIDER"] = os.environ.get("TABULA_PROVIDER", "openai")
-    spec = importlib.util.spec_from_file_location("tabula_main_boot", ROOT / "distrib" / "assistant" / "boot.py")
+    spec = importlib.util.spec_from_file_location("tabula_main_boot", ROOT / "distrib" / "familiar" / "boot.py")
     mod = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     try:
@@ -81,7 +81,7 @@ class TestSkillPathLayout(unittest.TestCase):
                 boot.SUBAGENT_PROMPT_FILE = orig_sub
 
     def test_pair_auth_file_uses_data_dir(self):
-        pair_path = ROOT / "distrib" / "assistant" / "skills" / "pair" / "run.py"
+        pair_path = ROOT / "distrib" / "familiar" / "skills" / "pair" / "run.py"
         with tempfile.TemporaryDirectory() as tmp:
             old = dict(os.environ)
             try:
@@ -119,7 +119,7 @@ class TestSkillPathLayout(unittest.TestCase):
                 os.environ.update(old)
 
     def test_cron_jobs_use_data_dir(self):
-        cron_path = ROOT / "distrib" / "assistant" / "skills" / "cron" / "run.py"
+        cron_path = ROOT / "distrib" / "familiar" / "skills" / "cron" / "run.py"
         with tempfile.TemporaryDirectory() as tmp:
             old = dict(os.environ)
             try:
@@ -132,7 +132,7 @@ class TestSkillPathLayout(unittest.TestCase):
                 os.environ.update(old)
 
     def test_hook_permissions_uses_config_skills_dir(self):
-        hook_path = ROOT / "distrib" / "assistant" / "skills" / "hook-permissions" / "run.py"
+        hook_path = ROOT / "distrib" / "familiar" / "skills" / "hook-permissions" / "run.py"
         with tempfile.TemporaryDirectory() as tmp:
             old = dict(os.environ)
             try:
@@ -153,7 +153,7 @@ class TestSkillPathLayout(unittest.TestCase):
             try:
                 os.environ.clear()
                 os.environ["TABULA_HOME"] = tmp
-                mod = _load_mcp_module(ROOT / "distrib" / "assistant" / "skills" / "mcp" / "pool.py", "mcp.pool")
+                mod = _load_mcp_module(ROOT / "distrib" / "familiar" / "skills" / "mcp" / "pool.py", "mcp.pool")
                 self.assertEqual(mod.CONFIG_FILE, os.path.join(tmp, "config", "skills", "mcp", "servers.json"))
             finally:
                 os.environ.clear()

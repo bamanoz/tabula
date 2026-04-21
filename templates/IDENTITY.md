@@ -1,1 +1,1 @@
-../distrib/assistant/templates/IDENTITY.md
+../distrib/familiar/templates/IDENTITY.md

@@ -10,7 +10,7 @@ WS-подключением к kernel, реальная process isolation, kerne
 
 ## Состояние сейчас
 
-- `distrib/assistant/skills/subagent-{anthropic,openai}/run.py` — тонкие
+- `distrib/familiar/skills/subagent-{anthropic,openai}/run.py` — тонкие
   адаптеры (~96 строк), выбирают провайдера.
 - `skills/lib/subagent_runtime.py` (156 строк) — общий runtime: connect →
   join → init → loop `generate / tool_use / tool_result` до `max_turns=20`
@@ -96,7 +96,7 @@ Acceptance:
 - `subagent_finished` — payload: `{agent_id, final_text, turn_count}`.
 - `subagent_failed` — payload: `{agent_id, error, exit_reason}`.
 
-Observer (`distrib/assistant/skills/observer`) автоматом получает feed —
+Observer (`distrib/familiar/skills/observer`) автоматом получает feed —
 без изменений API observer-а.
 
 Файлы:

@@ -1,1 +1,1 @@
-../distrib/assistant/templates/SOUL.md
+../distrib/familiar/templates/SOUL.md

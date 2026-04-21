@@ -1,1 +1,1 @@
-../distrib/assistant/templates/SAFETY.md
+../distrib/familiar/templates/SAFETY.md

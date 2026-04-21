@@ -49,7 +49,7 @@ def _load_boot_module():
         lib_spec.loader.exec_module(lib_mod)
     skills_pkg.lib = lib_mod
 
-    boot_path = ROOT / "distrib" / "assistant" / "boot.py"
+    boot_path = ROOT / "distrib" / "familiar" / "boot.py"
     spec = importlib.util.spec_from_file_location("tabula_main_boot", boot_path)
     mod = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -84,7 +84,7 @@ def with_tabula_home(fn):
             os.makedirs(os.path.join(tmp, "skills"), exist_ok=True)
             os.makedirs(os.path.join(tmp, "templates"), exist_ok=True)
             for name in ["SYSTEM.md", "TOOLS.md", "GUIDELINES.md", "SAFETY.md", "AGENTS.md", "IDENTITY.md", "SOUL.md", "USER.md"]:
-                src = ROOT / "distrib" / "assistant" / "templates" / name
+                src = ROOT / "distrib" / "familiar" / "templates" / name
                 Path(tmp, "templates", name).write_text(src.read_text())
             materialize_flat_surface(Path(tmp), source_root=Path(tmp))
             try:
@@ -155,7 +155,7 @@ def test_section_tools_rendered_from_visible_tools_input():
 
 
 def test_tools_template_source_is_not_canonical_list():
-    path = ROOT / "distrib" / "assistant" / "templates" / "TOOLS.md"
+    path = ROOT / "distrib" / "familiar" / "templates" / "TOOLS.md"
     text = path.read_text()
     assert "**shell_exec**" not in text
     assert "**process_spawn**" not in text

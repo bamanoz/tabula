@@ -2,7 +2,7 @@
 # Install Tabula from source into ~/.tabula/.
 #
 # Usage:
-#   bash scripts/install-dev.sh                     # install assistant distro
+#   bash scripts/install-dev.sh                     # install familiar distro
 #   bash scripts/install-dev.sh --distro guardian   # install another distro
 #
 # The selected distro is activated via install-distro.py, which manages all
@@ -11,7 +11,7 @@
 # (distrib/<name>/install.sh) is executed if present.
 set -euo pipefail
 
-DISTRO="assistant"
+DISTRO="familiar"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --distro) DISTRO="$2"; shift 2 ;;

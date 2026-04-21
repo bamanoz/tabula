@@ -1,1 +1,1 @@
-../distrib/assistant/templates/GUIDELINES.md
+../distrib/familiar/templates/GUIDELINES.md

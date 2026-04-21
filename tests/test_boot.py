@@ -49,7 +49,7 @@ def _load_boot_module():
         lib_spec.loader.exec_module(lib_mod)
     skills_pkg.lib = lib_mod
 
-    boot_path = os.path.join(ROOT, "distrib", "assistant", "boot.py")
+    boot_path = os.path.join(ROOT, "distrib", "familiar", "boot.py")
     spec = importlib.util.spec_from_file_location("tabula_main_boot", boot_path)
     mod = importlib.util.module_from_spec(spec)
     assert spec.loader is not None

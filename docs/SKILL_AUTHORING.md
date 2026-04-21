@@ -49,7 +49,7 @@ At runtime, the active skill surface is flat:
 In the source repo, built-in skills may live under a distro:
 
 ```text
-distrib/assistant/skills/
+distrib/familiar/skills/
 distrib/guardian/skills/
 ```
 
@@ -458,10 +458,10 @@ gateway, hook, or custom runtime.
 
 Useful reference skills:
 
-- tool skill: `distrib/assistant/skills/files/`
-- hook skill: `distrib/assistant/skills/hook-logger/`
-- gateway: `distrib/assistant/skills/gateway-cli/`
-- subagent runtime: `distrib/assistant/skills/subagent-openai/`
+- tool skill: `distrib/familiar/skills/files/`
+- hook skill: `distrib/familiar/skills/hook-logger/`
+- gateway: `distrib/familiar/skills/gateway-cli/`
+- subagent runtime: `distrib/familiar/skills/subagent-openai/`
 - minimal fixed distro boot: `distrib/guardian/boot.py`
 
 ## Future stabilization work

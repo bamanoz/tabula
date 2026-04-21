@@ -1,1 +1,1 @@
-../distrib/assistant/templates/USER.md
+../distrib/familiar/templates/USER.md

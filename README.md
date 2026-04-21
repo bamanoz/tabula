@@ -105,7 +105,7 @@ macOS/Linux-first.
 ```bash
 git clone https://github.com/bamanoz/tabula.git
 cd tabula
-bash scripts/install-dev.sh                    # assistant distro
+bash scripts/install-dev.sh                    # familiar distro
 bash scripts/install-dev.sh --distro guardian  # guardian distro
 ```
 
@@ -162,7 +162,7 @@ Pieces:
 ├── distrib/
 │   ├── assistant/
 │   ├── guardian/
-│   └── active -> assistant
+│   └── active -> familiar
 ├── boot.py         -> distrib/active/boot.py
 ├── templates/      -> distrib/active/templates
 ├── skills/
@@ -301,7 +301,7 @@ Useful environment variables:
 
 ## Writing skills
 
-A common built-in convention, used by the `assistant` distro, is a skill
+A common built-in convention, used by the `familiar` distro, is a skill
 directory like this:
 
 ```text
@@ -310,18 +310,18 @@ my-skill/
 └── run.py       # one possible entrypoint used by many built-in skills
 ```
 
-In `assistant`, `SKILL.md` frontmatter declares tools, commands,
-compatibility, and spawn policy. Assistant boot discovers skills, parses
+In `familiar`, `SKILL.md` frontmatter declares tools, commands,
+compatibility, and spawn policy. Familiar boot discovers skills, parses
 frontmatter, assembles the system prompt, and exposes tools to the active
-driver. Some built-in assistant paths also default to `run.py`, but that is a
+driver. Some built-in familiar paths also default to `run.py`, but that is a
 convention of the current distro, not a platform rule.
 
 This is the same mechanism the agent uses when it writes a new skill for
 itself — there is no separate "agent-authored skills" path.
 
-See `distrib/assistant/skills/skill-contract/SKILL.md` for the current
-assistant skill convention. Contract versioning across the wire protocol,
-boot output, assistant skill manifests, and `skills/lib/` is still being
+See `distrib/familiar/skills/skill-contract/SKILL.md` for the current
+familiar skill convention. Contract versioning across the wire protocol,
+boot output, familiar skill manifests, and `skills/lib/` is still being
 stabilized; don't rely on internal lib APIs yet.
 
 ## Testing

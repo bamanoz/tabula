@@ -8,7 +8,7 @@ from pathlib import Path
 def materialize_flat_surface(home: Path, *, source_root: Path) -> None:
     """Expose boot.py, templates/, and skills/* as the flat runtime surface.
 
-    The source of truth remains under ``distrib/assistant``; this helper creates the
+    The source of truth remains under ``distrib/familiar``; this helper creates the
     strict flat runtime contract that boot/runtime code expects.
     """
     _ensure_boot_alias(home, source_root=source_root)
@@ -25,14 +25,14 @@ def _ensure_boot_alias(home: Path, *, source_root: Path) -> None:
     boot = home / "boot.py"
     if boot.exists() or boot.is_symlink():
         return
-    boot_target = source_root / "distrib" / "assistant" / "boot.py"
+    boot_target = source_root / "distrib" / "familiar" / "boot.py"
     if not boot_target.is_file():
         return
-    boot.symlink_to(Path("distrib/assistant/boot.py"))
+    boot.symlink_to(Path("distrib/familiar/boot.py"))
 
 
 def _surface_source(source_root: Path, name: str) -> Path | None:
-    distro = source_root / "distrib" / "assistant" / name
+    distro = source_root / "distrib" / "familiar" / name
     if distro.is_dir():
         return distro
     flat = source_root / name

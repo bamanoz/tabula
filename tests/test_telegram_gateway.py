@@ -56,7 +56,7 @@ if "requests" not in sys.modules:
 import importlib.util
 
 def _load_gateway_module():
-    gw_path = os.path.join(ROOT, "distrib", "assistant", "skills", "gateway-telegram", "run.py")
+    gw_path = os.path.join(ROOT, "distrib", "familiar", "skills", "gateway-telegram", "run.py")
     spec = importlib.util.spec_from_file_location("gateway_run", gw_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

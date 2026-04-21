@@ -39,7 +39,7 @@ class TestInstallDistroBundles(unittest.TestCase):
             (bundle_root / "version.txt").write_text("new\n", encoding="utf-8")
             (bundle_root / "_lib.py").write_text("HELPER = 1\n", encoding="utf-8")
 
-            # The distro references a bundle via a symlink, like the real assistant distro.
+            # The distro references a bundle via a symlink, like the real familiar distro.
             (skills_dir / "memory-save").symlink_to(bundle_root)
 
             installed_skill = target / "skills" / "memory-save"

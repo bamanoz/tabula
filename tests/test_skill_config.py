@@ -20,19 +20,19 @@ if str(ROOT) not in sys.path:
 from skills.lib.config import SkillConfigError, load_skill_config
 
 
-DRIVER_OPENAI_DIR = ROOT / "distrib" / "assistant" / "skills" / "driver-openai"
+DRIVER_OPENAI_DIR = ROOT / "distrib" / "familiar" / "skills" / "driver-openai"
 DRIVER_OPENAI_PATH = DRIVER_OPENAI_DIR / "run.py"
 DRIVER_MOCK_DIR = ROOT / "testing" / "skills" / "driver-mock"
-SUBAGENT_OPENAI_DIR = ROOT / "distrib" / "assistant" / "skills" / "subagent-openai"
+SUBAGENT_OPENAI_DIR = ROOT / "distrib" / "familiar" / "skills" / "subagent-openai"
 SUBAGENT_OPENAI_PATH = SUBAGENT_OPENAI_DIR / "run.py"
-DRIVER_ANTHROPIC_DIR = ROOT / "distrib" / "assistant" / "skills" / "driver-anthropic"
+DRIVER_ANTHROPIC_DIR = ROOT / "distrib" / "familiar" / "skills" / "driver-anthropic"
 DRIVER_ANTHROPIC_PATH = DRIVER_ANTHROPIC_DIR / "run.py"
-SUBAGENT_ANTHROPIC_DIR = ROOT / "distrib" / "assistant" / "skills" / "subagent-anthropic"
+SUBAGENT_ANTHROPIC_DIR = ROOT / "distrib" / "familiar" / "skills" / "subagent-anthropic"
 SUBAGENT_ANTHROPIC_PATH = SUBAGENT_ANTHROPIC_DIR / "run.py"
-HOOK_LOGGER_DIR = ROOT / "distrib" / "assistant" / "skills" / "hook-logger"
+HOOK_LOGGER_DIR = ROOT / "distrib" / "familiar" / "skills" / "hook-logger"
 HOOK_LOGGER_PATH = HOOK_LOGGER_DIR / "run.py"
-MEMORY_DIR = ROOT / "distrib" / "assistant" / "skills" / "memory"
-MCP_DIR = ROOT / "distrib" / "assistant" / "skills" / "mcp"
+MEMORY_DIR = ROOT / "distrib" / "familiar" / "skills" / "memory"
+MCP_DIR = ROOT / "distrib" / "familiar" / "skills" / "mcp"
 MCP_DAEMON_PATH = MCP_DIR / "daemon.py"
 
 

@@ -121,11 +121,11 @@ The boot script emits one JSON object with fields like:
 - `context` — assembled system prompt
 - `kernel_tools` — subset of built-in kernel tools to expose
 
-Assistant and guardian use the same contract, but generate different payloads.
+Familiar and guardian use the same contract, but generate different payloads.
 
-### Assistant boot
+### Familiar boot
 
-`distrib/assistant/boot.py` is the more dynamic boot implementation.
+`distrib/familiar/boot.py` is the more dynamic boot implementation.
 
 It does the following:
 
@@ -138,7 +138,7 @@ It does the following:
 - selects exactly one driver and one matching subagent runtime
 - writes subagent prompt state under `~/.tabula/state/subagent/`
 
-This is where most of the assistant distro behavior is assembled.
+This is where most of the familiar distro behavior is assembled.
 
 ### Guardian boot
 
@@ -167,7 +167,7 @@ be a directory with three required parts:
 
 Tabula currently ships two:
 
-- `distrib/assistant/`
+- `distrib/familiar/`
 - `distrib/guardian/`
 
 `scripts/install-distro.py` installs a distro into `~/.tabula/distrib/<name>`
@@ -178,7 +178,7 @@ and then updates the active runtime surface.
 The selected distro is activated through symlinks:
 
 ```text
-~/.tabula/distrib/active -> assistant
+~/.tabula/distrib/active -> familiar
 ~/.tabula/boot.py -> distrib/active/boot.py
 ~/.tabula/templates/* -> distrib/active/templates/*
 ~/.tabula/skills/* -> distrib/active/skills/*
@@ -202,7 +202,7 @@ directory that contains at least:
 - some executable entry point
 
 That current assistant convention is described in
-`distrib/assistant/skills/skill-contract/SKILL.md`.
+`distrib/familiar/skills/skill-contract/SKILL.md`.
 
 ### `SKILL.md`
 
@@ -422,7 +422,7 @@ This keeps the execution boundary explicit and language-neutral.
 
 Bundles are optional reusable collections of skills under `bundles/<name>/`.
 
-The assistant distro already uses this mechanism for memory:
+The familiar distro already uses this mechanism for memory:
 
 - `memory-save`
 - `memory-search`
@@ -453,8 +453,8 @@ Those are the places where contracts matter.
 
 - `README.md` — project positioning and quick start
 - `docs/PHILOSOPHY.md` — why Tabula is shaped like this
-- `distrib/assistant/boot.py` — dynamic boot logic
+- `distrib/familiar/boot.py` — dynamic boot logic
 - `distrib/guardian/boot.py` — minimal fixed boot
-- `distrib/assistant/skills/skill-contract/SKILL.md` — current skill contract
+- `distrib/familiar/skills/skill-contract/SKILL.md` — current skill contract
 - `skills/lib/protocol.py` — Python-side protocol constants
 - `internal/kernel/protocol.go` — Go-side protocol constants

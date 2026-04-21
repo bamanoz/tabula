@@ -48,7 +48,7 @@ def _load_boot_module():
         lib_spec.loader.exec_module(lib_mod)
     skills_pkg.lib = lib_mod
 
-    boot_path = ROOT / "distrib" / "assistant" / "boot.py"
+    boot_path = ROOT / "distrib" / "familiar" / "boot.py"
     spec = importlib.util.spec_from_file_location("tabula_main_boot", boot_path)
     mod = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -344,14 +344,14 @@ def test_config_includes_commands():
 
 def test_tabula_guide_exists():
     """tabula-guide/SKILL.md should exist."""
-    guide_path = ROOT / "distrib" / "assistant" / "skills" / "tabula-guide" / "SKILL.md"
+    guide_path = ROOT / "distrib" / "familiar" / "skills" / "tabula-guide" / "SKILL.md"
     assert guide_path.is_file(), f"tabula-guide/SKILL.md not found at {guide_path}"
 
 
 def test_tabula_guide_has_description():
     """tabula-guide should have description in frontmatter (appears in system prompt)."""
     boot = _load_boot_module()
-    guide_path = ROOT / "distrib" / "assistant" / "skills" / "tabula-guide" / "SKILL.md"
+    guide_path = ROOT / "distrib" / "familiar" / "skills" / "tabula-guide" / "SKILL.md"
     meta, body = boot.parse_skill_md(guide_path.read_text().strip())
     assert meta.get("description"), "tabula-guide must have description"
     assert meta.get("name") == "tabula-guide"
@@ -361,7 +361,7 @@ def test_tabula_guide_in_scan_skills():
     """tabula-guide should appear in scan_skills output."""
     boot = _load_boot_module()
     original = boot.SKILLS_DIR
-    boot.SKILLS_DIR = str(ROOT / "distrib" / "assistant" / "skills")
+    boot.SKILLS_DIR = str(ROOT / "distrib" / "familiar" / "skills")
     try:
         skills = boot.scan_skills()
         guide_entries = [s for s in skills if "tabula-guide" in s]
@@ -374,7 +374,7 @@ def test_tabula_guide_not_user_invocable():
     """tabula-guide should NOT be a slash command."""
     boot = _load_boot_module()
     original = boot.SKILLS_DIR
-    boot.SKILLS_DIR = str(ROOT / "distrib" / "assistant" / "skills")
+    boot.SKILLS_DIR = str(ROOT / "distrib" / "familiar" / "skills")
     try:
         cmds = boot.discover_slash_commands()
         names = [c["name"] for c in cmds]
@@ -385,7 +385,7 @@ def test_tabula_guide_not_user_invocable():
 
 def test_tabula_guide_covers_key_sections():
     """tabula-guide body should cover all major architecture sections."""
-    guide_path = ROOT / "distrib" / "assistant" / "skills" / "tabula-guide" / "SKILL.md"
+    guide_path = ROOT / "distrib" / "familiar" / "skills" / "tabula-guide" / "SKILL.md"
     content = guide_path.read_text()
     required_sections = [
         "## Overview",
@@ -406,7 +406,7 @@ def test_tabula_guide_covers_key_sections():
 
 def test_tabula_guide_documents_all_hook_events():
     """tabula-guide should document all hook events."""
-    guide_path = ROOT / "distrib" / "assistant" / "skills" / "tabula-guide" / "SKILL.md"
+    guide_path = ROOT / "distrib" / "familiar" / "skills" / "tabula-guide" / "SKILL.md"
     content = guide_path.read_text()
     hook_events = [
         "before_message", "after_message",
@@ -420,7 +420,7 @@ def test_tabula_guide_documents_all_hook_events():
 
 def test_tabula_guide_documents_kernel_tools():
     """tabula-guide should document the default kernel tools and their policy model."""
-    guide_path = ROOT / "distrib" / "assistant" / "skills" / "tabula-guide" / "SKILL.md"
+    guide_path = ROOT / "distrib" / "familiar" / "skills" / "tabula-guide" / "SKILL.md"
     content = guide_path.read_text()
     assert "boot-controlled" in content
     for tool in ["shell_exec", "process_spawn", "process_kill", "process_list"]:

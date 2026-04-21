@@ -19,7 +19,7 @@ if str(ROOT) not in sys.path:
 import importlib.util
 
 
-FILES_RUN_PATH = ROOT / "distrib" / "assistant" / "skills" / "files" / "run.py"
+FILES_RUN_PATH = ROOT / "distrib" / "familiar" / "skills" / "files" / "run.py"
 spec = importlib.util.spec_from_file_location("tabula_files_run", FILES_RUN_PATH)
 _files = importlib.util.module_from_spec(spec)
 assert spec.loader is not None

@@ -1,1 +1,1 @@
-../distrib/assistant/templates/SYSTEM.md
+../distrib/familiar/templates/SYSTEM.md

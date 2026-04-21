@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
-GATEWAY_CLI_PATH = ROOT / "distrib" / "assistant" / "skills" / "gateway-cli" / "run.py"
+GATEWAY_CLI_PATH = ROOT / "distrib" / "familiar" / "skills" / "gateway-cli" / "run.py"
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))

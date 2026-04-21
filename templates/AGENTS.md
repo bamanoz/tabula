@@ -1,1 +1,1 @@
-../distrib/assistant/templates/AGENTS.md
+../distrib/familiar/templates/AGENTS.md

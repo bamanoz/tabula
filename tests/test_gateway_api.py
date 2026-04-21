@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
-GATEWAY_API_PATH = ROOT / "distrib" / "assistant" / "skills" / "gateway-api" / "run.py"
+GATEWAY_API_PATH = ROOT / "distrib" / "familiar" / "skills" / "gateway-api" / "run.py"
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -182,7 +182,7 @@ class TestGatewayAPIPaths(unittest.TestCase):
                 gateway = mod.GatewayAPI()
 
             self.assertIn(str(driver), gateway.driver_cmd)
-            self.assertNotIn("distrib/assistant/skills/driver-openai/run.py", gateway.driver_cmd.replace(str(driver), ""))
+            self.assertNotIn("distrib/familiar/skills/driver-openai/run.py", gateway.driver_cmd.replace(str(driver), ""))
 
     def test_missing_driver_script_raises_clear_error(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Package distrib/assistant, shared libs, config, and launch scripts into a tarball.
+# Package distrib/familiar, shared libs, config, and launch scripts into a tarball.
 # Called by GoReleaser before hook: bash scripts/package-skills.sh <version>
 set -euo pipefail
 
@@ -15,14 +15,14 @@ tar -czf "extra/tabula-skills-${VERSION}.tar.gz" \
   --exclude='distrib/*/*/*/*.pyc' \
   --exclude='distrib/*/*/*/*/__pycache__' \
   --exclude='distrib/*/*/*/*/*.pyc' \
-  --exclude='distrib/assistant/skills/*/__pycache__' \
-  --exclude='distrib/assistant/skills/*/.pytest_cache' \
-  --exclude='distrib/assistant/skills/*/.pytest_cache/**' \
-  --exclude='distrib/assistant/skills/__pycache__' \
-  --exclude='distrib/assistant/skills/*/*.pyc' \
-  --exclude='distrib/assistant/templates/__pycache__' \
-  --exclude='distrib/assistant/__pycache__' \
-  --exclude='distrib/assistant/boot.pyc' \
+  --exclude='distrib/familiar/skills/*/__pycache__' \
+  --exclude='distrib/familiar/skills/*/.pytest_cache' \
+  --exclude='distrib/familiar/skills/*/.pytest_cache/**' \
+  --exclude='distrib/familiar/skills/__pycache__' \
+  --exclude='distrib/familiar/skills/*/*.pyc' \
+  --exclude='distrib/familiar/templates/__pycache__' \
+  --exclude='distrib/familiar/__pycache__' \
+  --exclude='distrib/familiar/boot.pyc' \
   --exclude='skills/lib/__pycache__' \
   --exclude='skills/lib/.pytest_cache' \
   --exclude='skills/lib/.pytest_cache/**' \

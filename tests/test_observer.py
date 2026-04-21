@@ -20,7 +20,7 @@ from tests.runtime_harness import write_boot_script
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OBSERVER_SCRIPT = ROOT / "distrib" / "assistant" / "skills" / "observer" / "run.py"
+OBSERVER_SCRIPT = ROOT / "distrib" / "familiar" / "skills" / "observer" / "run.py"
 MODIFYING_HOOK_NAMES = {
     "before_message",
     "before_tool_call",

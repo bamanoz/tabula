@@ -1,1 +1,1 @@
-../distrib/assistant/templates/TOOLS.md
+../distrib/familiar/templates/TOOLS.md

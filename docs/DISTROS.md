@@ -95,11 +95,11 @@ What it includes:
 - hooks: logging and permissions
 - observer skill for metrics
 - provider-matched subagents
-- memory bundle: `memory-save`, `memory-search`, `memory-admin`
+- memory skills: `memory-save`, `memory-search`, `memory-admin`
 
 How it works:
 
-- `distrib/assistant/boot.py` scans the active `skills/` tree
+- `distrib/familiar/boot.py` scans the active `skills/` tree
 - reads `SKILL.md` recursively
 - assembles the main system prompt from templates and project files
 - selects the active provider via `TABULA_PROVIDER` / config
