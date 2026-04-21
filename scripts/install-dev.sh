@@ -1,23 +1,29 @@
 #!/bin/bash
-# Install Tabula from source into ~/.tabula/.
+# Install Tabula kernel + runtime library from source, then materialize a distro
+# from a sibling checkout of ``tabula-distrib``.
 #
 # Usage:
-#   bash scripts/install-dev.sh                     # install familiar distro
-#   bash scripts/install-dev.sh --distro guardian   # install another distro
+#   bash scripts/install-dev.sh                             # familiar distro from ../tabula-distrib/familiar
+#   bash scripts/install-dev.sh --distro guardian
+#   bash scripts/install-dev.sh --distro /abs/path/to/distro
+#   bash scripts/install-dev.sh --distrib-root ~/src/tabula-distrib --distro familiar
 #
-# The selected distro is activated via install-distro.py, which manages all
-# symlink fan-out under ~/.tabula/{boot.py,templates,skills}. After the distro
-# is installed, an optional distro-specific post-install hook
-# (distrib/<name>/install.sh) is executed if present.
+# The distro source may be a directory name (looked up under ``--distrib-root``),
+# or an absolute/relative path. Unlike the old layout, no distros live inside
+# this repo anymore — they come from the ``tabula-distrib`` repository.
 set -euo pipefail
 
 DISTRO="familiar"
+DISTRIB_ROOT=""
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --distro) DISTRO="$2"; shift 2 ;;
     --distro=*) DISTRO="${1#*=}"; shift ;;
+    --distrib-root) DISTRIB_ROOT="$2"; shift 2 ;;
+    --distrib-root=*) DISTRIB_ROOT="${1#*=}"; shift ;;
     -h|--help)
-      sed -n '2,8p' "$0"
+      sed -n '2,11p' "$0"
       exit 0
       ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -29,10 +35,24 @@ BIN_DIR="$TABULA_HOME/bin"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV="$TABULA_HOME/.venv"
-DISTRO_SRC="$REPO_ROOT/distrib/$DISTRO"
+
+# Resolve distro source.
+if [ -z "$DISTRIB_ROOT" ]; then
+  if [ -d "$REPO_ROOT/../tabula-distrib" ]; then
+    DISTRIB_ROOT="$(cd "$REPO_ROOT/../tabula-distrib" && pwd)"
+  fi
+fi
+
+case "$DISTRO" in
+  /*) DISTRO_SRC="$DISTRO" ;;
+  ./*|../*) DISTRO_SRC="$(cd "$DISTRO" && pwd)" ;;
+  *) DISTRO_SRC="$DISTRIB_ROOT/$DISTRO" ;;
+esac
 
 if [ ! -d "$DISTRO_SRC" ]; then
-  echo "error: distro $DISTRO not found at $DISTRO_SRC" >&2
+  echo "error: distro source not found: $DISTRO_SRC" >&2
+  echo "  hint: clone https://github.com/bamanoz/tabula-distrib next to this repo," >&2
+  echo "        or pass --distrib-root / a full --distro path" >&2
   exit 1
 fi
 
@@ -43,26 +63,19 @@ sleep 0.3
 echo "==> Installing Tabula to $TABULA_HOME (distro: $DISTRO)"
 mkdir -p "$TABULA_HOME" "$BIN_DIR"
 
-# Wipe legacy root-level runtime layout from older installs. install-distro.py
-# rebuilds the symlink fan-out from distrib/active/ on every run.
+# Wipe any previous runtime layout — tabula-distro rebuilds it from scratch.
 rm -rf \
   "$TABULA_HOME/boot.py" \
   "$TABULA_HOME/templates" \
   "$TABULA_HOME/skills" \
-  "$TABULA_HOME/testing" \
   "$TABULA_HOME/distrib"
 
 cp "$REPO_ROOT/examples/boot-cicd.py" "$TABULA_HOME/"
 
-# Shared skill library (preserved by install-distro.py during distro swaps)
+# Shared skill library (preserved across distro swaps by tabula-distro).
 mkdir -p "$TABULA_HOME/skills"
 rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
   "$REPO_ROOT/skills/lib/" "$TABULA_HOME/skills/lib/"
-
-# Test/dev runtime skills
-mkdir -p "$TABULA_HOME/testing"
-rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
-  "$REPO_ROOT/testing/skills/" "$TABULA_HOME/testing/skills/"
 
 # Global config (don't overwrite user edits)
 mkdir -p "$TABULA_HOME/config"
@@ -98,10 +111,10 @@ done
 cp "$REPO_ROOT/scripts/install-distro.py" "$BIN_DIR/install-distro.py"
 
 # Install + activate the chosen distro
-echo "==> Installing distro: $DISTRO"
+echo "==> Installing distro from $DISTRO_SRC"
 "$VENV/bin/tabula-distro" --home "$TABULA_HOME" install "$DISTRO_SRC"
 
-# Optional distro-specific post-install hook (e.g. guardian builds a sandbox image).
+# Optional distro-specific post-install hook.
 POST_INSTALL="$DISTRO_SRC/install.sh"
 if [ -f "$POST_INSTALL" ]; then
   echo "==> Running post-install hook: $DISTRO"

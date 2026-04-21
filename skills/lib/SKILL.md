@@ -1,127 +1,57 @@
 ---
 name: lib
-description: "Shared Python runtime library. System XML tags used in messages: `<cross_session from=\"sess-xxx\">text</cross_session>` — message from another session (not from your user); `<subagent_result id=\"xxx\">text</subagent_result>` — subagent result; `<subagent_pending ids=\"...\" />` — waiting for subagents; `<error>text</error>` — subagent error; `<system_error>text</system_error>` — kernel error. These tags are injected by the system, never by the user."
+description: "Shared kernel-level Python runtime library. Provides `kernel_client` (WebSocket wrapper), `protocol` (message/hook/tool constants), `paths` (TABULA_HOME conventions), `config` (typed skill config loader), and `filelock`. Driver- and provider-specific code lives in the `drivers` bundle, not here."
 ---
-# skills/lib — shared runtime library
+# skills/lib — kernel runtime library
 
-Reusable building blocks for writing Tabula skills (LLM drivers, subagents, gateways). Import from `skills.lib.*`.
+The narrow runtime surface every Tabula skill can rely on.
+
+Everything here is deliberately kernel-oriented — it talks to the kernel, honours
+the wire protocol, reads `$TABULA_HOME`, or exposes machinery so small it has
+no sensible home anywhere else. Distro-specific code (drivers, subagents,
+prompt assembly, compaction, provider selection, gateway XML) does **not**
+live here; it lives in the relevant distro or bundle.
 
 ## Modules
 
-### kernel_client — `skills.lib.kernel_client`
+### `skills.lib.kernel_client`
 
-`KernelConnection` — thread-safe WebSocket wrapper for the kernel protocol.
+`KernelConnection` — thread-safe WebSocket wrapper around the kernel protocol.
 
 ```python
 from skills.lib.kernel_client import KernelConnection
 
 conn = KernelConnection("ws://localhost:8089/ws")
 conn.send({"type": "connect", "name": "my-skill", ...})
-msg = conn.recv(timeout=5.0)       # returns dict or None on close
+msg = conn.recv(timeout=5.0)      # dict or None on close
 conn.close()
 ```
 
-### providers — `skills.lib.providers`
+### `skills.lib.protocol`
 
-Abstract `ProviderSession` base class and concrete implementations for LLM APIs.
+Symbolic names for everything crossing the wire: `MSG_*`, `TOOL_*`, `HOOK_*`,
+`DEFAULT_KERNEL_TOOLS`. Skills **should** import from here rather than typing
+literals.
 
-**Data types:**
+### `skills.lib.paths`
 
-| Type | Fields | Description |
-|------|--------|-------------|
-| `ToolCall` | `id`, `name`, `input` | A tool call from the LLM |
-| `ToolResult` | `tool_use_id`, `output` | Result to feed back after tool execution |
-| `TurnOutcome` | `final_text`, `tool_calls` | What one `generate()` call produced |
+`$TABULA_HOME` layout conventions. Each kind of skill file (config, data,
+state, run, logs) has a canonical location; helpers return the `Path`.
 
-**ProviderSession interface:**
+### `skills.lib.config`
 
-```python
-class ProviderSession(ABC):
-    def add_user_text(self, text: str): ...
-    def add_tool_results(self, results: list[ToolResult]): ...
-    def generate(self, on_text_delta: Callable[[str], None]) -> TurnOutcome: ...
-    def abort(self): ...
-    def record_aborted_turn(self): ...
-```
+`load_skill_config` / `load_global_config` / `SkillConfigError` — typed loader
+for `SKILL.config.json` entries combining env vars, `config/skills/<id>.toml`,
+`secrets.json`, and schema defaults.
 
-**Implementations:**
+### `skills.lib.filelock`
 
-- `AnthropicSession` — Claude streaming API (`/v1/messages`, SSE)
-- `OpenAISession` — OpenAI Responses API (`/v1/responses`, SSE)
-- `MockProvider` — deterministic, no LLM calls. For testing subagent orchestration (waves, fanouts, spawn failure handling). Configured via `MockConfig`.
+Cross-platform advisory file locking used by `cron`, task queues and anything
+that multiplexes a single on-disk JSON.
 
-**Creating a new provider:** subclass `ProviderSession`, implement `add_user_text`, `add_tool_results`, `generate`. The runtime calls `generate(on_text_delta)` — stream text via the callback, return `TurnOutcome` with tool calls or final text.
+## What used to live here
 
-### driver_runtime — `skills.lib.driver_runtime`
-
-`DriverRuntime` — orchestration loop for main LLM drivers. Handles the full lifecycle: init, message routing, tool execution, subagent spawning (SPAWN), result collection, streaming, and turn suppression.
-
-```python
-from skills.lib.driver_runtime import DriverConfig, DriverRuntime
-from skills.lib.providers import AnthropicSession
-
-runtime = DriverRuntime(
-    config=DriverConfig(name="anthropic", url=TABULA_URL),
-    provider_factory=lambda prompt, tools: AnthropicSession(
-        system_prompt=prompt, model=MODEL, api_key=KEY, base_url=URL, tools=tools,
-    ),
-    logger=log,
-)
-runtime.connect()
-runtime.run()
-```
-
-**What it handles automatically:**
-
-- Connecting to kernel, joining session `main`, receiving `init`
-- Streaming text deltas to gateway via `stream_start`/`stream_delta`/`stream_end`
-- Sending `tool_use` to kernel, batching `tool_result` responses
-- Extracting `--id` from SPAWN commands for subagent tracking
-- **Collection mode**: after SPAWNs, waits for all subagent results before triggering next LLM turn
-- **Early results buffer**: catches subagent results that arrive before collection mode starts
-- **Spawn failure detection**: non-PID SPAWN results recorded as failures
-- **Suppress/retroactive streaming**: intermediate turns (tool loops, collection flushes) are suppressed; final text is retroactively streamed
-- Crash detection via kernel `error` messages
-- Timeout after `MAX_WAIT_SEC` (300s) with partial result aggregation
-
-**`DriverConfig` fields:** `name` (client name), `url` (kernel WebSocket URL)
-
-### subagent_runtime — `skills.lib.subagent_runtime`
-
-`SubagentRuntime` — orchestration loop for spawned subagents. Simpler than DriverRuntime: no SPAWN handling, no collection mode. Runs a task, sends result to parent session, optionally stays alive for follow-ups.
-
-```python
-from skills.lib.subagent_runtime import SubagentConfig, SubagentRuntime
-from skills.lib.providers import AnthropicSession
-
-runtime = SubagentRuntime(
-    config=SubagentConfig(
-        url=TABULA_URL, agent_id="research_1",
-        parent_session="main", task="Find info about X",
-    ),
-    provider_factory=lambda prompt, tools: AnthropicSession(...),
-    logger=log,
-)
-runtime.connect()
-runtime.run()
-```
-
-**`SubagentConfig` fields:** `url`, `agent_id`, `parent_session`, `task`, `idle_timeout` (0=oneshot), `max_turns` (default 25), `spawn_token` (optional auth)
-
-## Writing a new LLM driver
-
-1. Create `skills/driver-<name>/run.py` (~60 lines)
-2. Implement `ProviderSession` subclass (or use existing one)
-3. Wire up: `DriverRuntime(config, provider_factory, logger)` → `.connect()` → `.run()`
-4. Create `skills/driver-<name>/SKILL.md`
-5. Add provider to `boot.py` aliases if needed
-
-See `skills/driver-anthropic/run.py` and `skills/driver-mock/run.py` as examples.
-
-## Writing a new subagent
-
-1. Create `skills/subagent-<name>/run.py` (~80 lines)
-2. Wire up: `SubagentRuntime(config, provider_factory, logger)` → `.connect()` → `.run()`
-3. Create `skills/subagent-<name>/SKILL.md`
-
-See `skills/subagent-anthropic/run.py` as example.
+`providers`, `driver_runtime`, `subagent_runtime`, `prompt_builder`,
+`compaction`, `provider_selection` all moved to the `drivers` bundle
+(`skills/_drivers/`). A distro that wants LLM drivers or subagents should
+include that bundle via its `distro.toml`.

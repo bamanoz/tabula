@@ -37,6 +37,31 @@ class InstallError(RuntimeError):
     pass
 
 
+def _resolve_distro_source(value: str | Path, home: Path, *, offline: bool) -> tuple[Path, str | None]:
+    """Resolve a distro source (path / local: / git+) to a local directory.
+
+    Returns ``(directory, original_uri_or_None)``. The URI is returned only if
+    the source was non-local (so it can be persisted in the lockfile and re-used
+    by ``tabula-distro update`` later).
+    """
+    if isinstance(value, Path):
+        return value.resolve(), None
+
+    text = str(value)
+    if text.startswith("local:") or text.startswith("git+"):
+        src = srcmod.parse(text, base_dir=Path.cwd())
+        if isinstance(src, srcmod.LocalSource):
+            return src.path, text
+        cache = GitCache(home / "cache")
+        checkout = cache.fetch(src, offline=offline)
+        root = checkout.worktree if not src.subpath else checkout.worktree / src.subpath
+        if not root.is_dir():
+            raise InstallError(f"git source subpath not found: {src.subpath} in {src.url}")
+        return root, text
+
+    return Path(text).expanduser().resolve(), None
+
+
 @dataclass
 class Plan:
     distro: cfg.DistroConfig
@@ -46,14 +71,25 @@ class Plan:
     update_only: tuple[str, ...] = ()  # subset of names to update; () means all when update=True
 
 
-def install(distro_dir: Path, home: Path, *,
+def install(distro_dir: str | Path, home: Path, *,
             override_name: str | None = None,
             offline: bool = False,
             update: bool = False,
             update_only: tuple[str, ...] = (),
             keep_generations: int = 5) -> tuple[gens.Generation, lockmod.Lock]:
-    """Install ``distro_dir`` into ``home``. Returns (new_generation, lock)."""
-    distro = cfg.load(distro_dir, override_name=override_name)
+    """Install a distro into ``home``.
+
+    ``distro_dir`` may be:
+      - a local path (``Path`` or ``str``),
+      - a ``local:<path>`` URI,
+      - a ``git+<url>@<ref>[#path=<subdir>]`` URI.
+
+    Returns ``(new_generation, lock)``.
+    """
+    distro_path, distro_source_uri = _resolve_distro_source(
+        distro_dir, home, offline=offline,
+    )
+    distro = cfg.load(distro_path, override_name=override_name)
     plan = Plan(distro=distro, home=home, offline=offline, update=update, update_only=tuple(update_only))
 
     home.mkdir(parents=True, exist_ok=True)
@@ -72,6 +108,9 @@ def install(distro_dir: Path, home: Path, *,
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
+
+    if distro_source_uri is not None:
+        new_lock.distro_source = distro_source_uri
 
     os.replace(staging, new_path)
     new_gen = gens.Generation(number=int(new_name.split("-", 1)[0]), name=new_name, path=new_path)

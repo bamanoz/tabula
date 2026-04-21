@@ -69,15 +69,19 @@ class Lock:
     bundles: dict[str, LockEntry] = field(default_factory=dict)
     skills: dict[str, LockEntry] = field(default_factory=dict)
     generated_at: str | None = None
+    distro_source: str | None = None  # original URI passed to install (for `update`)
 
     def to_json(self) -> dict:
-        return {
+        out: dict = {
             "version": LOCK_VERSION,
             "distro": self.distro,
             "generated_at": self.generated_at or now_iso(),
             "bundles": {k: v.to_json() for k, v in self.bundles.items()},
             "skills": {k: v.to_json() for k, v in self.skills.items()},
         }
+        if self.distro_source is not None:
+            out["distro_source"] = self.distro_source
+        return out
 
     @classmethod
     def from_json(cls, data: dict) -> "Lock":
@@ -89,6 +93,7 @@ class Lock:
             bundles={k: LockEntry.from_json(v) for k, v in data.get("bundles", {}).items()},
             skills={k: LockEntry.from_json(v) for k, v in data.get("skills", {}).items()},
             generated_at=data.get("generated_at"),
+            distro_source=data.get("distro_source"),
         )
 
 

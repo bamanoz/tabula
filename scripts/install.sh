@@ -9,7 +9,9 @@ REPO="bamanoz/tabula"
 TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
 BIN_DIR="$TABULA_HOME/bin"
 VENV="$TABULA_HOME/.venv"
-DISTRO="${TABULA_DISTRO:-assistant}"
+DISTRO="${TABULA_DISTRO:-familiar}"
+DISTRIB_REPO="${TABULA_DISTRIB_REPO:-https://github.com/bamanoz/tabula-distrib.git}"
+DISTRIB_REF="${TABULA_DISTRIB_REF:-main}"
 
 # Auth header for private repos (optional)
 AUTH_HEADER=()
@@ -311,13 +313,14 @@ for a in data.get('assets', []):
     "$VENV/bin/pip" install -q -e "$TABULA_HOME/tools/tabula-distro"
   fi
 
-  if [ -x "$VENV/bin/tabula-distro" ]; then
-    "$VENV/bin/tabula-distro" --home "$TABULA_HOME" install "$TABULA_HOME/distrib/$DISTRO"
-  else
-    "$VENV/bin/python3" "$BIN_DIR/install-distro.py" --home "$TABULA_HOME" "$TABULA_HOME/distrib/$DISTRO"
-  fi
+  # Install distro from external tabula-distrib repo (git+ source via tabula-distro).
+  local distro_source="git+${DISTRIB_REPO}@${DISTRIB_REF}#path=${DISTRO}"
+  info "Installing distro $DISTRO from $DISTRIB_REPO@$DISTRIB_REF"
+  "$VENV/bin/tabula-distro" --home "$TABULA_HOME" install "$distro_source"
 
-  POST_INSTALL="$TABULA_HOME/distrib/$DISTRO/install.sh"
+  # Optional distro-specific post-install hook is now expected to live in the
+  # installed generation; if present, run it.
+  POST_INSTALL="$TABULA_HOME/distrib/$DISTRO/current/install.sh"
   if [ -f "$POST_INSTALL" ]; then
     info "Running post-install hook: $DISTRO"
     TABULA_HOME="$TABULA_HOME" bash "$POST_INSTALL"

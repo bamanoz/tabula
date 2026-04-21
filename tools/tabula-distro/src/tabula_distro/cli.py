@@ -18,13 +18,20 @@ def _default_home() -> Path:
     return Path(os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula")))
 
 
-def _source_arg(value: str) -> Path:
+def _source_arg(value: str) -> str:
+    """Accept a local directory path or a git+... URI.
+
+    Validation for local paths happens early to give a better error; git sources
+    are passed through and resolved by the installer.
+    """
+    if value.startswith("git+") or value.startswith("local:"):
+        return value
     p = Path(value).expanduser()
     if not p.exists():
         raise argparse.ArgumentTypeError(f"distro source not found: {value}")
     if not p.is_dir():
         raise argparse.ArgumentTypeError(f"distro source is not a directory: {value}")
-    return p.resolve()
+    return str(p.resolve())
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -186,14 +193,17 @@ def _active_name(home: Path) -> str:
     return Path(target).name
 
 
-def _active_source(home: Path, distro_name: str) -> Path | None:
-    """Try to locate the original source for a re-install.
+def _active_source(home: Path, distro_name: str) -> str | None:
+    """Return the original source URI that was used to install ``distro_name``.
 
-    Strategy: use the most recent generation's embedded source dir if present.
-    For now, we rely on the user passing the source again on first install —
-    this function returns None to force them to.
+    Reads it back from the lockfile written by a previous ``install``. Returns
+    ``None`` if no lockfile exists yet.
     """
-    return None
+    lock_path = gens.distro_root(home, distro_name) / "distro.lock.json"
+    lock = lockmod.load(lock_path)
+    if lock is None:
+        return None
+    return lock.distro_source
 
 
 def _print_summary(home: Path, distro_name: str, gen, lock: lockmod.Lock) -> None:

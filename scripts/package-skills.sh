@@ -1,28 +1,14 @@
 #!/bin/bash
-# Package distros, shared libs, config, and launch scripts into a tarball.
-# Called by GoReleaser before hook: bash scripts/package-skills.sh <version>
+# Package the Tabula kernel runtime payload (no distros, no bundles).
+# Distros come from https://github.com/bamanoz/tabula-distrib and are pulled in
+# at install time by ``tabula-distro``. Called by GoReleaser before hook:
+#   bash scripts/package-skills.sh <version>
 set -euo pipefail
 
 VERSION="${1:?usage: package-skills.sh <version>}"
 mkdir -p extra
 
 tar -czf "extra/tabula-skills-${VERSION}.tar.gz" \
-  --exclude='distrib/*/__pycache__' \
-  --exclude='distrib/*/*.pyc' \
-  --exclude='distrib/*/*/__pycache__' \
-  --exclude='distrib/*/*/*.pyc' \
-  --exclude='distrib/*/*/*/__pycache__' \
-  --exclude='distrib/*/*/*/*.pyc' \
-  --exclude='distrib/*/*/*/*/__pycache__' \
-  --exclude='distrib/*/*/*/*/*.pyc' \
-  --exclude='distrib/familiar/skills/*/__pycache__' \
-  --exclude='distrib/familiar/skills/*/.pytest_cache' \
-  --exclude='distrib/familiar/skills/*/.pytest_cache/**' \
-  --exclude='distrib/familiar/skills/__pycache__' \
-  --exclude='distrib/familiar/skills/*/*.pyc' \
-  --exclude='distrib/familiar/templates/__pycache__' \
-  --exclude='distrib/familiar/__pycache__' \
-  --exclude='distrib/familiar/boot.pyc' \
   --exclude='skills/lib/__pycache__' \
   --exclude='skills/lib/.pytest_cache' \
   --exclude='skills/lib/.pytest_cache/**' \
@@ -33,7 +19,6 @@ tar -czf "extra/tabula-skills-${VERSION}.tar.gz" \
   --exclude='tools/tabula-distro/**/*.pyc' \
   --exclude='tools/tabula-distro/tests' \
   --exclude='tools/tabula-distro/.pytest_cache' \
-  distrib/ \
   skills/lib/ \
   config/global.toml \
   examples/boot-cicd.py \

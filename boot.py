@@ -1,1 +1,0 @@
-distrib/main/boot.py
