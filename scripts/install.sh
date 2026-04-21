@@ -307,8 +307,15 @@ for a in data.get('assets', []):
   fi
 
   install_python_deps
+  if [ -d "$TABULA_HOME/tools/tabula-distro" ]; then
+    "$VENV/bin/pip" install -q -e "$TABULA_HOME/tools/tabula-distro"
+  fi
 
-  "$VENV/bin/python3" "$BIN_DIR/install-distro.py" --home "$TABULA_HOME" "$TABULA_HOME/distrib/$DISTRO"
+  if [ -x "$VENV/bin/tabula-distro" ]; then
+    "$VENV/bin/tabula-distro" --home "$TABULA_HOME" install "$TABULA_HOME/distrib/$DISTRO"
+  else
+    "$VENV/bin/python3" "$BIN_DIR/install-distro.py" --home "$TABULA_HOME" "$TABULA_HOME/distrib/$DISTRO"
+  fi
 
   POST_INSTALL="$TABULA_HOME/distrib/$DISTRO/install.sh"
   if [ -f "$POST_INSTALL" ]; then

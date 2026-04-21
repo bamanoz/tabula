@@ -371,7 +371,7 @@ There are two main installation paths.
 
 - download the Go binary from GitHub Releases
 - download the runtime payload tarball
-- install `skills/lib`, distros, bundles, launchers, examples, service files
+- install `skills/lib`, distros, launchers, examples, service files
 - create `~/.tabula/.venv`
 - install Python runtime dependencies
 - activate the default distro (`assistant` unless overridden)
@@ -400,7 +400,7 @@ The source tree:
 
 - keeps distros under `distrib/`
 - keeps shared runtime code under `skills/lib/`
-- keeps optional reusable skill collections under `bundles/`
+- supports optional reusable skill collections as external bundles
 
 ### Installed active layout
 
@@ -420,7 +420,7 @@ This keeps the execution boundary explicit and language-neutral.
 
 ## Bundles
 
-Bundles are optional reusable collections of skills under `bundles/<name>/`.
+Bundles are optional reusable collections of skills, typically kept in their own repository and pulled into a distro at install time.
 
 The familiar distro already uses this mechanism for memory:
 

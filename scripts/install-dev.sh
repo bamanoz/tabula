@@ -50,8 +50,7 @@ rm -rf \
   "$TABULA_HOME/templates" \
   "$TABULA_HOME/skills" \
   "$TABULA_HOME/testing" \
-  "$TABULA_HOME/distrib" \
-  "$TABULA_HOME/bundles"
+  "$TABULA_HOME/distrib"
 
 cp "$REPO_ROOT/examples/boot-cicd.py" "$TABULA_HOME/"
 
@@ -81,6 +80,7 @@ if [ ! -d "$VENV" ]; then
 fi
 "$VENV/bin/pip" install -q --upgrade pip
 "$VENV/bin/pip" install -q -r "$SCRIPT_DIR/requirements-dev.txt"
+"$VENV/bin/pip" install -q -e "$REPO_ROOT/tools/tabula-distro"
 echo "    Python dependencies installed"
 
 # Go binary
@@ -99,7 +99,7 @@ cp "$REPO_ROOT/scripts/install-distro.py" "$BIN_DIR/install-distro.py"
 
 # Install + activate the chosen distro
 echo "==> Installing distro: $DISTRO"
-"$VENV/bin/python3" "$BIN_DIR/install-distro.py" --home "$TABULA_HOME" "$DISTRO_SRC"
+"$VENV/bin/tabula-distro" --home "$TABULA_HOME" install "$DISTRO_SRC"
 
 # Optional distro-specific post-install hook (e.g. guardian builds a sandbox image).
 POST_INSTALL="$DISTRO_SRC/install.sh"

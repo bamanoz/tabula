@@ -1,0 +1,174 @@
+# Distro configuration
+
+A Tabula distribution is composed from a declarative config. This document
+describes the schema, resolution rules, and on-disk layout managed by
+`tabula-distro`.
+
+Related docs: [tools/tabula-distro/README.md](../tools/tabula-distro/README.md).
+
+## `distro.toml`
+
+Lives at the root of a distro source tree (e.g. `distrib/ouroboros/distro.toml`).
+The file is optional — absent means "no external sources; use what's in the
+tree as-is".
+
+```toml
+[distro]
+name = "ouroboros"
+# kernel = ">=0.3"   # reserved, not enforced yet
+
+[[bundles]]
+name   = "memory"
+source = "git+https://github.com/bamanoz/tabula-bundles.git@main#path=memory"
+# skills = ["memory-save", "memory-search"]   # optional allowlist
+# override = false                             # must be true to replace existing
+
+[[bundles]]
+name   = "caveman"
+source = "git+https://github.com/bamanoz/tabula-bundles.git@main#path=caveman"
+
+[[skills]]
+name   = "weather"
+source = "git+https://github.com/foo/weather-skill.git@main#path=skill"
+```
+
+### Fields
+
+- `[distro].name` — installed distro name. Defaults to the directory name.
+- `[[bundles]]` / `[[skills]]` — ordered arrays of external sources.
+  - `name` — required. Target path under `skills/`.
+  - `source` — required. See URI grammar below.
+  - `skills` — bundles only. Allowlist of skill subdirectories to include.
+  - `override` — required to replace a pre-existing target with the same name.
+
+### Source URI grammar
+
+```
+local:<path>
+git+<url>@<ref>[#path=<subdir>]
+```
+
+- `local:` paths are resolved relative to the containing `distro.toml`, or may
+  be absolute. Always materialized as a **copy** (not a symlink) in the
+  installed generation, so that generations stay immutable snapshots.
+- `git+` requires an explicit `@ref` (tag, branch, or full/short sha).
+  A ref that looks like a hex sha is resolved directly; otherwise it is
+  fetched and rev-parsed.
+- `#path=<subdir>` narrows to a subdirectory of the repo — useful for
+  mono-repos that expose several skills/bundles.
+
+### Name resolution and conflicts
+
+Resolution order within a distro (first writer wins):
+
+1. In-tree `skills/<name>/` directories.
+2. `[[skills]]` entries, in declaration order.
+3. `[[bundles]]`, in declaration order — each provides its own skill subdirs
+   plus any `_*` support directories (bundle-level shared code).
+
+If a later entry collides with an earlier one, installation fails unless the
+later entry is marked `override = true`. Silent overwrites are refused on
+purpose.
+
+### Overrides for development
+
+A sibling `distro.override.toml` (conventionally gitignored) is merged on top
+of `distro.toml`:
+
+- `[distro]` fields are shallow-merged.
+- `[[bundles]]` / `[[skills]]` entries with the same `name` replace the base
+  entry; new entries are appended.
+
+Typical use: flip a `git+` source temporarily to a `local:` checkout.
+
+## Lockfile
+
+After every install, `distro.lock.json` is written to the installed distro
+root (`$TABULA_HOME/distrib/<name>/distro.lock.json`). Example:
+
+```json
+{
+  "version": 1,
+  "distro": "ouroboros",
+  "generated_at": "2026-04-21T14:30:00Z",
+  "bundles": {
+    "memory": {
+      "source":       "git+https://.../@main",
+      "resolved_sha": "abc123…",
+      "resolved_ref": "main",
+      "fetched_at":   "2026-04-21T14:30:00Z"
+    }
+  },
+  "skills": {
+    "weather": {
+      "source":       "git+…@main",
+      "resolved_sha": "def456…",
+      "resolved_ref": "main",
+      "subpath":      "skill"
+    }
+  }
+}
+```
+
+Semantics:
+
+- `distro.toml` expresses **intent** (`@main`, `@v0.2.0`).
+- `distro.lock.json` expresses **reality** (pinned sha).
+- Plain `tabula-distro install` prefers pinned shas from the lock, so
+  repeated installs are reproducible.
+- `tabula-distro install --update [--update-only NAME …]` ignores pinned
+  shas for the selected entries, re-resolves them, and writes a new lock.
+- `tabula-distro install --frozen` forbids any network access: the lock
+  must fully describe the distro, otherwise the install fails.
+
+Local sources (`local:…`) are not hashable by design; their lock entry only
+records the resolved absolute path.
+
+## Generations and atomic switch
+
+Each install produces a new generation under the distro directory:
+
+```
+$TABULA_HOME/distrib/ouroboros/
+  generations/
+    0001-2026-04-21T10-00-00Z/   # full staged tree
+    0002-2026-04-21T14-30-00Z/
+  current  -> generations/0002-...
+  boot.py  -> current/boot.py
+  skills   -> current/skills
+  templates-> current/templates
+  distro.lock.json
+```
+
+- A staging directory (`<name>.staging`) is built first; on success it is
+  renamed into place, then the `current` symlink is atomically swapped.
+- `tabula-distro rollback [name] [--to N]` flips `current` to a previous
+  generation without touching the filesystem otherwise.
+- Old generations are pruned after install (default: keep 5 + the current).
+
+Existing installs without a `generations/` layout are auto-migrated on first
+run: the existing tree is moved into `generations/0001-legacy/`.
+
+## Git source cache
+
+Git sources are cached under `$TABULA_HOME/cache/git/<url-sha1>/`:
+
+- `repo.git/` — a bare clone, fetched on demand.
+- `worktrees/<commit-sha>/` — one worktree per pinned commit, shared across
+  distros and generations.
+
+`tabula-distro gc` removes worktrees not referenced by any installed
+distro's lockfile.
+
+## CLI summary
+
+```
+tabula-distro install <source> [--frozen] [--update] [--update-only NAME]
+tabula-distro rollback [<name>] [--to N]
+tabula-distro list
+tabula-distro lock [<name>]
+tabula-distro gc
+```
+
+`<source>` is the path to a distro source directory (the one containing
+`boot.py` and optionally `distro.toml`).

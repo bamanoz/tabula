@@ -29,8 +29,8 @@ if ($task) {
 if (Test-Path $TabulaHome) {
     Info "Removing $TabulaHome..."
 
-    # Always remove: bin, distrib, skills, testing, bundles, service, venv, logs, boot scripts
-    foreach ($item in @("bin", "distrib", "skills", "testing", "bundles", "service", ".venv", "logs", "boot-cicd.py", "tabula.yaml")) {
+    # Always remove: bin, distrib, skills, testing, service, venv, logs, boot scripts
+    foreach ($item in @("bin", "distrib", "skills", "testing", "service", ".venv", "logs", "boot-cicd.py", "tabula.yaml")) {
         $path = Join-Path $TabulaHome $item
         if (Test-Path $path) { Remove-Item -Recurse -Force $path }
     }

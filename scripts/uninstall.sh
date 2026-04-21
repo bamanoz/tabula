@@ -42,7 +42,7 @@ esac
 if [ -d "$TABULA_HOME" ]; then
   info "Removing $TABULA_HOME..."
 
-  # Always remove: runtime layout, bin, distrib, skills, bundles, testing,
+  # Always remove: runtime layout, bin, distrib, skills, testing,
   # service, venv, logs, runtime state/data caches, top-level boot wrappers.
   rm -rf \
     "$TABULA_HOME/bin" \
@@ -50,7 +50,6 @@ if [ -d "$TABULA_HOME" ]; then
     "$TABULA_HOME/skills" \
     "$TABULA_HOME/templates" \
     "$TABULA_HOME/testing" \
-    "$TABULA_HOME/bundles" \
     "$TABULA_HOME/service" \
     "$TABULA_HOME/state" \
     "$TABULA_HOME/run" \

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tabula-distro"
+version = "0.1.0"
+description = "Installer and composer for Tabula distributions"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Anomaly" }]
+dependencies = []
+
+[project.scripts]
+tabula-distro = "tabula_distro.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+tabula_distro = ["py.typed"]

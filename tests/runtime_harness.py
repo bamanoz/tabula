@@ -30,7 +30,6 @@ def populate_installed_home(home_path: Path) -> None:
     shutil.copytree(ROOT / "distrib", home_path / "distrib", symlinks=True)
     shutil.copytree(ROOT / "skills", home_path / "skills", symlinks=True)
     shutil.copytree(ROOT / "testing", home_path / "testing", symlinks=True)
-    shutil.copytree(ROOT / "bundles", home_path / "bundles", symlinks=True)
     shutil.copytree(ROOT / ".venv", home_path / ".venv", dirs_exist_ok=True)
     reset_and_materialize_flat_surface(home_path, source_root=home_path)
 

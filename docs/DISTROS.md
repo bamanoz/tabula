@@ -171,8 +171,8 @@ Smallest extension unit.
 
 Reusable collection of optional skills.
 
-- lives under `bundles/<name>/`
-- linked into the flat runtime surface when installed
+- usually lives in a separate repository
+- materialized into the flat runtime surface when installed
 - examples: the `memory` bundle
 
 Bundles are capability packs.
@@ -200,7 +200,7 @@ What this does:
 1. validate that the source matches the current installer expectation:
    `boot.py`, `templates/`, and `skills/`
 2. copy it into `~/.tabula/distrib/<name>`
-3. copy any required bundles referenced by symlinked skills
+3. resolve any bundles or individual skills declared in `distro.toml`
 4. update `~/.tabula/distrib/active`
 5. rebuild `boot.py`, `templates/`, and `skills/` symlink fan-out
 

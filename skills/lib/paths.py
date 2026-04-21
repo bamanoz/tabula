@@ -51,10 +51,6 @@ def distrib_assistant_skills_dir() -> Path:
     return distrib_assistant_dir() / "skills"
 
 
-def bundles_dir() -> Path:
-    return tabula_home() / "bundles"
-
-
 def testing_skills_dir() -> Path:
     return tabula_home() / "testing" / "skills"
 

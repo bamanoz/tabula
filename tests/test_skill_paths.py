@@ -160,7 +160,7 @@ class TestSkillPathLayout(unittest.TestCase):
                 os.environ.update(old)
 
     def test_memory_skill_uses_palace_under_tabula_home(self):
-        lib_path = ROOT / "bundles" / "memory" / "_lib.py"
+        lib_path = ROOT / "../tabula-bundles" / "memory" / "_memory" / "lib.py"
         with tempfile.TemporaryDirectory() as tmp:
             old = dict(os.environ)
             try:
