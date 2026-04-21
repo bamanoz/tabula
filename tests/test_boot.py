@@ -410,18 +410,18 @@ class TestLoadPermissions(BootTestBase):
 class TestFilterDeniedTools(unittest.TestCase):
     def test_removes_unconditionally_denied(self):
         tools = [
-            {"name": "write_file", "description": "Write"},
-            {"name": "read_file", "description": "Read"},
+            {"name": "write", "description": "Write"},
+            {"name": "read", "description": "Read"},
             {"name": "shell_exec", "description": "Exec"},
         ]
         perms = [
-            {"tool": "write_file", "effect": "deny"},
+            {"tool": "write", "effect": "deny"},
             {"tool": "*", "effect": "allow"},
         ]
         filtered = boot.filter_denied_tools(tools, perms)
         names = [t["name"] for t in filtered]
-        self.assertNotIn("write_file", names)
-        self.assertIn("read_file", names)
+        self.assertNotIn("write", names)
+        self.assertIn("read", names)
         self.assertIn("shell_exec", names)
 
     def test_keeps_conditional_deny(self):
@@ -436,14 +436,14 @@ class TestFilterDeniedTools(unittest.TestCase):
 
     def test_glob_deny(self):
         tools = [
-            {"name": "write_file", "description": "Write"},
+            {"name": "write", "description": "Write"},
             {"name": "write_config", "description": "Config"},
-            {"name": "read_file", "description": "Read"},
+            {"name": "read", "description": "Read"},
         ]
-        perms = [{"tool": "write_*", "effect": "deny"}]
+        perms = [{"tool": "write*", "effect": "deny"}]
         filtered = boot.filter_denied_tools(tools, perms)
         names = [t["name"] for t in filtered]
-        self.assertEqual(names, ["read_file"])
+        self.assertEqual(names, ["read"])
 
     def test_empty_permissions(self):
         tools = [{"name": "shell_exec", "description": "Exec"}]

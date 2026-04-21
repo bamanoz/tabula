@@ -381,7 +381,7 @@ Optional: `--timeout N` (0=oneshot, default). Results delivered as messages to p
 | Skill | Description |
 |-------|-------------|
 | `cron` | Scheduled tasks. Uses OS crontab or built-in daemon. |
-| `files` | Read, write, and edit files. Tools: `read_file`, `write_file`, `str_replace`. |
+| `files` | Read, search, and edit files. Tools: `read`, `list_dir`, `glob`, `grep`, `write`, `edit`, `multiedit`, `apply_patch`. |
 | `memory` | Persistent memory via MemPalace (local ChromaDB + SQLite KG). Wing/room/drawer model. No API keys. |
 | `pair` | Universal pairing for gateways (Telegram, etc.). |
 | `sessions` | Cross-session messaging. Messages arrive as `<cross_session>` XML tags. |
@@ -435,7 +435,7 @@ Tool permission rules defined in `~/.tabula/config/skills/hook-permissions/permi
   "rules": [
     {"tool": "shell_exec", "command": "rm -rf *", "effect": "deny"},
     {"tool": "shell_exec", "command": "git push *--force*", "effect": "deny"},
-    {"tool": "write_file", "effect": "deny"},
+    {"tool": "write", "effect": "deny"},
     {"tool": "*", "effect": "allow"}
   ]
 }
@@ -443,7 +443,7 @@ Tool permission rules defined in `~/.tabula/config/skills/hook-permissions/permi
 
 ### Rule fields
 
-- `tool` — tool name or glob pattern (`shell_exec`, `write_*`, `*`)
+- `tool` — tool name or glob pattern (`shell_exec`, `write*`, `*`)
 - `command` — glob pattern for `shell_exec`/`process_spawn` command field (optional)
 - `effect` — `allow` or `deny`
 

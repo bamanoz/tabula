@@ -6,7 +6,7 @@ Feature ideas based on competitive analysis of Claude Code, OpenClaw, OpenCode, 
 
 ### Permission system
 Rules allow/deny/ask for tools in config (AGENTS.md or tabula.yaml).
-Example: `allow: read_file *`, `deny: EXEC rm *`, `ask: EXEC git push *`.
+Example: `allow: read *`, `deny: EXEC rm *`, `ask: EXEC git push *`.
 Infrastructure already exists — before_tool_call hook. Need config format and enforcement.
 
 ### Compaction hooks
@@ -14,7 +14,7 @@ Add `before_compaction` hook event so memory skill can flush context before summ
 Add configurable max token threshold for auto-compaction trigger.
 
 ### Plan mode
-`/plan` slash command. Temporarily deny write_file/str_replace/EXEC(write), allow only read tools.
+`/plan` slash command. Temporarily deny write/edit/multiedit/apply_patch/EXEC(write), allow only read tools.
 Agent produces a markdown plan. After user approve — switch back to normal mode.
 
 ### Session resume/fork

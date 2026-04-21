@@ -20,7 +20,7 @@ Create `~/.tabula/config/skills/hook-permissions/permissions.json`:
   "rules": [
     {"tool": "EXEC", "command": "rm -rf *", "effect": "deny"},
     {"tool": "EXEC", "command": "git push *--force*", "effect": "deny"},
-    {"tool": "write_file", "effect": "deny"},
+    {"tool": "write", "effect": "deny"},
     {"tool": "*", "effect": "allow"}
   ]
 }
@@ -28,7 +28,7 @@ Create `~/.tabula/config/skills/hook-permissions/permissions.json`:
 
 ### Rule fields
 
-- `tool` — tool name or glob pattern (`EXEC`, `write_*`, `*`)
+- `tool` — tool name or glob pattern (`EXEC`, `write*`, `*`)
 - `command` — glob pattern for EXEC/SPAWN command field (optional)
 - `effect` — `allow` or `deny`
 

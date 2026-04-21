@@ -81,13 +81,13 @@ def extract_command(payload: dict) -> str:
 
 class TestCheckPermission(unittest.TestCase):
     def test_deny_exact(self):
-        rules = [{"tool": "write_file", "effect": "deny"}]
-        self.assertFalse(check_permission(rules, "write_file"))
+        rules = [{"tool": "write", "effect": "deny"}]
+        self.assertFalse(check_permission(rules, "write"))
 
     def test_deny_glob(self):
-        rules = [{"tool": "write_*", "effect": "deny"}]
-        self.assertFalse(check_permission(rules, "write_file"))
-        self.assertTrue(check_permission(rules, "read_file"))
+        rules = [{"tool": "write*", "effect": "deny"}]
+        self.assertFalse(check_permission(rules, "write"))
+        self.assertTrue(check_permission(rules, "read"))
 
     def test_command_pattern_deny(self):
         rules = [{"tool": "EXEC", "command": "rm -rf *", "effect": "deny"}]
@@ -108,7 +108,7 @@ class TestCheckPermission(unittest.TestCase):
     def test_allow_when_no_deny(self):
         rules = [{"tool": "*", "effect": "allow"}]
         self.assertTrue(check_permission(rules, "EXEC"))
-        self.assertTrue(check_permission(rules, "write_file"))
+        self.assertTrue(check_permission(rules, "write"))
 
     def test_default_allow_no_match(self):
         rules = [{"tool": "other_tool", "effect": "deny"}]
@@ -116,7 +116,7 @@ class TestCheckPermission(unittest.TestCase):
 
     def test_empty_rules(self):
         self.assertTrue(check_permission([], "EXEC"))
-        self.assertTrue(check_permission([], "write_file"))
+        self.assertTrue(check_permission([], "write"))
 
     def test_force_push_deny(self):
         rules = [{"tool": "EXEC", "command": "git push *--force*", "effect": "deny"}]
@@ -149,8 +149,8 @@ class TestCheckPermission(unittest.TestCase):
         self.assertFalse(check_permission(rules, "EXEC", "cat /etc/passwd"))
         self.assertFalse(check_permission(rules, "EXEC", "rm -rf /"))
         # Non-EXEC tools still allowed
-        self.assertTrue(check_permission(rules, "read_file"))
-        self.assertTrue(check_permission(rules, "write_file"))
+        self.assertTrue(check_permission(rules, "read"))
+        self.assertTrue(check_permission(rules, "write"))
 
     def test_command_deny_overrides_command_allow(self):
         """Among command-level rules, deny wins."""
@@ -175,10 +175,10 @@ class TestCheckPermission(unittest.TestCase):
         """Specific tool deny beats wildcard allow at same specificity."""
         rules = [
             {"tool": "*", "effect": "allow"},
-            {"tool": "read_file", "effect": "deny"},
+            {"tool": "read", "effect": "deny"},
         ]
-        self.assertFalse(check_permission(rules, "read_file"))
-        self.assertTrue(check_permission(rules, "write_file"))
+        self.assertFalse(check_permission(rules, "read"))
+        self.assertTrue(check_permission(rules, "write"))
 
 
 class TestExtractCommand(unittest.TestCase):
@@ -191,7 +191,7 @@ class TestExtractCommand(unittest.TestCase):
         self.assertEqual(extract_command(payload), "python3 run.py")
 
     def test_non_exec_tool(self):
-        payload = {"tool": "write_file", "input": {"path": "/tmp/x"}}
+        payload = {"tool": "write", "input": {"path": "/tmp/x"}}
         self.assertEqual(extract_command(payload), "")
 
     def test_string_input(self):

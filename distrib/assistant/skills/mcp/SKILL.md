@@ -123,5 +123,5 @@ python3 skills/mcp/run.py list filesystem
 ### Call a tool
 
 ```bash
-python3 skills/mcp/run.py call filesystem read_file '{"path": "/etc/hosts"}'
+python3 skills/mcp/run.py call filesystem read '{"path": "/etc/hosts"}'
 ```

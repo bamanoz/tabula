@@ -193,7 +193,7 @@ Default general-purpose agent.
 
 - providers: Anthropic and OpenAI (official SDKs)
 - gateways: CLI, OpenAI-compatible HTTP API, Telegram
-- tools: `files` (read / write / str_replace), `sessions`, `pair`, `mcp`,
+- tools: `files` (`read`, `list_dir`, `glob`, `grep`, `write`, `edit`, `multiedit`, `apply_patch`), `sessions`, `pair`, `mcp`,
   `timer`, `cron`, `clawhub`
 - hooks: `hook-logger`, `hook-permissions`
 - observability: `observer`

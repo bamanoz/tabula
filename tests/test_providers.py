@@ -82,7 +82,7 @@ class TestKernelToOpenAITools(unittest.TestCase):
     def test_keeps_strict_for_fully_required_schema(self):
         tools = kernel_to_openai_tools([
             {
-                "name": "write_file",
+                "name": "write",
                 "description": "Write file",
                 "params": {
                     "path": {"type": "string", "description": "Path"},
@@ -97,7 +97,7 @@ class TestKernelToOpenAITools(unittest.TestCase):
     def test_omits_strict_for_optional_params_schema(self):
         tools = kernel_to_openai_tools([
             {
-                "name": "read_file",
+                "name": "read",
                 "description": "Read file",
                 "params": {
                     "path": {"type": "string", "description": "Path"},
@@ -114,7 +114,7 @@ class TestKernelToOpenAIChatTools(unittest.TestCase):
     def test_wraps_tool_schema_under_function(self):
         tools = kernel_to_openai_chat_tools([
             {
-                "name": "write_file",
+                "name": "write",
                 "description": "Write file",
                 "params": {
                     "path": {"type": "string", "description": "Path"},
@@ -125,7 +125,7 @@ class TestKernelToOpenAIChatTools(unittest.TestCase):
         ])
 
         self.assertEqual(tools[0]["type"], "function")
-        self.assertEqual(tools[0]["function"]["name"], "write_file")
+        self.assertEqual(tools[0]["function"]["name"], "write")
         self.assertTrue(tools[0]["function"]["strict"])
 
 
@@ -244,7 +244,7 @@ class TestOpenAIChatCompletionsSession(unittest.TestCase):
                                 SimpleNamespace(
                                     index=0,
                                     id="call_1",
-                                    function=SimpleNamespace(name="write_file", arguments='{"path":"IDENTITY.md"'),
+                                    function=SimpleNamespace(name="write", arguments='{"path":"IDENTITY.md"'),
                                 )
                             ],
                         )
@@ -285,7 +285,7 @@ class TestOpenAIChatCompletionsSession(unittest.TestCase):
 
         self.assertEqual(len(outcome.tool_calls), 1)
         self.assertEqual(outcome.tool_calls[0].id, "call_1")
-        self.assertEqual(outcome.tool_calls[0].name, "write_file")
+        self.assertEqual(outcome.tool_calls[0].name, "write")
         self.assertEqual(outcome.tool_calls[0].input, {"path": "IDENTITY.md", "content": "hi"})
         self.assertEqual(session.messages[-1]["role"], "assistant")
         self.assertEqual(session.messages[-1]["tool_calls"][0]["id"], "call_1")
