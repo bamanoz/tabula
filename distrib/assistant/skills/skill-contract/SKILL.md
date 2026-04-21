@@ -266,27 +266,8 @@ The subagent runtime reads `~/.tabula/state/subagent/prompt.txt` written by boot
 - Tool names must not collide with kernel tools (`shell_exec`, `process_spawn`, `process_kill`, `process_list`).
   Duplicate tool names across skills trigger a warning; the last one wins.
 
-## Bundles
-
-Bundles are optional thematic skill packages stored in `bundles/<name>/` at the
-`TABULA_HOME` root. Each bundle contains sub-skill directories (same format as
-regular skills). The installed runtime exposes selected bundle skills through the
-flat `skills/` surface, so `boot.py` sees one skill tree:
-
-```
-bundles/example/               # Bundle directory
-  review/SKILL.md              # Review helper skill
-  summarize/SKILL.md           # Summary helper skill
-
-skills/                        # Runtime surface after install
-  review -> ../bundles/example/review
-  summarize -> ../bundles/example/summarize
-  weather/                     # Regular skill (not a symlink)
-```
-
-Install bundles via `BUNDLES` env var: `BUNDLES=<name>`, `BUNDLES=all`,
-or comma-separated: `BUNDLES=name1,name2`.
-
-Repository note: the source tree may organize built-in skills differently inside
-the repo, but the agent-facing runtime contract stays flat (`boot.py`,
-`templates/`, `skills/`).
+Repository note: the source tree may organize reusable skill sets differently
+inside the repo, but the installed agent-facing runtime contract stays flat:
+`boot.py`, `templates/`, and `skills/`. Skills available to the agent should be
+materialized as ordinary directories under `skills/`, not exposed as an extra
+bundle layer.

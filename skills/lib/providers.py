@@ -136,6 +136,57 @@ def _parse_json_object(raw: str | None) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _provider_schema(node: dict) -> dict:
+    schema = {}
+    for key in ("type", "description", "enum", "format", "default"):
+        if key in node:
+            schema[key] = node[key]
+
+    properties = node.get("properties")
+    if isinstance(properties, dict):
+        schema["properties"] = {
+            name: _provider_schema(value)
+            for name, value in properties.items()
+            if isinstance(value, dict)
+        }
+
+    items = node.get("items")
+    if isinstance(items, dict):
+        schema["items"] = _provider_schema(items)
+
+    required = node.get("required")
+    if isinstance(required, list):
+        schema["required"] = required
+
+    return schema
+
+
+def _schema_supports_strict(node: dict) -> bool:
+    node_type = node.get("type")
+    if node_type == "object":
+        properties = node.get("properties")
+        if not isinstance(properties, dict):
+            return True
+        return all(_schema_supports_strict(child) for child in properties.values() if isinstance(child, dict))
+
+    if node_type == "array":
+        items = node.get("items")
+        if not isinstance(items, dict):
+            return True
+        # Some OpenAI-compatible endpoints reject strict schemas when array items are objects.
+        if items.get("type") == "object":
+            return False
+        return _schema_supports_strict(items)
+
+    return True
+
+
+def _tool_supports_strict(properties: dict, required: list) -> bool:
+    if set(required) != set(properties.keys()):
+        return False
+    return all(_schema_supports_strict(schema) for schema in properties.values() if isinstance(schema, dict))
+
+
 def _anthropic_client(*, api_key: str, base_url: str):
     anthropic = _import_anthropic()
     return anthropic.Anthropic(
@@ -245,8 +296,9 @@ def kernel_to_anthropic_tools(kernel_tools: list[dict]) -> list[dict]:
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        key: {"type": value["type"], "description": value["description"]}
+                        key: _provider_schema(value)
                         for key, value in tool.get("params", {}).items()
+                        if isinstance(value, dict)
                     },
                     "required": tool.get("required", []),
                 },
@@ -259,8 +311,9 @@ def kernel_to_openai_tools(kernel_tools: list[dict]) -> list[dict]:
     result = []
     for tool in kernel_tools:
         properties = {
-            key: {"type": value["type"], "description": value["description"]}
+            key: _provider_schema(value)
             for key, value in tool.get("params", {}).items()
+            if isinstance(value, dict)
         }
         required = tool.get("required", [])
         result.append(
@@ -268,7 +321,7 @@ def kernel_to_openai_tools(kernel_tools: list[dict]) -> list[dict]:
                 "type": "function",
                 "name": tool["name"],
                 "description": tool["description"],
-                **({"strict": True} if set(required) == set(properties.keys()) else {}),
+                **({"strict": True} if _tool_supports_strict(properties, required) else {}),
                 "parameters": {
                     "type": "object",
                     "properties": properties,
@@ -284,8 +337,9 @@ def kernel_to_openai_chat_tools(kernel_tools: list[dict]) -> list[dict]:
     result = []
     for tool in kernel_tools:
         properties = {
-            key: {"type": value["type"], "description": value["description"]}
+            key: _provider_schema(value)
             for key, value in tool.get("params", {}).items()
+            if isinstance(value, dict)
         }
         required = tool.get("required", [])
         function = {
@@ -298,7 +352,7 @@ def kernel_to_openai_chat_tools(kernel_tools: list[dict]) -> list[dict]:
                 "additionalProperties": False,
             },
         }
-        if set(required) == set(properties.keys()):
+        if _tool_supports_strict(properties, required):
             function["strict"] = True
         result.append({"type": "function", "function": function})
     return result

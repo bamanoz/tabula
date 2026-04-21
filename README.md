@@ -168,7 +168,6 @@ Pieces:
 ├── skills/
 │   ├── lib/
 │   └── ...         -> distrib/active/skills/*
-├── bundles/
 ├── config/global.toml
 ├── secrets.json
 ├── .env
@@ -197,8 +196,7 @@ Default general-purpose agent.
   `timer`, `cron`, `clawhub`
 - hooks: `hook-logger`, `hook-permissions`
 - observability: `observer`
-- memory: `memory-save`, `memory-search`, `memory-admin` (bundle; backed by
-  MemPalace)
+- memory: `memory-save`, `memory-search`, `memory-admin` (backed by MemPalace)
 - subagents: provider-matched, real processes
 
 ### `guardian`

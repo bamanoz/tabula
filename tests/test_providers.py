@@ -109,6 +109,38 @@ class TestKernelToOpenAITools(unittest.TestCase):
 
         self.assertNotIn("strict", tools[0])
 
+    def test_preserves_nested_array_item_schema(self):
+        tools = kernel_to_openai_tools([
+            {
+                "name": "multiedit",
+                "description": "Apply edits",
+                "params": {
+                    "path": {"type": "string", "description": "Path"},
+                    "edits": {
+                        "type": "array",
+                        "description": "Edit operations",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old_string": {"type": "string", "description": "Old"},
+                                "new_string": {"type": "string", "description": "New"},
+                                "replace_all": {"type": "boolean", "description": "Replace all"},
+                            },
+                            "required": ["old_string", "new_string"],
+                        },
+                    },
+                },
+                "required": ["path", "edits"],
+            }
+        ])
+
+        edits = tools[0]["parameters"]["properties"]["edits"]
+        self.assertEqual(edits["type"], "array")
+        self.assertEqual(edits["items"]["type"], "object")
+        self.assertEqual(set(edits["items"]["properties"].keys()), {"old_string", "new_string", "replace_all"})
+        self.assertEqual(edits["items"]["required"], ["old_string", "new_string"])
+        self.assertNotIn("strict", tools[0])
+
 
 class TestKernelToOpenAIChatTools(unittest.TestCase):
     def test_wraps_tool_schema_under_function(self):
@@ -127,6 +159,37 @@ class TestKernelToOpenAIChatTools(unittest.TestCase):
         self.assertEqual(tools[0]["type"], "function")
         self.assertEqual(tools[0]["function"]["name"], "write")
         self.assertTrue(tools[0]["function"]["strict"])
+
+    def test_preserves_nested_array_item_schema(self):
+        tools = kernel_to_openai_chat_tools([
+            {
+                "name": "multiedit",
+                "description": "Apply edits",
+                "params": {
+                    "path": {"type": "string", "description": "Path"},
+                    "edits": {
+                        "type": "array",
+                        "description": "Edit operations",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old_string": {"type": "string", "description": "Old"},
+                                "new_string": {"type": "string", "description": "New"},
+                            },
+                            "required": ["old_string", "new_string"],
+                        },
+                    },
+                },
+                "required": ["path", "edits"],
+            }
+        ])
+
+        edits = tools[0]["function"]["parameters"]["properties"]["edits"]
+        self.assertEqual(edits["type"], "array")
+        self.assertEqual(edits["items"]["type"], "object")
+        self.assertEqual(set(edits["items"]["properties"].keys()), {"old_string", "new_string"})
+        self.assertEqual(edits["items"]["required"], ["old_string", "new_string"])
+        self.assertNotIn("strict", tools[0]["function"])
 
 
 class TestOpenAIRestoreHistory(unittest.TestCase):

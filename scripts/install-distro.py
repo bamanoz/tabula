@@ -15,6 +15,10 @@ from pathlib import Path
 IGNORE_NAMES = {"__pycache__", ".pytest_cache"}
 
 
+def should_ignore_name(name: str) -> bool:
+    return name in IGNORE_NAMES or name.endswith(".pyc")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Install or switch a Tabula distro")
     parser.add_argument("source", help="Local distro directory or GitHub tree URL")
@@ -86,39 +90,57 @@ def install_distro(home: Path, source_dir: Path, distro_name: str) -> None:
         else:
             target_dir.unlink()
     copytree_filtered(source_dir, target_dir)
-    copy_required_bundles(home, source_dir)
+    materialize_linked_skills(source_dir, target_dir)
     set_active_distro(home, distro_name)
 
 
 def copytree_filtered(src: Path, dst: Path) -> None:
     def _ignore(_dir: str, names: list[str]) -> set[str]:
-        ignored = {name for name in names if name in IGNORE_NAMES or name.endswith(".pyc")}
+        ignored = {name for name in names if should_ignore_name(name)}
         return ignored
 
     shutil.copytree(src, dst, symlinks=True, ignore=_ignore)
 
 
-def copy_required_bundles(home: Path, source_dir: Path) -> None:
-    skills_dir = source_dir / "skills"
-    if not skills_dir.is_dir():
+def bundle_root_for_skill(path: Path) -> Path | None:
+    if "bundles" not in path.parts:
+        return None
+    parts = path.parts
+    idx = parts.index("bundles")
+    if idx + 1 >= len(parts):
+        return None
+    return Path(*parts[: idx + 2])
+
+
+def copy_bundle_support_files(bundle_root: Path, target_skill_dir: Path) -> None:
+    for entry in bundle_root.iterdir():
+        if entry.is_dir():
+            continue
+        if should_ignore_name(entry.name) or entry.name == "README.md":
+            continue
+        shutil.copy2(entry, target_skill_dir / entry.name)
+
+
+def materialize_linked_skills(source_dir: Path, target_dir: Path) -> None:
+    source_skills_dir = source_dir / "skills"
+    target_skills_dir = target_dir / "skills"
+    if not source_skills_dir.is_dir() or not target_skills_dir.is_dir():
         return
-    bundles_home = home / "bundles"
-    for entry in skills_dir.iterdir():
+    for entry in source_skills_dir.iterdir():
         if not entry.is_symlink():
             continue
         resolved = entry.resolve(strict=True)
-        if "bundles" not in resolved.parts:
+        bundle_root = bundle_root_for_skill(resolved)
+        if bundle_root is None:
             continue
-        parts = resolved.parts
-        idx = parts.index("bundles")
-        if idx + 1 >= len(parts):
-            continue
-        bundle_root = Path(*parts[: idx + 2])
-        target = bundles_home / bundle_root.name
-        if target.exists():
-            continue
-        bundles_home.mkdir(parents=True, exist_ok=True)
-        copytree_filtered(bundle_root, target)
+        target = target_skills_dir / entry.name
+        if target.exists() or target.is_symlink():
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+        copytree_filtered(resolved, target)
+        copy_bundle_support_files(bundle_root, target)
 
 
 def set_active_distro(home: Path, distro_name: str) -> None:

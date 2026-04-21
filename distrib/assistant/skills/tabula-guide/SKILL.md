@@ -191,25 +191,12 @@ it always sends the same system prompt to all clients.
 ### Auto-spawn
 
 `build_spawn()` starts: cron daemon (if no OS crontab), MCP pool (if configured),
-sessions daemon, hook skills (including those from bundles via symlinks).
-
-### Bundles
-
-Optional thematic skill packages live in `bundles/<name>/`.
-
-At runtime, boot only scans the flat `skills/` surface. Install/dev flows expose
-selected bundle skills there so the agent sees one composed skill tree.
-
-In the repository, assistant-distro bundle composition is expressed from
-`distrib/assistant/skills/`, while the installed contract remains flat.
-
-Bundles are installed via `BUNDLES` env var at install time
-(`BUNDLES=<name>`, `BUNDLES=all`). By default, no bundles are installed.
+sessions daemon, and hook skills.
 
 ### Skill discovery
 
-`walk_skills()` scans `skills/` recursively with `followlinks=True` (for symlinked
-bundles). Returns `(rel_path, SKILL.md_path)` tuples. Provider filtering via
+`walk_skills()` scans `skills/` recursively and returns `(rel_path, SKILL.md_path)`
+tuples. Provider filtering via
 `include_skill()` excludes non-active `driver-*` and `subagent-*` skills.
 
 ## Kernel

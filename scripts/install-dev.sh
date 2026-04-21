@@ -50,7 +50,8 @@ rm -rf \
   "$TABULA_HOME/templates" \
   "$TABULA_HOME/skills" \
   "$TABULA_HOME/testing" \
-  "$TABULA_HOME/distrib"
+  "$TABULA_HOME/distrib" \
+  "$TABULA_HOME/bundles"
 
 cp "$REPO_ROOT/examples/boot-cicd.py" "$TABULA_HOME/"
 
