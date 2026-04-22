@@ -1,4 +1,11 @@
-# Tabula installer — downloads pre-built binary and skills from GitHub Releases.
+# Tabula installer — downloads pre-built kernel from GitHub Releases.
+#
+# Installs the kernel layer only. After this script finishes, install a
+# distro separately:
+#
+#   tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=familiar'
+#   tabula-distro install C:\path\to\local\distro
+#
 # Usage:
 #   irm https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.ps1 | iex
 #   $env:VERSION = "v1.0.0"; irm ... | iex
@@ -9,9 +16,6 @@ $Repo = "bamanoz/tabula"
 $TabulaHome = if ($env:TABULA_HOME) { $env:TABULA_HOME } else { Join-Path $HOME ".tabula" }
 $BinDir = Join-Path $TabulaHome "bin"
 $Venv = Join-Path $TabulaHome ".venv"
-$Distro = if ($env:TABULA_DISTRO) { $env:TABULA_DISTRO } else { "familiar" }
-$DistribRepo = if ($env:TABULA_DISTRIB_REPO) { $env:TABULA_DISTRIB_REPO } else { "https://github.com/bamanoz/tabula-distrib.git" }
-$DistribRef = if ($env:TABULA_DISTRIB_REF) { $env:TABULA_DISTRIB_REF } else { "main" }
 
 # ── Helpers ──────────────────────────────────────────────────────
 
@@ -204,24 +208,10 @@ try {
         $Pip = Join-Path $Venv "Scripts" "pip.exe"
         & $Pip install -q -e $DistroToolDir
     }
-
-    # Install distro from external tabula-distrib repo (git+ source via tabula-distro).
-    $DistroSource = "git+${DistribRepo}@${DistribRef}#path=${Distro}"
-    Info "Installing distro $Distro from $DistribRepo@$DistribRef"
-    $TabulaDistro = Join-Path $Venv "Scripts" "tabula-distro.exe"
-    & $TabulaDistro --home $TabulaHome install $DistroSource
-
-    # Optional distro-specific post-install hook (PowerShell preferred, falls back to bash).
-    $PostInstallPs1 = Join-Path $TabulaHome "distrib" $Distro "current" "install.ps1"
-    $PostInstallSh  = Join-Path $TabulaHome "distrib" $Distro "current" "install.sh"
-    if (Test-Path $PostInstallPs1) {
-        Info "Running post-install hook: $Distro"
-        $env:TABULA_HOME = $TabulaHome
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $PostInstallPs1
-    } elseif (Test-Path $PostInstallSh) {
-        Info "Running post-install hook: $Distro (bash)"
-        $env:TABULA_HOME = $TabulaHome
-        & bash $PostInstallSh
+    # Expose tabula-distro on PATH alongside the rest of the launchers.
+    $TabulaDistroSrc = Join-Path $Venv "Scripts" "tabula-distro.exe"
+    if (Test-Path $TabulaDistroSrc) {
+        Copy-Item $TabulaDistroSrc -Destination (Join-Path $BinDir "tabula-distro.exe") -Force
     }
 
     # Copy PowerShell launch scripts
@@ -261,13 +251,14 @@ try {
     }
 
     Write-Host ""
-    Write-Host "Tabula $Version installed!" -ForegroundColor Green
+    Write-Host "Tabula $Version kernel installed!" -ForegroundColor Green
     Write-Host ""
     Write-Host "Add your API key to $EnvFile :"
     Write-Host "  echo ANTHROPIC_API_KEY=sk-... >> $EnvFile"
     Write-Host ""
-    Write-Host "Install a different distro later:"
-    Write-Host "  tabula-install-distro <local-path-or-github-tree-url>"
+    Write-Host "Install a distro (required before the kernel can do anything useful):"
+    Write-Host "  tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=familiar'"
+    Write-Host "  tabula-distro install C:\path\to\local\distro"
     Write-Host ""
     Write-Host "Then connect:"
     Write-Host "  tabula-cli"

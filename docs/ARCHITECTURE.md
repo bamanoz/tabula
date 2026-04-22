@@ -394,10 +394,14 @@ There are two main installation paths.
 - download the runtime payload tarball (kernel-side `skills/lib`, launchers,
   examples, service files, the `tabula-distro` source)
 - create `~/.tabula/.venv` and install Python runtime dependencies
-- install `tabula-distro` from the bundled tools/ directory
-- install the requested distro from `tabula-distrib` (default: `familiar`,
-  override with `TABULA_DISTRO`) using a `git+...` source — the installer
-  pulls the bundles declared in `distro.toml` from `tabula-bundles`
+- install `tabula-distro` from the bundled tools/ directory and expose it on
+  `~/.tabula/bin`
+
+After the kernel installer finishes, install a distro yourself:
+
+```bash
+tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=familiar'
+```
 
 ### Source install
 
@@ -407,12 +411,13 @@ There are two main installation paths.
 - install shared `skills/lib` from this repo
 - copy service files
 - create a venv with dev dependencies
-- install `tabula-distro` (editable)
-- install the selected distro from a sibling `tabula-distrib/` checkout
-  (auto-detected, or pass `--distrib-root /path/to/tabula-distrib`)
+- install `tabula-distro` (editable) and expose it on `~/.tabula/bin`
 
-Both paths converge on `tabula-distro install <source>` to materialize the
-active runtime surface from a distro plus its declared bundles.
+Same follow-up: install a distro with `tabula-distro install <path-or-uri>`.
+
+Both paths intentionally stop at the kernel layer. Distro composition is
+always done by `tabula-distro install`, which resolves a distro plus its
+declared bundles into the active runtime surface.
 
 ## Runtime surfaces
 

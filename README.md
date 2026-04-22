@@ -106,8 +106,11 @@ macOS/Linux-first.
 ```bash
 git clone https://github.com/bamanoz/tabula.git
 cd tabula
-bash scripts/install-dev.sh                    # familiar distro
-bash scripts/install-dev.sh --distro guardian  # guardian distro
+bash scripts/install-dev.sh                                        # kernel only
+
+# then install a distro (pick one):
+tabula-distro install ../tabula-distrib/familiar                   # local checkout
+tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=guardian'
 ```
 
 Requires Go 1.26+ and Python 3.11+.

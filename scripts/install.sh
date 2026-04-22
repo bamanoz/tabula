@@ -1,5 +1,12 @@
 #!/bin/bash
-# Tabula installer — downloads pre-built binary and skills from GitHub Releases.
+# Tabula installer — downloads pre-built kernel from GitHub Releases.
+#
+# This installs only the kernel layer (binary, launchers, skills/lib, venv,
+# tabula-distro). After it finishes, install a distro separately:
+#
+#   tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=familiar'
+#   tabula-distro install /path/to/local/distro
+#
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash
 #   VERSION=v1.0.0 curl -fsSL ... | bash
@@ -9,9 +16,6 @@ REPO="bamanoz/tabula"
 TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
 BIN_DIR="$TABULA_HOME/bin"
 VENV="$TABULA_HOME/.venv"
-DISTRO="${TABULA_DISTRO:-familiar}"
-DISTRIB_REPO="${TABULA_DISTRIB_REPO:-https://github.com/bamanoz/tabula-distrib.git}"
-DISTRIB_REF="${TABULA_DISTRIB_REF:-main}"
 
 # Auth header for private repos (optional)
 AUTH_HEADER=()
@@ -312,19 +316,8 @@ for a in data.get('assets', []):
   if [ -d "$TABULA_HOME/tools/tabula-distro" ]; then
     "$VENV/bin/pip" install -q -e "$TABULA_HOME/tools/tabula-distro"
   fi
-
-  # Install distro from external tabula-distrib repo (git+ source via tabula-distro).
-  local distro_source="git+${DISTRIB_REPO}@${DISTRIB_REF}#path=${DISTRO}"
-  info "Installing distro $DISTRO from $DISTRIB_REPO@$DISTRIB_REF"
-  "$VENV/bin/tabula-distro" --home "$TABULA_HOME" install "$distro_source"
-
-  # Optional distro-specific post-install hook is now expected to live in the
-  # installed generation; if present, run it.
-  POST_INSTALL="$TABULA_HOME/distrib/$DISTRO/current/install.sh"
-  if [ -f "$POST_INSTALL" ]; then
-    info "Running post-install hook: $DISTRO"
-    TABULA_HOME="$TABULA_HOME" bash "$POST_INSTALL"
-  fi
+  # Expose tabula-distro on PATH alongside the rest of the launchers.
+  ln -sf "$VENV/bin/tabula-distro" "$BIN_DIR/tabula-distro" 2>/dev/null || true
 
   # Shell
   configure_shell
@@ -343,11 +336,12 @@ for a in data.get('assets', []):
     chmod 600 "$env_file"
   fi
 
-  printf '\n\033[1;32mTabula %s installed!\033[0m\n\n' "$VERSION"
+  printf '\n\033[1;32mTabula %s kernel installed!\033[0m\n\n' "$VERSION"
   printf 'Add your API key:\n'
   printf '  echo "ANTHROPIC_API_KEY=sk-..." >> %s\n\n' "$env_file"
-  printf 'Install a different distro later:\n'
-  printf '  tabula-install-distro <local-path-or-github-tree-url>\n\n'
+  printf 'Install a distro (this is required before the kernel can do anything useful):\n'
+  printf '  tabula-distro install '\''git+https://github.com/bamanoz/tabula-distrib.git@main#path=familiar'\''\n'
+  printf '  tabula-distro install /path/to/local/distro\n\n'
   printf 'Then connect:\n'
   printf '  tabula-cli\n\n'
 }

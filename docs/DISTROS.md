@@ -242,9 +242,9 @@ What this does:
    `~/.tabula/distrib/active`
 6. rebuild the flat `boot.py`, `templates/`, and `skills/` surface
 
-For development, `scripts/install-dev.sh --distro <name>` does the same as
-part of the local install flow, picking up a sibling `tabula-distrib/`
-checkout automatically (override with `--distrib-root`).
+For development, clone `tabula-distrib` next to this repo and run
+`bash scripts/install-dev.sh` (kernel only), then
+`tabula-distro install ../tabula-distrib/<name>`.
 
 ## Designing a new distro
 

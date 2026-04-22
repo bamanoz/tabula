@@ -1,31 +1,27 @@
 #!/bin/bash
-# Install Tabula kernel + runtime library from source, then materialize a distro
-# via ``tabula-distro install``.
+# Install Tabula kernel + runtime library from source.
 #
-# Usage:
-#   bash scripts/install-dev.sh --distro /abs/path/to/distro
-#   bash scripts/install-dev.sh --distro ./relative/distro
-#   bash scripts/install-dev.sh --distro local:/abs/path
-#   bash scripts/install-dev.sh --distro 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=guardian'
+# Installs only the kernel layer:
+#   * Go binary (built from this repo)
+#   * launch scripts (tabula-server, tabula-cli, tabula-api, tabula-install-distro)
+#   * shared skill library (skills/lib/) — the kernel-side contract
+#   * Python venv with runtime + dev dependencies
+#   * tabula-distro installer (editable, from tools/tabula-distro)
+#   * service unit templates
 #
-# --distro accepts:
-#   * an absolute or ./../ relative path to a local distro directory
-#   * a 'local:<path>' URI passed through to tabula-distro
-#   * a 'git+<url>@<ref>#path=<subpath>' URI passed through to tabula-distro
+# After this script finishes, install a distro separately:
 #
-# Default: ../tabula-distrib/familiar (sibling checkout of tabula-distrib).
+#   tabula-distro install <path-or-uri>
+#
+# Examples:
+#   tabula-distro install ../tabula-distrib/familiar
+#   tabula-distro install local:/abs/path/to/distro
+#   tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=guardian'
 set -euo pipefail
-
-DISTRO=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --distro) DISTRO="$2"; shift 2 ;;
-    --distro=*) DISTRO="${1#*=}"; shift ;;
-    -h|--help)
-      sed -n '2,17p' "$0"
-      exit 0
-      ;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -36,78 +32,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV="$TABULA_HOME/.venv"
 
-# Default: sibling tabula-distrib/familiar.
-if [ -z "$DISTRO" ]; then
-  if [ -d "$REPO_ROOT/../tabula-distrib/familiar" ]; then
-    DISTRO="$(cd "$REPO_ROOT/../tabula-distrib/familiar" && pwd)"
-  else
-    echo "error: --distro not given and no ../tabula-distrib/familiar found" >&2
-    echo "  pass --distro <path> or --distro 'git+...#path=<distro>'" >&2
-    exit 1
-  fi
-fi
-
-# Resolve --distro into:
-#   DISTRO_SOURCE — what gets passed to `tabula-distro install`
-#   DISTRO_NAME   — short label for logging / post-install hook lookup
-#   POST_INSTALL  — install.sh path (only for local sources)
-DISTRO_SOURCE=""
-DISTRO_NAME=""
-POST_INSTALL=""
-
-case "$DISTRO" in
-  git+*)
-    DISTRO_SOURCE="$DISTRO"
-    if [[ "$DISTRO" == *"#path="* ]]; then
-      DISTRO_NAME="${DISTRO##*#path=}"
-      DISTRO_NAME="${DISTRO_NAME%%[?&]*}"
-      DISTRO_NAME="${DISTRO_NAME##*/}"
-    else
-      DISTRO_NAME="${DISTRO##*/}"
-      DISTRO_NAME="${DISTRO_NAME%.git*}"
-    fi
-    ;;
-  local:*)
-    DISTRO_SOURCE="$DISTRO"
-    LOCAL_PATH="${DISTRO#local:}"
-    DISTRO_NAME="$(basename "$LOCAL_PATH")"
-    if [ -d "$LOCAL_PATH" ]; then
-      POST_INSTALL="$LOCAL_PATH/install.sh"
-    fi
-    ;;
-  /*|./*|../*)
-    if [ ! -d "$DISTRO" ]; then
-      echo "error: distro source not found: $DISTRO" >&2
-      exit 1
-    fi
-    DISTRO_SOURCE="$(cd "$DISTRO" && pwd)"
-    DISTRO_NAME="$(basename "$DISTRO_SOURCE")"
-    POST_INSTALL="$DISTRO_SOURCE/install.sh"
-    ;;
-  *)
-    echo "error: --distro must be a path (./..., /abs), local: URI, or git+ URI; got: $DISTRO" >&2
-    exit 2
-    ;;
-esac
-
 echo "==> Stopping any running tabula kernel"
 pkill -f "$TABULA_HOME/bin/tabula serve" 2>/dev/null || true
 sleep 0.3
 
-echo "==> Installing Tabula to $TABULA_HOME (distro: $DISTRO_NAME)"
-echo "    distro source: $DISTRO_SOURCE"
+echo "==> Installing Tabula kernel to $TABULA_HOME"
 mkdir -p "$TABULA_HOME" "$BIN_DIR"
-
-# Wipe any previous runtime layout — tabula-distro rebuilds it from scratch.
-rm -rf \
-  "$TABULA_HOME/boot.py" \
-  "$TABULA_HOME/templates" \
-  "$TABULA_HOME/skills" \
-  "$TABULA_HOME/distrib"
 
 cp "$REPO_ROOT/examples/boot-cicd.py" "$TABULA_HOME/"
 
-# Shared skill library (preserved across distro swaps by tabula-distro).
+# Shared skill library (kernel-side contract — preserved across distro swaps
+# by tabula-distro).
 mkdir -p "$TABULA_HOME/skills"
 rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
   "$REPO_ROOT/skills/lib/" "$TABULA_HOME/skills/lib/"
@@ -118,7 +53,7 @@ if [ ! -f "$TABULA_HOME/config/global.toml" ]; then
   cp "$REPO_ROOT/config/global.toml" "$TABULA_HOME/config/global.toml"
 fi
 
-# Service units
+# Service unit templates
 rsync -a --delete "$REPO_ROOT/service/" "$TABULA_HOME/service/"
 
 # Python venv with dependencies
@@ -145,23 +80,8 @@ for script in tabula-server tabula-api tabula-cli tabula-install-distro; do
 done
 cp "$REPO_ROOT/scripts/install-distro.py" "$BIN_DIR/install-distro.py"
 
-# Install + activate the chosen distro
-echo "==> Installing distro from $DISTRO_SOURCE"
-"$VENV/bin/tabula-distro" --home "$TABULA_HOME" install "$DISTRO_SOURCE"
-
-# Optional distro-specific post-install hook (only for local sources where we
-# can see the source tree; for git+ sources the hook is expected to live inside
-# the materialized generation under $TABULA_HOME/distrib/<name>/current).
-if [ -n "$POST_INSTALL" ] && [ -f "$POST_INSTALL" ]; then
-  echo "==> Running post-install hook: $DISTRO_NAME"
-  TABULA_HOME="$TABULA_HOME" REPO_ROOT="$REPO_ROOT" bash "$POST_INSTALL"
-else
-  GENERATION_HOOK="$TABULA_HOME/distrib/$DISTRO_NAME/current/install.sh"
-  if [ -f "$GENERATION_HOOK" ]; then
-    echo "==> Running post-install hook: $DISTRO_NAME (from generation)"
-    TABULA_HOME="$TABULA_HOME" REPO_ROOT="$REPO_ROOT" bash "$GENERATION_HOOK"
-  fi
-fi
+# Symlink tabula-distro from venv into bin/ so it's on PATH alongside the rest.
+ln -sf "$VENV/bin/tabula-distro" "$BIN_DIR/tabula-distro"
 
 # PATH config
 SHELL_RC=""
@@ -199,6 +119,17 @@ else
   printf '  %s\n  %s\n  %s\n' "$HOME_LINE" "$PATH_LINE" "$TABULA_PATH_LINE"
 fi
 
-echo
-echo "Installed. Active distro: $DISTRO_NAME"
-echo "  Active link: $TABULA_HOME/distrib/active -> $(readlink "$TABULA_HOME/distrib/active" 2>/dev/null || echo '?')"
+cat <<EOF
+
+Tabula kernel installed at $TABULA_HOME.
+
+Next: install a distro with tabula-distro. Examples:
+
+  tabula-distro install ../tabula-distrib/familiar
+  tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=guardian'
+
+Then start the kernel:
+
+  tabula-server
+
+EOF
