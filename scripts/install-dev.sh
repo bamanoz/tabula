@@ -1,16 +1,21 @@
 #!/bin/bash
 # Install Tabula kernel + runtime library from source, then materialize a distro
-# from a sibling checkout of ``tabula-distrib``.
+# via ``tabula-distro install``.
 #
 # Usage:
-#   bash scripts/install-dev.sh                             # familiar distro from ../tabula-distrib/familiar
-#   bash scripts/install-dev.sh --distro guardian
-#   bash scripts/install-dev.sh --distro /abs/path/to/distro
+#   bash scripts/install-dev.sh                                  # familiar from ../tabula-distrib
+#   bash scripts/install-dev.sh --distro guardian                # named distro from --distrib-root
+#   bash scripts/install-dev.sh --distro /abs/path/to/distro     # local absolute path
+#   bash scripts/install-dev.sh --distro ./relative/distro       # local relative path
+#   bash scripts/install-dev.sh --distro local:/abs/path         # explicit local: URI
+#   bash scripts/install-dev.sh --distro 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=guardian'
 #   bash scripts/install-dev.sh --distrib-root ~/src/tabula-distrib --distro familiar
 #
-# The distro source may be a directory name (looked up under ``--distrib-root``),
-# or an absolute/relative path. Unlike the old layout, no distros live inside
-# this repo anymore — they come from the ``tabula-distrib`` repository.
+# --distro accepts:
+#   * a name        -> resolved against --distrib-root (default: ../tabula-distrib)
+#   * an absolute or ./../ relative path to a local distro directory
+#   * a 'local:<path>' URI passed through to tabula-distro
+#   * a 'git+<url>@<ref>#path=<subpath>' URI passed through to tabula-distro
 set -euo pipefail
 
 DISTRO="familiar"
@@ -23,7 +28,7 @@ while [ "$#" -gt 0 ]; do
     --distrib-root) DISTRIB_ROOT="$2"; shift 2 ;;
     --distrib-root=*) DISTRIB_ROOT="${1#*=}"; shift ;;
     -h|--help)
-      sed -n '2,11p' "$0"
+      sed -n '2,20p' "$0"
       exit 0
       ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -36,31 +41,66 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV="$TABULA_HOME/.venv"
 
-# Resolve distro source.
-if [ -z "$DISTRIB_ROOT" ]; then
-  if [ -d "$REPO_ROOT/../tabula-distrib" ]; then
-    DISTRIB_ROOT="$(cd "$REPO_ROOT/../tabula-distrib" && pwd)"
-  fi
-fi
+# Resolve the --distro argument into:
+#   DISTRO_SOURCE — what gets passed to `tabula-distro install` (path or URI)
+#   DISTRO_NAME   — short label for logging / post-install hook lookup
+#   POST_INSTALL  — optional install.sh path (only when source is a local dir)
+DISTRO_SOURCE=""
+DISTRO_NAME=""
+POST_INSTALL=""
 
 case "$DISTRO" in
-  /*) DISTRO_SRC="$DISTRO" ;;
-  ./*|../*) DISTRO_SRC="$(cd "$DISTRO" && pwd)" ;;
-  *) DISTRO_SRC="$DISTRIB_ROOT/$DISTRO" ;;
+  git+*|local:*)
+    # Pass URI through; derive a name from #path= or last URI segment.
+    DISTRO_SOURCE="$DISTRO"
+    if [[ "$DISTRO" == *"#path="* ]]; then
+      DISTRO_NAME="${DISTRO##*#path=}"
+      DISTRO_NAME="${DISTRO_NAME%%[?&]*}"
+      DISTRO_NAME="${DISTRO_NAME##*/}"
+    else
+      DISTRO_NAME="${DISTRO##*/}"
+      DISTRO_NAME="${DISTRO_NAME%.git*}"
+    fi
+    ;;
+  /*|./*|../*)
+    DISTRO_SOURCE="$(cd "$DISTRO" && pwd)"
+    DISTRO_NAME="$(basename "$DISTRO_SOURCE")"
+    POST_INSTALL="$DISTRO_SOURCE/install.sh"
+    ;;
+  *)
+    # Bare name — look up in DISTRIB_ROOT (defaulting to sibling tabula-distrib).
+    if [ -z "$DISTRIB_ROOT" ] && [ -d "$REPO_ROOT/../tabula-distrib" ]; then
+      DISTRIB_ROOT="$(cd "$REPO_ROOT/../tabula-distrib" && pwd)"
+    fi
+    if [ -z "$DISTRIB_ROOT" ]; then
+      echo "error: --distro '$DISTRO' is a bare name but no tabula-distrib checkout found" >&2
+      echo "  hint: clone https://github.com/bamanoz/tabula-distrib next to this repo," >&2
+      echo "        pass --distrib-root, or pass a full path / git+ URI to --distro" >&2
+      exit 1
+    fi
+    DISTRO_SOURCE="$DISTRIB_ROOT/$DISTRO"
+    DISTRO_NAME="$DISTRO"
+    POST_INSTALL="$DISTRO_SOURCE/install.sh"
+    ;;
 esac
 
-if [ ! -d "$DISTRO_SRC" ]; then
-  echo "error: distro source not found: $DISTRO_SRC" >&2
-  echo "  hint: clone https://github.com/bamanoz/tabula-distrib next to this repo," >&2
-  echo "        or pass --distrib-root / a full --distro path" >&2
-  exit 1
-fi
+# For local-path sources, sanity-check the directory exists up front so we fail
+# early rather than inside tabula-distro.
+case "$DISTRO_SOURCE" in
+  /*|./*|../*)
+    if [ ! -d "$DISTRO_SOURCE" ]; then
+      echo "error: distro source not found: $DISTRO_SOURCE" >&2
+      exit 1
+    fi
+    ;;
+esac
 
 echo "==> Stopping any running tabula kernel"
 pkill -f "$TABULA_HOME/bin/tabula serve" 2>/dev/null || true
 sleep 0.3
 
-echo "==> Installing Tabula to $TABULA_HOME (distro: $DISTRO)"
+echo "==> Installing Tabula to $TABULA_HOME (distro: $DISTRO_NAME)"
+echo "    distro source: $DISTRO_SOURCE"
 mkdir -p "$TABULA_HOME" "$BIN_DIR"
 
 # Wipe any previous runtime layout — tabula-distro rebuilds it from scratch.
@@ -111,14 +151,21 @@ done
 cp "$REPO_ROOT/scripts/install-distro.py" "$BIN_DIR/install-distro.py"
 
 # Install + activate the chosen distro
-echo "==> Installing distro from $DISTRO_SRC"
-"$VENV/bin/tabula-distro" --home "$TABULA_HOME" install "$DISTRO_SRC"
+echo "==> Installing distro from $DISTRO_SOURCE"
+"$VENV/bin/tabula-distro" --home "$TABULA_HOME" install "$DISTRO_SOURCE"
 
-# Optional distro-specific post-install hook.
-POST_INSTALL="$DISTRO_SRC/install.sh"
-if [ -f "$POST_INSTALL" ]; then
-  echo "==> Running post-install hook: $DISTRO"
+# Optional distro-specific post-install hook (only for local sources where we
+# can see the source tree; for git+ sources the hook is expected to live inside
+# the materialized generation under $TABULA_HOME/distrib/<name>/current).
+if [ -n "$POST_INSTALL" ] && [ -f "$POST_INSTALL" ]; then
+  echo "==> Running post-install hook: $DISTRO_NAME"
   TABULA_HOME="$TABULA_HOME" REPO_ROOT="$REPO_ROOT" bash "$POST_INSTALL"
+else
+  GENERATION_HOOK="$TABULA_HOME/distrib/$DISTRO_NAME/current/install.sh"
+  if [ -f "$GENERATION_HOOK" ]; then
+    echo "==> Running post-install hook: $DISTRO_NAME (from generation)"
+    TABULA_HOME="$TABULA_HOME" REPO_ROOT="$REPO_ROOT" bash "$GENERATION_HOOK"
+  fi
 fi
 
 # PATH config
@@ -158,5 +205,5 @@ else
 fi
 
 echo
-echo "Installed. Active distro: $DISTRO"
+echo "Installed. Active distro: $DISTRO_NAME"
 echo "  Active link: $TABULA_HOME/distrib/active -> $(readlink "$TABULA_HOME/distrib/active" 2>/dev/null || echo '?')"
