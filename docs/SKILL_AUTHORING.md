@@ -46,15 +46,16 @@ At runtime, the active skill surface is flat:
 ~/.tabula/skills/
 ```
 
-In the source repo, built-in skills may live under a distro:
+In source, skills may live in one of three places:
 
-```text
-distrib/familiar/skills/
-distrib/guardian/skills/
-```
+- distro-specific skills in [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib):
+  `familiar/skills/`, `guardian/skills/`, `ouroboros/skills/`
+- shared bundles in [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles):
+  `base/`, `files/`, `drivers/`, `memory/`, `caveman/`
+- the kernel-side runtime contract in this repo: `skills/lib/`
 
-The active distro is fanned out into `~/.tabula/skills/` by
-`scripts/install-distro.py`.
+The active distro plus its declared bundles are fanned out into
+`~/.tabula/skills/` by `tabula-distro install`.
 
 When you write a new skill for your local agent, the important place is the
 runtime surface the boot script sees.
@@ -273,10 +274,11 @@ These are advanced skill types. In most cases you should not write one from
 scratch unless you are extending provider support or changing core runtime
 behavior.
 
-Shared runtimes exist for these:
+Shared runtimes exist for these in the `drivers` bundle
+([`tabula-bundles`](https://github.com/bamanoz/tabula-bundles)):
 
-- `skills/lib/driver_runtime.py`
-- `skills/lib/subagent_runtime.py`
+- `skills._drivers.driver_runtime`
+- `skills._drivers.subagent_runtime`
 
 If you need a normal capability, a tool skill is almost always the right shape.
 
@@ -456,19 +458,19 @@ gateway, hook, or custom runtime.
 
 ## Examples in the repo
 
-Useful reference skills:
+Useful reference skills (in their respective repos):
 
-- tool skill: `distrib/familiar/skills/files/`
-- hook skill: `distrib/familiar/skills/hook-logger/`
-- gateway: `distrib/familiar/skills/gateway-cli/`
-- subagent runtime: `distrib/familiar/skills/subagent-openai/`
-- minimal fixed distro boot: `distrib/guardian/boot.py`
+- tool skill: `files/files/` in [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles)
+- hook skill: `base/hook-logger/` in `tabula-bundles`
+- gateway: `familiar/skills/gateway-cli/` in [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib)
+- subagent runtime: `drivers/subagent-openai/` in `tabula-bundles`
+- minimal fixed distro boot: `guardian/boot.py` in `tabula-distrib`
 
 ## Future stabilization work
 
 Still to be made explicit:
 
-- versioned assistant `SKILL.md` contract
+- versioned familiar `SKILL.md` contract
 - narrower, documented public surface for `skills/lib/`
 - clearer contract for community-distributed skills and bundles
 

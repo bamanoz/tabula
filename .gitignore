@@ -7,3 +7,5 @@ __pycache__/
 .cache
 extra/
 dist/
+
+*.egg-info/

@@ -9,6 +9,9 @@ $Repo = "bamanoz/tabula"
 $TabulaHome = if ($env:TABULA_HOME) { $env:TABULA_HOME } else { Join-Path $HOME ".tabula" }
 $BinDir = Join-Path $TabulaHome "bin"
 $Venv = Join-Path $TabulaHome ".venv"
+$Distro = if ($env:TABULA_DISTRO) { $env:TABULA_DISTRO } else { "familiar" }
+$DistribRepo = if ($env:TABULA_DISTRIB_REPO) { $env:TABULA_DISTRIB_REPO } else { "https://github.com/bamanoz/tabula-distrib.git" }
+$DistribRef = if ($env:TABULA_DISTRIB_REF) { $env:TABULA_DISTRIB_REF } else { "main" }
 
 # ── Helpers ──────────────────────────────────────────────────────
 
@@ -78,20 +81,9 @@ function New-FlatRuntimeSurface {
         [string[]]$Preserve = @()
     )
 
+    # Legacy helper retained for backwards compatibility; no longer invoked
+    # because distros are installed via tabula-distro into $TABULA_HOME/distrib.
     New-Item -ItemType Directory -Force -Path $DestDir | Out-Null
-    Get-ChildItem -Force -Path $DestDir | ForEach-Object {
-        if ($Preserve -contains $_.Name) {
-            return
-        }
-        Remove-Item -Recurse -Force $_.FullName
-    }
-    if (-not (Test-Path $SourceDir)) {
-        return
-    }
-    Get-ChildItem -Force -Path $SourceDir | ForEach-Object {
-        $target = Join-Path $DestDir $_.Name
-        New-Item -ItemType Junction -Force -Path $target -Target $_.FullName | Out-Null
-    }
 }
 
 # ── Service install ─────────────────────────────────────────────
@@ -189,9 +181,6 @@ try {
     $InstalledBinDir = Join-Path $TabulaHome "bin"
     Copy-Item (Join-Path $InstalledBinDir "tabula-install-distro.ps1") -Destination (Join-Path $BinDir "tabula-install-distro.ps1") -Force -ErrorAction SilentlyContinue
     Copy-Item (Join-Path $TabulaHome "scripts" "install-distro.py") -Destination (Join-Path $BinDir "install-distro.py") -Force
-    Copy-Item (Join-Path $TabulaHome "distrib" "assistant" "boot.py") -Destination (Join-Path $TabulaHome "boot.py") -Force
-    New-FlatRuntimeSurface -SourceDir (Join-Path $TabulaHome "distrib" "assistant" "templates") -DestDir (Join-Path $TabulaHome "templates") -TabulaHome $TabulaHome
-    New-FlatRuntimeSurface -SourceDir (Join-Path $TabulaHome "distrib" "assistant" "skills") -DestDir (Join-Path $TabulaHome "skills") -TabulaHome $TabulaHome -Preserve @("lib")
     Ok "Skills and config installed"
 
     # Restore user config if it existed
@@ -209,8 +198,31 @@ try {
 
     Install-PythonDeps
 
-    $PythonRuntime = Join-Path $Venv "Scripts" "python.exe"
-    & $PythonRuntime (Join-Path $BinDir "install-distro.py") --home $TabulaHome (Join-Path $TabulaHome "distrib" "assistant")
+    # Install tabula-distro from the bundled tools/ directory if available.
+    $DistroToolDir = Join-Path $TabulaHome "tools" "tabula-distro"
+    if (Test-Path $DistroToolDir) {
+        $Pip = Join-Path $Venv "Scripts" "pip.exe"
+        & $Pip install -q -e $DistroToolDir
+    }
+
+    # Install distro from external tabula-distrib repo (git+ source via tabula-distro).
+    $DistroSource = "git+${DistribRepo}@${DistribRef}#path=${Distro}"
+    Info "Installing distro $Distro from $DistribRepo@$DistribRef"
+    $TabulaDistro = Join-Path $Venv "Scripts" "tabula-distro.exe"
+    & $TabulaDistro --home $TabulaHome install $DistroSource
+
+    # Optional distro-specific post-install hook (PowerShell preferred, falls back to bash).
+    $PostInstallPs1 = Join-Path $TabulaHome "distrib" $Distro "current" "install.ps1"
+    $PostInstallSh  = Join-Path $TabulaHome "distrib" $Distro "current" "install.sh"
+    if (Test-Path $PostInstallPs1) {
+        Info "Running post-install hook: $Distro"
+        $env:TABULA_HOME = $TabulaHome
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $PostInstallPs1
+    } elseif (Test-Path $PostInstallSh) {
+        Info "Running post-install hook: $Distro (bash)"
+        $env:TABULA_HOME = $TabulaHome
+        & bash $PostInstallSh
+    }
 
     # Copy PowerShell launch scripts
     foreach ($script in @("tabula-server.ps1", "tabula-cli.ps1", "tabula-api.ps1", "tabula-install-distro.ps1")) {

@@ -108,7 +108,8 @@ In a normal install, `tabula-server` sets this to something like:
 "$TABULA_HOME/.venv/bin/python3" "$TABULA_HOME/boot.py"
 ```
 
-The active `boot.py` is a symlink to `distrib/active/boot.py`.
+The active `boot.py` is copied (or symlinked) from the installed distro under
+`~/.tabula/distrib/<distro>/current/boot.py` by `tabula-distro`.
 
 ### Boot output
 
@@ -125,7 +126,8 @@ Familiar and guardian use the same contract, but generate different payloads.
 
 ### Familiar boot
 
-`distrib/familiar/boot.py` is the more dynamic boot implementation.
+`familiar/boot.py` (in the [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib)
+repo) is the more dynamic boot implementation.
 
 It does the following:
 
@@ -142,7 +144,7 @@ This is where most of the familiar distro behavior is assembled.
 
 ### Guardian boot
 
-`distrib/guardian/boot.py` is intentionally much simpler.
+`guardian/boot.py` (in `tabula-distrib`) is intentionally much simpler.
 
 It does not scan a flexible skill tree. It builds a fixed runtime:
 
@@ -155,37 +157,54 @@ It does not scan a flexible skill tree. It builds a fixed runtime:
 Guardian is a good example of a distro with the same kernel contract but a
 completely different runtime philosophy.
 
+## Repository layout
+
+Tabula is split across three repositories:
+
+- [`tabula`](https://github.com/bamanoz/tabula) — the kernel, the thin
+  `skills/lib` runtime contract, the `tabula-distro` installer, and
+  installation scripts.
+- [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles) — reusable
+  skill bundles: `base/`, `files/`, `drivers/`, `memory/`, `caveman/`. These
+  are referenced from distros via `distro.toml`.
+- [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib) — the three
+  ready-to-use distros: `familiar/`, `guardian/`, `ouroboros/`. Each declares
+  its bundle dependencies in `distro.toml`.
+
+A distro never embeds bundle source. It declares dependencies and the
+`tabula-distro` installer composes the runtime surface in `~/.tabula/`.
+
 ## Distros
 
 At the kernel level, a distro is just "whatever boot command and runtime layout
-you choose to ship". In the built-in installer flow, a distro is expected to
-be a directory with three required parts:
+you choose to ship". The built-in `tabula-distro` installer expects a directory
+with:
 
 - `boot.py`
 - `templates/`
-- `skills/`
+- `skills/` (distro-specific skills only)
+- `distro.toml` (declares which bundles to pull in)
 
-Tabula currently ships two:
+`tabula-distro install <source>` resolves the distro itself from a local path,
+`local:` URI, or `git+...@ref#path=...` URI; resolves the bundles declared in
+`distro.toml`; and lays the result out under
+`~/.tabula/distrib/<name>/<generation>/` with `current` and `active` symlinks.
 
-- `distrib/familiar/`
-- `distrib/guardian/`
+### Active distro layout
 
-`scripts/install-distro.py` installs a distro into `~/.tabula/distrib/<name>`
-and then updates the active runtime surface.
-
-### Active distro fan-out
-
-The selected distro is activated through symlinks:
+The selected distro is activated through symlinks/copies under
+`~/.tabula/distrib/<name>/`:
 
 ```text
-~/.tabula/distrib/active -> familiar
-~/.tabula/boot.py -> distrib/active/boot.py
-~/.tabula/templates/* -> distrib/active/templates/*
-~/.tabula/skills/* -> distrib/active/skills/*
+~/.tabula/distrib/familiar/current   -> <generation>
+~/.tabula/distrib/active             -> familiar
+~/.tabula/boot.py                    -> distrib/active/current/boot.py
+~/.tabula/templates/*                -> distrib/active/current/templates/*
+~/.tabula/skills/*                   -> distrib/active/current/skills/* + bundle skills
 ```
 
 The exception is `skills/lib/`, which is shared runtime code copied in
-separately and preserved when distros are switched.
+separately from the kernel repo and preserved when distros are switched.
 
 This flat runtime surface is important: the active agent sees one `skills/`
 tree, not a multi-distro layout.
@@ -195,30 +214,30 @@ tree, not a multi-distro layout.
 At the platform level, a skill is any external capability unit the active boot
 logic can discover, describe to the kernel, and optionally execute.
 
-In the built-in `assistant` distro, the current convention is usually a
+In the built-in `familiar` distro, the current convention is usually a
 directory that contains at least:
 
 - `SKILL.md`
 - some executable entry point
 
-That current assistant convention is described in
-`distrib/familiar/skills/skill-contract/SKILL.md`.
+That convention is described in the `skill-contract` skill (shipped via the
+`base` bundle in `tabula-bundles`).
 
 ### `SKILL.md`
 
-In the `assistant` distro, `SKILL.md` serves two jobs at once:
+In the `familiar` distro, `SKILL.md` serves two jobs at once:
 
 1. frontmatter for machine-readable metadata
 2. human-readable documentation for users and agents
 
-Typical assistant frontmatter fields include:
+Typical familiar frontmatter fields include:
 
 - `name`
 - `description`
 - `user-invocable: true`
 - `tools: [...]`
 
-The assistant boot process uses this to:
+The familiar boot process uses this to:
 
 - decide what enters the system prompt
 - discover tool definitions
@@ -240,7 +259,7 @@ LLM backends such as:
 These receive `message`, `tool_result`, `init`, `cancel` and send stream
 events, `tool_use`, and `done`.
 
-Shared runtime: `skills/lib/driver_runtime.py`
+Shared runtime: `skills._drivers.driver_runtime` (in the `drivers` bundle).
 
 #### Gateways
 
@@ -254,9 +273,9 @@ They send `message` and receive streaming events and completion markers.
 
 #### Tool skills
 
-In the built-in assistant convention, skills that expose tools through
+In the built-in familiar convention, skills that expose tools through
 `SKILL.md` frontmatter are usually invoked as separate subprocesses per call.
-If no explicit `exec` is provided for a tool, assistant boot currently falls
+If no explicit `exec` is provided for a tool, familiar boot currently falls
 back to the `run.py tool <name>` convention.
 
 Example shape:
@@ -304,27 +323,29 @@ These are not special-cased in the kernel beyond process spawning and spawn
 policy. They are regular external processes that happen to run a different
 driver loop.
 
-Shared runtime: `skills/lib/subagent_runtime.py`
+Shared runtime: `skills._drivers.subagent_runtime` (in the `drivers` bundle).
 
 ## Shared runtime library
 
-`skills/lib/` is shared Python code used by many skills.
+`skills/lib/` is the *minimal* shared Python code that every skill uses to
+talk to the kernel. It lives in the kernel repo (`tabula`) and is shipped in
+every install, regardless of which distro is active.
 
 Important modules:
 
 - `protocol.py` — protocol constants and kernel tool names
 - `kernel_client.py` — WebSocket wrapper
-- `driver_runtime.py` — common driver loop
-- `subagent_runtime.py` — common subagent loop
-- `providers.py` — Anthropic / OpenAI provider adapters
-- `compaction.py` — context compaction
-- `prompt_builder.py` — prompt assembly helpers
 - `paths.py` — runtime path helpers
-- `provider_selection.py` — provider resolution
+- `config.py` — config and env parsing
+- `filelock.py` — cross-process file locking
 
-This library is shared runtime infrastructure, but its public API is not yet
-fully stabilized as a versioned external contract. That is one of the next
-documentation and design tasks.
+Driver and subagent runtime (`driver_runtime`, `subagent_runtime`,
+`providers`, `provider_selection`, `prompt_builder`, `compaction`) now lives in
+the `drivers` bundle under `skills/_drivers/` and is imported as
+`skills._drivers.<module>`.
+
+This keeps the kernel-side contract tiny, and lets provider-specific code
+evolve inside the `tabula-bundles` repo.
 
 ## Subagents
 
@@ -348,7 +369,7 @@ parallel work and isolation; registry / control / recovery are the next layer.
 
 Prompt assembly is done in boot, not in the kernel.
 
-Assistant pulls from:
+Familiar pulls from:
 
 - distro templates under `templates/`
 - user-editable project files like `IDENTITY.md`, `SOUL.md`, `USER.md`,
@@ -370,25 +391,28 @@ There are two main installation paths.
 `scripts/install.sh` / `scripts/install.ps1`:
 
 - download the Go binary from GitHub Releases
-- download the runtime payload tarball
-- install `skills/lib`, distros, launchers, examples, service files
-- create `~/.tabula/.venv`
-- install Python runtime dependencies
-- activate the default distro (`assistant` unless overridden)
+- download the runtime payload tarball (kernel-side `skills/lib`, launchers,
+  examples, service files, the `tabula-distro` source)
+- create `~/.tabula/.venv` and install Python runtime dependencies
+- install `tabula-distro` from the bundled tools/ directory
+- install the requested distro from `tabula-distrib` (default: `familiar`,
+  override with `TABULA_DISTRO`) using a `git+...` source — the installer
+  pulls the bundles declared in `distro.toml` from `tabula-bundles`
 
 ### Source install
 
 `scripts/install-dev.sh` / `scripts/install-dev.ps1`:
 
 - build the Go binary from source
-- install shared `skills/lib`
-- install testing skills under `~/.tabula/testing`
+- install shared `skills/lib` from this repo
 - copy service files
 - create a venv with dev dependencies
-- activate the selected distro
+- install `tabula-distro` (editable)
+- install the selected distro from a sibling `tabula-distrib/` checkout
+  (auto-detected, or pass `--distrib-root /path/to/tabula-distrib`)
 
-Both paths rely on `scripts/install-distro.py` to materialize the active
-runtime surface.
+Both paths converge on `tabula-distro install <source>` to materialize the
+active runtime surface from a distro plus its declared bundles.
 
 ## Runtime surfaces
 
@@ -396,11 +420,14 @@ There are three related but different layouts to keep in mind.
 
 ### Repository layout
 
-The source tree:
+The source tree is split across three repos:
 
-- keeps distros under `distrib/`
-- keeps shared runtime code under `skills/lib/`
-- supports optional reusable skill collections as external bundles
+- `tabula/` — kernel, `skills/lib/` (kernel contract only), `tabula-distro`
+  installer
+- `tabula-bundles/` — reusable skill collections (`base/`, `files/`,
+  `drivers/`, `memory/`, `caveman/`)
+- `tabula-distrib/` — `familiar/`, `guardian/`, `ouroboros/` distros, each
+  with its own `boot.py`, `templates/`, `skills/`, and `distro.toml`
 
 ### Installed active layout
 
@@ -420,19 +447,35 @@ This keeps the execution boundary explicit and language-neutral.
 
 ## Bundles
 
-Bundles are optional reusable collections of skills, typically kept in their own repository and pulled into a distro at install time.
+Bundles are reusable collections of skills, kept in the
+[`tabula-bundles`](https://github.com/bamanoz/tabula-bundles) repo and pulled
+into a distro at install time via `distro.toml`.
 
-The familiar distro already uses this mechanism for memory:
+Current bundles:
 
-- `memory-save`
-- `memory-search`
-- `memory-admin`
+- `base/` — clawhub, cron, hook-logger, hook-permissions, observer, pair,
+  sessions, skill-contract, tabula-guide, timer
+- `files/` — the `files` skill
+- `drivers/` — `driver-anthropic`, `driver-openai`, `subagent-anthropic`,
+  `subagent-openai`, plus `_drivers/` shared support code
+- `memory/` — memory-save, memory-search, memory-admin
+- `caveman/` — minimal experimental skill set
 
-At install time or distro install time, bundle skills are linked into the flat
-`skills/` surface so boot sees them as ordinary skills.
+A distro lists bundles in `distro.toml`:
 
-Bundles are the right place for optional capability packs. Distros are the
-right place for fully opinionated products.
+```toml
+[bundles.base]
+source = "git+https://github.com/bamanoz/tabula-bundles.git@main#path=base"
+
+[bundles.drivers]
+source = "git+https://github.com/bamanoz/tabula-bundles.git@main#path=drivers"
+```
+
+For dev work you can override these locally with a `distro.override.toml`
+pointing at `local:` paths.
+
+At install time, bundle skills are linked into the flat `skills/` surface so
+boot sees them as ordinary skills.
 
 ## Current boundaries
 
@@ -440,12 +483,13 @@ If you are extending Tabula, the important seams are:
 
 - **kernel <-> skill** — WebSocket protocol
 - **boot <-> kernel** — one JSON config object on stdout
-- **distro <-> install** — current built-in installer expects `boot.py`,
-  `templates/`, `skills/`
-- **tool call <-> skill** — assistant currently defaults to `run.py tool <name>`
+- **distro <-> install** — `tabula-distro` expects `boot.py`, `templates/`,
+  `skills/`, and `distro.toml`
+- **tool call <-> skill** — familiar currently defaults to `run.py tool <name>`
   via stdin/stdout when `exec` is not explicitly provided; the platform itself
   only needs an executable command
-- **shared runtime <-> skills** — `skills/lib/`
+- **kernel runtime contract <-> skills** — `skills/lib/` (kernel)
+- **driver/subagent runtime <-> drivers bundle** — `skills._drivers.*`
 
 Those are the places where contracts matter.
 
@@ -453,8 +497,11 @@ Those are the places where contracts matter.
 
 - `README.md` — project positioning and quick start
 - `docs/PHILOSOPHY.md` — why Tabula is shaped like this
-- `distrib/familiar/boot.py` — dynamic boot logic
-- `distrib/guardian/boot.py` — minimal fixed boot
-- `distrib/familiar/skills/skill-contract/SKILL.md` — current skill contract
+- `docs/DISTROS.md` — how distros are composed
+- `docs/distro-config.md` — `distro.toml` reference
+- [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib) — `familiar/`,
+  `guardian/`, `ouroboros/` distros
+- [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles) — reusable
+  skill bundles
 - `skills/lib/protocol.py` — Python-side protocol constants
 - `internal/kernel/protocol.go` — Go-side protocol constants

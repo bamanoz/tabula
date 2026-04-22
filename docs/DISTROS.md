@@ -18,36 +18,39 @@ unit of product design.
 At the platform level, a distro is just a packaged runtime surface plus a boot
 command that can describe itself to the kernel.
 
-In the built-in installer flow, a distro is expected to be a directory with
-three required parts:
+In the `tabula-distro` installer flow, a distro is expected to be a directory
+with:
 
 ```text
 my-distro/
 ├── boot.py
 ├── templates/
-└── skills/
+├── skills/          # distro-specific skills only
+└── distro.toml      # declares bundle dependencies
 ```
 
-Optional additions are fine, but these three are the contract expected by
-`scripts/install-distro.py`.
+Optional additions (`install.sh`, docs) are fine. A distro never embeds
+bundle source — it declares dependencies in `distro.toml` and the installer
+fetches them.
 
 At install time, the distro is copied into:
 
 ```text
-~/.tabula/distrib/<name>/
+~/.tabula/distrib/<name>/<generation>/
 ```
 
-Then `~/.tabula/distrib/active` is updated to point at it, and Tabula rebuilds
+and `~/.tabula/distrib/<name>/current` points at the latest generation. The
+active distro is selected via `~/.tabula/distrib/active`, and Tabula fans out
 the flat runtime surface:
 
 ```text
-~/.tabula/boot.py    -> distrib/active/boot.py
-~/.tabula/templates/ -> distrib/active/templates/*
-~/.tabula/skills/    -> distrib/active/skills/*
+~/.tabula/boot.py    -> distrib/active/current/boot.py
+~/.tabula/templates/ -> distrib/active/current/templates/*
+~/.tabula/skills/    -> distrib/active/current/skills/* + bundle skills
 ```
 
-`skills/lib/` is the one important exception: it is shared runtime code, not
-owned by any single distro.
+`skills/lib/` is the one important exception: it is the kernel-side runtime
+contract copied from the `tabula` repo, not owned by any single distro.
 
 ## Why distros exist
 
@@ -67,14 +70,16 @@ setups. The kernel is not the product. The assembled environment is.
 
 ## Built-in distros
 
-Tabula currently ships with two distros:
+Tabula currently ships three distros in the
+[`tabula-distrib`](https://github.com/bamanoz/tabula-distrib) repo:
 
-- `assistant`
+- `familiar`
 - `guardian`
+- `ouroboros`
 
 They share the same kernel and protocol, but they are different products.
 
-### `assistant`
+### `familiar`
 
 The default general-purpose distro.
 
@@ -89,17 +94,17 @@ What it is for:
 
 What it includes:
 
-- provider drivers: Anthropic and OpenAI
-- gateways: CLI, HTTP API, Telegram
-- tool and support skills: files, sessions, pair, MCP, timer, cron, clawhub
-- hooks: logging and permissions
-- observer skill for metrics
-- provider-matched subagents
-- memory skills: `memory-save`, `memory-search`, `memory-admin`
+- provider drivers: Anthropic and OpenAI (from the `drivers` bundle)
+- gateways: CLI, HTTP API, Telegram (distro-specific)
+- tool and support skills via bundles: `files`, `base` (sessions, pair,
+  clawhub, timer, cron, hook-logger, hook-permissions, observer, skill-contract,
+  tabula-guide), `memory` (save/search/admin)
+- MCP bridge (distro-specific)
+- provider-matched subagents (from the `drivers` bundle)
 
 How it works:
 
-- `distrib/familiar/boot.py` scans the active `skills/` tree
+- `familiar/boot.py` scans the active `skills/` tree
 - reads `SKILL.md` recursively
 - assembles the main system prompt from templates and project files
 - selects the active provider via `TABULA_PROVIDER` / config
@@ -143,8 +148,8 @@ What it does **not** include:
 
 How it works:
 
-- `distrib/guardian/boot.py` builds a fixed runtime
-- does not depend on broad dynamic skill discovery the way assistant does
+- `guardian/boot.py` builds a fixed runtime
+- does not depend on broad dynamic skill discovery the way familiar does
 - exposes one tool and a small prompt surface
 
 Philosophy:
@@ -153,6 +158,32 @@ Philosophy:
 - strong operational clarity
 - sandbox first
 - optimized for one job, not general companionship
+
+### `ouroboros`
+
+Self-hosting / self-evolving distro for an agent that maintains its own
+identity, scratchpad, task list, and knowledge base.
+
+What it is for:
+
+- long-running agent with a persistent self-model
+- background research and self-improvement loops
+- experimentation with consciousness/control/evolve skills
+
+What it includes:
+
+- its own driver-anthropic / driver-openai (custom variants)
+- subagents from the `drivers` bundle
+- distro-specific skills: `identity`, `scratchpad`, `tasks`, `knowledge`,
+  `consciousness`, `control`, `evolve`, `review`, `multi-model-review`,
+  `status`, `bg`, `git`, `hook-ouroboros-context`, `hook-ouroboros-log`
+- shared base skills via the `base` bundle
+
+Philosophy:
+
+- the agent should be able to write things down about itself
+- the agent should be able to act on its own task list
+- the kernel stays out of the way; identity lives in files
 
 ## Distros vs bundles vs skills
 
@@ -163,17 +194,18 @@ These three concepts are related but different.
 Smallest extension unit.
 
 - one capability or process
-- in assistant today, commonly represented as `SKILL.md` plus some executable
+- in familiar today, commonly represented as `SKILL.md` plus some executable
   entrypoint
 - examples: `files`, `hook-logger`, `gateway-cli`
 
 ### Bundle
 
-Reusable collection of optional skills.
+Reusable collection of skills, kept in
+[`tabula-bundles`](https://github.com/bamanoz/tabula-bundles).
 
-- usually lives in a separate repository
-- materialized into the flat runtime surface when installed
-- examples: the `memory` bundle
+- referenced from a distro via `distro.toml`
+- materialized into the flat runtime surface at install time
+- examples: `base`, `files`, `drivers`, `memory`, `caveman`
 
 Bundles are capability packs.
 
@@ -190,22 +222,29 @@ Distros are not just bigger bundles. They decide what the runtime *is*.
 
 ## Installing and switching distros
 
-From a local path or GitHub tree URL:
+From a local path, `local:` URI, or `git+...` URI:
 
 ```bash
+tabula-distro install ./path/to/my-distro
+tabula-distro install local:./path/to/my-distro
+tabula-distro install "git+https://github.com/bamanoz/tabula-distrib.git@main#path=familiar"
 ```
 
 What this does:
 
-1. validate that the source matches the current installer expectation:
-   `boot.py`, `templates/`, and `skills/`
-2. copy it into `~/.tabula/distrib/<name>`
-3. resolve any bundles or individual skills declared in `distro.toml`
-4. update `~/.tabula/distrib/active`
-5. rebuild `boot.py`, `templates/`, and `skills/` symlink fan-out
+1. resolve the distro source (clone+checkout for git+, copy for local)
+2. validate that it provides `boot.py`, `templates/`, `skills/`,
+   and `distro.toml`
+3. resolve every bundle declared in `distro.toml` (git+ or local: sources;
+   pinned via lockfile)
+4. lay everything out under `~/.tabula/distrib/<name>/<generation>/`
+5. update `~/.tabula/distrib/<name>/current` and (if requested)
+   `~/.tabula/distrib/active`
+6. rebuild the flat `boot.py`, `templates/`, and `skills/` surface
 
-On source installs, `scripts/install-dev.sh --distro <name>` does the same as
-part of the install flow.
+For development, `scripts/install-dev.sh --distro <name>` does the same as
+part of the local install flow, picking up a sibling `tabula-distrib/`
+checkout automatically (override with `--distrib-root`).
 
 ## Designing a new distro
 
@@ -228,14 +267,15 @@ Good answers:
 
 You do not need every skill in every distro.
 
-- Assistant is broad.
+- Familiar is broad.
 - Guardian is narrow.
+- Ouroboros is moderate but very opinionated about self-state.
 
 That is a feature, not inconsistency.
 
 ### 3. Should boot be dynamic or fixed?
 
-Assistant-style boot:
+Familiar-style boot:
 
 - scans a skill tree
 - discovers tools and slash commands
@@ -283,5 +323,6 @@ Skills are how an agent grows.
 Bundles are how capabilities are shared.
 Distros are how complete agents become recognizable products.
 
-Today there are only two built-in distros. That is enough to prove the model,
-but not enough to call the ecosystem mature yet.
+Today there are three built-in distros (`familiar`, `guardian`, `ouroboros`).
+That is enough to demonstrate the model — broad / narrow / self-modifying — but
+not enough to call the ecosystem mature yet.

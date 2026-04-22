@@ -19,8 +19,9 @@ building and living with an agent.
 - Your agent's identity, memory, and config live as plain files under
   `~/.tabula/`. Like dotfiles, for an agent.
 - **Distros** package a kernel + a set of skills + a personality into a
-  product. Two ship today: `assistant` (general-purpose) and `guardian`
-  (sandboxed code execution). You can build your own.
+  product. Three ship today: `familiar` (general-purpose), `guardian`
+  (sandboxed code execution), and `ouroboros` (self-hosting/evolving). You can
+  build your own.
 
 A Tabula agent is something you own, can inspect, can break, can fix, and can
 grow over years. Not something you rent.
@@ -61,7 +62,7 @@ surface" phase.
 - **Solid:** kernel, process-based skills, distro model, official Anthropic /
   OpenAI SDK drivers, OpenAI-compatible HTTP gateway, real subagent processes,
   local memory via MemPalace.
-- **Maturing:** stable assistant skill-manifest versioning, subagent ops,
+- **Maturing:** stable familiar skill-manifest versioning, subagent ops,
   self-edit safety (git-backed rollback), skill distribution story.
 
 The project favors small, composable primitives over big features. It will
@@ -160,14 +161,15 @@ Pieces:
 ```text
 ~/.tabula/
 ├── distrib/
-│   ├── assistant/
-│   ├── guardian/
+│   ├── familiar/current/
+│   ├── guardian/current/
+│   ├── ouroboros/current/
 │   └── active -> familiar
-├── boot.py         -> distrib/active/boot.py
-├── templates/      -> distrib/active/templates
+├── boot.py         -> distrib/active/current/boot.py
+├── templates/      -> distrib/active/current/templates
 ├── skills/
-│   ├── lib/
-│   └── ...         -> distrib/active/skills/*
+│   ├── lib/        # kernel contract (from tabula repo)
+│   └── ...         # distro skills + bundle skills
 ├── config/global.toml
 ├── secrets.json
 ├── .env
@@ -177,20 +179,24 @@ Pieces:
 └── .venv/
 ```
 
-The active distro fans out into `boot.py`, `templates/`, and `skills/`.
-Shared runtime code lives in `skills/lib/`. Files like `IDENTITY.md`,
-`SOUL.md`, `AGENTS.md` under `templates/` are the agent's personality — edit
-them, or let the agent edit them.
+The active distro plus the bundles it declares fan out into `boot.py`,
+`templates/`, and `skills/`. The kernel-side contract lives in `skills/lib/`.
+Files like `IDENTITY.md`, `SOUL.md`, `AGENTS.md` under `templates/` are the
+agent's personality — edit them, or let the agent edit them.
 
 ## Distros
 
 Distros are how you package a kernel + skills + personality into a product.
+They live in
+[`tabula-distrib`](https://github.com/bamanoz/tabula-distrib) and declare
+bundle dependencies against
+[`tabula-bundles`](https://github.com/bamanoz/tabula-bundles).
 
-### `assistant`
+### `familiar`
 
 Default general-purpose agent.
 
-- providers: Anthropic and OpenAI (official SDKs)
+- providers: Anthropic and OpenAI (official SDKs, from the `drivers` bundle)
 - gateways: CLI, OpenAI-compatible HTTP API, Telegram
 - tools: `files` (`read`, `list_dir`, `glob`, `grep`, `write`, `edit`, `multiedit`, `apply_patch`), `sessions`, `pair`, `mcp`,
   `timer`, `cron`, `clawhub`
@@ -208,17 +214,22 @@ Focused runtime for sandboxed Python execution.
 - builds its sandbox image during install
 - no files / mcp / sessions / memory / telegram / hooks
 
-Guardian is not a lesser assistant — it is a different product sharing the
-same kernel.
+### `ouroboros`
 
-More about what each distro contains lives in its own `distrib/<name>/`.
+Self-hosting distro for a long-running agent with persistent identity,
+scratchpad, task list, and knowledge base. Ships its own driver variants plus
+consciousness / control / evolve / review skills.
+
+More about what each distro contains lives in the
+[`tabula-distrib`](https://github.com/bamanoz/tabula-distrib) repo.
 
 ## Documentation
 
 - [`docs/PHILOSOPHY.md`](docs/PHILOSOPHY.md) — why Tabula is shaped like Linux / Neovim
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how kernel, boot, distros, and skills fit together
 - [`docs/SKILL_AUTHORING.md`](docs/SKILL_AUTHORING.md) — practical guide to writing skills
-- [`docs/DISTROS.md`](docs/DISTROS.md) — what distros are and what `assistant` / `guardian` mean
+- [`docs/DISTROS.md`](docs/DISTROS.md) — what distros are and what `familiar` / `guardian` / `ouroboros` mean
+- [`docs/distro-config.md`](docs/distro-config.md) — `distro.toml` reference
 
 ## Common commands
 
@@ -319,10 +330,12 @@ convention of the current distro, not a platform rule.
 This is the same mechanism the agent uses when it writes a new skill for
 itself — there is no separate "agent-authored skills" path.
 
-See `distrib/familiar/skills/skill-contract/SKILL.md` for the current
-familiar skill convention. Contract versioning across the wire protocol,
-boot output, familiar skill manifests, and `skills/lib/` is still being
-stabilized; don't rely on internal lib APIs yet.
+See the
+[`skill-contract`](https://github.com/bamanoz/tabula-bundles/tree/main/base/skill-contract)
+skill in `tabula-bundles` for the current familiar skill convention. Contract
+versioning across the wire protocol, boot output, familiar skill manifests,
+and `skills/lib/` is still being stabilized; don't rely on internal lib APIs
+yet.
 
 ## Testing
 
