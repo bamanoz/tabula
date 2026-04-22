@@ -233,7 +233,7 @@ def _install_skill(src: Path, dst: Path, *, override: bool, label: str) -> None:
     _copytree(src, dst)
 
 
-def _install_bundle(bundle_root: Path, skills_dir: Path, *, allowlist: tuple[str, ...],
+def _install_bundle(bundle_root: Path, skills_dir: Path, *, allowlist: tuple[str, ...] | None,
                     override: bool, bundle_name: str) -> None:
     if not bundle_root.is_dir():
         raise InstallError(f"bundle {bundle_name}: source is not a directory: {bundle_root}")
@@ -248,7 +248,7 @@ def _install_bundle(bundle_root: Path, skills_dir: Path, *, allowlist: tuple[str
         if entry.name.startswith("_"):
             support_dirs.append(entry)
             continue
-        if allowlist and entry.name not in allowlist:
+        if allowlist is not None and entry.name not in allowlist:
             continue
         skills_to_install.append(entry)
 

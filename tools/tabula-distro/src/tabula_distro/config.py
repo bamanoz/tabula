@@ -33,7 +33,10 @@ from pathlib import Path
 class BundleEntry:
     name: str
     source: str
-    skills: tuple[str, ...] = ()
+    # None  = no allowlist, install every skill in the bundle
+    # ()    = explicit empty allowlist, install no skills (only _* support dirs)
+    # (...) = install only the named skills
+    skills: tuple[str, ...] | None = None
     override: bool = False
 
 
@@ -104,13 +107,17 @@ def _merge(base: dict, override: dict) -> dict:
 
 def _parse_bundle(entry: dict) -> BundleEntry:
     _require(entry, ("name", "source"), kind="bundle")
-    skills = entry.get("skills") or ()
-    if not all(isinstance(s, str) for s in skills):
-        raise ConfigError(f"bundle {entry['name']!r}: 'skills' must be list[str]")
+    if "skills" in entry:
+        skills_raw = entry["skills"] or []
+        if not isinstance(skills_raw, list) or not all(isinstance(s, str) for s in skills_raw):
+            raise ConfigError(f"bundle {entry['name']!r}: 'skills' must be list[str]")
+        skills: tuple[str, ...] | None = tuple(skills_raw)
+    else:
+        skills = None
     return BundleEntry(
         name=entry["name"],
         source=entry["source"],
-        skills=tuple(skills),
+        skills=skills,
         override=bool(entry.get("override", False)),
     )
 
