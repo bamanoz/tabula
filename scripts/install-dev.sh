@@ -3,32 +3,27 @@
 # via ``tabula-distro install``.
 #
 # Usage:
-#   bash scripts/install-dev.sh                                  # familiar from ../tabula-distrib
-#   bash scripts/install-dev.sh --distro guardian                # named distro from --distrib-root
-#   bash scripts/install-dev.sh --distro /abs/path/to/distro     # local absolute path
-#   bash scripts/install-dev.sh --distro ./relative/distro       # local relative path
-#   bash scripts/install-dev.sh --distro local:/abs/path         # explicit local: URI
+#   bash scripts/install-dev.sh --distro /abs/path/to/distro
+#   bash scripts/install-dev.sh --distro ./relative/distro
+#   bash scripts/install-dev.sh --distro local:/abs/path
 #   bash scripts/install-dev.sh --distro 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=guardian'
-#   bash scripts/install-dev.sh --distrib-root ~/src/tabula-distrib --distro familiar
 #
 # --distro accepts:
-#   * a name        -> resolved against --distrib-root (default: ../tabula-distrib)
 #   * an absolute or ./../ relative path to a local distro directory
 #   * a 'local:<path>' URI passed through to tabula-distro
 #   * a 'git+<url>@<ref>#path=<subpath>' URI passed through to tabula-distro
+#
+# Default: ../tabula-distrib/familiar (sibling checkout of tabula-distrib).
 set -euo pipefail
 
-DISTRO="familiar"
-DISTRIB_ROOT=""
+DISTRO=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --distro) DISTRO="$2"; shift 2 ;;
     --distro=*) DISTRO="${1#*=}"; shift ;;
-    --distrib-root) DISTRIB_ROOT="$2"; shift 2 ;;
-    --distrib-root=*) DISTRIB_ROOT="${1#*=}"; shift ;;
     -h|--help)
-      sed -n '2,20p' "$0"
+      sed -n '2,17p' "$0"
       exit 0
       ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -41,17 +36,27 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV="$TABULA_HOME/.venv"
 
-# Resolve the --distro argument into:
-#   DISTRO_SOURCE — what gets passed to `tabula-distro install` (path or URI)
+# Default: sibling tabula-distrib/familiar.
+if [ -z "$DISTRO" ]; then
+  if [ -d "$REPO_ROOT/../tabula-distrib/familiar" ]; then
+    DISTRO="$(cd "$REPO_ROOT/../tabula-distrib/familiar" && pwd)"
+  else
+    echo "error: --distro not given and no ../tabula-distrib/familiar found" >&2
+    echo "  pass --distro <path> or --distro 'git+...#path=<distro>'" >&2
+    exit 1
+  fi
+fi
+
+# Resolve --distro into:
+#   DISTRO_SOURCE — what gets passed to `tabula-distro install`
 #   DISTRO_NAME   — short label for logging / post-install hook lookup
-#   POST_INSTALL  — optional install.sh path (only when source is a local dir)
+#   POST_INSTALL  — install.sh path (only for local sources)
 DISTRO_SOURCE=""
 DISTRO_NAME=""
 POST_INSTALL=""
 
 case "$DISTRO" in
-  git+*|local:*)
-    # Pass URI through; derive a name from #path= or last URI segment.
+  git+*)
     DISTRO_SOURCE="$DISTRO"
     if [[ "$DISTRO" == *"#path="* ]]; then
       DISTRO_NAME="${DISTRO##*#path=}"
@@ -62,36 +67,26 @@ case "$DISTRO" in
       DISTRO_NAME="${DISTRO_NAME%.git*}"
     fi
     ;;
+  local:*)
+    DISTRO_SOURCE="$DISTRO"
+    LOCAL_PATH="${DISTRO#local:}"
+    DISTRO_NAME="$(basename "$LOCAL_PATH")"
+    if [ -d "$LOCAL_PATH" ]; then
+      POST_INSTALL="$LOCAL_PATH/install.sh"
+    fi
+    ;;
   /*|./*|../*)
+    if [ ! -d "$DISTRO" ]; then
+      echo "error: distro source not found: $DISTRO" >&2
+      exit 1
+    fi
     DISTRO_SOURCE="$(cd "$DISTRO" && pwd)"
     DISTRO_NAME="$(basename "$DISTRO_SOURCE")"
     POST_INSTALL="$DISTRO_SOURCE/install.sh"
     ;;
   *)
-    # Bare name — look up in DISTRIB_ROOT (defaulting to sibling tabula-distrib).
-    if [ -z "$DISTRIB_ROOT" ] && [ -d "$REPO_ROOT/../tabula-distrib" ]; then
-      DISTRIB_ROOT="$(cd "$REPO_ROOT/../tabula-distrib" && pwd)"
-    fi
-    if [ -z "$DISTRIB_ROOT" ]; then
-      echo "error: --distro '$DISTRO' is a bare name but no tabula-distrib checkout found" >&2
-      echo "  hint: clone https://github.com/bamanoz/tabula-distrib next to this repo," >&2
-      echo "        pass --distrib-root, or pass a full path / git+ URI to --distro" >&2
-      exit 1
-    fi
-    DISTRO_SOURCE="$DISTRIB_ROOT/$DISTRO"
-    DISTRO_NAME="$DISTRO"
-    POST_INSTALL="$DISTRO_SOURCE/install.sh"
-    ;;
-esac
-
-# For local-path sources, sanity-check the directory exists up front so we fail
-# early rather than inside tabula-distro.
-case "$DISTRO_SOURCE" in
-  /*|./*|../*)
-    if [ ! -d "$DISTRO_SOURCE" ]; then
-      echo "error: distro source not found: $DISTRO_SOURCE" >&2
-      exit 1
-    fi
+    echo "error: --distro must be a path (./..., /abs), local: URI, or git+ URI; got: $DISTRO" >&2
+    exit 2
     ;;
 esac
 
