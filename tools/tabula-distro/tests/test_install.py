@@ -181,10 +181,24 @@ class InstallTests(unittest.TestCase):
             home = root / "home"
             distro = _make_minimal_distro(root)
             installmod.install(distro, home)
+            # Mutate the distro tree so the second install is not a no-op.
+            (distro / "skills" / "extra").mkdir()
+            (distro / "skills" / "extra" / "SKILL.md").write_text("# extra\n", encoding="utf-8")
             installmod.install(distro, home)
             gs = gens.list_generations(home, "demo")
             self.assertEqual([g.number for g in gs], [1, 2])
             self.assertEqual(gens.current_generation(home, "demo").number, 2)
+
+    def test_identical_reinstall_reuses_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root)
+            gen1, _ = installmod.install(distro, home)
+            gen2, _ = installmod.install(distro, home)
+            self.assertEqual(gen1.number, gen2.number)
+            gs = gens.list_generations(home, "demo")
+            self.assertEqual([g.number for g in gs], [1])
 
     def test_rollback(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -192,6 +206,8 @@ class InstallTests(unittest.TestCase):
             home = root / "home"
             distro = _make_minimal_distro(root)
             installmod.install(distro, home)
+            (distro / "skills" / "extra").mkdir()
+            (distro / "skills" / "extra" / "SKILL.md").write_text("# extra\n", encoding="utf-8")
             installmod.install(distro, home)
             target = installmod.rollback(home, "demo")
             self.assertEqual(target.number, 1)

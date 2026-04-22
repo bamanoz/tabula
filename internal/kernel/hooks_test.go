@@ -22,6 +22,7 @@ func (e *testEnv) connectHook(name string, hooks []HookSubscription) *websocket.
 		Sends:    []string{"hook_result"},
 		Receives: []string{"hook"},
 		Hooks:    hooks,
+		Version:  ProtocolVersion,
 	})
 	msg := readMsg(e.t, conn)
 	if msg.Type != "connected" {

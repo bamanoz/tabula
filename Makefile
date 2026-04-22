@@ -3,16 +3,21 @@
 TABULA_HOME ?= .
 VENV_PYTHON = .venv/bin/python3
 
+VERSION  := $(shell cat VERSION)
+COMMIT   := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+DATE     := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS  := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
+
 # Build
 
 build:
-	go build -o bin/tabula ./cmd/tabula/
+	go build -ldflags "$(LDFLAGS)" -o bin/tabula ./cmd/tabula/
 
 build-windows:
-	GOOS=windows go build -o bin/tabula.exe ./cmd/tabula/
+	GOOS=windows go build -ldflags "$(LDFLAGS)" -o bin/tabula.exe ./cmd/tabula/
 
 build-linux:
-	GOOS=linux go build -o bin/tabula-linux ./cmd/tabula/
+	GOOS=linux go build -ldflags "$(LDFLAGS)" -o bin/tabula-linux ./cmd/tabula/
 
 build-all: build build-windows build-linux
 

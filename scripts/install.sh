@@ -1,7 +1,7 @@
 #!/bin/bash
 # Tabula installer — downloads pre-built kernel from GitHub Releases.
 #
-# This installs only the kernel layer (binary, launchers, skills/lib, venv,
+# This installs only the kernel layer (binary, launchers, skills/_lib, venv,
 # tabula-distro). After it finishes, install a distro separately:
 #
 #   tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=familiar'
@@ -299,6 +299,8 @@ for a in data.get('assets', []):
   if [ -f "$TABULA_HOME/examples/boot-cicd.py" ]; then
     cp "$TABULA_HOME/examples/boot-cicd.py" "$TABULA_HOME/boot-cicd.py"
   fi
+  # Record installed kernel version for tabula-distro compatibility checks.
+  printf '%s\n' "${VERSION#v}" > "$TABULA_HOME/VERSION"
   install -m 755 "$TABULA_HOME/bin/tabula-install-distro" "$BIN_DIR/tabula-install-distro"
   install -m 755 "$TABULA_HOME/scripts/install-distro.py" "$BIN_DIR/install-distro.py"
   chmod +x "$BIN_DIR/tabula-server" "$BIN_DIR/tabula-cli" "$BIN_DIR/tabula-api" "$BIN_DIR/tabula-install-distro" 2>/dev/null || true

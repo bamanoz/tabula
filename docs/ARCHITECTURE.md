@@ -44,7 +44,7 @@ memory, MCP, or any other product feature. Those are all userland skills.
 ### Built-in kernel tools
 
 Current built-ins are defined in `internal/kernel/protocol.go` and mirrored in
-`skills/lib/protocol.py`:
+`skills/_lib/protocol.py`:
 
 - `shell_exec`
 - `process_spawn`
@@ -72,8 +72,26 @@ Skills talk to the kernel over WebSocket using JSON messages.
 Protocol version:
 
 - Go side: `internal/kernel/protocol.go`
-- Python side: `skills/lib/protocol.py`
+- Python side: `skills/_lib/protocol.py`
 - current version: `1`
+- Clients **must** declare `version` on `connect`. Mismatched or missing
+  versions are rejected with an `error` message — there is no legacy fallback.
+
+## Versioning
+
+The kernel binary and its `skills/_lib/` runtime contract share a single SemVer.
+Source of truth: `<repo>/VERSION` (synced by release tooling into Go ldflags
+and `skills/_lib/__init__.py:__version__`). Installers also write the version to
+`$TABULA_HOME/VERSION` so `tabula-distro` can verify compatibility before
+composing a distro.
+
+Distros and bundles declare their requirement against this number:
+
+- `distro.toml` → `[requires] kernel = ">=0.8.0,<1.0.0"`
+- `bundle.toml` → `[requires] kernel = ">=0.8.0,<1.0.0"`
+
+Mismatches are hard errors at install time. Bundles without a `bundle.toml` are
+treated as legacy and skip the check.
 
 Important message types:
 
@@ -93,7 +111,7 @@ Every skill uses the same basic lifecycle:
 6. optionally receive `init`
 7. enter message loop
 
-The shared Python wrapper for this is `skills/lib/kernel_client.py`.
+The shared Python wrapper for this is `skills/_lib/kernel_client.py`.
 
 ## Boot
 
@@ -162,7 +180,7 @@ completely different runtime philosophy.
 Tabula is split across three repositories:
 
 - [`tabula`](https://github.com/bamanoz/tabula) — the kernel, the thin
-  `skills/lib` runtime contract, the `tabula-distro` installer, and
+  `skills/_lib` runtime contract, the `tabula-distro` installer, and
   installation scripts.
 - [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles) — reusable
   skill bundles: `base/`, `files/`, `drivers/`, `memory/`, `caveman/`. These
@@ -203,7 +221,7 @@ The selected distro is activated through symlinks/copies under
 ~/.tabula/skills/*                   -> distrib/active/current/skills/* + bundle skills
 ```
 
-The exception is `skills/lib/`, which is shared runtime code copied in
+The exception is `skills/_lib/`, which is shared runtime code copied in
 separately from the kernel repo and preserved when distros are switched.
 
 This flat runtime surface is important: the active agent sees one `skills/`
@@ -327,7 +345,7 @@ Shared runtime: `skills._drivers.subagent_runtime` (in the `drivers` bundle).
 
 ## Shared runtime library
 
-`skills/lib/` is the *minimal* shared Python code that every skill uses to
+`skills/_lib/` is the *minimal* shared Python code that every skill uses to
 talk to the kernel. It lives in the kernel repo (`tabula`) and is shipped in
 every install, regardless of which distro is active.
 
@@ -391,7 +409,7 @@ There are two main installation paths.
 `scripts/install.sh` / `scripts/install.ps1`:
 
 - download the Go binary from GitHub Releases
-- download the runtime payload tarball (kernel-side `skills/lib`, launchers,
+- download the runtime payload tarball (kernel-side `skills/_lib`, launchers,
   examples, service files, the `tabula-distro` source)
 - create `~/.tabula/.venv` and install Python runtime dependencies
 - install `tabula-distro` from the bundled tools/ directory and expose it on
@@ -408,7 +426,7 @@ tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#pa
 `scripts/install-dev.sh` / `scripts/install-dev.ps1`:
 
 - build the Go binary from source
-- install shared `skills/lib` from this repo
+- install shared `skills/_lib` from this repo
 - copy service files
 - create a venv with dev dependencies
 - install `tabula-distro` (editable) and expose it on `~/.tabula/bin`
@@ -427,7 +445,7 @@ There are three related but different layouts to keep in mind.
 
 The source tree is split across three repos:
 
-- `tabula/` — kernel, `skills/lib/` (kernel contract only), `tabula-distro`
+- `tabula/` — kernel, `skills/_lib/` (kernel contract only), `tabula-distro`
   installer
 - `tabula-bundles/` — reusable skill collections (`base/`, `files/`,
   `drivers/`, `memory/`, `caveman/`)
@@ -441,7 +459,7 @@ The running agent sees a flat tree under `~/.tabula/`:
 - one active `boot.py`
 - one active `templates/`
 - one active `skills/`
-- shared `skills/lib/`
+- shared `skills/_lib/`
 
 ### Tool execution layout
 
@@ -493,7 +511,7 @@ If you are extending Tabula, the important seams are:
 - **tool call <-> skill** — familiar currently defaults to `run.py tool <name>`
   via stdin/stdout when `exec` is not explicitly provided; the platform itself
   only needs an executable command
-- **kernel runtime contract <-> skills** — `skills/lib/` (kernel)
+- **kernel runtime contract <-> skills** — `skills/_lib/` (kernel)
 - **driver/subagent runtime <-> drivers bundle** — `skills._drivers.*`
 
 Those are the places where contracts matter.
@@ -508,5 +526,5 @@ Those are the places where contracts matter.
   `guardian/`, `ouroboros/` distros
 - [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles) — reusable
   skill bundles
-- `skills/lib/protocol.py` — Python-side protocol constants
+- `skills/_lib/protocol.py` — Python-side protocol constants
 - `internal/kernel/protocol.go` — Go-side protocol constants

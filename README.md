@@ -183,7 +183,7 @@ Pieces:
 ```
 
 The active distro plus the bundles it declares fan out into `boot.py`,
-`templates/`, and `skills/`. The kernel-side contract lives in `skills/lib/`.
+`templates/`, and `skills/`. The kernel-side contract lives in `skills/_lib/`.
 Files like `IDENTITY.md`, `SOUL.md`, `AGENTS.md` under `templates/` are the
 agent's personality — edit them, or let the agent edit them.
 
@@ -337,7 +337,7 @@ See the
 [`skill-contract`](https://github.com/bamanoz/tabula-bundles/tree/main/base/skill-contract)
 skill in `tabula-bundles` for the current familiar skill convention. Contract
 versioning across the wire protocol, boot output, familiar skill manifests,
-and `skills/lib/` is still being stabilized; don't rely on internal lib APIs
+and `skills/_lib/` is still being stabilized; don't rely on internal lib APIs
 yet.
 
 ## Testing

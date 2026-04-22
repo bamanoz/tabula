@@ -50,7 +50,7 @@ Copy-Item (Join-Path $RepoRoot "examples" "boot-cicd.py") -Destination (Join-Pat
 $SkillsDest = Join-Path $TabulaHome "skills"
 if (Test-Path $SkillsDest) { Remove-Item -Recurse -Force $SkillsDest }
 New-Item -ItemType Directory -Force -Path $SkillsDest | Out-Null
-Copy-Item (Join-Path $RepoRoot "skills" "lib") -Destination (Join-Path $SkillsDest "lib") -Recurse -Force
+Copy-Item (Join-Path $RepoRoot "skills" "_lib") -Destination (Join-Path $SkillsDest "_lib") -Recurse -Force
 Get-ChildItem -Path $SkillsDest -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
 
 # Test/dev runtime skills
@@ -77,9 +77,16 @@ Write-Host "Python dependencies installed"
 # Go binary
 Write-Host "Building Go binary..."
 $BinPath = Join-Path $BinDir "tabula.exe"
+$VersionStr = (Get-Content (Join-Path $RepoRoot "VERSION") -Raw).Trim()
+try { $CommitStr = (& git -C $RepoRoot rev-parse --short HEAD).Trim() } catch { $CommitStr = "unknown" }
+$DateStr = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+$LdFlags = "-X main.version=$VersionStr -X main.commit=$CommitStr -X main.date=$DateStr"
 Push-Location $RepoRoot
-go build -o $BinPath ./cmd/tabula/
+go build -ldflags $LdFlags -o $BinPath ./cmd/tabula/
 Pop-Location
+
+# Record installed kernel version for tabula-distro compatibility checks.
+Set-Content -Path (Join-Path $TabulaHome "VERSION") -Value $VersionStr -NoNewline
 
 # Launch scripts
 foreach ($script in @("tabula-server.ps1", "tabula-cli.ps1", "tabula-api.ps1", "tabula-install-distro.ps1")) {

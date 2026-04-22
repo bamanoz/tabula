@@ -41,11 +41,12 @@ class LockEntry:
     subpath: str | None = None        # git only
     resolved_path: str | None = None  # local only
     fetched_at: str | None = None
+    version: str | None = None        # bundle/skill version from manifest, if known
 
     def to_json(self) -> dict:
         out: dict = {"source": self.source}
         for key in ("resolved_sha", "resolved_ref", "subpath",
-                    "resolved_path", "fetched_at"):
+                    "resolved_path", "fetched_at", "version"):
             val = getattr(self, key)
             if val is not None:
                 out[key] = val
@@ -60,6 +61,7 @@ class LockEntry:
             subpath=data.get("subpath"),
             resolved_path=data.get("resolved_path"),
             fetched_at=data.get("fetched_at"),
+            version=data.get("version"),
         )
 
 
@@ -70,6 +72,8 @@ class Lock:
     skills: dict[str, LockEntry] = field(default_factory=dict)
     generated_at: str | None = None
     distro_source: str | None = None  # original URI passed to install (for `update`)
+    distro_version: str | None = None  # [distro].version, if declared
+    kernel_version: str | None = None  # installed kernel version at install time
 
     def to_json(self) -> dict:
         out: dict = {
@@ -81,6 +85,10 @@ class Lock:
         }
         if self.distro_source is not None:
             out["distro_source"] = self.distro_source
+        if self.distro_version is not None:
+            out["distro_version"] = self.distro_version
+        if self.kernel_version is not None:
+            out["kernel_version"] = self.kernel_version
         return out
 
     @classmethod
@@ -94,6 +102,8 @@ class Lock:
             skills={k: LockEntry.from_json(v) for k, v in data.get("skills", {}).items()},
             generated_at=data.get("generated_at"),
             distro_source=data.get("distro_source"),
+            distro_version=data.get("distro_version"),
+            kernel_version=data.get("kernel_version"),
         )
 
 

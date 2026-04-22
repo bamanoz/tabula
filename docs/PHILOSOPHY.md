@@ -84,7 +84,7 @@ This is what we mean by *the agent grows with you*.
 
 People will only invest in writing skills if those skills don't break next
 month. The wire protocol is versioned. The `SKILL.md` contract will be
-versioned. The `skills/lib/` public surface will be narrow and stable.
+versioned. The `skills/_lib/` public surface will be narrow and stable.
 
 Features can move fast inside the kernel. Contracts cannot.
 

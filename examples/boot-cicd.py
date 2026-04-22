@@ -42,7 +42,7 @@ load_env()
 
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
 
-from skills.lib.provider_selection import build_driver_command, resolve_provider
+from skills._lib.provider_selection import build_driver_command, resolve_provider
 
 VENV_PYTHON = os.path.join(TABULA_HOME, ".venv", "bin", "python3")
 

@@ -77,6 +77,7 @@ func (e *testEnv) connect(name string, sends, receives []string) *websocket.Conn
 		Name:     name,
 		Sends:    sends,
 		Receives: receives,
+		Version:  ProtocolVersion,
 	})
 	msg := readMsg(e.t, conn)
 	if msg.Type != "connected" {
@@ -156,6 +157,7 @@ func (e *testEnv) connectWithDepth(name string, depth int, sends, receives []str
 		Sends:    sends,
 		Receives: receives,
 		Token:    token,
+		Version:  ProtocolVersion,
 	})
 	msg := readMsg(e.t, conn)
 	if msg.Type != "connected" {
@@ -188,6 +190,7 @@ func TestConnectJoinHandshake(t *testing.T) {
 		Name:     "client-a",
 		Sends:    []string{"message"},
 		Receives: []string{"message"},
+		Version:  ProtocolVersion,
 	})
 	msg1 := readMsg(t, conn1)
 	if msg1.Type != "connected" || msg1.ID != "c1" {
@@ -208,6 +211,7 @@ func TestConnectJoinHandshake(t *testing.T) {
 		Name:     "client-b",
 		Sends:    []string{"message"},
 		Receives: []string{"message"},
+		Version:  ProtocolVersion,
 	})
 	msg2 := readMsg(t, conn2)
 	if msg2.ID != "c2" {
@@ -221,6 +225,7 @@ func TestConnectJoinHandshake(t *testing.T) {
 		Name:     "client-c",
 		Sends:    []string{"message"},
 		Receives: []string{"message"},
+		Version:  ProtocolVersion,
 	})
 	msg3 := readMsg(t, conn3)
 	if msg3.ID != "c3" {
@@ -1515,6 +1520,7 @@ func TestSpawnTokenOneTimeUse(t *testing.T) {
 		Sends:    []string{"tool_use"},
 		Receives: []string{"init", "tool_result"},
 		Token:    token,
+		Version:  ProtocolVersion,
 	})
 	msg1 := readMsg(t, conn1)
 	if msg1.Type != "connected" {
@@ -1535,6 +1541,7 @@ func TestSpawnTokenOneTimeUse(t *testing.T) {
 		Sends:    []string{"tool_use"},
 		Receives: []string{"init", "tool_result"},
 		Token:    token,
+		Version:  ProtocolVersion,
 	})
 	msg2 := readMsg(t, conn2)
 	if msg2.Type != "error" {
@@ -1759,6 +1766,7 @@ func TestExpiredSpawnTokenRejectedOnConnect(t *testing.T) {
 		Sends:    []string{"tool_use"},
 		Receives: []string{"init", "tool_result"},
 		Token:    "expired-token",
+		Version:  ProtocolVersion,
 	})
 
 	msg := readMsg(t, conn)
@@ -1809,19 +1817,21 @@ func TestProtocolVersionInConnectedResponse(t *testing.T) {
 	}
 }
 
-func TestLegacyClientAccepted(t *testing.T) {
+func TestLegacyClientRejected(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.dial()
-	// Version 0 = legacy, should be accepted
+	// Version 0 (omitted) — must be rejected; clients must declare PROTOCOL_VERSION.
 	writeJSON(t, conn, Message{
 		Type:  "connect",
 		Name:  "legacy-client",
 		Sends: []string{"message"},
-		// no Version field — defaults to 0
 	})
 	msg := readMsg(t, conn)
-	if msg.Type != "connected" {
-		t.Fatalf("expected connected for legacy client, got %s", msg.Type)
+	if msg.Type != "error" {
+		t.Fatalf("expected error for missing protocol version, got %s", msg.Type)
+	}
+	if !strings.Contains(msg.Text, "unsupported protocol version") {
+		t.Errorf("unexpected error text: %q", msg.Text)
 	}
 }
 

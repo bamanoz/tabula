@@ -1,1 +1,0 @@
-../distrib/familiar/templates/SYSTEM.md

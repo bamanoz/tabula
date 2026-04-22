@@ -33,7 +33,7 @@ type ProcessHandle interface {
 type LocalProcessLauncher struct{}
 
 func (l *LocalProcessLauncher) Start(command string, env []string) (ProcessHandle, error) {
-	cmd := shell.Command(command)
+	cmd := shell.SpawnCommand(command)
 	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", os.DevNull, err)
@@ -68,9 +68,17 @@ type localProcessHandle struct {
 	devNull *os.File
 }
 
-func (h *localProcessHandle) PID() int      { return h.cmd.Process.Pid }
-func (h *localProcessHandle) Signal() error { return h.cmd.Process.Signal(os.Interrupt) }
-func (h *localProcessHandle) Kill() error   { return h.cmd.Process.Kill() }
+func (h *localProcessHandle) PID() int { return h.cmd.Process.Pid }
+
+// Signal sends SIGINT to the whole process group so children spawned by the
+// wrapping shell (e.g. “sh -c "sleep 60"“) are interrupted too. On Windows
+// (where we can't create a process group) we fall back to signaling the root
+// process.
+func (h *localProcessHandle) Signal() error { return signalProcess(h.cmd.Process, interruptSignal) }
+
+// Kill sends SIGKILL to the whole process group (falling back to the root
+// process). Must be used only after Signal() followed by a grace period.
+func (h *localProcessHandle) Kill() error { return signalProcess(h.cmd.Process, killSignal) }
 func (h *localProcessHandle) Wait() error {
 	err := h.cmd.Wait()
 	h.devNull.Close()

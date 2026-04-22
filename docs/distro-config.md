@@ -14,8 +14,11 @@ tree as-is".
 
 ```toml
 [distro]
-name = "ouroboros"
-# kernel = ">=0.3"   # reserved, not enforced yet
+name    = "ouroboros"
+version = "0.1.0"
+
+[requires]
+kernel = ">=0.8.0,<1.0.0"
 
 [[bundles]]
 name   = "memory"
@@ -35,11 +38,35 @@ source = "git+https://github.com/foo/weather-skill.git@main#path=skill"
 ### Fields
 
 - `[distro].name` — installed distro name. Defaults to the directory name.
+- `[distro].version` — optional SemVer (`MAJOR.MINOR.PATCH`). Recorded in
+  the lockfile; used by external tooling.
+- `[requires].kernel` — optional SemVer constraint against the installed
+  kernel version (read from `$TABULA_HOME/VERSION`). Hard-fails on mismatch
+  before any work is done. Operators: `>=`, `>`, `<=`, `<`, `==`; clauses
+  joined by commas (AND). Example: `">=0.8.0,<1.0.0"`.
 - `[[bundles]]` / `[[skills]]` — ordered arrays of external sources.
   - `name` — required. Target path under `skills/`.
   - `source` — required. See URI grammar below.
   - `skills` — bundles only. Allowlist of skill subdirectories to include.
   - `override` — required to replace a pre-existing target with the same name.
+
+### Bundle manifests
+
+Each external bundle may include a `bundle.toml` at its root that mirrors the
+distro schema:
+
+```toml
+[bundle]
+name    = "drivers"
+version = "0.1.0"
+
+[requires]
+kernel = ">=0.8.0,<1.0.0"
+```
+
+When present, `[requires].kernel` is enforced just like the distro-level
+constraint. Bundles without a `bundle.toml` are accepted as legacy/unversioned
+and skip the check (their entry in `distro.lock.json` will have no `version`).
 
 ### Source URI grammar
 
@@ -90,12 +117,15 @@ root (`$TABULA_HOME/distrib/<name>/distro.lock.json`). Example:
 {
   "version": 1,
   "distro": "ouroboros",
+  "distro_version": "0.1.0",
+  "kernel_version": "0.8.0",
   "generated_at": "2026-04-21T14:30:00Z",
   "bundles": {
     "memory": {
       "source":       "git+https://.../@main",
       "resolved_sha": "abc123…",
       "resolved_ref": "main",
+      "version":      "0.1.0",
       "fetched_at":   "2026-04-21T14:30:00Z"
     }
   },

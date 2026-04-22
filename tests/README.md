@@ -17,7 +17,7 @@
 - `unit`: fast logic-only modules in `tests/` such as `tests/test_boot.py`, `tests/test_compaction.py`, `tests/test_gateway_api.py`, `tests/test_slash_commands.py`, `tests/test_system_prompt.py`, `tests/test_telegram_gateway.py`
 - `smoke`: `tests/test_runtime_smoke.py`
 - `e2e`: `tests/test_hooks_e2e.py`, `tests/test_mcp_e2e.py`, `tests/test_mock_driver_e2e.py`, `tests/test_observer.py`, `tests/test_openai_subagent_e2e.py`, `tests/test_subagent_e2e.py`
-- `contract`: `skills/lib/test_protocol.py`, `skills/hook-permissions/test_permissions.py`
+- `contract`: `skills/_lib/test_protocol.py`, `skills/hook-permissions/test_permissions.py`
 - `manual`: `tests/test_hooks_real.py`, `tests/test_real_subagent.py`, `tests/test_*_diag.py`
 
 ## Notes

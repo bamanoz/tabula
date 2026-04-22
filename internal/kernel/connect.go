@@ -29,8 +29,9 @@ func (h *Hub) buildConnectPlan(c *Client, msg *Message) connectPlan {
 		hooks:    msg.Hooks,
 	}
 
-	// Version 0 means legacy client — we accept it for backwards compatibility.
-	if msg.Version != 0 && msg.Version != ProtocolVersion {
+	// Protocol version must match exactly. Version 0 is no longer accepted —
+	// clients must declare PROTOCOL_VERSION on connect.
+	if msg.Version != ProtocolVersion {
 		return connectPlan{errorMsg: fmt.Sprintf("unsupported protocol version %d (kernel expects %d)", msg.Version, ProtocolVersion)}
 	}
 

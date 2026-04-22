@@ -4,7 +4,7 @@
 # Installs only the kernel layer:
 #   * Go binary (built from this repo)
 #   * launch scripts (tabula-server, tabula-cli, tabula-api, tabula-install-distro)
-#   * shared skill library (skills/lib/) — the kernel-side contract
+#   * shared skill library (skills/_lib/) — the kernel-side contract
 #   * Python venv with runtime + dev dependencies
 #   * tabula-distro installer (editable, from tools/tabula-distro)
 #   * service unit templates
@@ -45,7 +45,7 @@ cp "$REPO_ROOT/examples/boot-cicd.py" "$TABULA_HOME/"
 # by tabula-distro).
 mkdir -p "$TABULA_HOME/skills"
 rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
-  "$REPO_ROOT/skills/lib/" "$TABULA_HOME/skills/lib/"
+  "$REPO_ROOT/skills/_lib/" "$TABULA_HOME/skills/_lib/"
 
 # Global config (don't overwrite user edits)
 mkdir -p "$TABULA_HOME/config"
@@ -68,7 +68,13 @@ echo "    Python dependencies installed"
 
 # Go binary
 echo "==> Building Go binary"
-( cd "$REPO_ROOT" && go build -o "$BIN_DIR/tabula" ./cmd/tabula/ )
+VERSION_STR="$(cat "$REPO_ROOT/VERSION")"
+COMMIT_STR="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+DATE_STR="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+LDFLAGS="-X main.version=$VERSION_STR -X main.commit=$COMMIT_STR -X main.date=$DATE_STR"
+( cd "$REPO_ROOT" && go build -ldflags "$LDFLAGS" -o "$BIN_DIR/tabula" ./cmd/tabula/ )
+# Record installed kernel version for tabula-distro compatibility checks.
+echo "$VERSION_STR" > "$TABULA_HOME/VERSION"
 if [ "$(uname)" = "Darwin" ]; then
   codesign --force --sign - "$BIN_DIR/tabula" 2>/dev/null || true
 fi

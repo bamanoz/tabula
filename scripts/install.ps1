@@ -182,6 +182,8 @@ try {
     if (Test-Path $BootCicd) {
         Copy-Item $BootCicd -Destination (Join-Path $TabulaHome "boot-cicd.py") -Force
     }
+    # Record installed kernel version for tabula-distro compatibility checks.
+    Set-Content -Path (Join-Path $TabulaHome "VERSION") -Value $VerBare -NoNewline
     $InstalledBinDir = Join-Path $TabulaHome "bin"
     Copy-Item (Join-Path $InstalledBinDir "tabula-install-distro.ps1") -Destination (Join-Path $BinDir "tabula-install-distro.ps1") -Force -ErrorAction SilentlyContinue
     Copy-Item (Join-Path $TabulaHome "scripts" "install-distro.py") -Destination (Join-Path $BinDir "install-distro.py") -Force

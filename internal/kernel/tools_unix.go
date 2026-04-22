@@ -4,17 +4,16 @@ package kernel
 
 import (
 	"os/exec"
-	"syscall"
 )
 
-// Signal sends SIGINT to the process.
+// Signal sends SIGINT to the process group rooted at this process.
 func (p *SpawnedProcess) Signal() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.Handle != nil {
 		_ = p.Handle.Signal()
-	} else if p.Cmd.Process != nil {
-		_ = p.Cmd.Process.Signal(syscall.SIGINT)
+	} else if p.Cmd != nil && p.Cmd.Process != nil {
+		_ = signalProcess(p.Cmd.Process, interruptSignal)
 	}
 }
 

@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 PYTHON_CONTRACT_FILES = {
-    "skills/lib/test_protocol.py",
+    "skills/_lib/test_protocol.py",
 }
 
 

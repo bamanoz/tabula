@@ -1,6 +1,7 @@
 """Composition pipeline: resolve sources -> stage generation -> atomic switch."""
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 from dataclasses import dataclass
@@ -11,6 +12,8 @@ from . import generations as gens
 from . import lock as lockmod
 from . import sources as srcmod
 from .cache import GitCache
+from .manifest import ManifestError, load_bundle_manifest
+from .semver import Constraint, Version, VersionError
 from .sources import GitSource, LocalSource, Source
 
 
@@ -35,6 +38,107 @@ def _replace_dir(target: Path) -> None:
 
 class InstallError(RuntimeError):
     pass
+
+
+_FINGERPRINT_FILE = ".fingerprint"
+
+
+def _fingerprint_tree(root: Path) -> str:
+    """Stable hash of a staged distro tree.
+
+    Walks the tree deterministically and hashes (relative path, mode bit,
+    file content / symlink target). The ``.fingerprint`` marker file itself
+    is excluded so it doesn't perturb its own hash.
+    """
+    h = hashlib.sha256()
+    root = root.resolve()
+    entries: list[tuple[str, Path]] = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames.sort()
+        for name in sorted(filenames):
+            if name == _FINGERPRINT_FILE and Path(dirpath) == root:
+                continue
+            full = Path(dirpath) / name
+            rel = full.relative_to(root).as_posix()
+            entries.append((rel, full))
+    for rel, full in entries:
+        h.update(rel.encode("utf-8"))
+        h.update(b"\x00")
+        if full.is_symlink():
+            h.update(b"L")
+            h.update(os.readlink(full).encode("utf-8"))
+        else:
+            mode = "x" if os.access(full, os.X_OK) else "-"
+            h.update(mode.encode("ascii"))
+            with full.open("rb") as f:
+                while chunk := f.read(65536):
+                    h.update(chunk)
+        h.update(b"\n")
+    return h.hexdigest()
+
+
+def _generation_fingerprint(gen_path: Path) -> str | None:
+    """Return the cached fingerprint of an installed generation, if present."""
+    marker = gen_path / _FINGERPRINT_FILE
+    if marker.is_file():
+        return marker.read_text(encoding="utf-8").strip()
+    # Legacy generations installed before fingerprinting: compute on the fly so
+    # the next no-op install can dedupe against them too.
+    try:
+        return _fingerprint_tree(gen_path)
+    except FileNotFoundError:
+        return None
+
+
+def _read_kernel_version(home: Path) -> Version | None:
+    """Read installed kernel version from ``$TABULA_HOME/VERSION``.
+
+    Returns ``None`` if the file is absent (legacy install or uninitialised
+    home). Raises ``InstallError`` if the file exists but is malformed.
+    """
+    vfile = home / "VERSION"
+    if not vfile.is_file():
+        return None
+    raw = vfile.read_text(encoding="utf-8").strip()
+    if not raw:
+        return None
+    try:
+        return Version.parse(raw)
+    except VersionError as exc:
+        raise InstallError(f"$TABULA_HOME/VERSION is malformed: {exc}") from exc
+
+
+def _check_kernel_compat(distro: cfg.DistroConfig, kernel: Version | None) -> None:
+    """Hard-fail if the distro requires a kernel version that doesn't match."""
+    if distro.requires_kernel is None:
+        return
+    if kernel is None:
+        raise InstallError(
+            f"distro {distro.name!r} requires kernel {distro.requires_kernel.raw}, "
+            f"but no kernel version is recorded at $TABULA_HOME/VERSION "
+            f"(install/upgrade the kernel first via install.sh / install-dev.sh)"
+        )
+    if not distro.requires_kernel.matches(kernel):
+        raise InstallError(
+            f"distro {distro.name!r} requires kernel {distro.requires_kernel.raw}, "
+            f"but installed kernel is {kernel}"
+        )
+
+
+def _check_bundle_compat(bundle_name: str, manifest, kernel: Version | None) -> None:
+    """Hard-fail if a bundle requires a kernel version that doesn't match."""
+    if manifest.requires_kernel is None:
+        return
+    if kernel is None:
+        raise InstallError(
+            f"bundle {bundle_name!r} requires kernel {manifest.requires_kernel.raw}, "
+            f"but no kernel version is recorded at $TABULA_HOME/VERSION"
+        )
+    if not manifest.requires_kernel.matches(kernel):
+        raise InstallError(
+            f"bundle {bundle_name!r} requires kernel {manifest.requires_kernel.raw}, "
+            f"but installed kernel is {kernel}"
+        )
 
 
 def _resolve_distro_source(value: str | Path, home: Path, *, offline: bool) -> tuple[Path, str | None]:
@@ -90,6 +194,12 @@ def install(distro_dir: str | Path, home: Path, *,
         distro_dir, home, offline=offline,
     )
     distro = cfg.load(distro_path, override_name=override_name)
+
+    # Hard-fail before doing any work if the distro is incompatible with the
+    # installed kernel.
+    kernel_version = _read_kernel_version(home)
+    _check_kernel_compat(distro, kernel_version)
+
     plan = Plan(distro=distro, home=home, offline=offline, update=update, update_only=tuple(update_only))
 
     home.mkdir(parents=True, exist_ok=True)
@@ -104,14 +214,34 @@ def install(distro_dir: str | Path, home: Path, *,
         shutil.rmtree(staging)
 
     try:
-        new_lock = _stage(plan, staging)
+        new_lock = _stage(plan, staging, kernel_version=kernel_version)
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
 
     if distro_source_uri is not None:
         new_lock.distro_source = distro_source_uri
+    if distro.version is not None:
+        new_lock.distro_version = str(distro.version)
+    if kernel_version is not None:
+        new_lock.kernel_version = str(kernel_version)
 
+    # If the staged tree is byte-identical to the current generation, reuse it
+    # instead of promoting a new generation. Keeps `distrib/<name>/generations/`
+    # from growing on every no-op re-install.
+    staging_fp = _fingerprint_tree(staging)
+    current = gens.current_generation(home, distro.name)
+    if current is not None and _generation_fingerprint(current.path) == staging_fp:
+        shutil.rmtree(staging, ignore_errors=True)
+        # Refresh lockfile/runtime surface with any non-tree updates (e.g. new
+        # lock metadata) but keep the existing generation as current.
+        lockmod.save(gens.distro_root(home, distro.name) / "distro.lock.json", new_lock)
+        _expose_current(home, distro.name)
+        _set_active(home, distro.name)
+        _refresh_runtime_surface(home)
+        return current, new_lock
+
+    (staging / ".fingerprint").write_text(staging_fp, encoding="utf-8")
     os.replace(staging, new_path)
     new_gen = gens.Generation(number=int(new_name.split("-", 1)[0]), name=new_name, path=new_path)
 
@@ -125,7 +255,7 @@ def install(distro_dir: str | Path, home: Path, *,
     return new_gen, new_lock
 
 
-def _stage(plan: Plan, staging: Path) -> lockmod.Lock:
+def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lockmod.Lock:
     """Build a fully composed distro tree at ``staging`` and return its lock."""
     distro = plan.distro
     _copytree(distro.path, staging)
@@ -154,6 +284,10 @@ def _stage(plan: Plan, staging: Path) -> lockmod.Lock:
     for entry in distro.bundles:
         resolved_dir, lock_entry = _resolve(entry.source, distro.path, cache, plan,
                                            prior=_prior_bundle(prior_lock, entry.name))
+        manifest = load_bundle_manifest(resolved_dir)
+        _check_bundle_compat(entry.name, manifest, kernel_version)
+        if manifest.version is not None:
+            lock_entry.version = str(manifest.version)
         _install_bundle(resolved_dir, skills_dir, allowlist=entry.skills,
                         override=entry.override, bundle_name=entry.name)
         new_lock.bundles[entry.name] = lock_entry
@@ -351,7 +485,7 @@ def _set_active(home: Path, distro_name: str) -> None:
 
 def _refresh_runtime_surface(home: Path) -> None:
     _link_runtime(home / "distrib" / "active" / "templates", home / "templates")
-    _link_runtime(home / "distrib" / "active" / "skills", home / "skills", preserve={"lib"})
+    _link_runtime(home / "distrib" / "active" / "skills", home / "skills", preserve={"_lib"})
 
 
 def _link_runtime(src_dir: Path, dst_dir: Path, preserve: set[str] | None = None) -> None:

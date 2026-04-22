@@ -49,7 +49,7 @@ the flat runtime surface:
 ~/.tabula/skills/    -> distrib/active/current/skills/* + bundle skills
 ```
 
-`skills/lib/` is the one important exception: it is the kernel-side runtime
+`skills/_lib/` is the one important exception: it is the kernel-side runtime
 contract copied from the `tabula` repo, not owned by any single distro.
 
 ## Why distros exist

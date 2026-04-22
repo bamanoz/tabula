@@ -138,7 +138,25 @@ func (ps *ProcessSupervisor) Shutdown() {
 		}
 	})
 
-	for _, proc := range stillAlive {
-		<-proc.done
+	// Wait for the SIGKILLed processes to actually disappear, but cap the
+	// wait so a stuck child can't block kernel shutdown forever. Anything
+	// still alive after this is a leak that the OS will reap when we exit.
+	if len(stillAlive) == 0 {
+		return
+	}
+	finalTimer := time.NewTimer(ps.timeout)
+	defer finalTimer.Stop()
+	finalDone := make(chan struct{})
+	go func() {
+		for _, proc := range stillAlive {
+			<-proc.done
+		}
+		close(finalDone)
+	}()
+	select {
+	case <-finalDone:
+	case <-finalTimer.C:
+		ps.logger.Error("processes still alive after SIGKILL grace; abandoning",
+			"count", len(stillAlive))
 	}
 }

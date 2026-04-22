@@ -3,8 +3,11 @@
 Schema (all sections optional; absent file = empty config, legacy behavior):
 
     [distro]
-    name = "ouroboros"
-    # kernel = ">=0.3"   # reserved, not enforced yet
+    name    = "ouroboros"
+    version = "0.1.0"           # optional but recommended
+
+    [requires]
+    kernel = ">=0.8.0,<1.0.0"   # enforced by tabula-distro install
 
     [[bundles]]
     name     = "memory"
@@ -27,6 +30,8 @@ import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from .semver import Constraint, Version, VersionError
 
 
 @dataclass(frozen=True)
@@ -51,6 +56,8 @@ class SkillEntry:
 class DistroConfig:
     path: Path  # directory containing distro.toml (the distro root)
     name: str
+    version: Version | None = None
+    requires_kernel: Constraint | None = None
     bundles: tuple[BundleEntry, ...] = ()
     skills: tuple[SkillEntry, ...] = ()
 
@@ -62,10 +69,28 @@ def load(distro_dir: Path, *, override_name: str | None = None) -> DistroConfig:
     override = _read_toml(distro_dir / "distro.override.toml")
     merged = _merge(base, override)
 
-    name = override_name or _section(merged, "distro").get("name") or distro_dir.name
+    distro_section = _section(merged, "distro")
+    requires_section = _section(merged, "requires")
+
+    name = override_name or distro_section.get("name") or distro_dir.name
+
+    version_raw = distro_section.get("version")
+    try:
+        version = Version.parse(version_raw) if version_raw else None
+    except VersionError as exc:
+        raise ConfigError(f"{distro_dir}/distro.toml: invalid distro.version: {exc}") from exc
+
+    kernel_raw = requires_section.get("kernel")
+    try:
+        requires_kernel = Constraint.parse(kernel_raw) if kernel_raw else None
+    except VersionError as exc:
+        raise ConfigError(f"{distro_dir}/distro.toml: invalid requires.kernel: {exc}") from exc
+
     return DistroConfig(
         path=distro_dir,
         name=name,
+        version=version,
+        requires_kernel=requires_kernel,
         bundles=tuple(_parse_bundle(entry) for entry in merged.get("bundles", [])),
         skills=tuple(_parse_skill(entry) for entry in merged.get("skills", [])),
     )
@@ -87,8 +112,9 @@ def _merge(base: dict, override: dict) -> dict:
     if not override:
         return base
     result = dict(base)
-    if "distro" in override:
-        result["distro"] = {**_section(base, "distro"), **_section(override, "distro")}
+    for dict_key in ("distro", "requires"):
+        if dict_key in override:
+            result[dict_key] = {**_section(base, dict_key), **_section(override, dict_key)}
     for list_key in ("bundles", "skills"):
         if list_key not in override:
             continue
