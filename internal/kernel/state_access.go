@@ -14,8 +14,8 @@ func (h *Hub) assignClientSession(c *Client, session string) {
 	h.clients.AssignSession(c, session)
 }
 
-func (h *Hub) configureClient(c *Client, name string, sends, receives []string, hooks []HookSubscription, depth int) int {
-	return h.clients.Configure(c, name, sends, receives, hooks, depth)
+func (h *Hub) configureClient(c *Client, name string, sends, receives, receivesGlobal []string, hooks []HookSubscription, depth int) int {
+	return h.clients.Configure(c, name, sends, receives, receivesGlobal, hooks, depth)
 }
 
 func (h *Hub) processByPID(pid int) (*SpawnedProcess, bool) {

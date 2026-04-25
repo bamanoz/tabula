@@ -8,7 +8,7 @@ Related docs: [tools/tabula-distro/README.md](../tools/tabula-distro/README.md).
 
 ## `distro.toml`
 
-Lives at the root of a distro source tree (e.g. `distrib/ouroboros/distro.toml`).
+Lives at the root of a distro source tree (e.g. `../tabula-distrib/ouroboros/distro.toml`).
 The file is optional — absent means "no external sources; use what's in the
 tree as-is".
 

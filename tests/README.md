@@ -6,22 +6,21 @@
 
 | Layer | Scope | Primary command |
 | --- | --- | --- |
-| `unit` | Fast logic-only tests in `tests/` plus lightweight Go checks in `cmd/tabula` | `make test-unit` |
-| `smoke` | Minimal runtime path: boot, connect, init, message, done | `make test-smoke` |
-| `e2e` | Heavier runtime flows: hooks, MCP, observer, subagents, mock driver | `make test-e2e` |
-| `contract` | Protocol and extension contract checks under `skills/` | `make test-contract` |
+| `unit` | Fast logic-only tests for Go kernel/CLI and Python distro installer | `make test-unit` |
+| `smoke` | Minimal Go runtime path: connect, join, init, routing, tools, shutdown | `make test-smoke` |
+| `e2e` | Reserved for heavier runtime flows owned by distro/bundle repos | `make test-e2e` |
+| `contract` | Protocol contract checks under `skills/_pylib/` | `make test-contract` |
 | `manual` | Real-env or diagnostic helpers, not part of the default matrix | run directly |
 
 ## Current classification
 
-- `unit`: fast logic-only modules in `tests/` such as `tests/test_boot.py`, `tests/test_compaction.py`, `tests/test_gateway_api.py`, `tests/test_slash_commands.py`, `tests/test_system_prompt.py`, `tests/test_telegram_gateway.py`
-- `smoke`: `tests/test_runtime_smoke.py`
-- `e2e`: `tests/test_hooks_e2e.py`, `tests/test_mcp_e2e.py`, `tests/test_mock_driver_e2e.py`, `tests/test_observer.py`, `tests/test_openai_subagent_e2e.py`, `tests/test_subagent_e2e.py`
-- `contract`: `skills/_lib/test_protocol.py`, `skills/hook-permissions/test_permissions.py`
-- `manual`: `tests/test_hooks_real.py`, `tests/test_real_subagent.py`, `tests/test_*_diag.py`
+- `unit`: `cmd/tabula`, `tools/tabula-distro/tests`, and any fast tests under `tests/`
+- `smoke`: selected `internal/kernel` tests run by `scripts/test-go.sh smoke`
+- `e2e`: currently empty in this repo; distro/bundle e2e suites live with `tabula-distrib` / `tabula-bundles`
+- `contract`: `skills/_pylib/test_protocol.py`
+- `manual`: ad hoc local checks, not part of the default matrix
 
 ## Notes
 
-- `conftest.py` assigns Python test markers automatically by file, so we can split layers without rewriting every existing test module.
-- `tests/runtime_harness.py` is a shared helper for future runtime/lifecycle regression suites from `T0-12`.
+- `conftest.py` assigns Python test markers automatically by file, so we can split layers without rewriting every test module.
 - `scripts/test-go.sh smoke` still depends on local socket bind permissions because `internal/kernel` tests use `httptest`.

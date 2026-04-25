@@ -36,6 +36,33 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: checkWebSocketOrigin,
 }
 
+func registerKernelHTTPHandlers(mux *http.ServeMux, hub *kernel.Hub) {
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":           "ok",
+			"version":          version,
+			"commit":           commit,
+			"protocol_version": kernel.ProtocolVersion,
+		})
+	})
+
+	mux.HandleFunc("/sessions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(hub.SnapshotSessions())
+	})
+}
+
 func main() {
 	// Parse subcommand early.
 	subcommand := ""
@@ -175,10 +202,13 @@ func serveCmd() int {
 	maxSpawnDepth := envInt("TABULA_MAX_SPAWN_DEPTH", 3)
 	maxChildren := envInt("TABULA_MAX_CHILDREN_PER_SESSION", 5)
 	hub := kernel.NewHub(toolsJSON, skillExec, maxSpawnDepth, maxChildren, logger.Logger)
+	hub.SetInitMeta(bootConfig.Meta)
+	hub.ProjectRoot = os.Getenv("TABULA_PROJECT_ROOT")
 	hub.StartReaper()
 
 	// Start HTTP/WebSocket server
 	mux := http.NewServeMux()
+	registerKernelHTTPHandlers(mux, hub)
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -187,11 +217,6 @@ func serveCmd() int {
 		}
 		kernel.NewClient(hub, conn)
 	})
-	mux.HandleFunc("/sessions", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(hub.SnapshotSessions())
-	})
-
 	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot listen on %s: %v\n", listenAddr, err)
@@ -380,10 +405,13 @@ func runCmd(args []string) int {
 	maxSpawnDepth := envInt("TABULA_MAX_SPAWN_DEPTH", 3)
 	maxChildren := envInt("TABULA_MAX_CHILDREN_PER_SESSION", 5)
 	hub := kernel.NewHub(toolsJSON, skillExec, maxSpawnDepth, maxChildren, logger.Logger)
+	hub.SetInitMeta(bootConfig.Meta)
+	hub.ProjectRoot = os.Getenv("TABULA_PROJECT_ROOT")
 	hub.StartReaper()
 
 	// Start HTTP/WebSocket server (driver needs WebSocket).
 	mux := http.NewServeMux()
+	registerKernelHTTPHandlers(mux, hub)
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -593,6 +621,7 @@ type BootConfig struct {
 	Spawn       []string        `json:"spawn"`
 	KernelTools []string        `json:"kernel_tools"`
 	Tools       json.RawMessage `json:"tools"`
+	Meta        json.RawMessage `json:"meta"`
 }
 
 func filterKernelTools(raw json.RawMessage, enabled []string) ([]json.RawMessage, error) {

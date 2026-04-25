@@ -77,7 +77,7 @@ Python закрывает:
 - автоматическое discover tools;
 - slash-команды через `user-invocable`;
 - отдельные bundles;
-- единая shared library в `skills/lib`.
+- единая shared library в `skills/_pylib` плюс provider runtime в `tabula-bundles/drivers/_drivers`.
 
 ### 3. Осмысленная модель хуков
 
@@ -138,9 +138,9 @@ Subagent-архитектура сделана не декоративно, а �
 
 - orchestration и lifecycle: `internal/kernel/*`
 - boot и discovery: `boot.py`
-- LLM state machine: `skills/lib/driver_runtime.py`, `skills/lib/providers.py`
-- subagents: `skills/lib/subagent_runtime.py`
-- gateways: `skills/gateway-*`
+- LLM state machine: `tabula-bundles/drivers/_drivers/driver_runtime.py`, `tabula-bundles/drivers/_drivers/providers.py`
+- subagents: `tabula-bundles/drivers/_drivers/subagent_runtime.py`
+- gateways: `tabula-distrib/*/skills/gateway-*`
 - memory / mcp / files: соответствующие skills
 
 ### Общая оценка архитектуры
@@ -251,7 +251,7 @@ Subagent-архитектура сделана не декоративно, а �
 
 В `skills/driver-openai/run.py` дефолтная модель — `gpt-5.4`.
 
-В `skills/lib/compaction.py` карта context windows содержит:
+В `tabula-bundles/drivers/_drivers/compaction.py` карта context windows содержит:
 
 - `gpt-4.1`, `gpt-5`, `o3`, `o4-mini`,
 

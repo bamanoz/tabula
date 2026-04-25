@@ -4,7 +4,7 @@
 # Installs only the kernel layer:
 #   * Go binary (built from this repo)
 #   * launch scripts (tabula-server, tabula-cli, tabula-api, tabula-install-distro)
-#   * shared skill library (skills/_lib/) — the kernel-side contract
+#   * shared Python skill library (skills/_pylib/) — the kernel-side contract
 #   * Python venv with runtime + dev dependencies
 #   * tabula-distro installer (editable, from tools/tabula-distro)
 #   * service unit templates
@@ -45,7 +45,17 @@ cp "$REPO_ROOT/examples/boot-cicd.py" "$TABULA_HOME/"
 # by tabula-distro).
 mkdir -p "$TABULA_HOME/skills"
 rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
-  "$REPO_ROOT/skills/_lib/" "$TABULA_HOME/skills/_lib/"
+  "$REPO_ROOT/skills/_pylib/" "$TABULA_HOME/skills/_pylib/"
+if [ -d "$REPO_ROOT/skills/_tslib" ]; then
+  rsync -a --delete --exclude 'node_modules' --exclude '.bun' \
+    "$REPO_ROOT/skills/_tslib/" "$TABULA_HOME/skills/_tslib/"
+  if command -v bun >/dev/null 2>&1; then
+    echo "==> Installing TypeScript skill SDK dependencies"
+    (cd "$TABULA_HOME/skills/_tslib" && bun install)
+    mkdir -p "$TABULA_HOME/skills/_tslib/node_modules"
+    touch "$TABULA_HOME/skills/_tslib/node_modules/.tabula-sdk-installed"
+  fi
+fi
 
 # Global config (don't overwrite user edits)
 mkdir -p "$TABULA_HOME/config"
@@ -80,7 +90,7 @@ if [ "$(uname)" = "Darwin" ]; then
 fi
 
 # Launch scripts
-for script in tabula-server tabula-api tabula-cli tabula-install-distro; do
+for script in tabula-server tabula-api tabula-cli tabula-install-distro tabula-coder; do
   cp "$REPO_ROOT/bin/$script" "$BIN_DIR/$script"
   chmod +x "$BIN_DIR/$script"
 done

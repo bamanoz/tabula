@@ -9,3 +9,5 @@ extra/
 dist/
 
 *.egg-info/
+
+node_modules/

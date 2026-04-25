@@ -594,7 +594,7 @@ Task integration и guardrails:
 
 - [ ] `T3-03` Freeze public SDK boundary and add contract tests
   Lane: `H`
-  Area: `skills/lib/`, public extension seams, tests/docs
+  Area: `skills/_pylib/`, public extension seams, tests/docs
   Depends on: `T3-01`
   Done when:
   зафиксированы public seams для skills/extensions, есть contract tests на manifest loading и capability registration.

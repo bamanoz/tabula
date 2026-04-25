@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 
 from tabula_distro import config as cfg
+from tabula_distro import cli as climod
 from tabula_distro import generations as gens
 from tabula_distro import install as installmod
 from tabula_distro import lock as lockmod
@@ -117,8 +120,10 @@ class InstallTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            gen, lock = installmod.install(distro, home)
+            result = installmod.install(distro, home)
+            gen, lock = result
             self.assertEqual(gen.number, 1)
+            self.assertTrue(result.changed)
 
             cur = home / "distrib" / "demo" / "current"
             self.assertTrue(cur.is_symlink())
@@ -136,6 +141,31 @@ class InstallTests(unittest.TestCase):
 
             self.assertIn("memory", lock.bundles)
             self.assertIn("weather", lock.skills)
+
+    def test_bundle_skips_directories_without_skill_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            bundle = root / "ext" / "bundles" / "drivers"
+            _make_skill(bundle, "driver", "unified")
+            (bundle / "driver-openai").mkdir(parents=True)
+            (bundle / "driver-openai" / "README.tmp").write_text("not a skill\n", encoding="utf-8")
+            (bundle / "_drivers").mkdir(parents=True)
+            _touch(bundle / "_drivers" / "lib.py", "X=1\n")
+
+            (distro / "distro.toml").write_text(
+                '[distro]\nname="demo"\n\n'
+                '[[bundles]]\nname="drivers"\nsource="local:../ext/bundles/drivers"\n',
+                encoding="utf-8",
+            )
+
+            installmod.install(distro, home)
+            skills = home / "distrib" / "demo" / "skills"
+            self.assertTrue((skills / "driver" / "SKILL.md").exists())
+            self.assertTrue((skills / "_drivers" / "lib.py").exists())
+            self.assertFalse((skills / "driver-openai").exists())
 
     def test_conflict_without_override_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -194,9 +224,35 @@ class InstallTests(unittest.TestCase):
             root = Path(tmp)
             home = root / "home"
             distro = _make_minimal_distro(root)
-            gen1, _ = installmod.install(distro, home)
-            gen2, _ = installmod.install(distro, home)
+            result1 = installmod.install(distro, home)
+            result2 = installmod.install(distro, home)
+            gen1, _ = result1
+            gen2, _ = result2
             self.assertEqual(gen1.number, gen2.number)
+            self.assertTrue(result1.changed)
+            self.assertFalse(result2.changed)
+            gs = gens.list_generations(home, "demo")
+            self.assertEqual([g.number for g in gs], [1])
+
+    def test_cli_reports_unchanged_for_identical_reinstall(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root)
+
+            first = StringIO()
+            with redirect_stdout(first):
+                rc = climod.main(["--home", str(home), "install", str(distro)])
+            self.assertEqual(rc, 0)
+            self.assertIn("installed distro demo as generation 1", first.getvalue())
+
+            second = StringIO()
+            with redirect_stdout(second):
+                rc = climod.main(["--home", str(home), "install", str(distro)])
+            self.assertEqual(rc, 0)
+            self.assertIn("distro demo unchanged at generation 1", second.getvalue())
+            self.assertNotIn("installed distro demo as generation 2", second.getvalue())
+
             gs = gens.list_generations(home, "demo")
             self.assertEqual([g.number for g in gs], [1])
 
@@ -233,7 +289,7 @@ class InstallTests(unittest.TestCase):
             self.assertIsNotNone(lock.skills["foo"].resolved_path)
 
     def test_symlinked_in_tree_skill_is_materialized(self):
-        """Legacy dev pattern: distrib/<d>/skills/<x> is a symlink to repo skills dir."""
+        """Legacy dev pattern: source distro skills/<x> is a symlink to a repo skill dir."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"

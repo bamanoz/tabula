@@ -28,7 +28,7 @@ func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 
 	s.hub.Logger.Debug("tool_use", "tool", toolName, "session", session, "id", toolID)
 
-	effectiveInput, ok := s.hub.policy.CanUseTool(toolName, toolID, msg.Input, session)
+	effectiveInput, ok := s.hub.policy.CanUseTool(sender, toolName, toolID, msg.Input, session)
 	if !ok {
 		s.hub.sendToolResult(session, toolID, "ERROR: blocked by hook")
 		return

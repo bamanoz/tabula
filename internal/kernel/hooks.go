@@ -3,9 +3,17 @@ package kernel
 import "encoding/json"
 
 // HookSubscription declares a client's interest in a hook event.
+//
+// TimeoutMs, if non-nil, overrides the default hook wait timeout:
+//   - nil: use HookEngine default (5s).
+//   - 0:   wait indefinitely (until the subscriber disconnects). Used for
+//          interactive hooks like approval UX, where the reply comes from a
+//          human on the other side of a UI client.
+//   - >0:  override with the specified number of milliseconds.
 type HookSubscription struct {
-	Event    string `json:"event"`
-	Priority int    `json:"priority"`
+	Event     string `json:"event"`
+	Priority  int    `json:"priority"`
+	TimeoutMs *int   `json:"timeout_ms,omitempty"`
 }
 
 // HookEventType classifies the role of a hook event in the system.
@@ -53,6 +61,10 @@ func (h *Hub) rebuildHookIndex() {
 // It validates the event, logs the dispatch, and delegates to the hook engine.
 // Returns (payload, true) on success, (nil, false) if blocked.
 func (h *Hub) dispatchHook(event string, payload json.RawMessage, session string) (json.RawMessage, bool) {
+	return h.dispatchHookExcept(event, payload, session, nil)
+}
+
+func (h *Hub) dispatchHookExcept(event string, payload json.RawMessage, session string, exclude *Client) (json.RawMessage, bool) {
 	def, known := HookEvents[event]
 	if !known {
 		h.Logger.Warn("unknown hook event", "event", event)
@@ -60,7 +72,7 @@ func (h *Hub) dispatchHook(event string, payload json.RawMessage, session string
 	}
 
 	h.Logger.Debug("dispatching hook", "event", event, "type", def.Type, "session", session)
-	result, ok := h.hooks.Dispatch(event, payload, session)
+	result, ok := h.hooks.DispatchExcept(event, payload, session, exclude)
 
 	if !ok {
 		h.Logger.Info("hook blocked event", "event", event)

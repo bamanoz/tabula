@@ -3,29 +3,42 @@ set -euo pipefail
 
 PYTHON_BIN="${PYTHON_BIN:-.venv/bin/python3}"
 LAYER="${1:-unit}"
+PYTHONPATH="tools/tabula-distro/src:skills/_pylib${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+
+run_pytest_allow_empty() {
+  set +e
+  "$PYTHON_BIN" -m pytest "$@"
+  status=$?
+  set -e
+  if [ "$status" -eq 5 ]; then
+    echo "no tests matched"
+    return 0
+  fi
+  return "$status"
+}
 
 case "$LAYER" in
   unit)
-    exec "$PYTHON_BIN" -m pytest -m unit tests -q
+    exec "$PYTHON_BIN" -m pytest -m unit tests tools/tabula-distro/tests -q
     ;;
   smoke)
-    exec "$PYTHON_BIN" -m pytest -m smoke tests -q
+    run_pytest_allow_empty -m smoke tests -q
+    exit $?
     ;;
   e2e)
-    exec "$PYTHON_BIN" -m pytest -m e2e tests -q
+    run_pytest_allow_empty -m e2e tests -q
+    exit $?
     ;;
   contract)
-    PYTHONPATH="skills/_lib${PYTHONPATH:+:$PYTHONPATH}" exec "$PYTHON_BIN" -m pytest -m contract skills/_lib/test_protocol.py distrib/main/skills/hook-permissions/test_permissions.py -q
+    exec "$PYTHON_BIN" -m pytest -m contract skills/_pylib/test_protocol.py -q
     ;;
   all)
     "$0" unit
-    "$0" contract
-    "$0" smoke
-    exec "$0" e2e
+    exec "$0" contract
     ;;
   list)
-    "$PYTHON_BIN" -m pytest --collect-only tests -q
-    PYTHONPATH="skills/_lib${PYTHONPATH:+:$PYTHONPATH}" exec "$PYTHON_BIN" -m pytest --collect-only skills/_lib/test_protocol.py distrib/main/skills/hook-permissions/test_permissions.py -q
+    exec "$PYTHON_BIN" -m pytest --collect-only tests tools/tabula-distro/tests skills/_pylib/test_protocol.py -q
     ;;
   *)
     echo "usage: scripts/test-python.sh [unit|smoke|e2e|contract|all|list]" >&2

@@ -30,6 +30,7 @@ func (h *Hub) RunOneShot(cfg OneShotConfig) (string, error) {
 		sendCh: make(chan []byte, sendBufSize),
 		recvCh: recvCh,
 		state:  ClientSocketConnected,
+		done:   make(chan struct{}),
 	}
 	if !h.Register(c) {
 		return "", fmt.Errorf("hub at capacity")
@@ -38,6 +39,7 @@ func (h *Hub) RunOneShot(cfg OneShotConfig) (string, error) {
 	// Connect.
 	connectMsg := &Message{
 		Type:     string(MsgConnect),
+		Version:  ProtocolVersion,
 		Name:     "oneshot",
 		Sends:    []string{string(MsgMessage), string(MsgDone)},
 		Receives: []string{string(MsgMessage), string(MsgStreamStart), string(MsgStreamDelta), string(MsgStreamEnd), string(MsgDone), string(MsgError)},

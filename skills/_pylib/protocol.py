@@ -70,3 +70,10 @@ HOOK_SESSION_END = "session_end"
 HOOK_CANCEL = "cancel"
 HOOK_BEFORE_SPAWN = "before_spawn"
 HOOK_AFTER_SPAWN = "after_spawn"
+
+# -- Message envelope fields ---------------------------------------------------
+# Optional opaque JSON object carried alongside messages. The kernel does not
+# interpret its contents; it is forwarded as-is. Conventional uses:
+#   - on `init`:        {"project_root": "/abs/path", ...}
+#   - on `tool_result`: {"diff": "...", "files": [...], "summary": "..."}
+FIELD_META = "meta"

@@ -10,12 +10,12 @@ WS-подключением к kernel, реальная process isolation, kerne
 
 ## Состояние сейчас
 
-- `distrib/familiar/skills/subagent-{anthropic,openai}/run.py` — тонкие
+- `tabula-distrib/familiar/skills/subagent-{anthropic,openai}/run.py` — тонкие
   адаптеры (~96 строк), выбирают провайдера.
-- `skills/lib/subagent_runtime.py` (156 строк) — общий runtime: connect →
+- `tabula-bundles/drivers/_drivers/subagent_runtime.py` — общий runtime: connect →
   join → init → loop `generate / tool_use / tool_result` до `max_turns=20`
   → `message` в parent session → опциональный idle-loop на followup.
-- `skills/lib/driver_runtime.py` со стороны parent: ловит `process_spawn`,
+- `tabula-bundles/drivers/_drivers/driver_runtime.py` со стороны parent: ловит `process_spawn`,
   парсит `--id`, копит `subagent_id → result`, вклеивает в следующий turn
   как `<subagent_result id="...">...</subagent_result>`.
 - Kernel: `internal/kernel/policy.go:CanSpawn` — spawn token, MaxSpawnDepth,
@@ -96,12 +96,12 @@ Acceptance:
 - `subagent_finished` — payload: `{agent_id, final_text, turn_count}`.
 - `subagent_failed` — payload: `{agent_id, error, exit_reason}`.
 
-Observer (`distrib/familiar/skills/observer`) автоматом получает feed —
+Observer (`tabula-bundles/base/observer`) автоматом получает feed —
 без изменений API observer-а.
 
 Файлы:
 - `internal/kernel/hooks.go` — добавить event constants.
-- `skills/lib/protocol.py` — синхронизировать константы.
+- `skills/_pylib/protocol.py` — синхронизировать константы.
 - `internal/kernel/process_supervisor.go` или `subagent_registry.go` —
   точки вызова.
 - `tests/test_observer.py` — расширить (помечен как e2e, ок).
@@ -116,7 +116,7 @@ Observer (`distrib/familiar/skills/observer`) автоматом получае�
 (полный toolset, обратная совместимость).
 
 Файлы:
-- `skills/lib/driver_runtime.py:extract_spawn_id` — расширить парсинг,
+- `tabula-bundles/drivers/_drivers/driver_runtime.py:extract_spawn_id` — расширить парсинг,
   чтобы пробросить allowlist в kernel через `process_spawn` args.
 - `internal/kernel/process_manager.go` — хранить allowlist на process.
 - `internal/kernel/connect.go` или где формируется `init` — фильтрация.

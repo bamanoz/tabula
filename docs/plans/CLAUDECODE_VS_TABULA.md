@@ -24,8 +24,8 @@
 - `internal/kernel/process_manager.go`
 - `internal/kernel/policy.go`
 - `internal/kernel/snapshot.go`
-- `skills/lib/driver_runtime.py`
-- `skills/lib/subagent_runtime.py`
+- `tabula-bundles/drivers/_drivers/driver_runtime.py`
+- `tabula-bundles/drivers/_drivers/subagent_runtime.py`
 - `skills/gateway-cli/run.py`
 - `skills/gateway-api/run.py`
 - `skills/gateway-telegram/run.py`

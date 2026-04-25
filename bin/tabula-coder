@@ -1,0 +1,166 @@
+#!/bin/bash
+# Launch the coder distro TUI. Starts the kernel if it is not already running.
+set -euo pipefail
+
+TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
+BIN_DIR="$TABULA_HOME/bin"
+GATEWAY_DIR="$TABULA_HOME/skills/gateway-tui"
+
+load_tabula_env() {
+  local env_file="$TABULA_HOME/.env"
+  [ -f "$env_file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|'#'*) continue ;;
+    esac
+    local key="${line%%=*}"
+    local value="${line#*=}"
+    key="${key#${key%%[![:space:]]*}}"
+    key="${key%${key##*[![:space:]]}}"
+    value="${value#${value%%[![:space:]]*}}"
+    value="${value%${value##*[![:space:]]}}"
+    [ -n "$key" ] || continue
+    case "$key" in
+      [A-Za-z_][A-Za-z0-9_]*) ;;
+      *) continue ;;
+    esac
+    if [ -z "${!key+x}" ]; then
+      export "$key=$value"
+    fi
+  done < "$env_file"
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || die "required tool not found: $1"
+}
+
+python_bin() {
+  if [ -x "$TABULA_HOME/.venv/bin/python3" ]; then
+    printf '%s\n' "$TABULA_HOME/.venv/bin/python3"
+  elif [ -x "$TABULA_HOME/.venv/Scripts/python.exe" ]; then
+    printf '%s\n' "$TABULA_HOME/.venv/Scripts/python.exe"
+  else
+    command -v python3 || command -v python || true
+  fi
+}
+
+sessions_url() {
+  "$PYTHON_BIN" - <<'PY'
+import os
+from urllib.parse import urlsplit, urlunsplit
+
+raw = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
+parts = urlsplit(raw)
+scheme = "https" if parts.scheme == "wss" else "http"
+netloc = parts.netloc or "127.0.0.1:8089"
+if netloc.startswith("localhost:"):
+    netloc = "127.0.0.1:" + netloc.rsplit(":", 1)[1]
+print(urlunsplit((scheme, netloc, "/sessions", "", "")))
+PY
+}
+
+kernel_ready() {
+  TABULA_SESSIONS_URL="$SESSIONS_URL" "$PYTHON_BIN" - <<'PY'
+import os
+import sys
+import urllib.request
+
+try:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(os.environ["TABULA_SESSIONS_URL"], timeout=0.8) as response:
+        sys.exit(0 if response.status < 500 else 1)
+except Exception:
+    sys.exit(1)
+PY
+}
+
+ensure_kernel() {
+  if kernel_ready; then
+    return 0
+  fi
+  [ -x "$BIN_DIR/tabula-server" ] || die "tabula-server not found. Run the Tabula installer first."
+
+  mkdir -p "$TABULA_HOME/logs"
+  printf 'Starting Tabula kernel...\n' >&2
+  nohup "$BIN_DIR/tabula-server" \
+    > "$TABULA_HOME/logs/coder-kernel.out.log" \
+    2> "$TABULA_HOME/logs/coder-kernel.err.log" &
+
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if kernel_ready; then
+      return 0
+    fi
+    sleep 0.5
+  done
+
+  if grep -q "address already in use" "$TABULA_HOME/logs/coder-kernel.err.log" 2>/dev/null; then
+    printf 'Kernel port is already in use; connecting to the existing kernel.\n' >&2
+    return 0
+  fi
+
+  printf 'Kernel did not become ready. Logs:\n' >&2
+  printf '  %s\n' "$TABULA_HOME/logs/coder-kernel.out.log" >&2
+  printf '  %s\n' "$TABULA_HOME/logs/coder-kernel.err.log" >&2
+  exit 1
+}
+
+ensure_tui_deps() {
+  [ -d "$GATEWAY_DIR" ] || die "coder TUI not installed at $GATEWAY_DIR. Run: tabula-distro install <coder-source>"
+  [ -d "$TABULA_HOME/skills/_tslib" ] || die "TypeScript skill SDK not installed at $TABULA_HOME/skills/_tslib. Re-run the Tabula installer."
+  need bun
+
+  local sdk_stamp="$TABULA_HOME/skills/_tslib/node_modules/.tabula-sdk-installed"
+  if [ ! -d "$TABULA_HOME/skills/_tslib/node_modules" ] || [ ! -f "$sdk_stamp" ] || [ "$TABULA_HOME/skills/_tslib/package.json" -nt "$sdk_stamp" ] || { [ -f "$TABULA_HOME/skills/_tslib/bun.lock" ] && [ "$TABULA_HOME/skills/_tslib/bun.lock" -nt "$sdk_stamp" ]; }; then
+    printf 'Installing TypeScript skill SDK dependencies...\n' >&2
+    (cd "$TABULA_HOME/skills/_tslib" && bun install)
+    touch "$sdk_stamp"
+  fi
+
+  local stamp="$GATEWAY_DIR/node_modules/.tabula-coder-installed"
+  if [ ! -d "$GATEWAY_DIR/node_modules" ] || [ ! -f "$stamp" ] || [ "$GATEWAY_DIR/package.json" -nt "$stamp" ] || { [ -f "$GATEWAY_DIR/bun.lock" ] && [ "$GATEWAY_DIR/bun.lock" -nt "$stamp" ]; }; then
+    printf 'Installing coder TUI dependencies...\n' >&2
+    (cd "$GATEWAY_DIR" && bun install)
+  fi
+  mkdir -p "$GATEWAY_DIR/node_modules/@tabula"
+  rm -rf "$GATEWAY_DIR/node_modules/@tabula/skill-sdk"
+  ln -s "$TABULA_HOME/skills/_tslib" "$GATEWAY_DIR/node_modules/@tabula/skill-sdk"
+  touch "$stamp"
+}
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  cat <<'EOF'
+Usage: tabula-coder [options]
+
+Starts the coder TUI. If the kernel is not running, tabula-coder starts it in
+the background using tabula-server.
+
+Options:
+  --session <id>              Resume or join a specific session
+  --provider <name>           anthropic or openai (default: TABULA_PROVIDER or anthropic)
+  --url <ws-url>              Kernel WebSocket URL (default: TABULA_URL or ws://localhost:8089/ws)
+  --driver <command>          Driver command override
+  -h, --help                  Show this help
+EOF
+  exit 0
+fi
+
+load_tabula_env
+PYTHON_BIN="$(python_bin)"
+[ -n "$PYTHON_BIN" ] || die "Python 3 is required"
+
+export TABULA_HOME
+export TABULA_URL="${TABULA_URL:-ws://localhost:8089/ws}"
+export TABULA_PATH="${TABULA_PATH:-$TABULA_HOME/.venv/bin:$TABULA_HOME/bin:$PATH}"
+export PATH="$TABULA_HOME/bin:$TABULA_PATH"
+
+SESSIONS_URL="$(sessions_url)"
+
+ensure_tui_deps
+ensure_kernel
+
+exec bun run --cwd "$GATEWAY_DIR" src/index.tsx "$@"

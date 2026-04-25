@@ -85,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _cmd_install(args: argparse.Namespace, home: Path) -> int:
-    gen, lock = installmod.install(
+    result = installmod.install(
         args.source, home,
         override_name=args.name or None,
         offline=args.frozen,
@@ -93,7 +93,7 @@ def _cmd_install(args: argparse.Namespace, home: Path) -> int:
         update_only=tuple(args.update_only),
         keep_generations=args.keep_generations,
     )
-    _print_summary(home, lock.distro, gen, lock)
+    _print_summary(home, result.lock.distro, result.generation, result.lock, changed=result.changed)
     return 0
 
 
@@ -107,13 +107,13 @@ def _cmd_update(args: argparse.Namespace, home: Path) -> int:
         print(f"tabula-distro: cannot locate source for distro {distro_name!r}; "
               f"re-run `tabula-distro install <source>` explicitly", file=sys.stderr)
         return 2
-    gen, lock = installmod.install(
+    result = installmod.install(
         source, home,
         override_name=distro_name,
         update=True,
         update_only=tuple(args.only),
     )
-    _print_summary(home, lock.distro, gen, lock)
+    _print_summary(home, result.lock.distro, result.generation, result.lock, changed=result.changed)
     return 0
 
 
@@ -206,8 +206,11 @@ def _active_source(home: Path, distro_name: str) -> str | None:
     return lock.distro_source
 
 
-def _print_summary(home: Path, distro_name: str, gen, lock: lockmod.Lock) -> None:
-    print(f"installed distro {distro_name} as generation {gen.number} ({gen.name})")
+def _print_summary(home: Path, distro_name: str, gen, lock: lockmod.Lock, *, changed: bool = True) -> None:
+    if changed:
+        print(f"installed distro {distro_name} as generation {gen.number} ({gen.name})")
+    else:
+        print(f"distro {distro_name} unchanged at generation {gen.number} ({gen.name})")
     if lock.bundles:
         print("  bundles:")
         for name, entry in sorted(lock.bundles.items()):

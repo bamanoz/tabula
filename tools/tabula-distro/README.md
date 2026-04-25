@@ -2,10 +2,11 @@
 
 Installer and composer for Tabula distributions.
 
-A Tabula distribution (`distrib/<name>/`) is a directory of skills, templates and
-a boot script. This tool resolves the distro's declared sources (local paths or
-git repositories), composes them into a single staged tree, and atomically
-switches `$TABULA_HOME` to point at it.
+A Tabula distribution is a directory of skills, templates and a boot script.
+Built-in distros live in the sibling `tabula-distrib` repository. This tool
+resolves the distro's declared sources (local paths or git repositories),
+composes them into a single staged tree, and atomically switches `$TABULA_HOME`
+to point at it.
 
 The installer is intentionally separate from the kernel binary: it only manages
 files on disk under `$TABULA_HOME`. The kernel does not need to know about
@@ -16,7 +17,7 @@ sources, locks, or generations — at runtime it only sees the materialized
 
 ```sh
 pip install -e tools/tabula-distro
-tabula-distro install distrib/ouroboros
+tabula-distro install ../tabula-distrib/ouroboros
 tabula-distro list
 tabula-distro update --frozen   # CI-style: lock must match
 tabula-distro rollback ouroboros

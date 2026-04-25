@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/bamanoz/tabula/internal/kernel"
 )
 
 func TestWebSocketOriginCheck_DefaultAllowsLocalhost(t *testing.T) {
@@ -101,6 +103,59 @@ func TestLoadEnvFileDoesNotOverrideExistingValues(t *testing.T) {
 
 	if got := os.Getenv("TABULA_PROVIDER"); got != "openai" {
 		t.Fatalf("expected existing TABULA_PROVIDER to win, got %q", got)
+	}
+}
+
+func TestHealthEndpoint(t *testing.T) {
+	hub := kernel.NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	mux := http.NewServeMux()
+	registerKernelHTTPHandlers(mux, hub)
+
+	req := httptest.NewRequest(http.MethodGet, "http://tabula.local/health", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("expected application/json content type, got %q", got)
+	}
+
+	var body struct {
+		Status          string `json:"status"`
+		Version         string `json:"version"`
+		Commit          string `json:"commit"`
+		ProtocolVersion int    `json:"protocol_version"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal health response: %v", err)
+	}
+	if body.Status != "ok" {
+		t.Fatalf("expected status ok, got %q", body.Status)
+	}
+	if body.Version == "" || body.Commit == "" {
+		t.Fatalf("expected version and commit in response, got %+v", body)
+	}
+	if body.ProtocolVersion != 1 {
+		t.Fatalf("expected protocol version 1, got %d", body.ProtocolVersion)
+	}
+}
+
+func TestHealthEndpointRejectsNonGET(t *testing.T) {
+	hub := kernel.NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	mux := http.NewServeMux()
+	registerKernelHTTPHandlers(mux, hub)
+
+	req := httptest.NewRequest(http.MethodPost, "http://tabula.local/health", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected status 405, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Allow"); got != http.MethodGet {
+		t.Fatalf("expected Allow: GET, got %q", got)
 	}
 }
 

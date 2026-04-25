@@ -52,7 +52,7 @@ In source, skills may live in one of three places:
   `familiar/skills/`, `guardian/skills/`, `ouroboros/skills/`
 - shared bundles in [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles):
   `base/`, `files/`, `drivers/`, `memory/`, `caveman/`
-- the kernel-side runtime contract in this repo: `skills/_lib/`
+- the kernel-side Python runtime contract in this repo: `skills/_pylib/`
 
 The active distro plus its declared bundles are fanned out into
 `~/.tabula/skills/` by `tabula-distro install`.
@@ -284,7 +284,7 @@ If you need a normal capability, a tool skill is almost always the right shape.
 
 ## Connecting to the kernel
 
-Long-running skills connect over WebSocket using `skills/_lib/kernel_client.py`.
+Long-running skills connect over WebSocket using `skills/_pylib/kernel_client.py`.
 
 Minimal pattern:
 
@@ -299,8 +299,8 @@ ROOT = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from skills._lib.kernel_client import KernelConnection
-from skills._lib.protocol import MSG_CONNECT, MSG_JOIN, MSG_MESSAGE
+from skills._pylib.kernel_client import KernelConnection
+from skills._pylib.protocol import MSG_CONNECT, MSG_JOIN, MSG_MESSAGE
 
 
 def main() -> None:
@@ -397,15 +397,15 @@ Common runtime variables:
 Depending on how the skill is launched, more variables may exist. Do not assume
 everything is always present.
 
-## When to use `skills/_lib/`
+## When to use `skills/_pylib/`
 
-Use `skills/_lib/` when it removes boilerplate and matches an existing pattern.
+Use `skills/_pylib/` when it removes boilerplate and matches an existing pattern.
 
 Good candidates:
 
 - `kernel_client.KernelConnection`
-- protocol constants from `skills._lib.protocol`
-- path helpers from `skills._lib.paths`
+- protocol constants from `skills._pylib.protocol`
+- path helpers from `skills._pylib.paths`
 - config loading helpers already used by existing skills
 
 Be careful with deeper imports.
@@ -414,21 +414,21 @@ Be careful with deeper imports.
 
 There are three different contracts in Tabula, and they are not equally stable:
 
-1. **Wire protocol** (`internal/kernel/protocol.go`, `skills/_lib/protocol.py`)
+1. **Wire protocol** (`internal/kernel/protocol.go`, `skills/_pylib/protocol.py`)
    — closest to stable
 2. **assistant `SKILL.md` frontmatter contract** — mostly stable in practice,
    not yet explicitly versioned
-3. **`skills/_lib/` runtime API** — useful, but not yet a formally versioned
+3. **`skills/_pylib/` runtime API** — useful, but not yet a formally versioned
    public package
 
 If you are writing reusable community skills, prefer depending on:
 
 - the wire protocol
-- a small subset of `skills/_lib/` helpers and, if needed, the current
+- a small subset of `skills/_pylib/` helpers and, if needed, the current
   assistant fallback `run.py tool <name>` convention
-- a small subset of `skills/_lib/` helpers
+- a small subset of `skills/_pylib/` helpers
 
-Do not assume every helper inside `skills/_lib/` is permanent API.
+Do not assume every helper inside `skills/_pylib/` is permanent API.
 
 ## Where to put docs
 
@@ -471,7 +471,7 @@ Useful reference skills (in their respective repos):
 Still to be made explicit:
 
 - versioned familiar `SKILL.md` contract
-- narrower, documented public surface for `skills/_lib/`
+- narrower, documented public surface for `skills/_pylib/`
 - clearer contract for community-distributed skills and bundles
 
 Until then, write skills conservatively: simple file layout, small dependency

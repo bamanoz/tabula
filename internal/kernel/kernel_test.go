@@ -385,6 +385,47 @@ func TestSendsValidation(t *testing.T) {
 	}
 }
 
+func TestReceivesGlobal(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Client A: joined to "main" session, sends messages
+	connA := env.connectAndJoin("sender", "main", []string{"message"}, []string{"message"})
+
+	// Client B: NOT joined to any session, but has receives_global: ["message"]
+	connB := env.dial()
+	writeJSON(t, connB, Message{
+		Type:           "connect",
+		Name:           "global-listener",
+		Sends:          []string{},
+		Receives:       []string{},
+		ReceivesGlobal: []string{"message"},
+		Version:        ProtocolVersion,
+	})
+	msgConnected := readMsg(t, connB)
+	if msgConnected.Type != "connected" {
+		t.Fatalf("expected connected, got %s", msgConnected.Type)
+	}
+
+	// Client C: NOT joined, no receives_global — should NOT receive
+	connC := env.connect("no-global", []string{}, []string{"message"})
+
+	// A sends message to its session ("main")
+	writeJSON(t, connA, Message{Type: "message", Text: "hello global"})
+	time.Sleep(50 * time.Millisecond)
+
+	// B (receives_global) should receive it even though not in session
+	msgB := readMsgTimeout(t, connB, time.Second)
+	if msgB == nil || msgB.Type != "message" || msgB.Text != "hello global" {
+		t.Errorf("B: expected message 'hello global', got %+v", msgB)
+	}
+
+	// C (no receives_global, not joined) should NOT receive
+	msgC := readMsgTimeout(t, connC, 200*time.Millisecond)
+	if msgC != nil {
+		t.Errorf("C: should not receive without receives_global, got %+v", msgC)
+	}
+}
+
 func TestNotConnected(t *testing.T) {
 	env := newTestEnv(t)
 

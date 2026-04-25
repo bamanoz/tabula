@@ -31,12 +31,13 @@ func (r *ClientRegistry) Remove(c *Client) {
 	delete(r.clients, c)
 }
 
-func (r *ClientRegistry) Configure(c *Client, name string, sends, receives []string, hooks []HookSubscription, depth int) int {
+func (r *ClientRegistry) Configure(c *Client, name string, sends, receives, receivesGlobal []string, hooks []HookSubscription, depth int) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	c.name = name
 	c.sends = makeCapabilitySet(sends)
 	c.receives = makeCapabilitySet(receives)
+	c.receivesGlobal = makeCapabilitySet(receivesGlobal)
 	c.id = r.nextClientID
 	r.nextClientID++
 	c.depth = depth

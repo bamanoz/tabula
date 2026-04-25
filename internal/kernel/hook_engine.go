@@ -72,6 +72,10 @@ func (e *HookEngine) RebuildIndex(clients []*Client) {
 }
 
 func (e *HookEngine) Dispatch(event string, payload json.RawMessage, session string) (json.RawMessage, bool) {
+	return e.DispatchExcept(event, payload, session, nil)
+}
+
+func (e *HookEngine) DispatchExcept(event string, payload json.RawMessage, session string, exclude *Client) (json.RawMessage, bool) {
 	entries := e.entries(event)
 	if len(entries) == 0 {
 		return payload, true
@@ -82,6 +86,9 @@ func (e *HookEngine) Dispatch(event string, payload json.RawMessage, session str
 
 	var relevant []hookEntry
 	for _, entry := range entries {
+		if exclude != nil && entry.client == exclude {
+			continue
+		}
 		if entry.client.session == session || entry.client.session == "" {
 			relevant = append(relevant, entry)
 		}
@@ -139,7 +146,7 @@ func (e *HookEngine) dispatchVoid(event string, payload json.RawMessage, entries
 func (e *HookEngine) dispatchModifying(event string, payload json.RawMessage, entries []hookEntry, secure bool) (json.RawMessage, bool) {
 	current := payload
 	for _, entry := range entries {
-		result := e.sendAndWait(entry.client, event, current)
+		result := e.sendAndWait(entry, event, current)
 		if result == nil {
 			if secure {
 				e.logger.Info("security hook timeout, blocking", "event", event, "client", entry.client.name)
@@ -162,7 +169,7 @@ func (e *HookEngine) dispatchModifying(event string, payload json.RawMessage, en
 
 func (e *HookEngine) dispatchClaiming(event string, payload json.RawMessage, entries []hookEntry) (json.RawMessage, bool) {
 	for _, entry := range entries {
-		result := e.sendAndWait(entry.client, event, payload)
+		result := e.sendAndWait(entry, event, payload)
 		if result == nil {
 			continue
 		}
@@ -176,7 +183,8 @@ func (e *HookEngine) dispatchClaiming(event string, payload json.RawMessage, ent
 	return payload, true
 }
 
-func (e *HookEngine) sendAndWait(c *Client, event string, payload json.RawMessage) *HookResult {
+func (e *HookEngine) sendAndWait(entry hookEntry, event string, payload json.RawMessage) *HookResult {
+	c := entry.client
 	id := generateHookID()
 	ch := make(chan *HookResult, 1)
 	e.addPendingHook(id, ch)
@@ -189,10 +197,25 @@ func (e *HookEngine) sendAndWait(c *Client, event string, payload json.RawMessag
 	})
 
 	var result *HookResult
-	select {
-	case result = <-ch:
-	case <-time.After(hookTimeout):
-		e.logger.Warn("hook timeout", "event", event, "client", c.name, "id", id)
+	if entry.sub.TimeoutMs != nil && *entry.sub.TimeoutMs == 0 {
+		// Wait indefinitely; only the subscriber disconnecting unblocks us.
+		select {
+		case result = <-ch:
+		case <-c.Done():
+			e.logger.Info("hook subscriber disconnected", "event", event, "client", c.name, "id", id)
+		}
+	} else {
+		d := hookTimeout
+		if entry.sub.TimeoutMs != nil && *entry.sub.TimeoutMs > 0 {
+			d = time.Duration(*entry.sub.TimeoutMs) * time.Millisecond
+		}
+		select {
+		case result = <-ch:
+		case <-c.Done():
+			e.logger.Info("hook subscriber disconnected", "event", event, "client", c.name, "id", id)
+		case <-time.After(d):
+			e.logger.Warn("hook timeout", "event", event, "client", c.name, "id", id)
+		}
 	}
 
 	e.removePendingHook(id)

@@ -175,12 +175,25 @@ class Plan:
     update_only: tuple[str, ...] = ()  # subset of names to update; () means all when update=True
 
 
+@dataclass(frozen=True)
+class InstallResult:
+    generation: gens.Generation
+    lock: lockmod.Lock
+    changed: bool
+
+    def __iter__(self):
+        # Preserve the historical `gen, lock = install(...)` API while letting
+        # callers opt into the changed flag as `result.changed`.
+        yield self.generation
+        yield self.lock
+
+
 def install(distro_dir: str | Path, home: Path, *,
             override_name: str | None = None,
             offline: bool = False,
             update: bool = False,
             update_only: tuple[str, ...] = (),
-            keep_generations: int = 5) -> tuple[gens.Generation, lockmod.Lock]:
+            keep_generations: int = 5) -> InstallResult:
     """Install a distro into ``home``.
 
     ``distro_dir`` may be:
@@ -188,7 +201,9 @@ def install(distro_dir: str | Path, home: Path, *,
       - a ``local:<path>`` URI,
       - a ``git+<url>@<ref>[#path=<subdir>]`` URI.
 
-    Returns ``(new_generation, lock)``.
+    Returns an ``InstallResult``. It remains unpackable as ``(generation, lock)``
+    for compatibility; use ``result.changed`` to tell whether a new generation
+    was promoted.
     """
     distro_path, distro_source_uri = _resolve_distro_source(
         distro_dir, home, offline=offline,
@@ -239,7 +254,7 @@ def install(distro_dir: str | Path, home: Path, *,
         _expose_current(home, distro.name)
         _set_active(home, distro.name)
         _refresh_runtime_surface(home)
-        return current, new_lock
+        return InstallResult(current, new_lock, False)
 
     (staging / ".fingerprint").write_text(staging_fp, encoding="utf-8")
     os.replace(staging, new_path)
@@ -252,7 +267,7 @@ def install(distro_dir: str | Path, home: Path, *,
     _set_active(home, distro.name)
     _refresh_runtime_surface(home)
     gens.prune(home, distro.name, keep=keep_generations)
-    return new_gen, new_lock
+    return InstallResult(new_gen, new_lock, True)
 
 
 def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lockmod.Lock:
@@ -382,6 +397,8 @@ def _install_bundle(bundle_root: Path, skills_dir: Path, *, allowlist: tuple[str
         if entry.name.startswith("_"):
             support_dirs.append(entry)
             continue
+        if not (entry / "SKILL.md").is_file():
+            continue
         if allowlist is not None and entry.name not in allowlist:
             continue
         skills_to_install.append(entry)
@@ -485,7 +502,7 @@ def _set_active(home: Path, distro_name: str) -> None:
 
 def _refresh_runtime_surface(home: Path) -> None:
     _link_runtime(home / "distrib" / "active" / "templates", home / "templates")
-    _link_runtime(home / "distrib" / "active" / "skills", home / "skills", preserve={"_lib"})
+    _link_runtime(home / "distrib" / "active" / "skills", home / "skills", preserve={"_pylib", "_tslib"})
 
 
 def _link_runtime(src_dir: Path, dst_dir: Path, preserve: set[str] | None = None) -> None:

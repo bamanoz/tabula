@@ -1,5 +1,7 @@
 package kernel
 
+import "encoding/json"
+
 // joinPlan holds the complete result of a join computation.
 // Built in the build phase, applied in the side-effect phase.
 type joinPlan struct {
@@ -67,9 +69,22 @@ func (h *Hub) finalizeJoinPlan(c *Client, plan *joinPlan) {
 }
 
 func (h *Hub) initMessage(context string) *Message {
-	return &Message{
+	msg := &Message{
 		Type:    string(MsgInit),
 		Context: context,
 		Tools:   h.toolsJSON,
 	}
+	meta := map[string]any{}
+	if len(h.initMeta) > 0 {
+		_ = json.Unmarshal(h.initMeta, &meta)
+	}
+	if h.ProjectRoot != "" {
+		meta["project_root"] = h.ProjectRoot
+	}
+	if len(meta) > 0 {
+		if raw, err := json.Marshal(meta); err == nil {
+			msg.Meta = raw
+		}
+	}
+	return msg
 }

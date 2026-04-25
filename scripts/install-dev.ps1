@@ -46,11 +46,14 @@ foreach ($legacy in @("boot.py", "templates", "skills", "testing", "distrib")) {
 
 Copy-Item (Join-Path $RepoRoot "examples" "boot-cicd.py") -Destination (Join-Path $TabulaHome "boot-cicd.py") -Force
 
-# Shared skill library
+# Shared Python/TypeScript skill libraries
 $SkillsDest = Join-Path $TabulaHome "skills"
 if (Test-Path $SkillsDest) { Remove-Item -Recurse -Force $SkillsDest }
 New-Item -ItemType Directory -Force -Path $SkillsDest | Out-Null
-Copy-Item (Join-Path $RepoRoot "skills" "_lib") -Destination (Join-Path $SkillsDest "_lib") -Recurse -Force
+Copy-Item (Join-Path $RepoRoot "skills" "_pylib") -Destination (Join-Path $SkillsDest "_pylib") -Recurse -Force
+if (Test-Path (Join-Path $RepoRoot "skills" "_tslib")) {
+    Copy-Item (Join-Path $RepoRoot "skills" "_tslib") -Destination (Join-Path $SkillsDest "_tslib") -Recurse -Force
+}
 Get-ChildItem -Path $SkillsDest -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
 
 # Test/dev runtime skills
@@ -92,10 +95,12 @@ Set-Content -Path (Join-Path $TabulaHome "VERSION") -Value $VersionStr -NoNewlin
 foreach ($script in @("tabula-server.ps1", "tabula-cli.ps1", "tabula-api.ps1", "tabula-install-distro.ps1")) {
     Copy-Item (Join-Path $RepoRoot "bin" $script) -Destination (Join-Path $BinDir $script) -Force
 }
+if (Test-Path (Join-Path $RepoRoot "bin" "tabula-coder")) {
+    Copy-Item (Join-Path $RepoRoot "bin" "tabula-coder") -Destination (Join-Path $BinDir "tabula-coder") -Force
+}
 Copy-Item (Join-Path $RepoRoot "scripts" "install-distro.py") -Destination (Join-Path $BinDir "install-distro.py") -Force
 
-$PythonRuntime = Join-Path $Venv "Scripts" "python.exe"
-& $PythonRuntime (Join-Path $BinDir "install-distro.py") --home $TabulaHome (Join-Path $RepoRoot "distrib" "assistant")
+# Install a distro separately with tabula-distro, e.g. ../tabula-distrib/familiar.
 
 # Add to PATH
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")

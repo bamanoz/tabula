@@ -8,7 +8,7 @@ import os
 import tomllib
 from pathlib import Path
 
-from skills._lib.paths import global_config_file, secrets_file, skill_config_toml, tabula_home
+from skills._pylib.paths import global_config_file, secrets_file, skill_config_toml, tabula_home
 
 
 class SkillConfigError(RuntimeError):

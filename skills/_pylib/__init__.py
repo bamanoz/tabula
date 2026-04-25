@@ -1,4 +1,4 @@
-"""Shared runtime helpers for Tabula skills."""
+"""Shared Python runtime helpers for Tabula skills."""
 
 from .config import SkillConfigError, get_tabula_home, load_global_config, load_skill_config
 

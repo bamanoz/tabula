@@ -18,12 +18,21 @@ type Hub struct {
 	tools           *ToolService
 	toolExec        map[string]string // tool name → exec command for skill tools
 	toolsJSON       json.RawMessage
+	initMeta        json.RawMessage
 	enabledBuiltins map[string]bool
 	Logger          *slog.Logger
 	MaxSpawnDepth   int
 	MaxChildren     int
 	MaxClients      int           // max concurrent clients (default 100)
 	ShutdownTimeout time.Duration // grace period before SIGKILL (default 3s)
+	// ProjectRoot is the absolute workspace/project root exposed to skills via
+	// the `meta.project_root` field on `init`. Skills use it to scope file
+	// reads/writes, shell commands, and approval policies. Empty if unset.
+	ProjectRoot string
+}
+
+func (h *Hub) SetInitMeta(meta json.RawMessage) {
+	h.initMeta = meta
 }
 
 // NewHub creates a new Hub.

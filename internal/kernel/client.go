@@ -21,20 +21,30 @@ const (
 
 // Client represents a single WebSocket connection.
 type Client struct {
-	hub        *Hub
-	conn       *websocket.Conn
-	name       string
-	session    string
-	id         int
-	depth      int
-	sends      map[string]bool
-	receives   map[string]bool
-	hooks      []HookSubscription
-	sendCh     chan []byte
-	sendMu     sync.Mutex
-	sendClosed bool
-	state      ClientState
-	recvCh     chan *Message // if set, messages go here instead of WebSocket
+	hub            *Hub
+	conn           *websocket.Conn
+	name           string
+	session        string
+	id             int
+	depth          int
+	sends          map[string]bool
+	receives       map[string]bool
+	receivesGlobal map[string]bool // message types to receive from all sessions
+	hooks          []HookSubscription
+	sendCh         chan []byte
+	sendMu         sync.Mutex
+	sendClosed     bool
+	state          ClientState
+	recvCh         chan *Message // if set, messages go here instead of WebSocket
+	done           chan struct{} // closed when the client disconnects
+	doneOnce       sync.Once
+}
+
+// Done returns a channel that is closed when the client disconnects.
+// Used by the hook engine to cancel pending interactive hooks (timeout=0)
+// when the responding client goes away.
+func (c *Client) Done() <-chan struct{} {
+	return c.done
 }
 
 // NewClient creates a client and starts its pumps.
@@ -45,6 +55,7 @@ func NewClient(hub *Hub, conn *websocket.Conn) *Client {
 		conn:   conn,
 		sendCh: make(chan []byte, sendBufSize),
 		state:  ClientSocketConnected,
+		done:   make(chan struct{}),
 	}
 	if !hub.Register(c) {
 		conn.Close()
@@ -83,6 +94,7 @@ func (c *Client) MarkJoined() bool {
 // MarkClosed transitions to closed state.
 func (c *Client) MarkClosed() {
 	c.transition(ClientClosed)
+	c.doneOnce.Do(func() { close(c.done) })
 }
 
 // IsConnected returns true if the client is in a live state.
@@ -96,6 +108,12 @@ func (c *Client) canSend(msgType string) bool {
 
 func (c *Client) canReceive(msgType string) bool {
 	return c.receives[msgType]
+}
+
+// canReceiveGlobal returns true if this client wants to receive the given
+// message type from all sessions (regardless of session membership).
+func (c *Client) canReceiveGlobal(msgType string) bool {
+	return c.receivesGlobal[msgType]
 }
 
 // SendMsg marshals and queues a message for sending.
@@ -180,4 +198,5 @@ func (c *Client) closeSend() {
 	if c.recvCh != nil {
 		close(c.recvCh)
 	}
+	c.doneOnce.Do(func() { close(c.done) })
 }

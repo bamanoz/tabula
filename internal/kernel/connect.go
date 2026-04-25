@@ -8,14 +8,15 @@ import (
 
 // connectPlan holds the complete result of a connect computation.
 type connectPlan struct {
-	name         string
-	sends        []string
-	receives     []string
-	hooks        []HookSubscription
-	depth        int
-	clientID     int
-	errorMsg     string
-	connectedMsg *Message
+	name           string
+	sends          []string
+	receives       []string
+	receivesGlobal []string
+	hooks          []HookSubscription
+	depth          int
+	clientID       int
+	errorMsg       string
+	connectedMsg   *Message
 }
 
 // buildConnectPlan performs pure computation for a connect:
@@ -23,10 +24,11 @@ type connectPlan struct {
 // No state mutations or messages are sent during this phase.
 func (h *Hub) buildConnectPlan(c *Client, msg *Message) connectPlan {
 	plan := connectPlan{
-		name:     msg.Name,
-		sends:    msg.Sends,
-		receives: msg.Receives,
-		hooks:    msg.Hooks,
+		name:           msg.Name,
+		sends:          msg.Sends,
+		receives:       msg.Receives,
+		receivesGlobal: msg.ReceivesGlobal,
+		hooks:          msg.Hooks,
 	}
 
 	// Protocol version must match exactly. Version 0 is no longer accepted —
@@ -66,7 +68,7 @@ func (h *Hub) applyConnectPlan(c *Client, plan connectPlan) {
 	}
 
 	// Mutate state.
-	h.configureClient(c, plan.name, plan.sends, plan.receives, plan.hooks, plan.depth)
+	h.configureClient(c, plan.name, plan.sends, plan.receives, plan.receivesGlobal, plan.hooks, plan.depth)
 	c.MarkProtocolReady()
 	h.rebuildHookIndex()
 

@@ -1,8 +1,8 @@
 ---
-name: lib
+name: pylib
 description: "Shared kernel-level Python runtime library. Provides `kernel_client` (WebSocket wrapper), `protocol` (message/hook/tool constants), `paths` (TABULA_HOME conventions), `config` (typed skill config loader), and `filelock`. Driver- and provider-specific code lives in the `drivers` bundle, not here."
 ---
-# skills/_lib — kernel runtime library
+# skills/_pylib — kernel Python runtime library
 
 The narrow runtime surface every Tabula skill can rely on.
 
@@ -14,12 +14,12 @@ live here; it lives in the relevant distro or bundle.
 
 ## Modules
 
-### `skills._lib.kernel_client`
+### `skills._pylib.kernel_client`
 
 `KernelConnection` — thread-safe WebSocket wrapper around the kernel protocol.
 
 ```python
-from skills._lib.kernel_client import KernelConnection
+from skills._pylib.kernel_client import KernelConnection
 
 conn = KernelConnection("ws://localhost:8089/ws")
 conn.send({"type": "connect", "name": "my-skill", ...})
@@ -27,24 +27,24 @@ msg = conn.recv(timeout=5.0)      # dict or None on close
 conn.close()
 ```
 
-### `skills._lib.protocol`
+### `skills._pylib.protocol`
 
 Symbolic names for everything crossing the wire: `MSG_*`, `TOOL_*`, `HOOK_*`,
 `DEFAULT_KERNEL_TOOLS`. Skills **should** import from here rather than typing
 literals.
 
-### `skills._lib.paths`
+### `skills._pylib.paths`
 
 `$TABULA_HOME` layout conventions. Each kind of skill file (config, data,
 state, run, logs) has a canonical location; helpers return the `Path`.
 
-### `skills._lib.config`
+### `skills._pylib.config`
 
 `load_skill_config` / `load_global_config` / `SkillConfigError` — typed loader
 for `SKILL.config.json` entries combining env vars, `config/skills/<id>.toml`,
 `secrets.json`, and schema defaults.
 
-### `skills._lib.filelock`
+### `skills._pylib.filelock`
 
 Cross-platform advisory file locking used by `cron`, task queues and anything
 that multiplexes a single on-disk JSON.
