@@ -21,13 +21,13 @@ Tabula is the same idea applied to AI agents.
 | Neovim                 | Tabula                                |
 | ---------------------- | ------------------------------------- |
 | `nvim` core            | `bin/tabula` (Go kernel)              |
-| Plugins                | Skills (separate processes)           |
+| Plugins                | Skills (per-call) + Plugins (long-lived) |
 | `runtimepath`          | `~/.tabula/skills/`                   |
 | `~/.config/nvim/`      | `~/.tabula/`                          |
 | `init.lua`             | `IDENTITY.md`, `SOUL.md`, `AGENTS.md` |
-| Plugin manager         | `clawhub` skill                       |
-| `:help`                | `SKILL.md` per skill                  |
-| Distro (LazyVim, etc.) | Distro (`assistant`, `guardian`)      |
+| Plugin manager         | `tabula-distro` + bundles             |
+| `:help`                | `SKILL.md` / `README.md` per component |
+| Distro (LazyVim, etc.) | Distro (`coder`, `familiar`, `guardian`) |
 
 ## What Tabula is not
 
@@ -45,21 +45,26 @@ These are non-negotiable. They shape every decision.
 
 ### 1. Small kernel, large userland
 
-Features live in skills, not in the core. `grep` is not in `bash`. Memory
-is not in the kernel. Telegram is not in the kernel. Even drivers are
-skills.
+Features live in skills and plugins, not in the core. `grep` is not in
+`bash`. Memory is not in the kernel. Telegram is not in the kernel. Even
+drivers are plugins.
 
-What stays in the kernel: routing, sessions, processes, hooks, the wire
-protocol, and four built-in tools (`shell_exec`, `process_spawn`,
-`process_kill`, `process_list`). That is the entire ABI.
+What stays in the kernel: routing, sessions, processes, hooks, and the
+wire protocol. The native LLM tool catalog is intentionally **empty** —
+distros choose their own surface through skills and plugins. That is the
+entire ABI.
 
-If a feature can be a skill, it is a skill.
+If a feature can be a skill or plugin, it is a skill or plugin.
 
 ### 2. Process isolation is real
 
-A skill is a real OS process. Crashes are contained. Skills can be written
-in any language. Subagents are real child processes with their own
-session, not coroutines.
+A skill is a real OS subprocess (per call). A plugin is a real OS
+long-lived subprocess. Crashes are contained. Components can be written in
+any language. Subagents are real child processes with their own session,
+not coroutines.
+
+Two-tier supervision: kernel owns level-one components; plugins own their
+own children through process groups.
 
 This is the main reason Tabula is not a Python library.
 
@@ -71,38 +76,45 @@ Everything user-facing lives as files under `~/.tabula/`. You can `cat`,
 This is what makes self-modification natural. The agent reads and writes
 the same files you do. No special "agent storage" layer.
 
+Plugins may hold runtime state in memory or persist their own state to
+flat files under `~/.tabula/state/<plugin-id>/`, but core lifecycle
+information (sessions, identity, prompts) stays inspectable.
+
 ### 4. Self-modification is normal
 
-A skill is not a kernel-defined file format. It is whatever the active distro
-knows how to discover, describe, and optionally execute. The agent has file and
-shell tools, so it can write skills for itself using the same mechanism a human
-extender uses. There is no separate "agent-authored" path.
+A skill or plugin is not a kernel-defined file format. It is whatever the
+active distro knows how to discover, describe, and optionally execute.
+The agent has file and shell tools, so it can write skills and plugins
+for itself using the same mechanism a human extender uses. There is no
+separate "agent-authored" path.
 
 This is what we mean by *the agent grows with you*.
 
 ### 5. Stable contracts over rapid features
 
-People will only invest in writing skills if those skills don't break next
-month. The wire protocol is versioned. The `SKILL.md` contract will be
-versioned. The `skills/_pylib/` public surface will be narrow and stable.
+People will only invest in writing components if they don't break next
+month. The wire protocol is versioned. The `SKILL.md` and `plugin.toml`
+contracts will be versioned. The `tabula_plugin_sdk` public surface is narrow
+and stable.
 
 Features can move fast inside the kernel. Contracts cannot.
 
 ### 6. Convention over configuration
 
-The kernel keeps its contracts small. Distros are free to define conventions
-above them. In the built-in `assistant` distro, if a skill is in `skills/`, it
-is discovered; if its `SKILL.md` declares a tool, the tool is exposed; if a
-skill is named `driver-anthropic`, it is selected when
-`TABULA_PROVIDER=anthropic`. No central registry, no manual wiring.
+The kernel keeps its contracts small. Distros are free to define
+conventions above them. In the built-in `familiar` distro, if a directory
+sits in `skills/` and has a `SKILL.md`, it is discovered as a skill;
+if it has a `plugin.toml`, it is launched as a plugin; if a skill is named
+`gateway-cli`, it is treated as a UI gateway by convention. No central
+registry, no manual wiring.
 
-For assistant, the directory layout *is* the configuration.
+For familiar, the directory layout *is* the configuration.
 
 ### 7. Distros are products
 
-A kernel + a curated skill set + a personality = a product. `assistant`
-and `guardian` are two products on the same kernel. Anyone can build
-their own.
+A kernel + a curated bundle set + a personality = a product. `coder`,
+`familiar`, and `guardian` are three products on the same kernel. Anyone
+can build their own.
 
 This is how we expect the ecosystem to grow: not "everyone builds the
 same agent", but "everyone builds their own distro".
@@ -128,7 +140,7 @@ These are the same trade-offs Linux and Neovim make. They turned out fine.
 
 When deciding whether something belongs in Tabula, ask:
 
-- Can it be a skill instead? → Make it a skill.
+- Can it be a skill or plugin instead? → Make it a skill or plugin.
 - Does it require a database / hidden state? → Find a flat-file design.
 - Does it require breaking the contract? → Postpone or version it.
 - Does it make the kernel bigger? → Justify it.

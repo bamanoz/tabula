@@ -111,6 +111,12 @@ func (h *Hub) handleCancel(session string) {
 	})
 }
 
+// generateSpawnToken issues a one-time token for a spawned child to present
+// when it connects back to the kernel.
+//
+// TODO(skill-plugin-arch): unused after kernel cleanup (Phase 1 D1.2 removed
+// handleSpawn). Kept as dead code per creative §7 (D1.11 option b) until
+// subagent plugin GA in tabula-bundles. Remove together with SpawnTokenStore.
 func (h *Hub) generateSpawnToken(childDepth int) (string, error) {
 	return h.tokens.Generate(childDepth, time.Now())
 }

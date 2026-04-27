@@ -392,11 +392,15 @@ func TestHookNone_MessagePassesThrough(t *testing.T) {
 
 // --- Universal before_tool_call tests ---
 
-// newTestEnvWithSkillTool creates a test env with a skill tool "echo_tool" that just echoes input.
+// newTestEnvWithSkillTool creates a test env with a synthetic skill tool
+// "echo_tool" whose exec command echoes the JSON input it receives on stdin.
+// This is the replacement coverage for the removed kernel-builtin shell_exec
+// path: before_tool_call hooks still gate and rewrite real dynamic skill exec
+// dispatch without depending on any kernel builtin tool.
 func newTestEnvWithSkillTool(t *testing.T) *testEnv {
 	t.Helper()
-	toolsJSON := json.RawMessage(`[{"name":"shell_exec","description":"run cmd","params":{"command":{"type":"string","description":"cmd"}},"required":["command"]},{"name":"echo_tool","description":"echo","params":{"text":{"type":"string","description":"text"}},"required":["text"]}]`)
-	skillExec := map[string]string{"echo_tool": "echo"}
+	toolsJSON := json.RawMessage(`[{"name":"echo_tool","description":"echo","params":{"text":{"type":"string","description":"text"},"command":{"type":"string","description":"command text"}},"required":[]}]`)
+	skillExec := map[string]string{"echo_tool": "cat"}
 	hub := NewHub(toolsJSON, skillExec, 3, 5, nil)
 
 	mux := http.NewServeMux()
@@ -416,11 +420,11 @@ func newTestEnvWithSkillTool(t *testing.T) *testEnv {
 	return &testEnv{Hub: hub, Server: server, t: t}
 }
 
-func TestBeforeToolCallHookFiresForShellExec(t *testing.T) {
+func TestBeforeToolCallHookFiresForDynamicSkillTool(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on windows")
 	}
-	env := newTestEnv(t)
+	env := newTestEnvWithSkillTool(t)
 
 	hook := env.connectHook("perm", []HookSubscription{
 		{Event: "before_tool_call", Priority: 100},
@@ -431,13 +435,13 @@ func TestBeforeToolCallHookFiresForShellExec(t *testing.T) {
 		[]string{"tool_result"},
 	)
 
-	// Send shell_exec tool_use
+	// Send dynamic skill tool_use
 	go func() {
 		writeJSON(t, drv, Message{
 			Type:  "tool_use",
-			Name:  "shell_exec",
+			Name:  "echo_tool",
 			ID:    "t1",
-			Input: json.RawMessage(`{"command":"echo hi"}`),
+			Input: json.RawMessage(`{"text":"hi"}`),
 		})
 	}()
 
@@ -450,8 +454,8 @@ func TestBeforeToolCallHookFiresForShellExec(t *testing.T) {
 	json.Unmarshal(hookMsg.Payload, &payload)
 	var tool string
 	json.Unmarshal(payload["tool"], &tool)
-	if tool != "shell_exec" {
-		t.Fatalf("expected tool shell_exec, got %s", tool)
+	if tool != "echo_tool" {
+		t.Fatalf("expected tool echo_tool, got %s", tool)
 	}
 
 	// Pass through
@@ -508,8 +512,8 @@ func TestBeforeToolCallHookFiresForSkillTool(t *testing.T) {
 	}
 }
 
-func TestBeforeToolCallHookCanBlockShellExec(t *testing.T) {
-	env := newTestEnv(t)
+func TestBeforeToolCallHookCanBlockDynamicSkillTool(t *testing.T) {
+	env := newTestEnvWithSkillTool(t)
 
 	hook := env.connectHook("perm", []HookSubscription{
 		{Event: "before_tool_call", Priority: 100},
@@ -523,9 +527,9 @@ func TestBeforeToolCallHookCanBlockShellExec(t *testing.T) {
 	go func() {
 		writeJSON(t, drv, Message{
 			Type:  "tool_use",
-			Name:  "shell_exec",
+			Name:  "echo_tool",
 			ID:    "t3",
-			Input: json.RawMessage(`{"command":"rm -rf /"}`),
+			Input: json.RawMessage(`{"text":"should-not-run"}`),
 		})
 	}()
 
@@ -588,7 +592,7 @@ func TestBeforeToolCallHookCanBlockSkillTool(t *testing.T) {
 // --- Hook classification tests ---
 
 func TestSecurityHookTimeoutBlocksToolCall(t *testing.T) {
-	env := newTestEnv(t)
+	env := newTestEnvWithSkillTool(t)
 
 	// Hook that never responds on before_tool_call (security event)
 	_ = env.connectHook("slow-perm", []HookSubscription{
@@ -603,9 +607,9 @@ func TestSecurityHookTimeoutBlocksToolCall(t *testing.T) {
 	go func() {
 		writeJSON(t, drv, Message{
 			Type:  "tool_use",
-			Name:  "shell_exec",
+			Name:  "echo_tool",
 			ID:    "t1",
-			Input: json.RawMessage(`{"command":"echo hello"}`),
+			Input: json.RawMessage(`{"text":"hello"}`),
 		})
 	}()
 
@@ -623,6 +627,7 @@ func TestSecurityHookTimeoutBlocksToolCall(t *testing.T) {
 }
 
 func TestSecurityHookTimeoutBlocksSpawn(t *testing.T) {
+	skipKernelBuiltinRemoved(t)
 	env := newTestEnv(t)
 
 	_ = env.connectHook("slow-spawn", []HookSubscription{

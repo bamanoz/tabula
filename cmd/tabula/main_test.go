@@ -69,6 +69,51 @@ func TestParseSkillExecMap_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestResolveBootSkills_PrefersSkillsField(t *testing.T) {
+	cfg := &BootConfig{
+		Skills: json.RawMessage(`[{"name":"a","exec":"a.sh"}]`),
+		Tools:  json.RawMessage(`[{"name":"b","exec":"b.sh"}]`),
+	}
+	raw, legacy := resolveBootSkills(cfg)
+	if legacy {
+		t.Fatal("expected legacy=false when skills is populated")
+	}
+	if string(raw) != `[{"name":"a","exec":"a.sh"}]` {
+		t.Fatalf("expected skills field to win, got %s", raw)
+	}
+}
+
+func TestResolveBootSkills_FallsBackToLegacyTools(t *testing.T) {
+	cfg := &BootConfig{
+		Tools: json.RawMessage(`[{"name":"b","exec":"b.sh"}]`),
+	}
+	raw, legacy := resolveBootSkills(cfg)
+	if !legacy {
+		t.Fatal("expected legacy=true when only tools is populated")
+	}
+	if string(raw) != `[{"name":"b","exec":"b.sh"}]` {
+		t.Fatalf("expected tools fallback, got %s", raw)
+	}
+}
+
+func TestResolveBootSkills_EmptyJSONTreatedAsAbsent(t *testing.T) {
+	cfg := &BootConfig{
+		Skills: json.RawMessage(`[]`),
+		Tools:  json.RawMessage(`[]`),
+	}
+	raw, legacy := resolveBootSkills(cfg)
+	if raw != nil || legacy {
+		t.Fatalf("expected nil/false for empty JSON arrays, got raw=%s legacy=%v", raw, legacy)
+	}
+}
+
+func TestResolveBootSkills_NilConfig(t *testing.T) {
+	raw, legacy := resolveBootSkills(nil)
+	if raw != nil || legacy {
+		t.Fatalf("expected nil/false for nil config, got raw=%s legacy=%v", raw, legacy)
+	}
+}
+
 func TestLoadEnvFileLoadsMissingValues(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")

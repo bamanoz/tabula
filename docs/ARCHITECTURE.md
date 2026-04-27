@@ -7,16 +7,22 @@ works*.
 
 ## Top-level model
 
-Tabula has four main layers:
+Tabula has five main concepts:
 
 1. **Kernel** — small Go runtime that owns sessions, routing, hooks, and
-   process management.
+   process supervision.
 2. **Boot** — command from `TABULA_BOOT` that inspects the active runtime and
    prints one JSON config object. In the built-in distros this is currently
    implemented in Python.
-3. **Skills** — external processes that connect to the kernel over WebSocket.
-4. **Distro** — a packaged runtime surface: boot script, templates, and a set
-   of skills.
+3. **Skills** — declarative per-call extensions. Each tool call spawns a fresh
+   subprocess; skills are stateless. Manifest: `SKILL.md` (Markdown +
+   frontmatter).
+4. **Plugins** — long-lived processes with a `register(api)` entry point that
+   subscribe to bus events, register tools dynamically, and own their own
+   lifecycle. Manifest: `plugin.toml`. See
+   [plans/SKILL_PLUGIN_ARCHITECTURE.md](plans/SKILL_PLUGIN_ARCHITECTURE.md).
+5. **Distro** — a packaged runtime surface: boot script, templates, and a set
+   of bundles (which themselves are mixed collections of skills and plugins).
 
 Message flow usually looks like this:
 
@@ -33,25 +39,28 @@ Responsibilities:
 - run the WebSocket server
 - run the boot command from `TABULA_BOOT`
 - parse the boot JSON config
-- spawn configured skill processes
+- execute per-call skill subprocesses and long-lived plugin processes
 - route messages between session members
-- expose built-in kernel tools
-- enforce hook ordering and spawn policy
+- expose the distro-declared skill/plugin tool catalog
+- enforce hook ordering and own level-one process supervision
 
 The kernel intentionally does **not** know about Anthropic, OpenAI, Telegram,
 memory, MCP, or any other product feature. Those are all userland skills.
 
 ### Built-in kernel tools
 
-Current built-ins are defined in `internal/kernel/protocol.go` and mirrored in
-`skills/_pylib/protocol.py`:
+The kernel publishes **no** LLM-visible tools by default. The native tool
+catalog is empty; everything (including `shell_exec`-style commands) is
+delivered by skills or plugins from the active distro.
 
-- `shell_exec`
-- `process_spawn`
-- `process_kill`
-- `process_list`
+This is intentional: distros decide their tool surface, and the kernel does
+not impose `shell_exec` / `process_spawn` / `process_kill` / `process_list`
+as a baseline. See
+[plans/SKILL_PLUGIN_ARCHITECTURE.md §4](plans/SKILL_PLUGIN_ARCHITECTURE.md)
+for the rationale.
 
-These are the only tools that are not provided by skills.
+Internally, the kernel still owns process spawning and skill execution
+(`SkillExec`, `PluginRuntime`), but those are not LLM tools.
 
 ### Sessions
 
@@ -72,18 +81,29 @@ Skills talk to the kernel over WebSocket using JSON messages.
 Protocol version:
 
 - Go side: `internal/kernel/protocol.go`
-- Python side: `skills/_pylib/protocol.py`
+- Python side: `tabula_plugin_sdk.protocol`
 - current version: `1`
 - Clients **must** declare `version` on `connect`. Mismatched or missing
   versions are rejected with an `error` message — there is no legacy fallback.
 
 ## Versioning
 
-The kernel binary and its `skills/_pylib/` runtime contract share a single SemVer.
-Source of truth: `<repo>/VERSION` (synced by release tooling into Go ldflags
-and `skills/_pylib/__init__.py:__version__`). Installers also write the version to
+The kernel binary has its own SemVer. Source of truth: `<repo>/VERSION` (synced
+by release tooling into Go ldflags). Installers also write that version to
 `$TABULA_HOME/VERSION` so `tabula-distro` can verify compatibility before
 composing a distro.
+
+Wire compatibility is tracked separately:
+
+- kernel client protocol: `ProtocolVersion` in `internal/kernel/protocol.go`
+  and `tabula_plugin_sdk.protocol` for WebSocket clients;
+- plugin protocol: `PluginProtocolVersion` in `internal/kernel/protocol.go`,
+  negotiated during the stdio `register_request` / `register` handshake;
+- Python/TypeScript SDK packages: independent SemVer artifacts, pinned by the
+  bundle/distro release that ships them.
+
+This avoids coupling kernel releases to SDK package patch releases while still
+making incompatible protocol changes explicit at connect/register time.
 
 Distros and bundles declare their requirement against this number:
 
@@ -111,7 +131,7 @@ Every skill uses the same basic lifecycle:
 6. optionally receive `init`
 7. enter message loop
 
-The shared Python wrapper for this is `skills/_pylib/kernel_client.py`.
+The shared Python wrapper for this is `tabula_plugin_sdk.kernel_client`.
 
 ## Boot
 
@@ -138,7 +158,8 @@ The boot script emits one JSON object with fields like:
 - `tools` — skill tools to expose to the active driver
 - `commands` — slash commands for gateways
 - `context` — assembled system prompt
-- `kernel_tools` — subset of built-in kernel tools to expose
+- `kernel_tools` — legacy compatibility field; the kernel builtin tool catalog
+  is empty in the skill/plugin architecture
 
 Familiar and guardian use the same contract, but generate different payloads.
 
@@ -150,12 +171,12 @@ repo) is the more dynamic boot implementation.
 It does the following:
 
 - loads `.env`
-- scans the flat `skills/` runtime surface recursively
-- reads `SKILL.md` frontmatter
+- scans the flat `skills/` and `plugins/` runtime surfaces recursively
+- reads `SKILL.md` frontmatter for skills and `plugin.toml` for plugins
 - discovers tool skills and slash commands
 - builds the system prompt from templates and project files
-- filters provider-specific skills based on `TABULA_PROVIDER`
-- selects exactly one driver and one matching subagent runtime
+- selects the active provider through the unified `drivers/driver` plugin
+- launches long-lived plugins (drivers, gateways, subagent runtime, mcp)
 - writes subagent prompt state under `~/.tabula/state/subagent/`
 
 This is where most of the familiar distro behavior is assembled.
@@ -179,14 +200,14 @@ completely different runtime philosophy.
 
 Tabula is split across three repositories:
 
-- [`tabula`](https://github.com/bamanoz/tabula) — the kernel, the thin
-  `skills/_pylib` runtime contract, the `tabula-distro` installer, and
-  installation scripts.
+- [`tabula`](https://github.com/bamanoz/tabula) — the kernel, the
+  `tabula-distro` installer, reference examples, and installation scripts.
 - [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles) — reusable
-  skill bundles: `base/`, `files/`, `drivers/`, `memory/`, `caveman/`. These
-  are referenced from distros via `distro.toml`.
-- [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib) — the three
-  ready-to-use distros: `familiar/`, `guardian/`, `ouroboros/`. Each declares
+  bundles. Each bundle is a directory containing skills (`SKILL.md`) and/or
+  plugins (`plugin.toml`) on the same level. Bundles are referenced from
+  distros via `distro.toml`.
+- [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib) — the
+  ready-to-use distros: `coder/`, `familiar/`, `guardian/`. Each declares
   its bundle dependencies in `distro.toml`.
 
 A distro never embeds bundle source. It declares dependencies and the
@@ -201,6 +222,7 @@ with:
 - `boot.py`
 - `templates/`
 - `skills/` (distro-specific skills only)
+- `plugins/` (optional distro-specific plugins)
 - `distro.toml` (declares which bundles to pull in)
 
 `tabula-distro install <source>` resolves the distro itself from a local path,
@@ -219,148 +241,143 @@ The selected distro is activated through symlinks/copies under
 ~/.tabula/boot.py                    -> distrib/active/current/boot.py
 ~/.tabula/templates/*                -> distrib/active/current/templates/*
 ~/.tabula/skills/*                   -> distrib/active/current/skills/* + bundle skills
+~/.tabula/plugins/*                  -> distrib/active/current/plugins/* + bundle plugins
 ```
 
-The exception is `skills/_pylib/`, which is shared runtime code copied in
-separately from the kernel repo and preserved when distros are switched.
+Shared SDK packages such as `tabula_plugin_sdk` are installed into
+`~/.tabula/.venv` by the installer from bundled package artifacts. They are not
+materialized as special `_pylib` / `_tslib` directories in the runtime surface.
 
 This flat runtime surface is important: the active agent sees one `skills/`
-tree, not a multi-distro layout.
+tree and one `plugins/` tree, not a multi-distro layout.
 
-## Skills
+## Skills and plugins
 
-At the platform level, a skill is any external capability unit the active boot
-logic can discover, describe to the kernel, and optionally execute.
+Tabula has two extension shapes, each identified by its manifest filename.
 
-In the built-in `familiar` distro, the current convention is usually a
-directory that contains at least:
+### Skill (`SKILL.md`)
 
-- `SKILL.md`
-- some executable entry point
+A **per-call** tool provider. Each tool invocation spawns a fresh subprocess.
+Skills are stateless. They do not subscribe to bus events.
 
-That convention is described in the `skill-contract` skill (shipped via the
-`base` bundle in `tabula-bundles`).
+Manifest is Markdown with YAML frontmatter (Anthropic-compatible). Required
+fields: `name`, `description`, `tools`. Each entry in `tools[]` carries an
+`exec` command — that is what kernel runs to handle the call. Optional
+`user-invocable: true` exposes the skill as a `/name` slash command.
 
-### `SKILL.md`
+```yaml
+---
+name: git
+description: "Structured git operations for coding agents..."
+tools:
+  - name: git_status
+    description: "..."
+    params: { cwd: { type: string } }
+    required: []
+    exec: "<venv_python> skills/git/run.py tool git_status"
+---
 
-In the `familiar` distro, `SKILL.md` serves two jobs at once:
+# Git skill
 
-1. frontmatter for machine-readable metadata
-2. human-readable documentation for users and agents
-
-Typical familiar frontmatter fields include:
-
-- `name`
-- `description`
-- `user-invocable: true`
-- `tools: [...]`
-
-The familiar boot process uses this to:
-
-- decide what enters the system prompt
-- discover tool definitions
-- discover slash commands
-- decide how some skills should be filtered or grouped
-
-### Skill categories
-
-Tabula does not enforce categories in the kernel, but in practice skills fall
-into recognizable roles.
-
-#### Drivers
-
-LLM backends such as:
-
-- `driver-anthropic`
-- `driver-openai`
-
-These receive `message`, `tool_result`, `init`, `cancel` and send stream
-events, `tool_use`, and `done`.
-
-Shared runtime: `skills._drivers.driver_runtime` (in the `drivers` bundle).
-
-#### Gateways
-
-User interfaces such as:
-
-- `gateway-cli`
-- `gateway-api`
-- `gateway-telegram`
-
-They send `message` and receive streaming events and completion markers.
-
-#### Tool skills
-
-In the built-in familiar convention, skills that expose tools through
-`SKILL.md` frontmatter are usually invoked as separate subprocesses per call.
-If no explicit `exec` is provided for a tool, familiar boot currently falls
-back to the `run.py tool <name>` convention.
-
-Example shape:
-
-```text
-weather/
-├── SKILL.md
-└── run.py
+(human-readable docs)
 ```
 
-Current assistant default tool call execution shape:
+Kernel runs the `exec` command per tool call, pipes JSON params on stdin,
+reads the result from stdout. Each call is process-isolated.
 
-```text
-python3 skills/weather/run.py tool get_weather
+### Plugin (`plugin.toml`)
+
+A **long-lived** process with a `register(api)` entry point. Plugins:
+
+- subscribe to bus events (`api.on(...)`),
+- register tools dynamically (`api.registerTool(...)`),
+- spawn and supervise their own children under their own process group,
+- hold state for as long as they run.
+
+Manifest is TOML; an optional `README.md` provides human docs (not parsed).
+
+```toml
+id = "mcp"
+name = "MCP bridge"
+version = "0.3.0"
+runtime = "python"      # python | node
+entry = "run.py"
+tags = ["mcp_bridge"]   # optional, free strings, kernel-ignored
+
+[config.schema]
+# JSON Schema for plugin config
+
+[config.defaults]
+# default values
 ```
 
-JSON input is piped on stdin; result is read from stdout.
+Plugins talk to the kernel over stdio NDJSON JSON-RPC: `register`,
+`tool_call`, `tool_result`, `event`, `event_reply`, `update_tools`, `send`,
+`log`, and `shutdown`. See [PLUGIN_AUTHORING.md](PLUGIN_AUTHORING.md) for the
+implemented authoring surface.
 
-#### Hook skills
+### What is a plugin and what is a skill
 
-Skills that subscribe to kernel lifecycle events by declaring `hooks` in their
-`connect` message.
+| Role today                         | Shape                       |
+|------------------------------------|-----------------------------|
+| Per-call tool sets (`coder-git`, `files`, `memory`, `pty-tools`) | skill |
+| Hooks (`hook-permissions`, `hook-approvals`, `caveman`, ...)     | plugin |
+| MCP bridge                          | plugin |
+| LLM drivers (`drivers/driver`)     | plugin |
+| Subagent runtime (`drivers/subagent`) | plugin |
+| Gateways (TUI, CLI, API, Telegram) | plugin |
 
-Examples:
+The migration from the old uniform "everything is a skill" model is tracked
+in [plans/SKILL_PLUGIN_ARCHITECTURE.md §8](plans/SKILL_PLUGIN_ARCHITECTURE.md).
 
-- `hook-logger`
-- `hook-permissions`
+### Two-tier supervision
 
-Current hook events include:
+```
+kernel
+  ├── skill subprocess (per call)
+  ├── plugin process (long-lived)
+  │     └── plugin's own children (under plugin's process group)
+  └── plugin process
+        └── child
+```
+
+Kernel owns level-one processes. Plugins own their children through a
+process-group leader pattern (`killpg` on shutdown). Kernel never reaches
+into plugin children.
+
+### Hook events
+
+Available bus events plugins can subscribe to:
 
 - `before_message`, `after_message`
 - `before_tool_call`, `after_tool_call`
 - `session_start`, `session_end`
-- `before_spawn`, `after_spawn`
+- `before_spawn`, `after_spawn` (reserved legacy names; no longer emitted by
+  kernel LLM-visible process tools)
 - `cancel`
 
-#### Subagents
+A hook can be void (observe only), modifying (rewrite/deny payload), or
+claiming (first claimer wins).
 
-Provider-specific subagent runtimes:
+## Shared SDK packages
 
-- `subagent-anthropic`
-- `subagent-openai`
-
-These are not special-cased in the kernel beyond process spawning and spawn
-policy. They are regular external processes that happen to run a different
-driver loop.
-
-Shared runtime: `skills._drivers.subagent_runtime` (in the `drivers` bundle).
-
-## Shared runtime library
-
-`skills/_pylib/` is the *minimal* shared Python code that every skill uses to
-talk to the kernel. It lives in the kernel repo (`tabula`) and is shipped in
-every install, regardless of which distro is active.
+`tabula_plugin_sdk` is the minimal shared Python package that skills and plugins
+use to talk to the kernel. It is distributed as a normal package artifact and
+installed into the Tabula venv by installer/bundle release tooling, rather than
+copied into the runtime as a magic skill directory.
 
 Important modules:
 
-- `protocol.py` — protocol constants and kernel tool names
-- `kernel_client.py` — WebSocket wrapper
-- `paths.py` — runtime path helpers
-- `config.py` — config and env parsing
-- `filelock.py` — cross-process file locking
+- `protocol` — protocol constants
+- `kernel_client` — WebSocket wrapper for per-call skills and clients
+- `api` — stdio NDJSON helper for long-lived plugins
+- `paths` — runtime path helpers
+- `config` — config and env parsing
+- `filelock` — cross-process file locking
 
 Driver and subagent runtime (`driver_runtime`, `subagent_runtime`,
-`providers`, `provider_selection`, `prompt_builder`, `compaction`) now lives in
-the `drivers` bundle under `skills/_drivers/` and is imported as
-`skills._drivers.<module>`.
+`providers`, `provider_selection`, `prompt_builder`, `compaction`) lives in the
+`drivers` bundle as bundle-internal support code.
 
 This keeps the kernel-side contract tiny, and lets provider-specific code
 evolve inside the `tabula-bundles` repo.
@@ -372,16 +389,21 @@ Subagents are one of Tabula's defining architectural choices.
 They are:
 
 - real child processes
-- connected to the kernel like any other skill
+- connected to the kernel like any other plugin client
 - attached to their own session
 - configured with `parent_session`, `agent_id`, `initial_task`, and limits
 
-The parent driver uses `process_spawn` and later collects subagent results back
-into the main turn.
+The parent driver requests a spawn through the subagent plugin, which (under
+its own process group) launches a child subagent process. Results flow back
+into the parent session as `<subagent_result id="...">...</subagent_result>`
+in the next turn.
 
-Today the operational layer around subagents is still minimal compared to the
-strength of the underlying process model. The current design already supports
-parallel work and isolation; registry / control / recovery are the next layer.
+`MaxSpawnDepth`, `MaxChildren`, and the spawn token live inside the subagent
+plugin itself — the kernel does not enforce them as a global invariant.
+
+The next operational layer (run registry, control surface, orphan recovery,
+tool allowlist on spawn) is described in
+[plans/COMPETITIVE_LESSONS.md §5](plans/COMPETITIVE_LESSONS.md).
 
 ## Prompts and personality
 
@@ -409,8 +431,8 @@ There are two main installation paths.
 `scripts/install.sh` / `scripts/install.ps1`:
 
 - download the Go binary from GitHub Releases
-- download the runtime payload tarball (kernel-side `skills/_pylib`, launchers,
-  examples, service files, the `tabula-distro` source)
+- download the runtime payload tarball (launchers, examples, service files,
+  bundled SDK package artifacts, and the `tabula-distro` source)
 - create `~/.tabula/.venv` and install Python runtime dependencies
 - install `tabula-distro` from the bundled tools/ directory and expose it on
   `~/.tabula/bin`
@@ -426,7 +448,7 @@ tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#pa
 `scripts/install-dev.sh` / `scripts/install-dev.ps1`:
 
 - build the Go binary from source
-- install shared `skills/_pylib` from this repo
+- install shared SDK packages into `~/.tabula/.venv`
 - copy service files
 - create a venv with dev dependencies
 - install `tabula-distro` (editable) and expose it on `~/.tabula/bin`
@@ -445,12 +467,13 @@ There are three related but different layouts to keep in mind.
 
 The source tree is split across three repos:
 
-- `tabula/` — kernel, `skills/_pylib/` (kernel Python contract only), `tabula-distro`
-  installer
-- `tabula-bundles/` — reusable skill collections (`base/`, `files/`,
-  `drivers/`, `memory/`, `caveman/`)
-- `tabula-distrib/` — `familiar/`, `guardian/`, `ouroboros/` distros, each
-  with its own `boot.py`, `templates/`, `skills/`, and `distro.toml`
+- `tabula/` — kernel, examples, installation scripts, and the `tabula-distro`
+  installer.
+- `tabula-bundles/` — reusable collections of skills and plugins (`base/`,
+  `files/`, `drivers/`, `memory/`, `caveman/`, `coder-*/`).
+- `tabula-distrib/` — `coder/`, `familiar/`, `guardian/` distros, each with
+  its own `boot.py`, `templates/`, optional in-tree `skills/`/`plugins/`,
+  and `distro.toml`.
 
 ### Installed active layout
 
@@ -459,60 +482,76 @@ The running agent sees a flat tree under `~/.tabula/`:
 - one active `boot.py`
 - one active `templates/`
 - one active `skills/`
-- shared `skills/_pylib/`
+- one active `plugins/`
+- shared SDK packages installed in `~/.tabula/.venv`
 
 ### Tool execution layout
 
-Tool skills are invoked as subprocesses using their entrypoint directly. The
-kernel does not import Python code from them.
+Skills are invoked as subprocesses using their `tools[].exec` command. The
+kernel does not import code from skills.
 
-This keeps the execution boundary explicit and language-neutral.
+Plugins run as long-lived subprocesses and communicate via stdio NDJSON
+JSON-RPC.
+Tool calls dispatched to a plugin are sent on the same channel, not by
+re-spawning a new process.
+
+This keeps every execution boundary explicit and language-neutral.
 
 ## Bundles
 
-Bundles are reusable collections of skills, kept in the
+Bundles are reusable collections of skills and plugins, kept in the
 [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles) repo and pulled
 into a distro at install time via `distro.toml`.
+
+A bundle is a directory whose top level contains skill directories
+(with `SKILL.md`) and plugin directories (with `plugin.toml`) on the same
+level. The kernel doesn't distinguish between them at the bundle level — the
+manifest filename does.
 
 Current bundles:
 
 - `base/` — clawhub, cron, hook-logger, hook-permissions, observer, pair,
-  sessions, skill-contract, tabula-guide, timer
+  sessions, skill-contract, tabula-guide, timer, mcp
 - `files/` — the `files` skill
-- `drivers/` — `driver-anthropic`, `driver-openai`, `subagent-anthropic`,
-  `subagent-openai`, plus `_drivers/` shared support code
+- `drivers/` — `driver`, `subagent`, plus `_drivers/` shared support code
 - `memory/` — memory-save, memory-search, memory-admin
 - `caveman/` — minimal experimental skill set
+- `coder-git/`, `coder-tasks/`, `coder-review/`, `coder-subagents/`,
+  `coder-workspace/` — components used by the `coder` distro
 
 A distro lists bundles in `distro.toml`:
 
 ```toml
-[bundles.base]
+[[bundles]]
+name = "base"
 source = "git+https://github.com/bamanoz/tabula-bundles.git@main#path=base"
 
-[bundles.drivers]
+[[bundles]]
+name = "drivers"
 source = "git+https://github.com/bamanoz/tabula-bundles.git@main#path=drivers"
 ```
 
 For dev work you can override these locally with a `distro.override.toml`
 pointing at `local:` paths.
 
-At install time, bundle skills are linked into the flat `skills/` surface so
-boot sees them as ordinary skills.
+At install time, bundle components are linked into the flat runtime surface:
+skill components under `skills/`, plugin components under `plugins/`.
 
 ## Current boundaries
 
 If you are extending Tabula, the important seams are:
 
-- **kernel <-> skill** — WebSocket protocol
-- **boot <-> kernel** — one JSON config object on stdout
+- **kernel <-> skill** — `tools[].exec` command, JSON over stdin/stdout per
+  call.
+- **kernel <-> plugin** — long-lived stdio NDJSON JSON-RPC (`register`,
+  `tool_call`, `tool_result`, `event`, `event_reply`, `update_tools`, `send`,
+  `log`, `shutdown`).
+- **boot <-> kernel** — one JSON config object on stdout.
 - **distro <-> install** — `tabula-distro` expects `boot.py`, `templates/`,
-  `skills/`, and `distro.toml`
-- **tool call <-> skill** — familiar currently defaults to `run.py tool <name>`
-  via stdin/stdout when `exec` is not explicitly provided; the platform itself
-  only needs an executable command
-- **kernel runtime contract <-> skills** — `skills/_pylib/` (kernel)
-- **driver/subagent runtime <-> drivers bundle** — `skills._drivers.*`
+  optional in-tree components, and `distro.toml`.
+- **kernel runtime contract <-> components** — SDK packages such as
+  `tabula_plugin_sdk`, installed into the Tabula venv.
+- **driver/subagent runtime <-> drivers bundle** — bundle-internal support code.
 
 Those are the places where contracts matter.
 
@@ -521,10 +560,13 @@ Those are the places where contracts matter.
 - `README.md` — project positioning and quick start
 - `docs/PHILOSOPHY.md` — why Tabula is shaped like this
 - `docs/DISTROS.md` — how distros are composed
+- `docs/SKILL_AUTHORING.md` — how to author skills and plugins
 - `docs/distro-config.md` — `distro.toml` reference
-- [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib) — `familiar/`,
-  `guardian/`, `ouroboros/` distros
+- `docs/plans/SKILL_PLUGIN_ARCHITECTURE.md` — skill/plugin design doc
+- `docs/plans/COMPETITIVE_LESSONS.md` — actionable lessons from peer projects
+- [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib) — `coder/`,
+  `familiar/`, `guardian/` distros
 - [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles) — reusable
-  skill bundles
-- `skills/_pylib/protocol.py` — Python-side protocol constants
+  bundles
 - `internal/kernel/protocol.go` — Go-side protocol constants
+- `internal/kernel/plugin/protocol.go` — plugin stdio protocol messages

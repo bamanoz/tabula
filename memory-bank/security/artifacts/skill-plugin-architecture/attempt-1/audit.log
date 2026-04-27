@@ -1,0 +1,72 @@
+# Dependency audit log — skill-plugin-architecture / Attempt 1
+
+Date: 2026-04-27
+
+## New dependency delta
+
+`git diff -- go.mod go.sum` shows:
+
+```diff
+diff --git a/go.mod b/go.mod
+index a5d2840..3227747 100644
+--- a/go.mod
++++ b/go.mod
+@@ -5,3 +5,5 @@ go 1.26.1
+ require github.com/gorilla/websocket v1.5.3
+ 
+ require gopkg.in/natefinch/lumberjack.v2 v2.2.1
++
++require github.com/BurntSushi/toml v1.5.0
+diff --git a/go.sum b/go.sum
+index a00ac12..f2cbecb 100644
+--- a/go.sum
++++ b/go.sum
+@@ -1,3 +1,5 @@
++github.com/BurntSushi/toml v1.5.0 h1:W5quZX/G/csjUnuI8SUYlsHs9M38FC7znL0lIO+DvMg=
++github.com/BurntSushi/toml v1.5.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
+ github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
+ github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9Vh4b55+EU/adAjf1fMHhE=
+ gopkg.in/natefinch/lumberjack.v2 v2.2.1 h1:bBRl1b0OH9s/DuPhuXpNl+VtCaJXFZ5/uEFST95x9zc=
+```
+
+## npm audit
+
+Command:
+
+```text
+npm audit --json
+```
+
+Output:
+
+```json
+{
+  "error": {
+    "code": "ENOLOCK",
+    "summary": "This command requires an existing lockfile.",
+    "detail": "Try creating one first with: npm i --package-lock-only\nOriginal error: loadVirtual requires existing shrinkwrap file"
+  }
+}
+```
+
+Security classification: `WARNING (Degraded)` for npm audit only. No npm dependency was introduced by the BUILD.
+
+## pip-audit
+
+Command:
+
+```text
+pip-audit --format=json
+```
+
+Output:
+
+```text
+zsh:1: command not found: pip-audit
+```
+
+Security classification: `WARNING (Degraded)` for Python audit only. No pinned Python dependency was introduced by the BUILD; reference plugin SDK uses stdlib.
+
+## Go dependency note
+
+No Go vulnerability-audit tool was available in the SECURITY checklist contract. Manual dependency review notes: `github.com/BurntSushi/toml v1.5.0` is used only to parse plugin manifests in `internal/kernel/plugin/manifest.go`; manifest paths and entries are validated as relative/non-`..` before execution.

@@ -1,6 +1,10 @@
 package kernel
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/bamanoz/tabula/internal/kernel/plugin"
+)
 
 func (h *Hub) targetSession(sender *Client, msg *Message) string {
 	if msg.Session != "" {
@@ -15,6 +19,30 @@ func (h *Hub) sessionClients(session string) []*Client {
 
 func (h *Hub) allClients() []*Client {
 	return h.clients.All()
+}
+
+// allHookSubscribers returns the union of all WebSocket clients and any
+// registered plugins that implement HookSubscriber. Used by the hook
+// engine to rebuild its dispatch index whenever the subscriber set
+// changes (per creative `creative-plugin-runtime.md` §2).
+func (h *Hub) allHookSubscribers() []HookSubscriber {
+	clients := h.clients.All()
+	pluginHandles := h.pluginHandles()
+	subs := make([]HookSubscriber, 0, len(clients)+len(pluginHandles))
+	for _, c := range clients {
+		subs = append(subs, c)
+	}
+	for _, p := range pluginHandles {
+		subs = append(subs, newPluginHookSubscriber(p))
+	}
+	return subs
+}
+
+func (h *Hub) pluginHandles() []*plugin.Handle {
+	if h.plugins == nil {
+		return nil
+	}
+	return h.plugins.All()
 }
 
 func (h *Hub) sessionProcesses(session string) []*SpawnedProcess {

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/bamanoz/tabula/internal/kernel"
+	"github.com/bamanoz/tabula/internal/kernel/plugin"
 	"github.com/bamanoz/tabula/internal/logging"
 
 	"github.com/gorilla/websocket"
@@ -60,6 +61,16 @@ func registerKernelHTTPHandlers(mux *http.ServeMux, hub *kernel.Hub) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(hub.SnapshotSessions())
+	})
+
+	mux.HandleFunc("/internal/snapshot/plugins", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(hub.SnapshotPlugins())
 	})
 }
 
@@ -159,17 +170,21 @@ func serveCmd() int {
 	copy(allTools, kernelTools)
 
 	skillExec := make(map[string]string)
-	if len(bootConfig.Tools) > 0 {
+	skillsJSON, fromLegacy := resolveBootSkills(bootConfig)
+	if len(skillsJSON) > 0 {
+		if fromLegacy {
+			slog.Warn("boot config uses deprecated `tools` field; rename to `skills` per docs/plans/SKILL_PLUGIN_ARCHITECTURE.md")
+		}
 		var bootTools []json.RawMessage
-		if err := json.Unmarshal(bootConfig.Tools, &bootTools); err != nil {
-			fmt.Fprintf(os.Stderr, "error: invalid boot tools: %v\n", err)
+		if err := json.Unmarshal(skillsJSON, &bootTools); err != nil {
+			fmt.Fprintf(os.Stderr, "error: invalid boot skills: %v\n", err)
 			return 1
 		}
 		allTools = append(allTools, bootTools...)
 
-		parsed, err := parseSkillExecMap(bootConfig.Tools)
+		parsed, err := parseSkillExecMap(skillsJSON)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: invalid boot tools for exec dispatch: %v\n", err)
+			fmt.Fprintf(os.Stderr, "error: invalid boot skills for exec dispatch: %v\n", err)
 			return 1
 		}
 		for _, t := range parsed {
@@ -204,6 +219,9 @@ func serveCmd() int {
 	hub := kernel.NewHub(toolsJSON, skillExec, maxSpawnDepth, maxChildren, logger.Logger)
 	hub.SetInitMeta(bootConfig.Meta)
 	hub.ProjectRoot = os.Getenv("TABULA_PROJECT_ROOT")
+	if err := hub.LoadPlugins(bootConfig.Plugins); err != nil {
+		slog.Warn("one or more plugins failed to load", "error", err)
+	}
 	hub.StartReaper()
 
 	// Start HTTP/WebSocket server
@@ -364,17 +382,21 @@ func runCmd(args []string) int {
 	copy(allTools, kernelTools)
 
 	skillExec := make(map[string]string)
-	if len(bootConfig.Tools) > 0 {
+	skillsJSON, fromLegacy := resolveBootSkills(bootConfig)
+	if len(skillsJSON) > 0 {
+		if fromLegacy {
+			slog.Warn("boot config uses deprecated `tools` field; rename to `skills` per docs/plans/SKILL_PLUGIN_ARCHITECTURE.md")
+		}
 		var bootTools []json.RawMessage
-		if err := json.Unmarshal(bootConfig.Tools, &bootTools); err != nil {
-			fmt.Fprintf(os.Stderr, "error: invalid boot tools: %v\n", err)
+		if err := json.Unmarshal(skillsJSON, &bootTools); err != nil {
+			fmt.Fprintf(os.Stderr, "error: invalid boot skills: %v\n", err)
 			return 1
 		}
 		allTools = append(allTools, bootTools...)
 
-		parsed, err := parseSkillExecMap(bootConfig.Tools)
+		parsed, err := parseSkillExecMap(skillsJSON)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: invalid boot tools for exec dispatch: %v\n", err)
+			fmt.Fprintf(os.Stderr, "error: invalid boot skills for exec dispatch: %v\n", err)
 			return 1
 		}
 		for _, t := range parsed {
@@ -407,6 +429,9 @@ func runCmd(args []string) int {
 	hub := kernel.NewHub(toolsJSON, skillExec, maxSpawnDepth, maxChildren, logger.Logger)
 	hub.SetInitMeta(bootConfig.Meta)
 	hub.ProjectRoot = os.Getenv("TABULA_PROJECT_ROOT")
+	if err := hub.LoadPlugins(bootConfig.Plugins); err != nil {
+		slog.Warn("one or more plugins failed to load", "error", err)
+	}
 	hub.StartReaper()
 
 	// Start HTTP/WebSocket server (driver needs WebSocket).
@@ -616,12 +641,46 @@ func loadEnvFile(path string) {
 }
 
 // BootConfig holds the parsed output of the boot script.
+//
+// Skills (preferred) lists per-call subprocess tools — see
+// `docs/plans/SKILL_PLUGIN_ARCHITECTURE.md` and
+// `memory-bank/creative/creative-manifest-schemas.md` §9. The legacy
+// field `Tools` is the deprecated alias kept for backwards compatibility
+// with existing boot scripts; if `Skills` is missing or empty and
+// `Tools` is populated, `Tools` is used and a deprecation warning is
+// emitted (creative §9 migrate-on-load policy).
 type BootConfig struct {
-	URL         string          `json:"url"`
-	Spawn       []string        `json:"spawn"`
-	KernelTools []string        `json:"kernel_tools"`
-	Tools       json.RawMessage `json:"tools"`
-	Meta        json.RawMessage `json:"meta"`
+	URL         string             `json:"url"`
+	Spawn       []string           `json:"spawn"`
+	KernelTools []string           `json:"kernel_tools"`
+	Skills      json.RawMessage    `json:"skills"`
+	Tools       json.RawMessage    `json:"tools"` // deprecated: legacy alias for Skills
+	Plugins     []plugin.BootEntry `json:"plugins"`
+	Meta        json.RawMessage    `json:"meta"`
+}
+
+// resolveBootSkills returns the effective per-call skill descriptor list
+// from a BootConfig, applying the migrate-on-load fallback from
+// creative-manifest-schemas.md §9: prefer `skills` when populated; if
+// only the legacy `tools` field is set, use it and log a one-time
+// deprecation warning. Returns nil when neither field is populated.
+func resolveBootSkills(cfg *BootConfig) (json.RawMessage, bool) {
+	if cfg == nil {
+		return nil, false
+	}
+	if len(cfg.Skills) > 0 && !isJSONEmpty(cfg.Skills) {
+		return cfg.Skills, false
+	}
+	if len(cfg.Tools) > 0 && !isJSONEmpty(cfg.Tools) {
+		return cfg.Tools, true
+	}
+	return nil, false
+}
+
+// isJSONEmpty reports whether the raw JSON value is null, [], or {}.
+func isJSONEmpty(raw json.RawMessage) bool {
+	s := strings.TrimSpace(string(raw))
+	return s == "" || s == "null" || s == "[]" || s == "{}"
 }
 
 func filterKernelTools(raw json.RawMessage, enabled []string) ([]json.RawMessage, error) {

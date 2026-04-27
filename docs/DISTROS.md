@@ -26,6 +26,7 @@ my-distro/
 ├── boot.py
 ├── templates/
 ├── skills/          # distro-specific skills only
+├── plugins/         # optional distro-specific plugins
 └── distro.toml      # declares bundle dependencies
 ```
 
@@ -47,10 +48,13 @@ the flat runtime surface:
 ~/.tabula/boot.py    -> distrib/active/current/boot.py
 ~/.tabula/templates/ -> distrib/active/current/templates/*
 ~/.tabula/skills/    -> distrib/active/current/skills/* + bundle skills
+~/.tabula/plugins/   -> distrib/active/current/plugins/* + bundle plugins
 ```
 
-`skills/_pylib/` is the one important exception: it is the kernel-side Python runtime
-contract copied from the `tabula` repo, not owned by any single distro.
+Shared SDK packages such as `tabula_plugin_sdk` are installed into the Tabula
+venv by the installer from bundled package artifacts. They are runtime
+contracts, but they are not owned by a single distro and are not special skill
+directories.
 
 ## Why distros exist
 
@@ -73,11 +77,29 @@ setups. The kernel is not the product. The assembled environment is.
 Tabula currently ships three distros in the
 [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib) repo:
 
+- `coder`
 - `familiar`
 - `guardian`
-- `ouroboros`
 
 They share the same kernel and protocol, but they are different products.
+
+### `coder`
+
+Coding-agent distro with a TUI, structured tool metadata, and a coding-tuned
+skill set.
+
+What it is for:
+
+- terminal-first coding agent (claude-code / opencode style)
+- structured git, tasks, review, workspace boundary, approvals
+- per-turn agent/model/effort selection
+- subagents for parallel work
+
+What it includes:
+
+- distro-specific TUI gateway plugin (TypeScript/Ink) under `coder/`
+- shared bundles: `base`, `files`, `drivers`, `memory`, `coder-git`,
+  `coder-tasks`, `coder-review`, `coder-subagents`, `coder-workspace`
 
 ### `familiar`
 
@@ -94,27 +116,26 @@ What it is for:
 
 What it includes:
 
-- provider drivers: Anthropic and OpenAI (from the `drivers` bundle)
+- unified driver plugin (Anthropic and OpenAI selected per-turn)
 - gateways: CLI, HTTP API, Telegram (distro-specific)
-- tool and support skills via bundles: `files`, `base` (sessions, pair,
-  clawhub, timer, cron, hook-logger, hook-permissions, observer, skill-contract,
-  tabula-guide), `memory` (save/search/admin)
-- MCP bridge (distro-specific)
-- provider-matched subagents (from the `drivers` bundle)
+- tool and support components via bundles: `files`, `base` (sessions, pair,
+  clawhub, timer, cron, hook-logger, hook-permissions, observer,
+  skill-contract, tabula-guide), `memory` (save/search/admin), `mcp`
+- shared subagent runtime (from the `drivers` bundle)
 
 How it works:
 
-- `familiar/boot.py` scans the active `skills/` tree
-- reads `SKILL.md` recursively
+- `familiar/boot.py` scans the active runtime tree
+- reads `SKILL.md` and `plugin.toml`
 - assembles the main system prompt from templates and project files
-- selects the active provider via `TABULA_PROVIDER` / config
 - exposes discovered tools and slash commands
+- launches long-lived plugins (drivers, gateways, subagent, mcp)
 
 Philosophy:
 
 - broad capability surface
-- composable skills
-- agent can extend itself by writing more skills
+- composable skills and plugins
+- the agent can extend itself by writing new components
 - acts like a living personal environment, not a single-purpose tool
 
 ### `guardian`
@@ -132,7 +153,7 @@ What it includes:
 
 - one primary tool: `execute_code`
 - minimal CLI gateway
-- Anthropic and OpenAI drivers adapted for guardian
+- driver plugin tuned for guardian
 - dedicated sandbox image build during install
 - fixed templates for system / tools / guidelines / safety
 
@@ -149,7 +170,7 @@ What it does **not** include:
 How it works:
 
 - `guardian/boot.py` builds a fixed runtime
-- does not depend on broad dynamic skill discovery the way familiar does
+- does not depend on broad dynamic discovery the way familiar does
 - exposes one tool and a small prompt surface
 
 Philosophy:
@@ -159,55 +180,34 @@ Philosophy:
 - sandbox first
 - optimized for one job, not general companionship
 
-### `ouroboros`
+## Distros vs bundles vs skills/plugins
 
-Self-hosting / self-evolving distro for an agent that maintains its own
-identity, scratchpad, task list, and knowledge base.
+These concepts are related but different.
 
-What it is for:
+### Skill / plugin
 
-- long-running agent with a persistent self-model
-- background research and self-improvement loops
-- experimentation with consciousness/control/evolve skills
+Smallest extension units.
 
-What it includes:
+- **Skill** (`SKILL.md` + `tools[].exec`): per-call subprocess; stateless;
+  declarative tool provider. Examples: `files`, `coder-git`, `memory-save`.
+- **Plugin** (`plugin.toml` + `register(api)`): long-lived process; subscribes
+  to events; registers tools dynamically; has state. Examples: `mcp`,
+  `hook-permissions`, `drivers/driver`, `gateway-tui`.
 
-- its own driver-anthropic / driver-openai (custom variants)
-- subagents from the `drivers` bundle
-- distro-specific skills: `identity`, `scratchpad`, `tasks`, `knowledge`,
-  `consciousness`, `control`, `evolve`, `review`, `multi-model-review`,
-  `status`, `bg`, `git`, `hook-ouroboros-context`, `hook-ouroboros-log`
-- shared base skills via the `base` bundle
-
-Philosophy:
-
-- the agent should be able to write things down about itself
-- the agent should be able to act on its own task list
-- the kernel stays out of the way; identity lives in files
-
-## Distros vs bundles vs skills
-
-These three concepts are related but different.
-
-### Skill
-
-Smallest extension unit.
-
-- one capability or process
-- in familiar today, commonly represented as `SKILL.md` plus some executable
-  entrypoint
-- examples: `files`, `hook-logger`, `gateway-cli`
+See [SKILL_AUTHORING.md](SKILL_AUTHORING.md) and
+[plans/SKILL_PLUGIN_ARCHITECTURE.md](plans/SKILL_PLUGIN_ARCHITECTURE.md).
 
 ### Bundle
 
-Reusable collection of skills, kept in
+Reusable collection of skills and plugins, kept in
 [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles).
 
 - referenced from a distro via `distro.toml`
 - materialized into the flat runtime surface at install time
-- examples: `base`, `files`, `drivers`, `memory`, `caveman`
+- examples: `base`, `files`, `drivers`, `memory`, `caveman`, `coder-*`
 
-Bundles are capability packs.
+Bundles are capability packs — they may contain a mix of skills and plugins
+on the same level.
 
 ### Distro
 
@@ -215,7 +215,7 @@ Whole product assembly.
 
 - defines boot behavior
 - defines prompt templates
-- defines the default skill universe
+- defines the default capability universe
 - can include its own install hook and packaging assumptions
 
 Distros are not just bigger bundles. They decide what the runtime *is*.
@@ -233,14 +233,14 @@ tabula-distro install "git+https://github.com/bamanoz/tabula-distrib.git@main#pa
 What this does:
 
 1. resolve the distro source (clone+checkout for git+, copy for local)
-2. validate that it provides `boot.py`, `templates/`, `skills/`,
-   and `distro.toml`
+2. validate that it provides `boot.py`, `templates/`, `skills/`, optional
+   `plugins/`, and `distro.toml`
 3. resolve every bundle declared in `distro.toml` (git+ or local: sources;
    pinned via lockfile)
 4. lay everything out under `~/.tabula/distrib/<name>/<generation>/`
 5. update `~/.tabula/distrib/<name>/current` and (if requested)
    `~/.tabula/distrib/active`
-6. rebuild the flat `boot.py`, `templates/`, and `skills/` surface
+6. rebuild the flat `boot.py`, `templates/`, `skills/`, and `plugins/` surface
 
 For development, clone `tabula-distrib` next to this repo and run
 `bash scripts/install-dev.sh` (kernel only), then
@@ -317,12 +317,12 @@ That is fine. Distros are allowed to be opinionated.
 ## Current direction
 
 The long-term idea is that Tabula grows an ecosystem of distros, not just a
-pile of skills.
+pile of components.
 
-Skills are how an agent grows.
+Skills and plugins are how an agent grows.
 Bundles are how capabilities are shared.
 Distros are how complete agents become recognizable products.
 
-Today there are three built-in distros (`familiar`, `guardian`, `ouroboros`).
-That is enough to demonstrate the model — broad / narrow / self-modifying — but
-not enough to call the ecosystem mature yet.
+Today there are three built-in distros (`coder`, `familiar`, `guardian`).
+That is enough to demonstrate the model — coding-tuned / general-purpose /
+sandboxed — but not enough to call the ecosystem mature yet.

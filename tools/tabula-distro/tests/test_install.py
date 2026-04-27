@@ -28,6 +28,21 @@ def _make_skill(root: Path, name: str, marker: str = "v1") -> Path:
     return d
 
 
+def _make_plugin(root: Path, name: str, marker: str = "v1") -> Path:
+    d = root / name
+    d.mkdir(parents=True, exist_ok=True)
+    _touch(d / "plugin.toml", (
+        f'id = "{name}"\n'
+        f'name = "{name}"\n'
+        'version = "0.1.0"\n'
+        'runtime = "python"\n'
+        'entry = "run.py"\n'
+    ))
+    _touch(d / "run.py", "# plugin\n")
+    _touch(d / "marker.txt", marker)
+    return d
+
+
 def _make_minimal_distro(root: Path, name: str = "demo") -> Path:
     dist = root / name
     _touch(dist / "boot.py", "# boot\n")
@@ -76,6 +91,7 @@ class ConfigTests(unittest.TestCase):
             c = cfg.load(root)
             self.assertEqual(c.bundles, ())
             self.assertEqual(c.skills, ())
+            self.assertEqual(c.plugins, ())
 
     def test_override_replaces_entry_by_name(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -94,8 +110,56 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(len(c.bundles), 1)
             self.assertEqual(c.bundles[0].source, "local:./b")
 
+    def test_bundle_components_replaces_legacy_skills_allowlist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "d"
+            root.mkdir()
+            (root / "distro.toml").write_text(
+                "[[bundles]]\nname=\"m\"\nsource=\"local:./a\"\ncomponents=[\"plugin-a\"]\n",
+                encoding="utf-8",
+            )
+            c = cfg.load(root)
+            self.assertEqual(c.bundles[0].components, ("plugin-a",))
+            self.assertEqual(c.bundles[0].skills, ("plugin-a",))
+
+    def test_plugin_config_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "d"
+            root.mkdir()
+            (root / "distro.toml").write_text(
+                "[[plugins]]\nname=\"hello\"\nsource=\"local:./plugins/hello\"\n",
+                encoding="utf-8",
+            )
+            c = cfg.load(root)
+            self.assertEqual(len(c.plugins), 1)
+            self.assertEqual(c.plugins[0].name, "hello")
+
 
 class InstallTests(unittest.TestCase):
+    def _with_fake_git_cache(self, mapping: dict[str, Path], fn):
+        original = installmod.GitCache
+
+        class FakeCheckout:
+            def __init__(self, sha: str, worktree: Path):
+                self.sha = sha
+                self.worktree = worktree
+
+        class FakeGitCache:
+            current_sha = next(iter(mapping))
+
+            def __init__(self, _root: Path):
+                pass
+
+            def fetch(self, src, *, offline: bool = False):
+                sha = src.ref if src.pinned_sha else FakeGitCache.current_sha
+                return FakeCheckout(sha, mapping[sha])
+
+        installmod.GitCache = FakeGitCache
+        try:
+            return fn(FakeGitCache)
+        finally:
+            installmod.GitCache = original
+
     def test_install_with_local_bundle_and_skill(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -131,16 +195,217 @@ class InstallTests(unittest.TestCase):
             for p in (
                 home / "distrib" / "demo" / "skills" / "memory-save" / "marker.txt",
                 home / "distrib" / "demo" / "skills" / "memory-search" / "marker.txt",
-                home / "distrib" / "demo" / "skills" / "_memory" / "lib.py",
                 home / "distrib" / "demo" / "skills" / "weather" / "marker.txt",
             ):
                 self.assertTrue(p.exists(), p)
+            self.assertFalse((home / "distrib" / "demo" / "skills" / "_memory").exists())
 
             self.assertTrue((home / "boot.py").is_symlink())
             self.assertTrue((home / "distrib" / "active").is_symlink())
 
             self.assertIn("memory", lock.bundles)
             self.assertIn("weather", lock.skills)
+
+    def test_bundle_install_mixed_skills_and_plugins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            bundle = root / "ext" / "bundles" / "mixed"
+            _make_skill(bundle, "base-shell", "shell-v1")
+            _make_plugin(bundle, "hook-permissions", "hook-v1")
+
+            (distro / "distro.toml").write_text(
+                '[distro]\nname="demo"\n\n'
+                '[[bundles]]\nname="mixed"\nsource="local:../ext/bundles/mixed"\n',
+                encoding="utf-8",
+            )
+
+            _gen, lock = installmod.install(distro, home)
+            self.assertTrue((home / "distrib" / "demo" / "skills" / "base-shell" / "SKILL.md").exists())
+            self.assertTrue((home / "distrib" / "demo" / "plugins" / "hook-permissions" / "plugin.toml").exists())
+            self.assertTrue((home / "plugins" / "hook-permissions" / "plugin.toml").exists())
+            self.assertIn("base-shell", lock.skills)
+            self.assertIn("hook-permissions", lock.plugins)
+
+    def test_install_with_standalone_plugin_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+            _make_plugin(root / "ext" / "plugins", "hello", "hello-v1")
+            (distro / "distro.toml").write_text(
+                '[distro]\nname="demo"\n'
+                '[[plugins]]\nname="hello"\nsource="local:../ext/plugins/hello"\n',
+                encoding="utf-8",
+            )
+
+            _gen, lock = installmod.install(distro, home)
+            self.assertTrue((home / "distrib" / "demo" / "plugins" / "hello" / "plugin.toml").exists())
+            self.assertTrue((home / "plugins" / "hello" / "plugin.toml").exists())
+            self.assertIn("hello", lock.plugins)
+
+    def test_bundle_toml_with_explicit_components(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            bundle = root / "ext" / "bundles" / "explicit"
+            _make_plugin(bundle, "plugin-a")
+            _make_skill(bundle, "skill-b")
+            _make_skill(bundle, "skill-c")
+            _touch(bundle / "bundle.toml", (
+                '[bundle]\nname="explicit"\nversion="0.1.0"\n'
+                'components=["plugin-a", "skill-b"]\n'
+            ))
+            (distro / "distro.toml").write_text(
+                '[distro]\nname="demo"\n'
+                '[[bundles]]\nname="explicit"\nsource="local:../ext/bundles/explicit"\n',
+                encoding="utf-8",
+            )
+
+            _gen, lock = installmod.install(distro, home)
+            self.assertTrue((home / "distrib" / "demo" / "plugins" / "plugin-a" / "plugin.toml").exists())
+            self.assertTrue((home / "distrib" / "demo" / "skills" / "skill-b" / "SKILL.md").exists())
+            self.assertFalse((home / "distrib" / "demo" / "skills" / "skill-c").exists())
+            self.assertIn("plugin-a", lock.plugins)
+            self.assertIn("skill-b", lock.skills)
+            self.assertNotIn("skill-c", lock.skills)
+            self.assertEqual(lock.bundles["explicit"].version, "0.1.0")
+
+    def test_bundle_toml_legacy_compat_no_components(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            bundle = root / "ext" / "bundles" / "legacy"
+            _make_skill(bundle, "skill-a")
+            _make_plugin(bundle, "plugin-a")
+            _touch(bundle / "bundle.toml", '[bundle]\nname="legacy"\nversion="0.1.0"\n')
+            (distro / "distro.toml").write_text(
+                '[distro]\nname="demo"\n'
+                '[[bundles]]\nname="legacy"\nsource="local:../ext/bundles/legacy"\n',
+                encoding="utf-8",
+            )
+
+            _gen, lock = installmod.install(distro, home)
+            self.assertTrue((home / "distrib" / "demo" / "skills" / "skill-a" / "SKILL.md").exists())
+            self.assertTrue((home / "distrib" / "demo" / "plugins" / "plugin-a" / "plugin.toml").exists())
+            self.assertIn("skill-a", lock.skills)
+            self.assertIn("plugin-a", lock.plugins)
+
+    def test_update_only_plugin_name_refreshes_standalone_plugin_git_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            sha_v1 = "a" * 40
+            sha_v2 = "b" * 40
+            plugin_v1 = _make_plugin(root / "git-v1", "hello", "hello-v1")
+            plugin_v2 = _make_plugin(root / "git-v2", "hello", "hello-v2")
+            (distro / "distro.toml").write_text(
+                '[distro]\nname="demo"\n'
+                '[[plugins]]\nname="hello"\nsource="git+https://example.invalid/hello.git@main"\n',
+                encoding="utf-8",
+            )
+
+            def run(fake_cache):
+                fake_cache.current_sha = sha_v1
+                _gen, lock1 = installmod.install(distro, home)
+                self.assertEqual(lock1.plugins["hello"].resolved_sha, sha_v1)
+                self.assertEqual(
+                    (home / "plugins" / "hello" / "marker.txt").read_text(encoding="utf-8"),
+                    "hello-v1",
+                )
+
+                fake_cache.current_sha = sha_v2
+                _gen, lock2 = installmod.install(distro, home, update=True, update_only=("hello",))
+                self.assertEqual(lock2.plugins["hello"].resolved_sha, sha_v2)
+                self.assertEqual(
+                    (home / "plugins" / "hello" / "marker.txt").read_text(encoding="utf-8"),
+                    "hello-v2",
+                )
+
+            self._with_fake_git_cache({sha_v1: plugin_v1, sha_v2: plugin_v2}, run)
+
+    def test_update_only_bundle_plugin_component_refreshes_owning_bundle_git_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            sha_v1 = "c" * 40
+            sha_v2 = "d" * 40
+            bundle_v1 = root / "git-v1" / "mixed"
+            bundle_v2 = root / "git-v2" / "mixed"
+            _make_skill(bundle_v1, "base-shell", "shell-v1")
+            _make_plugin(bundle_v1, "hook-permissions", "hook-v1")
+            _make_skill(bundle_v2, "base-shell", "shell-v2")
+            _make_plugin(bundle_v2, "hook-permissions", "hook-v2")
+            (distro / "distro.toml").write_text(
+                '[distro]\nname="demo"\n'
+                '[[bundles]]\nname="mixed"\nsource="git+https://example.invalid/mixed.git@main"\n',
+                encoding="utf-8",
+            )
+
+            def run(fake_cache):
+                fake_cache.current_sha = sha_v1
+                _gen, lock1 = installmod.install(distro, home)
+                self.assertEqual(lock1.bundles["mixed"].resolved_sha, sha_v1)
+                self.assertIn("hook-permissions", lock1.plugins)
+
+                fake_cache.current_sha = sha_v2
+                _gen, lock2 = installmod.install(
+                    distro, home, update=True, update_only=("hook-permissions",)
+                )
+                self.assertEqual(lock2.bundles["mixed"].resolved_sha, sha_v2)
+                self.assertEqual(lock2.plugins["hook-permissions"].resolved_sha, sha_v2)
+                self.assertEqual(
+                    (home / "plugins" / "hook-permissions" / "marker.txt").read_text(encoding="utf-8"),
+                    "hook-v2",
+                )
+                self.assertEqual(
+                    (home / "skills" / "base-shell" / "marker.txt").read_text(encoding="utf-8"),
+                    "shell-v2",
+                )
+
+            self._with_fake_git_cache({sha_v1: bundle_v1, sha_v2: bundle_v2}, run)
+
+    def test_bundle_toml_components_missing_dir_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            bundle = root / "ext" / "bundles" / "bad"
+            bundle.mkdir(parents=True)
+            _touch(bundle / "bundle.toml", '[bundle]\nname="bad"\ncomponents=["missing"]\n')
+            (distro / "distro.toml").write_text(
+                '[distro]\nname="demo"\n'
+                '[[bundles]]\nname="bad"\nsource="local:../ext/bundles/bad"\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(installmod.InstallError) as cm:
+                installmod.install(distro, home)
+            self.assertIn("component not found: missing", str(cm.exception))
+
+    def test_lock_v1_loads_as_v2_with_empty_plugins(self):
+        data = {
+            "version": 1,
+            "distro": "demo",
+            "generated_at": "2026-04-21T14:30:00Z",
+            "bundles": {},
+            "skills": {"foo": {"source": "local:foo", "resolved_path": "/tmp/foo"}},
+        }
+        lock = lockmod.Lock.from_json(data)
+        self.assertEqual(lock.plugins, {})
+        self.assertEqual(lock.to_json()["version"], 2)
+        self.assertEqual(lock.to_json()["plugins"], {})
 
     def test_bundle_skips_directories_without_skill_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -164,7 +429,7 @@ class InstallTests(unittest.TestCase):
             installmod.install(distro, home)
             skills = home / "distrib" / "demo" / "skills"
             self.assertTrue((skills / "driver" / "SKILL.md").exists())
-            self.assertTrue((skills / "_drivers" / "lib.py").exists())
+            self.assertFalse((skills / "_drivers").exists())
             self.assertFalse((skills / "driver-openai").exists())
 
     def test_conflict_without_override_fails(self):

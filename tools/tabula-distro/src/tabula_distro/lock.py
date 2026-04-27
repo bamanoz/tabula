@@ -1,10 +1,10 @@
 """distro.lock.json read/write.
 
-Format (version 1)::
+Format (version 2)::
 
     {
-      "version": 1,
-      "distro": "ouroboros",
+      "version": 2,
+      "distro": "demo",
       "generated_at": "2026-04-21T14:30:00Z",
       "bundles": {
         "memory": {
@@ -19,7 +19,8 @@ Format (version 1)::
           "resolved_path": "/abs/path"
         }
       },
-      "skills": { ... same shape ... }
+      "skills": { ... same shape ... },
+      "plugins": { ... same shape ... }
     }
 """
 from __future__ import annotations
@@ -30,7 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-LOCK_VERSION = 1
+LOCK_VERSION = 2
 
 
 @dataclass
@@ -70,6 +71,7 @@ class Lock:
     distro: str
     bundles: dict[str, LockEntry] = field(default_factory=dict)
     skills: dict[str, LockEntry] = field(default_factory=dict)
+    plugins: dict[str, LockEntry] = field(default_factory=dict)
     generated_at: str | None = None
     distro_source: str | None = None  # original URI passed to install (for `update`)
     distro_version: str | None = None  # [distro].version, if declared
@@ -82,6 +84,7 @@ class Lock:
             "generated_at": self.generated_at or now_iso(),
             "bundles": {k: v.to_json() for k, v in self.bundles.items()},
             "skills": {k: v.to_json() for k, v in self.skills.items()},
+            "plugins": {k: v.to_json() for k, v in self.plugins.items()},
         }
         if self.distro_source is not None:
             out["distro_source"] = self.distro_source
@@ -94,17 +97,28 @@ class Lock:
     @classmethod
     def from_json(cls, data: dict) -> "Lock":
         version = data.get("version")
+        if version == 1:
+            data = _migrate_v1_to_v2(data)
+            version = data.get("version")
         if version != LOCK_VERSION:
             raise LockError(f"unsupported lock version: {version}")
         return cls(
             distro=data.get("distro", ""),
             bundles={k: LockEntry.from_json(v) for k, v in data.get("bundles", {}).items()},
             skills={k: LockEntry.from_json(v) for k, v in data.get("skills", {}).items()},
+            plugins={k: LockEntry.from_json(v) for k, v in data.get("plugins", {}).items()},
             generated_at=data.get("generated_at"),
             distro_source=data.get("distro_source"),
             distro_version=data.get("distro_version"),
             kernel_version=data.get("kernel_version"),
         )
+
+
+def _migrate_v1_to_v2(data: dict) -> dict:
+    migrated = dict(data)
+    migrated["version"] = LOCK_VERSION
+    migrated.setdefault("plugins", {})
+    return migrated
 
 
 class LockError(ValueError):

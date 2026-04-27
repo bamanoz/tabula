@@ -31,30 +31,49 @@ const (
 	MsgStatus       MsgType = "status"
 )
 
-// KernelTool constants for built-in kernel tools.
+// KernelTool is retained as a type for tool name constants. The four legacy
+// kernel-builtin tools (shell_exec, process_spawn, process_kill, process_list)
+// are no longer dispatched from kernel as of Phase 1 D1.1 of the skill/plugin
+// architecture migration (see docs/plans/SKILL_PLUGIN_ARCHITECTURE.md §4.1).
+//
+// The constants below are kept as deprecated identifiers so that:
+//   1. Existing tests can reference them while being marked t.Skip per
+//      creative §7 dead-code-keep policy (D1.11 option b).
+//   2. The subagent plugin (in tabula-bundles) can re-use the same string
+//      values for its `process_spawn` semantics when it lands.
+//
+// TODO(skill-plugin-arch): remove these constants once subagent plugin GA in
+// tabula-bundles restores the spawn invariant via plugin-side dispatch.
 type KernelTool string
 
 const (
-	ToolShellExec    KernelTool = "shell_exec"
+	// Deprecated: kernel no longer dispatches shell_exec. Use a skill or
+	// plugin tool instead. See docs/plans/SKILL_PLUGIN_ARCHITECTURE.md §4.
+	ToolShellExec KernelTool = "shell_exec"
+	// Deprecated: kernel no longer dispatches process_spawn. Migrating to
+	// the subagent plugin in tabula-bundles. See D1.11(b).
 	ToolProcessSpawn KernelTool = "process_spawn"
-	ToolProcessKill  KernelTool = "process_kill"
-	ToolProcessList  KernelTool = "process_list"
+	// Deprecated: kernel no longer dispatches process_kill.
+	ToolProcessKill KernelTool = "process_kill"
+	// Deprecated: kernel no longer dispatches process_list.
+	ToolProcessList KernelTool = "process_list"
 )
 
-var DefaultKernelTools = []KernelTool{
-	ToolShellExec,
-	ToolProcessSpawn,
-	ToolProcessKill,
-	ToolProcessList,
+// DefaultKernelTools is now empty: kernel ships with zero builtin LLM-tools.
+// Kept as an exported symbol for downstream callers that enumerate kernel
+// tools at boot time.
+var DefaultKernelTools = []KernelTool{}
+
+// DefaultKernelToolNames returns an empty slice; see DefaultKernelTools.
+func DefaultKernelToolNames() []string {
+	return []string{}
 }
 
-func DefaultKernelToolNames() []string {
-	names := make([]string, 0, len(DefaultKernelTools))
-	for _, tool := range DefaultKernelTools {
-		names = append(names, string(tool))
-	}
-	return names
-}
+// PluginProtocolVersion is the current stdio JSON-RPC protocol version used
+// for kernel ↔ plugin communication (distinct from ProtocolVersion which
+// covers WebSocket kernel ↔ client). Bumped independently per
+// memory-bank/creative/creative-plugin-protocol.md §2.2.
+const PluginProtocolVersion = 1
 
 // HookAction constants for hook responses.
 type HookAction string

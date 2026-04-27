@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import config as cfg
@@ -12,7 +12,7 @@ from . import generations as gens
 from . import lock as lockmod
 from . import sources as srcmod
 from .cache import GitCache
-from .manifest import ManifestError, load_bundle_manifest
+from .manifest import BundleManifest, ManifestError, load_bundle_manifest
 from .semver import Constraint, Version, VersionError
 from .sources import GitSource, LocalSource, Source
 
@@ -25,6 +25,7 @@ def _ignored(_dir: str, names: list[str]) -> set[str]:
 
 
 def _copytree(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(src, dst, symlinks=False, ignore=_ignored)
 
 
@@ -188,6 +189,12 @@ class InstallResult:
         yield self.lock
 
 
+@dataclass(frozen=True)
+class InstalledBundleComponents:
+    skills: tuple[str, ...] = ()
+    plugins: tuple[str, ...] = ()
+
+
 def install(distro_dir: str | Path, home: Path, *,
             override_name: str | None = None,
             offline: bool = False,
@@ -283,6 +290,8 @@ def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lock
 
     skills_dir = staging / "skills"
     skills_dir.mkdir(parents=True, exist_ok=True)
+    plugins_dir = staging / "plugins"
+    plugins_dir.mkdir(parents=True, exist_ok=True)
 
     _materialize_inline_symlinks(distro.path / "skills", skills_dir)
 
@@ -292,20 +301,35 @@ def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lock
 
     for entry in distro.skills:
         resolved_dir, lock_entry = _resolve(entry.source, distro.path, cache, plan,
-                                           prior=_prior_skill(prior_lock, entry.name))
+                                            prior=_prior_skill(prior_lock, entry.name),
+                                            lock_names=(entry.name, entry.source))
         _install_skill(resolved_dir, skills_dir / entry.name, override=entry.override, label=f"skill {entry.name}")
         new_lock.skills[entry.name] = lock_entry
 
-    for entry in distro.bundles:
+    for entry in distro.plugins:
         resolved_dir, lock_entry = _resolve(entry.source, distro.path, cache, plan,
-                                           prior=_prior_bundle(prior_lock, entry.name))
+                                            prior=_prior_plugin(prior_lock, entry.name),
+                                            lock_names=(entry.name, entry.source))
+        _install_plugin(resolved_dir, plugins_dir / entry.name, override=entry.override, label=f"plugin {entry.name}")
+        new_lock.plugins[entry.name] = lock_entry
+
+    for entry in distro.bundles:
+        bundle_names = _bundle_update_names(entry, prior_lock)
+        resolved_dir, lock_entry = _resolve(entry.source, distro.path, cache, plan,
+                                           prior=_prior_bundle(prior_lock, entry.name),
+                                           lock_names=bundle_names)
         manifest = load_bundle_manifest(resolved_dir)
         _check_bundle_compat(entry.name, manifest, kernel_version)
         if manifest.version is not None:
             lock_entry.version = str(manifest.version)
-        _install_bundle(resolved_dir, skills_dir, allowlist=entry.skills,
-                        override=entry.override, bundle_name=entry.name)
+        installed = _install_bundle(resolved_dir, skills_dir, plugins_dir, manifest=manifest,
+                                    allowlist=entry.components, override=entry.override,
+                                    bundle_name=entry.name)
         new_lock.bundles[entry.name] = lock_entry
+        for name in installed.skills:
+            new_lock.skills[name] = replace(lock_entry)
+        for name in installed.plugins:
+            new_lock.plugins[name] = replace(lock_entry)
 
     return new_lock
 
@@ -318,16 +342,57 @@ def _prior_bundle(lock: lockmod.Lock | None, name: str) -> lockmod.LockEntry | N
     return None if lock is None else lock.bundles.get(name)
 
 
-def _should_use_lock_for(name: str, plan: Plan) -> bool:
+def _prior_plugin(lock: lockmod.Lock | None, name: str) -> lockmod.LockEntry | None:
+    return None if lock is None else lock.plugins.get(name)
+
+
+def _bundle_update_names(entry: cfg.BundleEntry, prior_lock: lockmod.Lock | None) -> tuple[str, ...]:
+    """Return names that should refresh this bundle during ``--update-only``.
+
+    Bundle-sourced components are recorded in ``lock.skills``/``lock.plugins``
+    with a copied bundle lock entry, not with their own source. Including those
+    prior component names lets ``tabula-distro update --only <component>`` update
+    the owning bundle source even when the current distro entry is a legacy
+    walk-discovered bundle without an explicit ``components`` allowlist.
+    """
+    names: list[str] = [entry.name, entry.source]
+    if entry.components is not None:
+        names.extend(entry.components)
+    if prior_lock is None:
+        return tuple(dict.fromkeys(names))
+
+    prior_bundle = _prior_bundle(prior_lock, entry.name)
+    if prior_bundle is None:
+        return tuple(dict.fromkeys(names))
+    for collection in (prior_lock.skills, prior_lock.plugins):
+        for component_name, component_entry in collection.items():
+            if _same_lock_entry_origin(component_entry, prior_bundle):
+                names.append(component_name)
+    return tuple(dict.fromkeys(names))
+
+
+def _same_lock_entry_origin(a: lockmod.LockEntry, b: lockmod.LockEntry) -> bool:
+    return (
+        a.source == b.source
+        and a.resolved_sha == b.resolved_sha
+        and a.resolved_ref == b.resolved_ref
+        and a.subpath == b.subpath
+        and a.resolved_path == b.resolved_path
+    )
+
+
+def _should_use_lock_for(names: str | tuple[str, ...], plan: Plan) -> bool:
     if not plan.update:
         return True
-    if plan.update_only and name not in plan.update_only:
+    identities = (names,) if isinstance(names, str) else names
+    if plan.update_only and not any(name in plan.update_only for name in identities):
         return True
     return False
 
 
 def _resolve(uri: str, base_dir: Path, cache: GitCache, plan: Plan, *,
-             prior: lockmod.LockEntry | None) -> tuple[Path, lockmod.LockEntry]:
+             prior: lockmod.LockEntry | None,
+             lock_names: tuple[str, ...] | None = None) -> tuple[Path, lockmod.LockEntry]:
     src = srcmod.parse(uri, base_dir=base_dir)
 
     if isinstance(src, LocalSource):
@@ -337,8 +402,7 @@ def _resolve(uri: str, base_dir: Path, cache: GitCache, plan: Plan, *,
                                            fetched_at=lockmod.now_iso())
 
     assert isinstance(src, GitSource)
-    name_for_lock = uri  # we just use the URI as identity for prior_matches
-    if prior is not None and prior.source == uri and prior.resolved_sha and _should_use_lock_for(name_for_lock, plan):
+    if prior is not None and prior.source == uri and prior.resolved_sha and _should_use_lock_for(lock_names or (uri,), plan):
         # Reuse pinned sha from lock; treat ref as the pinned sha.
         pinned = GitSource(url=src.url, ref=prior.resolved_sha, subpath=src.subpath, pinned_sha=True)
         try:
@@ -372,6 +436,18 @@ def _git_result(uri: str, src: GitSource, checkout) -> tuple[Path, lockmod.LockE
 
 
 def _install_skill(src: Path, dst: Path, *, override: bool, label: str) -> None:
+    if not (src / "SKILL.md").is_file():
+        raise InstallError(f"{label}: missing SKILL.md")
+    _install_component(src, dst, override=override, label=label)
+
+
+def _install_plugin(src: Path, dst: Path, *, override: bool, label: str) -> None:
+    if not (src / "plugin.toml").is_file():
+        raise InstallError(f"{label}: missing plugin.toml")
+    _install_component(src, dst, override=override, label=label)
+
+
+def _install_component(src: Path, dst: Path, *, override: bool, label: str) -> None:
     if dst.exists() or dst.is_symlink():
         if not override:
             raise InstallError(
@@ -382,47 +458,62 @@ def _install_skill(src: Path, dst: Path, *, override: bool, label: str) -> None:
     _copytree(src, dst)
 
 
-def _install_bundle(bundle_root: Path, skills_dir: Path, *, allowlist: tuple[str, ...] | None,
-                    override: bool, bundle_name: str) -> None:
+def _install_bundle(bundle_root: Path, skills_dir: Path, plugins_dir: Path, *,
+                    manifest: BundleManifest, allowlist: tuple[str, ...] | None,
+                    override: bool, bundle_name: str) -> InstalledBundleComponents:
     if not bundle_root.is_dir():
         raise InstallError(f"bundle {bundle_name}: source is not a directory: {bundle_root}")
 
-    skills_to_install: list[Path] = []
-    support_dirs: list[Path] = []
+    candidates = _bundle_component_candidates(bundle_root, manifest, bundle_name=bundle_name)
+    if allowlist is not None:
+        allowed = set(allowlist)
+        candidates = [c for c in candidates if c[0] in allowed]
+
+    present = {name for name, _path in candidates}
+    missing = [n for n in allowlist or () if n not in present]
+    if missing:
+        raise InstallError(f"bundle {bundle_name}: components not found: {', '.join(missing)}")
+
+    installed_skills: list[str] = []
+    installed_plugins: list[str] = []
+    for name, entry in candidates:
+        has_skill = (entry / "SKILL.md").is_file()
+        has_plugin = (entry / "plugin.toml").is_file()
+        if has_skill and has_plugin:
+            raise InstallError(f"bundle {bundle_name}: component {name!r} has both SKILL.md and plugin.toml")
+        if has_skill:
+            _install_skill(entry, skills_dir / name, override=override,
+                           label=f"bundle {bundle_name} -> skill {name}")
+            installed_skills.append(name)
+        elif has_plugin:
+            _install_plugin(entry, plugins_dir / name, override=override,
+                            label=f"bundle {bundle_name} -> plugin {name}")
+            installed_plugins.append(name)
+        else:
+            raise InstallError(f"bundle {bundle_name}: component {name!r} has no SKILL.md or plugin.toml")
+    return InstalledBundleComponents(skills=tuple(installed_skills), plugins=tuple(installed_plugins))
+
+
+def _bundle_component_candidates(bundle_root: Path, manifest: BundleManifest, *,
+                                 bundle_name: str) -> list[tuple[str, Path]]:
+    if manifest.components is not None:
+        candidates: list[tuple[str, Path]] = []
+        for component in manifest.components:
+            entry = bundle_root / component
+            if not entry.is_dir():
+                raise InstallError(f"bundle {bundle_name}: component not found: {component}")
+            candidates.append((component, entry))
+        return candidates
+
+    candidates = []
     for entry in sorted(bundle_root.iterdir()):
         if not entry.is_dir():
             continue
         if entry.name in IGNORE_NAMES or entry.name.startswith("."):
             continue
-        if entry.name.startswith("_"):
-            support_dirs.append(entry)
-            continue
-        if not (entry / "SKILL.md").is_file():
-            continue
-        if allowlist is not None and entry.name not in allowlist:
-            continue
-        skills_to_install.append(entry)
-
-    if allowlist:
-        present = {e.name for e in skills_to_install}
-        missing = [n for n in allowlist if n not in present]
-        if missing:
-            raise InstallError(f"bundle {bundle_name}: skills not found: {', '.join(missing)}")
-
-    for entry in skills_to_install:
-        _install_skill(entry, skills_dir / entry.name, override=override,
-                       label=f"bundle {bundle_name} -> skill {entry.name}")
-
-    for support in support_dirs:
-        target = skills_dir / support.name
-        if target.exists() or target.is_symlink():
-            if not override:
-                raise InstallError(
-                    f"bundle {bundle_name}: support dir {support.name!r} already exists; "
-                    f"set override = true on this entry to replace it"
-                )
-            _replace_dir(target)
-        _copytree(support, target)
+        if (entry / "SKILL.md").is_file() or (entry / "plugin.toml").is_file():
+            candidates.append((entry.name, entry))
+    return candidates
 
 
 def _materialize_inline_symlinks(src_skills: Path, dst_skills: Path) -> None:
@@ -473,7 +564,7 @@ def _bundle_root_for(path: Path) -> Path | None:
 
 def _expose_current(home: Path, distro_name: str) -> None:
     root = gens.distro_root(home, distro_name)
-    for entry in ("boot.py", "skills", "templates"):
+    for entry in ("boot.py", "skills", "plugins", "templates"):
         link = root / entry
         if link.exists() or link.is_symlink():
             if link.is_dir() and not link.is_symlink():
@@ -502,6 +593,7 @@ def _set_active(home: Path, distro_name: str) -> None:
 
 def _refresh_runtime_surface(home: Path) -> None:
     _link_runtime(home / "distrib" / "active" / "templates", home / "templates")
+    _link_runtime(home / "distrib" / "active" / "plugins", home / "plugins")
     _link_runtime(home / "distrib" / "active" / "skills", home / "skills", preserve={"_pylib", "_tslib"})
 
 

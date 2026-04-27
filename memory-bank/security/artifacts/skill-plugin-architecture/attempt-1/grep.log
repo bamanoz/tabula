@@ -1,0 +1,59 @@
+# Grep transcripts — skill-plugin-architecture / Attempt 1
+
+Date: 2026-04-27
+
+## Secrets / credential keywords
+
+Command:
+
+```text
+grep -rEn "(api[_-]?key|secret|token|password|bearer)" internal/kernel cmd/tabula tools/tabula-distro/src examples/plugin-hello examples/plugin-sdk-python --exclude-dir=__pycache__
+```
+
+Relevant output summary:
+
+```text
+internal/kernel/connect.go:23:// validates protocol version, spawn token, computes the next client ID.
+internal/kernel/connect.go:62: h.Logger.Warn("invalid spawn token", "from", plan.name)
+internal/kernel/connect.go:114:// generateSpawnToken issues a one-time token for a spawned child to present
+internal/kernel/kernel.go:18: tokens *SpawnTokenStore
+internal/kernel/spawn_token_store.go:11:// spawnTokenEntry tracks a one-time spawn token with its creation time.
+internal/kernel/spawn_token_store.go:19:// SpawnTokenStore issues and consumes one-time tokens used to authenticate
+internal/kernel/message.go:24: Token string `json:"token,omitempty"`
+internal/kernel/policy.go:29:// CanConnect validates a spawn token and returns the depth for the connecting client.
+internal/kernel/process_manager.go:116: env := append(os.Environ(), "TABULA_SPAWN_TOKEN="+token)
+internal/kernel/kernel_test.go:1503: Input: json.RawMessage(`{"command":"echo $TABULA_SPAWN_TOKEN > /tmp/tabula_token_test.txt"}`)
+```
+
+Assessment:
+
+- No hard-coded API keys, passwords, bearer tokens, or credentials found in product source scope.
+- Token hits are the existing/generated spawn-token subsystem and tests. The live LLM-visible `process_spawn` path was removed; spawn token code remains dead-code-kept per D1.11(b).
+- Logging of invalid spawn token logs only client name (`plan.name`), not token value.
+
+## Logging / PII keywords
+
+Command:
+
+```text
+grep -rEn "(console\.log|logger\.|slog\.|fmt\.Print|print\()" internal/kernel cmd/tabula tools/tabula-distro/src examples/plugin-hello examples/plugin-sdk-python --exclude-dir=__pycache__
+```
+
+Relevant output summary:
+
+```text
+internal/kernel/plugin/runtime.go:258: logger.Info("plugin stderr", "plugin", id, "line", sc.Text())
+internal/kernel/plugin_tools.go:168: h.Logger.LogAttrs(context.Background(), level, params.Msg, slog.String("plugin", handle.ID()))
+cmd/tabula/main.go:153: slog.Info("running boot", "command", bootCmd)
+cmd/tabula/main.go:254: slog.Info("spawning boot process", "command", cmd)
+cmd/tabula/main.go:724: slog.Error("boot script stderr", "output", stderr.String())
+cmd/tabula/main.go:730: slog.Warn("boot script warnings", "output", stderr.String())
+examples/plugin-hello/run.py:51: api.log("hello_child_spawned", child_pid=child.pid)
+```
+
+Assessment:
+
+- No direct logging of API keys/passwords/tokens found in audited BUILD changes.
+- `plugin_tools.go` currently forwards only plugin log message and plugin id; it intentionally drops plugin-supplied fields, reducing PII leakage risk.
+- `plugin/runtime.go` forwards plugin stderr line content. This may include plugin-authored sensitive output if a plugin writes it to stderr; classified as `WARNING`, non-blocking, because plugin authoring docs should warn plugins not to emit secrets and this is a common diagnostic surface.
+- Existing boot command/stderr logging can include whatever a local boot script chooses to print; not introduced by PluginRuntime, but still a caution for operators.

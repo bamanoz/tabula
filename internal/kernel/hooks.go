@@ -54,7 +54,7 @@ var HookEvents = map[string]HookEventDef{
 }
 
 func (h *Hub) rebuildHookIndex() {
-	h.hooks.RebuildIndex(h.allClients())
+	h.hooks.RebuildIndex(h.allHookSubscribers())
 }
 
 // dispatchHook is the single entry point for all hook dispatch.
@@ -64,7 +64,7 @@ func (h *Hub) dispatchHook(event string, payload json.RawMessage, session string
 	return h.dispatchHookExcept(event, payload, session, nil)
 }
 
-func (h *Hub) dispatchHookExcept(event string, payload json.RawMessage, session string, exclude *Client) (json.RawMessage, bool) {
+func (h *Hub) dispatchHookExcept(event string, payload json.RawMessage, session string, exclude HookSubscriber) (json.RawMessage, bool) {
 	def, known := HookEvents[event]
 	if !known {
 		h.Logger.Warn("unknown hook event", "event", event)

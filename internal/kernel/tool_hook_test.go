@@ -13,7 +13,7 @@ func TestBeforeToolCallHookCanModifyToolInput(t *testing.T) {
 		t.Skip("skipping on windows")
 	}
 
-	env := newTestEnv(t)
+	env := newTestEnvWithSkillTool(t)
 
 	hook := env.connectHook("perm", []HookSubscription{
 		{Event: "before_tool_call", Priority: 100},
@@ -27,9 +27,9 @@ func TestBeforeToolCallHookCanModifyToolInput(t *testing.T) {
 	go func() {
 		writeJSON(t, drv, Message{
 			Type:  "tool_use",
-			Name:  "shell_exec",
+			Name:  "echo_tool",
 			ID:    "t-modify",
-			Input: json.RawMessage(`{"command":"echo original"}`),
+			Input: json.RawMessage(`{"text":"original"}`),
 		})
 	}()
 
@@ -43,9 +43,9 @@ func TestBeforeToolCallHookCanModifyToolInput(t *testing.T) {
 		ID:     hookMsg.ID,
 		Action: "modify",
 		Payload: json.RawMessage(`{
-			"tool":"shell_exec",
+			"tool":"echo_tool",
 			"id":"t-modify",
-			"input":{"command":"echo rewritten"}
+			"input":{"text":"rewritten"}
 		}`),
 	})
 
@@ -53,8 +53,8 @@ func TestBeforeToolCallHookCanModifyToolInput(t *testing.T) {
 	if result.Type != "tool_result" {
 		t.Fatalf("expected tool_result, got %s", result.Type)
 	}
-	if result.Output != "rewritten" {
-		t.Fatalf("expected rewritten output, got %q", result.Output)
+	if !strings.Contains(result.Output, "rewritten") || strings.Contains(result.Output, "original") {
+		t.Fatalf("expected rewritten skill input, got %q", result.Output)
 	}
 }
 
@@ -65,7 +65,7 @@ func TestBeforeToolCallHook_InfiniteTimeout_RepliesAfterDelay(t *testing.T) {
 		t.Skip("skipping on windows")
 	}
 
-	env := newTestEnv(t)
+	env := newTestEnvWithSkillTool(t)
 
 	infinite := 0
 	hook := env.connectHook("approval", []HookSubscription{
@@ -80,9 +80,9 @@ func TestBeforeToolCallHook_InfiniteTimeout_RepliesAfterDelay(t *testing.T) {
 	go func() {
 		writeJSON(t, drv, Message{
 			Type:  "tool_use",
-			Name:  "shell_exec",
+			Name:  "echo_tool",
 			ID:    "t-wait",
-			Input: json.RawMessage(`{"command":"echo ok"}`),
+			Input: json.RawMessage(`{"text":"ok"}`),
 		})
 	}()
 
@@ -104,7 +104,7 @@ func TestBeforeToolCallHook_InfiniteTimeout_RepliesAfterDelay(t *testing.T) {
 	if result == nil || result.Type != "tool_result" {
 		t.Fatalf("expected tool_result after late approval, got %v", result)
 	}
-	if result.Output != "ok" {
+	if !strings.Contains(result.Output, "ok") {
 		t.Fatalf("expected ok, got %q", result.Output)
 	}
 }
@@ -117,7 +117,7 @@ func TestBeforeToolCallHook_InfiniteTimeout_DisconnectBlocks(t *testing.T) {
 		t.Skip("skipping on windows")
 	}
 
-	env := newTestEnv(t)
+	env := newTestEnvWithSkillTool(t)
 
 	infinite := 0
 	hook := env.connectHook("approval", []HookSubscription{
@@ -132,9 +132,9 @@ func TestBeforeToolCallHook_InfiniteTimeout_DisconnectBlocks(t *testing.T) {
 	go func() {
 		writeJSON(t, drv, Message{
 			Type:  "tool_use",
-			Name:  "shell_exec",
+			Name:  "echo_tool",
 			ID:    "t-disco",
-			Input: json.RawMessage(`{"command":"echo should-not-run"}`),
+			Input: json.RawMessage(`{"text":"should-not-run"}`),
 		})
 	}()
 
@@ -162,7 +162,7 @@ func TestBeforeToolCallHookSkipsSenderHookSubscription(t *testing.T) {
 		t.Skip("skipping on windows")
 	}
 
-	env := newTestEnv(t)
+	env := newTestEnvWithSkillTool(t)
 	infinite := 0
 
 	// The same client both subscribes to before_tool_call and sends a tool_use.
@@ -187,9 +187,9 @@ func TestBeforeToolCallHookSkipsSenderHookSubscription(t *testing.T) {
 
 	writeJSON(t, client, Message{
 		Type:  "tool_use",
-		Name:  "shell_exec",
+		Name:  "echo_tool",
 		ID:    "self-hook",
-		Input: json.RawMessage(`{"command":"echo ok"}`),
+		Input: json.RawMessage(`{"text":"ok"}`),
 	})
 
 	result := readMsgTimeout(t, client, 2*time.Second)
@@ -199,12 +199,13 @@ func TestBeforeToolCallHookSkipsSenderHookSubscription(t *testing.T) {
 	if result.Type == "hook" {
 		t.Fatalf("sender should not receive its own synchronous hook")
 	}
-	if result.Type != "tool_result" || result.Output != "ok" {
+	if result.Type != "tool_result" || !strings.Contains(result.Output, "ok") {
 		t.Fatalf("expected ok tool_result, got %+v", result)
 	}
 }
 
 func TestBeforeToolCallHookSkipsSenderForProcessSpawn(t *testing.T) {
+	skipKernelBuiltinRemoved(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on windows")
 	}

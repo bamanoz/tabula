@@ -10,10 +10,10 @@ Schema (all sections optional; absent file = empty config, legacy behavior):
     kernel = ">=0.8.0,<1.0.0"   # enforced by tabula-distro install
 
     [[bundles]]
-    name     = "memory"
-    source   = "local:../../bundles/memory"
-    skills   = ["memory-save", "memory-search"]   # optional allowlist
-    override = false                              # explicit conflict override
+    name       = "memory"
+    source     = "local:../../bundles/memory"
+    components = ["memory-save", "memory-search"] # optional allowlist
+    override   = false                            # explicit conflict override
 
     [[skills]]
     name     = "weather"
@@ -38,11 +38,16 @@ from .semver import Constraint, Version, VersionError
 class BundleEntry:
     name: str
     source: str
-    # None  = no allowlist, install every skill in the bundle
-    # ()    = explicit empty allowlist, install no skills (only _* support dirs)
-    # (...) = install only the named skills
-    skills: tuple[str, ...] | None = None
+    # None  = no allowlist, install every component in the bundle
+    # ()    = explicit empty allowlist, install no components
+    # (...) = install only the named components
+    components: tuple[str, ...] | None = None
     override: bool = False
+
+    @property
+    def skills(self) -> tuple[str, ...] | None:
+        """Backward-compatible alias for the legacy bundle skill allowlist."""
+        return self.components
 
 
 @dataclass(frozen=True)
@@ -60,6 +65,7 @@ class DistroConfig:
     requires_kernel: Constraint | None = None
     bundles: tuple[BundleEntry, ...] = ()
     skills: tuple[SkillEntry, ...] = ()
+    plugins: tuple[SkillEntry, ...] = ()
 
 
 def load(distro_dir: Path, *, override_name: str | None = None) -> DistroConfig:
@@ -93,6 +99,7 @@ def load(distro_dir: Path, *, override_name: str | None = None) -> DistroConfig:
         requires_kernel=requires_kernel,
         bundles=tuple(_parse_bundle(entry) for entry in merged.get("bundles", [])),
         skills=tuple(_parse_skill(entry) for entry in merged.get("skills", [])),
+        plugins=tuple(_parse_skill(entry) for entry in merged.get("plugins", [])),
     )
 
 
@@ -115,7 +122,7 @@ def _merge(base: dict, override: dict) -> dict:
     for dict_key in ("distro", "requires"):
         if dict_key in override:
             result[dict_key] = {**_section(base, dict_key), **_section(override, dict_key)}
-    for list_key in ("bundles", "skills"):
+    for list_key in ("bundles", "skills", "plugins"):
         if list_key not in override:
             continue
         by_name: dict[str, dict] = {}
@@ -133,17 +140,22 @@ def _merge(base: dict, override: dict) -> dict:
 
 def _parse_bundle(entry: dict) -> BundleEntry:
     _require(entry, ("name", "source"), kind="bundle")
-    if "skills" in entry:
-        skills_raw = entry["skills"] or []
-        if not isinstance(skills_raw, list) or not all(isinstance(s, str) for s in skills_raw):
-            raise ConfigError(f"bundle {entry['name']!r}: 'skills' must be list[str]")
-        skills: tuple[str, ...] | None = tuple(skills_raw)
+    has_components = "components" in entry
+    has_skills = "skills" in entry
+    if has_components and has_skills:
+        raise ConfigError(f"bundle {entry['name']!r}: use only one of 'components' or legacy 'skills'")
+    if has_components or has_skills:
+        key = "components" if has_components else "skills"
+        components_raw = entry[key] or []
+        if not isinstance(components_raw, list) or not all(isinstance(s, str) for s in components_raw):
+            raise ConfigError(f"bundle {entry['name']!r}: '{key}' must be list[str]")
+        components: tuple[str, ...] | None = tuple(components_raw)
     else:
-        skills = None
+        components = None
     return BundleEntry(
         name=entry["name"],
         source=entry["source"],
-        skills=skills,
+        components=components,
         override=bool(entry.get("override", False)),
     )
 

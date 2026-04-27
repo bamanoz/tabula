@@ -20,10 +20,9 @@ const (
 
 const hookTimeout = 5 * time.Second
 
-
 type hookEntry struct {
-	client *Client
-	sub    HookSubscription
+	sub      HookSubscriber
+	subscrip HookSubscription
 }
 
 type HookResult struct {
@@ -50,19 +49,21 @@ func NewHookEngine(logger *slog.Logger) *HookEngine {
 	}
 }
 
-func (e *HookEngine) RebuildIndex(clients []*Client) {
+// RebuildIndex reconstructs the hook index from the given subscribers
+// (typically the union of WebSocket clients and registered plugins).
+func (e *HookEngine) RebuildIndex(subs []HookSubscriber) {
 	idx := make(map[string][]hookEntry)
-	for _, c := range clients {
-		if !c.IsConnected() {
+	for _, s := range subs {
+		if !s.IsConnected() {
 			continue
 		}
-		for _, sub := range c.hooks {
-			idx[sub.Event] = append(idx[sub.Event], hookEntry{client: c, sub: sub})
+		for _, sub := range s.Hooks() {
+			idx[sub.Event] = append(idx[sub.Event], hookEntry{sub: s, subscrip: sub})
 		}
 	}
 	for event := range idx {
 		sort.Slice(idx[event], func(i, j int) bool {
-			return idx[event][i].sub.Priority > idx[event][j].sub.Priority
+			return idx[event][i].subscrip.Priority > idx[event][j].subscrip.Priority
 		})
 	}
 
@@ -75,7 +76,7 @@ func (e *HookEngine) Dispatch(event string, payload json.RawMessage, session str
 	return e.DispatchExcept(event, payload, session, nil)
 }
 
-func (e *HookEngine) DispatchExcept(event string, payload json.RawMessage, session string, exclude *Client) (json.RawMessage, bool) {
+func (e *HookEngine) DispatchExcept(event string, payload json.RawMessage, session string, exclude HookSubscriber) (json.RawMessage, bool) {
 	entries := e.entries(event)
 	if len(entries) == 0 {
 		return payload, true
@@ -86,10 +87,10 @@ func (e *HookEngine) DispatchExcept(event string, payload json.RawMessage, sessi
 
 	var relevant []hookEntry
 	for _, entry := range entries {
-		if exclude != nil && entry.client == exclude {
+		if exclude != nil && entry.sub == exclude {
 			continue
 		}
-		if entry.client.session == session || entry.client.session == "" {
+		if entry.sub.Session() == session || entry.sub.Session() == "" {
 			relevant = append(relevant, entry)
 		}
 	}
@@ -104,12 +105,12 @@ func (e *HookEngine) DispatchExcept(event string, payload json.RawMessage, sessi
 
 	switch def.Strategy {
 	case strategyVoid:
-		e.dispatchVoid(event, payload, relevant)
+		e.dispatchVoid(event, payload, session, relevant)
 		return payload, true
 	case strategyModifying:
-		return e.dispatchModifying(event, payload, relevant, def.Type == HookSecurity)
+		return e.dispatchModifying(event, payload, session, relevant, def.Type == HookSecurity)
 	case strategyClaiming:
-		return e.dispatchClaiming(event, payload, relevant)
+		return e.dispatchClaiming(event, payload, session, relevant)
 	default:
 		return payload, true
 	}
@@ -132,31 +133,32 @@ func (e *HookEngine) HandleResult(msg *Message) {
 	}
 }
 
-func (e *HookEngine) dispatchVoid(event string, payload json.RawMessage, entries []hookEntry) {
+func (e *HookEngine) dispatchVoid(event string, payload json.RawMessage, session string, entries []hookEntry) {
 	for _, entry := range entries {
-		entry.client.SendMsg(&Message{
+		entry.sub.SendMsg(&Message{
 			Type:    "hook",
 			ID:      generateHookID(),
 			Name:    event,
+			Session: session,
 			Payload: payload,
 		})
 	}
 }
 
-func (e *HookEngine) dispatchModifying(event string, payload json.RawMessage, entries []hookEntry, secure bool) (json.RawMessage, bool) {
+func (e *HookEngine) dispatchModifying(event string, payload json.RawMessage, session string, entries []hookEntry, secure bool) (json.RawMessage, bool) {
 	current := payload
 	for _, entry := range entries {
-		result := e.sendAndWait(entry, event, current)
+		result := e.sendAndWait(entry, event, current, session)
 		if result == nil {
 			if secure {
-				e.logger.Info("security hook timeout, blocking", "event", event, "client", entry.client.name)
+				e.logger.Info("security hook timeout, blocking", "event", event, "client", entry.sub.Name())
 				return nil, false
 			}
 			continue
 		}
 		switch HookAction(result.Action) {
 		case ActionBlock:
-			e.logger.Info("hook blocked event", "event", event, "client", entry.client.name, "reason", result.Reason)
+			e.logger.Info("hook blocked event", "event", event, "client", entry.sub.Name(), "reason", result.Reason)
 			return nil, false
 		case ActionModify:
 			if result.Payload != nil {
@@ -167,9 +169,9 @@ func (e *HookEngine) dispatchModifying(event string, payload json.RawMessage, en
 	return current, true
 }
 
-func (e *HookEngine) dispatchClaiming(event string, payload json.RawMessage, entries []hookEntry) (json.RawMessage, bool) {
+func (e *HookEngine) dispatchClaiming(event string, payload json.RawMessage, session string, entries []hookEntry) (json.RawMessage, bool) {
 	for _, entry := range entries {
-		result := e.sendAndWait(entry, event, payload)
+		result := e.sendAndWait(entry, event, payload, session)
 		if result == nil {
 			continue
 		}
@@ -183,38 +185,39 @@ func (e *HookEngine) dispatchClaiming(event string, payload json.RawMessage, ent
 	return payload, true
 }
 
-func (e *HookEngine) sendAndWait(entry hookEntry, event string, payload json.RawMessage) *HookResult {
-	c := entry.client
+func (e *HookEngine) sendAndWait(entry hookEntry, event string, payload json.RawMessage, session string) *HookResult {
+	s := entry.sub
 	id := generateHookID()
 	ch := make(chan *HookResult, 1)
 	e.addPendingHook(id, ch)
 
-	c.SendMsg(&Message{
+	s.SendMsg(&Message{
 		Type:    "hook",
 		ID:      id,
 		Name:    event,
+		Session: session,
 		Payload: payload,
 	})
 
 	var result *HookResult
-	if entry.sub.TimeoutMs != nil && *entry.sub.TimeoutMs == 0 {
+	if entry.subscrip.TimeoutMs != nil && *entry.subscrip.TimeoutMs == 0 {
 		// Wait indefinitely; only the subscriber disconnecting unblocks us.
 		select {
 		case result = <-ch:
-		case <-c.Done():
-			e.logger.Info("hook subscriber disconnected", "event", event, "client", c.name, "id", id)
+		case <-s.Done():
+			e.logger.Info("hook subscriber disconnected", "event", event, "client", s.Name(), "id", id)
 		}
 	} else {
 		d := hookTimeout
-		if entry.sub.TimeoutMs != nil && *entry.sub.TimeoutMs > 0 {
-			d = time.Duration(*entry.sub.TimeoutMs) * time.Millisecond
+		if entry.subscrip.TimeoutMs != nil && *entry.subscrip.TimeoutMs > 0 {
+			d = time.Duration(*entry.subscrip.TimeoutMs) * time.Millisecond
 		}
 		select {
 		case result = <-ch:
-		case <-c.Done():
-			e.logger.Info("hook subscriber disconnected", "event", event, "client", c.name, "id", id)
+		case <-s.Done():
+			e.logger.Info("hook subscriber disconnected", "event", event, "client", s.Name(), "id", id)
 		case <-time.After(d):
-			e.logger.Warn("hook timeout", "event", event, "client", c.name, "id", id)
+			e.logger.Warn("hook timeout", "event", event, "client", s.Name(), "id", id)
 		}
 	}
 

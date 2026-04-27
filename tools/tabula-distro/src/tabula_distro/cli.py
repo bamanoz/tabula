@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     p_install.add_argument("--update", action="store_true",
                            help="ignore pinned lock; re-resolve all git refs")
     p_install.add_argument("--update-only", action="append", default=[],
-                           help="update only the named bundle/skill (repeatable)")
+                           help="update only the named bundle/skill/plugin/component (repeatable)")
     p_install.add_argument("--keep-generations", type=int, default=5)
     p_install.set_defaults(func=_cmd_install)
 
@@ -56,7 +56,8 @@ def main(argv: list[str] | None = None) -> int:
     p_update.add_argument("--name", required=False, default="",
                           help="distro name (defaults to the active one)")
     p_update.add_argument("name_positional", nargs="?", help=argparse.SUPPRESS)
-    p_update.add_argument("--only", action="append", default=[], help="only update this entry (repeatable)")
+    p_update.add_argument("--only", action="append", default=[],
+                          help="only update this bundle/skill/plugin/component (repeatable)")
     p_update.set_defaults(func=_cmd_update)
 
     p_rollback = sub.add_parser("rollback", help="switch to a previous generation")
@@ -177,7 +178,7 @@ def _cmd_gc(args: argparse.Namespace, home: Path) -> int:
             lock = lockmod.load(lock_path)
             if lock is None:
                 continue
-            for lck in list(lock.bundles.values()) + list(lock.skills.values()):
+            for lck in list(lock.bundles.values()) + list(lock.skills.values()) + list(lock.plugins.values()):
                 if lck.resolved_sha:
                     keep.add(lck.resolved_sha)
     removed = cache.gc(keep)
@@ -219,7 +220,11 @@ def _print_summary(home: Path, distro_name: str, gen, lock: lockmod.Lock, *, cha
         print("  skills:")
         for name, entry in sorted(lock.skills.items()):
             print(f"    {name:20s} {_describe_lock(entry)}")
-    if not lock.bundles and not lock.skills:
+    if lock.plugins:
+        print("  plugins:")
+        for name, entry in sorted(lock.plugins.items()):
+            print(f"    {name:20s} {_describe_lock(entry)}")
+    if not lock.bundles and not lock.skills and not lock.plugins:
         print("  (no external sources)")
 
 

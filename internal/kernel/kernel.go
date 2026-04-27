@@ -4,23 +4,54 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os/exec"
+	"sync"
 	"time"
+
+	"github.com/bamanoz/tabula/internal/kernel/plugin"
 )
 
 // Hub manages all connected clients, sessions, and spawned processes.
 type Hub struct {
-	clients         *ClientRegistry
-	sessions        *SessionRegistry
-	processes       *ProcessSupervisor
-	tokens          *SpawnTokenStore
-	hooks           *HookEngine
-	policy          *PolicyEngine
-	tools           *ToolService
-	toolExec        map[string]string // tool name → exec command for skill tools
-	toolsJSON       json.RawMessage
-	initMeta        json.RawMessage
-	enabledBuiltins map[string]bool
-	Logger          *slog.Logger
+	clients   *ClientRegistry
+	sessions  *SessionRegistry
+	processes *ProcessSupervisor
+	tokens    *SpawnTokenStore
+	hooks     *HookEngine
+	policy    *PolicyEngine
+	tools     *ToolService
+	plugins   *plugin.Registry
+	// pluginRuns tracks active supervisor lifecycles by plugin id. It is kept
+	// outside plugin.Registry so replacement/cancellation state does not leak
+	// into the public plugin handle snapshot/order semantics.
+	pluginRuns   map[string]*pluginLifecycle
+	pluginRunsMu sync.Mutex
+	// pluginStates tracks durable lifecycle diagnostics for SnapshotPlugins.
+	// Unlike pluginRuns, failed terminal states are retained after the handle is
+	// removed from the live registry so operators can see why a plugin vanished.
+	pluginStates   map[string]*pluginLifecycleState
+	pluginStatesMu sync.RWMutex
+	// pluginRuntime owns live plugin process startup/stdio mechanics. It is
+	// injected as a field (rather than through NewHub's signature) to keep the
+	// builder-style Plugin API additive per creative-plugin-runtime.md §3.
+	pluginRuntime plugin.Runtime
+	// pluginSupervisorPolicy defaults to the frozen protocol values. Tests may
+	// override it to avoid waiting for real backoff intervals.
+	pluginSupervisorPolicy plugin.SupervisorPolicy
+	// toolExec is the unified tool dispatch table per creative
+	// `creative-plugin-runtime.md` §4 (D1.7). Keyed by tool name, value
+	// carries Source (skill | plugin) plus the source-specific routing
+	// payload. Skill tools are populated at NewHub time; plugin tools are
+	// inserted by Hub.RegisterPlugin (D2.14, future) on register-reply
+	// and atomically replaced on update_tools.
+	toolExec  map[string]toolDispatch
+	toolsJSON json.RawMessage
+	initMeta  json.RawMessage
+	Logger    *slog.Logger
+	// MaxSpawnDepth and MaxChildren are dead code as of Phase 1 D1.2 (the
+	// only kernel-side callsite was handleSpawn, removed). Kept per creative
+	// §7 (D1.11 option b) until subagent plugin GA in tabula-bundles
+	// re-establishes spawn caps in plugin-land.
+	// TODO(skill-plugin-arch): remove after subagent plugin GA.
 	MaxSpawnDepth   int
 	MaxChildren     int
 	MaxClients      int           // max concurrent clients (default 100)
@@ -36,12 +67,21 @@ func (h *Hub) SetInitMeta(meta json.RawMessage) {
 }
 
 // NewHub creates a new Hub.
+//
+// skillExec is the legacy skill-tool dispatch map (`name → exec command`),
+// constructed in main.go from `bootConfig.Skills` (or the deprecated
+// `bootConfig.Tools` legacy alias). It is converted internally to the
+// unified Hub.toolExec dispatch table per creative §4.
 func NewHub(toolsJSON json.RawMessage, skillExec map[string]string, maxSpawnDepth int, maxChildren int, logger *slog.Logger) *Hub {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if skillExec == nil {
-		skillExec = make(map[string]string)
+	dispatch := make(map[string]toolDispatch, len(skillExec))
+	for name, cmd := range skillExec {
+		if cmd == "" {
+			continue
+		}
+		dispatch[name] = skillDispatch(cmd)
 	}
 	hub := &Hub{
 		clients:         NewClientRegistry(),
@@ -49,9 +89,12 @@ func NewHub(toolsJSON json.RawMessage, skillExec map[string]string, maxSpawnDept
 		processes:       NewProcessSupervisor(logger, 3*time.Second),
 		tokens:          NewSpawnTokenStore(),
 		hooks:           NewHookEngine(logger),
-		toolExec:        skillExec,
+		plugins:         plugin.NewRegistry(),
+		pluginRuns:      make(map[string]*pluginLifecycle),
+		pluginStates:    make(map[string]*pluginLifecycleState),
+		pluginRuntime:   plugin.NewRuntime(),
+		toolExec:        dispatch,
 		toolsJSON:       toolsJSON,
-		enabledBuiltins: parseEnabledBuiltins(toolsJSON),
 		Logger:          logger,
 		MaxSpawnDepth:   maxSpawnDepth,
 		MaxChildren:     maxChildren,
@@ -61,24 +104,6 @@ func NewHub(toolsJSON json.RawMessage, skillExec map[string]string, maxSpawnDept
 	hub.policy = NewPolicyEngine(hub)
 	hub.tools = NewToolService(hub)
 	return hub
-}
-
-func parseEnabledBuiltins(toolsJSON json.RawMessage) map[string]bool {
-	enabled := map[string]bool{}
-	var tools []struct {
-		Name string `json:"name"`
-	}
-	if err := json.Unmarshal(toolsJSON, &tools); err != nil {
-		return enabled
-	}
-	for _, tool := range tools {
-		enabled[tool.Name] = true
-	}
-	return enabled
-}
-
-func (h *Hub) IsBuiltinEnabled(name KernelTool) bool {
-	return h.enabledBuiltins[string(name)]
 }
 
 // Register adds a client to the hub.

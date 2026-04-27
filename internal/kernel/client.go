@@ -102,6 +102,16 @@ func (c *Client) IsConnected() bool {
 	return c.state != ClientClosed
 }
 
+// Name returns the client's name. Implements HookSubscriber.
+func (c *Client) Name() string { return c.name }
+
+// Session returns the client's session id (empty for global subscribers).
+// Implements HookSubscriber.
+func (c *Client) Session() string { return c.session }
+
+// Hooks returns the client's hook subscriptions. Implements HookSubscriber.
+func (c *Client) Hooks() []HookSubscription { return c.hooks }
+
 func (c *Client) canSend(msgType string) bool {
 	return c.sends[msgType]
 }

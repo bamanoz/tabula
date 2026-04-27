@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
+
+	"github.com/bamanoz/tabula/internal/kernel/plugin"
 )
 
 const maxExecOutput = 16 * 1024 // 16KB
@@ -12,15 +15,25 @@ const maxExecOutput = 16 * 1024 // 16KB
 type ToolService struct {
 	hub     *Hub
 	process *ProcessManager
+	skill   *SkillExec
 }
 
 func NewToolService(hub *Hub) *ToolService {
+	pm := NewProcessManager(hub, nil)
 	return &ToolService{
 		hub:     hub,
-		process: NewProcessManager(hub, nil),
+		process: pm,
+		skill:   NewSkillExec(pm),
 	}
 }
 
+// HandleToolUse routes a tool_use message through the before_tool_call hook
+// and dispatches the result to a registered skill-exec tool.
+//
+// As of Phase 1 D1.2 of the skill/plugin architecture migration, kernel no
+// longer hosts builtin LLM tools (shell_exec, process_spawn, process_kill,
+// process_list). All tools flow through Hub.toolExec (skill exec dispatch).
+// Phase 2 will extend this with plugin-tool dispatch.
 func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 	toolName := msg.Name
 	toolID := msg.ID
@@ -35,104 +48,109 @@ func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 	}
 	msg.Input = effectiveInput
 
-	switch KernelTool(toolName) {
-	case ToolShellExec:
-		if !s.hub.IsBuiltinEnabled(ToolShellExec) {
-			s.hub.sendToolResult(session, toolID, fmt.Sprintf("ERROR: unknown tool %s", toolName))
-			return
-		}
-		s.handleExec(session, toolID, msg.Input)
-	case ToolProcessSpawn:
-		if !s.hub.IsBuiltinEnabled(ToolProcessSpawn) {
-			s.hub.sendToolResult(session, toolID, fmt.Sprintf("ERROR: unknown tool %s", toolName))
-			return
-		}
-		s.handleSpawn(sender, toolID, msg.Input)
-	case ToolProcessKill:
-		if !s.hub.IsBuiltinEnabled(ToolProcessKill) {
-			s.hub.sendToolResult(session, toolID, fmt.Sprintf("ERROR: unknown tool %s", toolName))
-			return
-		}
-		s.handleKill(session, toolID, msg.Input)
-	case ToolProcessList:
-		if !s.hub.IsBuiltinEnabled(ToolProcessList) {
-			s.hub.sendToolResult(session, toolID, fmt.Sprintf("ERROR: unknown tool %s", toolName))
-			return
-		}
-		s.handleList(session, toolID)
-	default:
-		s.handleDynamicTool(session, toolID, toolName, msg.Input)
-	}
-}
-
-func (s *ToolService) handleExec(session, toolID string, input json.RawMessage) {
-	parsed, err := parseCommandToolInput(input)
-	if err != nil {
-		s.hub.sendToolResult(session, toolID, "ERROR: missing or invalid command")
-		return
-	}
-	s.process.RunCommand(session, toolID, parsed.Command)
-}
-
-func (s *ToolService) handleSpawn(sender *Client, toolID string, input json.RawMessage) {
-	parsed, err := parseCommandToolInput(input)
-	if err != nil {
-		s.hub.sendToolResult(sender.session, toolID, "ERROR: missing or invalid command")
-		return
-	}
-
-	if err := s.hub.policy.CanSpawn(sender, parsed.Command, toolID, sender.session); err != nil {
-		s.hub.sendToolResult(sender.session, toolID, fmt.Sprintf("ERROR: %v", err))
-		return
-	}
-
-	result := s.process.Spawn(parsed.Command, sender.session, sender.depth+1)
-	if result.Error != "" {
-		s.hub.sendToolResult(sender.session, toolID, fmt.Sprintf("ERROR: %v", result.Error))
-		return
-	}
-
-	s.hub.sendToolResult(sender.session, toolID, fmt.Sprintf("PID %d", result.PID))
-	spawnHookPayload, _ := json.Marshal(map[string]any{
-		"tool": string(ToolProcessSpawn), "id": toolID, "command": parsed.Command, "pid": result.PID,
-	})
-	s.hub.dispatchHook("after_spawn", spawnHookPayload, sender.session)
-}
-
-func (s *ToolService) handleKill(session, toolID string, input json.RawMessage) {
-	var parsed struct {
-		PID int `json:"pid"`
-	}
-	if err := json.Unmarshal(input, &parsed); err != nil || parsed.PID == 0 {
-		s.hub.sendToolResult(session, toolID, "ERROR: missing or invalid pid")
-		return
-	}
-
-	if err := s.process.Kill(parsed.PID, session); err != nil {
-		s.hub.sendToolResult(session, toolID, fmt.Sprintf("ERROR: %v", err))
-		return
-	}
-	s.hub.sendToolResult(session, toolID, "OK")
-}
-
-func (s *ToolService) handleList(session, toolID string) {
-	result := s.process.List(session)
-	s.hub.sendToolResult(session, toolID, result)
+	s.handleDynamicTool(session, toolID, toolName, msg.Input)
 }
 
 func (s *ToolService) handleDynamicTool(session, toolID, toolName string, input json.RawMessage) {
-	execCmd, ok := s.hub.toolExec[toolName]
+	entry, ok := s.hub.toolExec[toolName]
 	if !ok {
 		s.hub.sendToolResult(session, toolID, fmt.Sprintf("ERROR: unknown tool %s", toolName))
 		return
 	}
-	s.process.RunSkillTool(session, toolID, toolName, execCmd, input)
+	switch entry.Source {
+	case toolSourceSkill:
+		s.skill.Run(session, toolID, toolName, entry.Command, input)
+	case toolSourcePlugin:
+		s.handlePluginTool(session, toolID, toolName, entry, input)
+	default:
+		s.hub.sendToolResult(session, toolID, fmt.Sprintf("ERROR: tool %s has unknown dispatch source", toolName))
+	}
+}
+
+func (s *ToolService) handlePluginTool(session, toolID, toolName string, entry toolDispatch, input json.RawMessage) {
+	if entry.Plugin == nil || !entry.Plugin.IsAlive() || !entry.Plugin.IsRegistered() {
+		s.hub.sendToolResult(session, toolID, fmt.Sprintf("ERROR: plugin tool %s is unavailable", toolName))
+		return
+	}
+	deadline := resolveToolDeadline(entry.DeadlineMs)
+	ch, err := entry.Plugin.SendToolCall(&plugin.ToolCallParams{
+		CallID:     toolID,
+		Name:       toolName,
+		Args:       input,
+		Session:    session,
+		DeadlineMs: int(deadline / time.Millisecond),
+	})
+	if err != nil {
+		s.hub.Logger.Warn("plugin tool_call failed", "tool", toolName, "session", session, "err", err)
+		s.hub.sendToolResult(session, toolID, fmt.Sprintf("ERROR: plugin tool %s failed: %v", toolName, err))
+		return
+	}
+
+	go func() {
+		var output string
+		select {
+		case msg, ok := <-ch:
+			if !ok {
+				output = "ERROR: plugin call cancelled"
+			} else {
+				output = pluginToolOutput(msg)
+			}
+		case <-entry.Plugin.Done():
+			entry.Plugin.CancelPending(toolID)
+			output = "ERROR: plugin crashed"
+		case <-time.After(deadline):
+			entry.Plugin.CancelPending(toolID)
+			output = fmt.Sprintf("ERROR: plugin timeout after %dms", int(deadline/time.Millisecond))
+		}
+		s.hub.sendToolResult(session, toolID, output)
+		s.hub.emitAfterToolCall(session, toolID, map[string]string{
+			"tool": toolName, "id": toolID, "output": output,
+		})
+	}()
+}
+
+func pluginToolOutput(msg *plugin.Message) string {
+	if msg == nil {
+		return "ERROR: plugin returned empty result"
+	}
+	var result plugin.ToolResultParams
+	if err := msg.DecodeParams(&result); err != nil {
+		return fmt.Sprintf("ERROR: invalid plugin tool_result: %v", err)
+	}
+	if result.Error != "" {
+		return "ERROR: " + result.Error
+	}
+	if len(result.Result) == 0 {
+		return "OK"
+	}
+	var text string
+	if err := json.Unmarshal(result.Result, &text); err == nil {
+		return text
+	}
+	return strings.TrimSpace(string(result.Result))
+}
+
+func resolveToolDeadline(deadlineMs int) time.Duration {
+	if deadlineMs <= 0 {
+		deadlineMs = 30000
+	}
+	if deadlineMs > 600000 {
+		deadlineMs = 600000
+	}
+	return time.Duration(deadlineMs) * time.Millisecond
 }
 
 type commandToolInput struct {
 	Command string `json:"command"`
 }
 
+// parseCommandToolInput is kept as a small reusable helper for tools whose
+// JSON shape is `{"command": "..."}`. After kernel cleanup it has no
+// in-tree caller; tests may still reference it. Skill or plugin tools
+// implementing shell-style semantics may use it via shared package import
+// in the future.
+//
+//nolint:unused // retained per Phase 1 D1.11(b) dead-code-keep policy
 func parseCommandToolInput(input json.RawMessage) (commandToolInput, error) {
 	var parsed commandToolInput
 	if err := json.Unmarshal(input, &parsed); err != nil || parsed.Command == "" {

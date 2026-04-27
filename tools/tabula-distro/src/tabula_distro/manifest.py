@@ -5,6 +5,7 @@ Schema:
     [bundle]
     name    = "drivers"
     version = "0.1.0"
+    components = ["driver", "mcp"]
 
     [requires]
     kernel = ">=0.8.0,<1.0.0"
@@ -28,6 +29,8 @@ class BundleManifest:
     version: Version | None
     requires_kernel: Constraint | None
     path: Path  # bundle root
+    # None means legacy walk-discovery; an empty tuple means explicit empty bundle.
+    components: tuple[str, ...] | None = None
 
     @property
     def is_versioned(self) -> bool:
@@ -52,6 +55,7 @@ def load_bundle_manifest(bundle_root: Path) -> BundleManifest:
 
     name = bundle.get("name")
     version_raw = bundle.get("version")
+    components = _parse_components(manifest_path, bundle.get("components"))
     kernel_raw = requires.get("kernel")
 
     try:
@@ -64,4 +68,21 @@ def load_bundle_manifest(bundle_root: Path) -> BundleManifest:
     except VersionError as exc:
         raise ManifestError(f"{manifest_path}: invalid requires.kernel: {exc}") from exc
 
-    return BundleManifest(name=name, version=version, requires_kernel=kernel, path=bundle_root)
+    return BundleManifest(name=name, version=version, requires_kernel=kernel, path=bundle_root,
+                          components=components)
+
+
+def _parse_components(manifest_path: Path, raw: object) -> tuple[str, ...] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise ManifestError(f"{manifest_path}: bundle.components must be list[str]")
+    components: list[str] = []
+    for value in raw:
+        if not isinstance(value, str) or not value.strip():
+            raise ManifestError(f"{manifest_path}: bundle.components entries must be non-empty strings")
+        p = Path(value)
+        if p.is_absolute() or ".." in p.parts:
+            raise ManifestError(f"{manifest_path}: bundle.components entry must be relative and stay inside bundle: {value!r}")
+        components.append(p.as_posix())
+    return tuple(components)

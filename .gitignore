@@ -1,13 +1,23 @@
+.env
+
+# Claude Code files
+.claude
+
+# Python files
 *.o
 __pycache__/
 *.pyc
 .pytest_cache
 .venv
-.claude
 .cache
 extra/
 dist/
-
 *.egg-info/
 
+# JS/TS files
 node_modules/
+
+# OpenCode files
+.opencode/state/
+.playwright-mcp/
+opencode.json

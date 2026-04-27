@@ -16,6 +16,13 @@ type spawnTokenEntry struct {
 
 const spawnTokenTTL = 60 * time.Second
 
+// SpawnTokenStore issues and consumes one-time tokens used to authenticate
+// spawned child processes when they reconnect to the kernel.
+//
+// TODO(skill-plugin-arch): unused after kernel cleanup (Phase 1 D1.2 removed
+// the kernel-side spawn flow). Kept as dead code per creative §7 (D1.11
+// option b) until subagent plugin GA in tabula-bundles re-implements
+// parent-token semantics in plugin-land.
 type SpawnTokenStore struct {
 	mu     sync.RWMutex
 	tokens map[string]spawnTokenEntry

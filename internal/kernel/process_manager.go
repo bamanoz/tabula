@@ -193,9 +193,27 @@ func (pm *ProcessManager) RunCommand(session, toolID, command string) {
 	})
 }
 
-// RunSkillTool executes a skill tool asynchronously.
-func (pm *ProcessManager) RunSkillTool(session, toolID, toolName, execCmd string, input json.RawMessage) {
-	pm.execTool(session, toolID, toolName, "skill tool completed", func() ([]byte, error) {
-		return pm.launcher.CombinedOutput(execCmd, string(input), []string{"TABULA_SESSION=" + session})
+// SkillExec encapsulates per-call execution of skill tools registered via
+// the boot config (`SKILL.md` `tools[].exec`). It is the kernel-internal
+// counterpart to skill subprocesses described in
+// `docs/plans/SKILL_PLUGIN_ARCHITECTURE.md` §4.2.
+//
+// Until Phase 2 introduces the unified `toolDispatch` (creative §4), this
+// type simply delegates to ProcessManager.execTool — preserving async
+// semantics, hook integration and result formatting.
+type SkillExec struct {
+	pm *ProcessManager
+}
+
+// NewSkillExec constructs a SkillExec bound to the given ProcessManager.
+func NewSkillExec(pm *ProcessManager) *SkillExec {
+	return &SkillExec{pm: pm}
+}
+
+// Run executes a skill tool asynchronously and posts the result back through
+// the kernel bus, emitting `after_tool_call` on completion.
+func (s *SkillExec) Run(session, toolID, toolName, execCmd string, input json.RawMessage) {
+	s.pm.execTool(session, toolID, toolName, "skill tool completed", func() ([]byte, error) {
+		return s.pm.launcher.CombinedOutput(execCmd, string(input), []string{"TABULA_SESSION=" + session})
 	})
 }

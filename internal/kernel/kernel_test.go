@@ -20,6 +20,25 @@ var testUpgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+const testShellToolName = "test_shell"
+
+// testShellExecCommand is a test-only dynamic skill command that emulates the
+// old shell_exec payload shape through SkillExec. It keeps kernel_test coverage
+// focused on unified dynamic dispatch without reintroducing kernel builtins.
+const testShellExecCommand = `python3 -c 'import json, subprocess, sys
+try:
+    data=json.load(sys.stdin)
+except Exception as exc:
+    sys.stderr.write(f"ERROR: invalid input: {exc}\n")
+    sys.exit(1)
+cmd=data.get("command")
+if not isinstance(cmd, str) or not cmd:
+    sys.stderr.write("ERROR: missing command\n")
+    sys.exit(1)
+proc=subprocess.run(cmd, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+sys.stdout.write(proc.stdout)
+sys.exit(proc.returncode)'`
+
 // testEnv bundles a Hub + httptest server + WS client factory for tests.
 type testEnv struct {
 	Hub    *Hub
@@ -30,8 +49,9 @@ type testEnv struct {
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 
-	toolsJSON := json.RawMessage(`[{"name":"shell_exec","description":"run cmd","params":{"command":{"type":"string","description":"cmd"}},"required":["command"]},{"name":"process_spawn","description":"spawn","params":{"command":{"type":"string","description":"cmd"}},"required":["command"]},{"name":"process_kill","description":"kill","params":{"pid":{"type":"integer","description":"pid"}},"required":["pid"]},{"name":"process_list","description":"list","params":{},"required":[]}]`)
-	hub := NewHub(toolsJSON, nil, 3, 5, nil)
+	toolsJSON := json.RawMessage(`[{"name":"echo_tool","description":"echo stdin","params":{"text":{"type":"string","description":"text to echo"}},"required":[]},{"name":"test_shell","description":"test-only shell-style skill","params":{"command":{"type":"string","description":"command to run"}},"required":["command"]}]`)
+	skillExec := map[string]string{"echo_tool": "cat", testShellToolName: testShellExecCommand}
+	hub := NewHub(toolsJSON, skillExec, 3, 5, nil)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
@@ -250,9 +270,9 @@ func TestInitOnJoin(t *testing.T) {
 	}
 }
 
-func TestHiddenBuiltinNotExposedOrExecutable(t *testing.T) {
-	toolsJSON := json.RawMessage(`[{"name":"shell_exec","description":"run cmd","params":{"command":{"type":"string","description":"cmd"}},"required":["command"]}]`)
-	hub := NewHub(toolsJSON, nil, 3, 5, nil)
+func TestRemovedKernelBuiltinsNotExposedOrExecutable(t *testing.T) {
+	toolsJSON := json.RawMessage(`[{"name":"echo_tool","description":"echo stdin","params":{"text":{"type":"string","description":"text to echo"}},"required":[]}]`)
+	hub := NewHub(toolsJSON, map[string]string{"echo_tool": "cat"}, 3, 5, nil)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := testUpgrader.Upgrade(w, r, nil)
@@ -274,17 +294,22 @@ func TestHiddenBuiltinNotExposedOrExecutable(t *testing.T) {
 	if init.Type != "init" {
 		t.Fatalf("expected init, got %s", init.Type)
 	}
-	if strings.Contains(string(init.Tools), `"process_spawn"`) || strings.Contains(string(init.Tools), `"process_kill"`) || strings.Contains(string(init.Tools), `"process_list"`) {
-		t.Fatalf("unexpected hidden builtin leaked in init tools: %s", string(init.Tools))
+	for _, removed := range []KernelTool{ToolShellExec, ToolProcessSpawn, ToolProcessKill, ToolProcessList} {
+		if strings.Contains(string(init.Tools), `"`+string(removed)+`"`) {
+			t.Fatalf("unexpected removed kernel builtin %s leaked in init tools: %s", removed, string(init.Tools))
+		}
 	}
 
-	writeJSON(t, conn, Message{Type: "tool_use", ID: "hidden-1", Name: string(ToolProcessSpawn), Input: json.RawMessage(`{"command":"sleep 1"}`)})
-	result := readMsg(t, conn)
-	if result.Type != "tool_result" {
-		t.Fatalf("expected tool_result, got %s", result.Type)
-	}
-	if !strings.Contains(result.Output, "unknown tool process_spawn") {
-		t.Fatalf("expected hidden builtin to be rejected, got %q", result.Output)
+	for i, removed := range []KernelTool{ToolShellExec, ToolProcessSpawn, ToolProcessKill, ToolProcessList} {
+		writeJSON(t, conn, Message{Type: "tool_use", ID: fmt.Sprintf("removed-%d", i), Name: string(removed), Input: json.RawMessage(`{}`)})
+		result := readMsg(t, conn)
+		if result.Type != "tool_result" {
+			t.Fatalf("%s: expected tool_result, got %s", removed, result.Type)
+		}
+		expected := "unknown tool " + string(removed)
+		if !strings.Contains(result.Output, expected) {
+			t.Fatalf("%s: expected removed builtin to be rejected with %q, got %q", removed, expected, result.Output)
+		}
 	}
 }
 
@@ -468,7 +493,7 @@ func TestExecBasic(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "t1",
-		Name:  string(ToolShellExec),
+		Name:  testShellToolName,
 		Input: json.RawMessage(`{"command":"echo hello"}`),
 	})
 
@@ -491,7 +516,7 @@ func TestExecErrorExit(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "t2",
-		Name:  string(ToolShellExec),
+		Name:  testShellToolName,
 		Input: json.RawMessage(`{"command":"exit 1"}`),
 	})
 
@@ -512,7 +537,7 @@ func TestExecOutputTruncation(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "t3",
-		Name:  string(ToolShellExec),
+		Name:  testShellToolName,
 		Input: json.RawMessage(`{"command":"python3 -c \"print('A'*32768)\""}`),
 	})
 
@@ -537,7 +562,7 @@ func TestExecStderrMerged(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "t4",
-		Name:  string(ToolShellExec),
+		Name:  testShellToolName,
 		Input: json.RawMessage(`{"command":"python3 -c \"import sys; sys.stderr.write('stderr_text\\n')\""}`),
 	})
 
@@ -567,13 +592,13 @@ func TestExecAsyncNonBlocking(t *testing.T) {
 	writeJSON(t, conn1, Message{
 		Type:  "tool_use",
 		ID:    "e1",
-		Name:  string(ToolShellExec),
+		Name:  testShellToolName,
 		Input: json.RawMessage(`{"command":"sleep 0.5 && echo done1"}`),
 	})
 	writeJSON(t, conn2, Message{
 		Type:  "tool_use",
 		ID:    "e2",
-		Name:  string(ToolShellExec),
+		Name:  testShellToolName,
 		Input: json.RawMessage(`{"command":"sleep 0.5 && echo done2"}`),
 	})
 
@@ -594,6 +619,7 @@ func TestExecAsyncNonBlocking(t *testing.T) {
 }
 
 func TestSpawnListKill(t *testing.T) {
+	skipKernelBuiltinRemoved(t)
 	env := newTestEnv(t)
 	conn := env.connectAndJoin("driver", "main",
 		[]string{"tool_use"},
@@ -657,6 +683,7 @@ func TestSpawnListKill(t *testing.T) {
 }
 
 func TestSpawnSessionTracking(t *testing.T) {
+	skipKernelBuiltinRemoved(t)
 	env := newTestEnv(t)
 	env.Hub.StartReaper()
 
@@ -733,7 +760,7 @@ func TestInvalidExecCommand(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "x1",
-		Name:  string(ToolShellExec),
+		Name:  testShellToolName,
 		Input: json.RawMessage(`{}`),
 	})
 	msg := readMsg(t, conn)
@@ -867,6 +894,7 @@ func TestConcurrentMessages(t *testing.T) {
 }
 
 func TestCancel(t *testing.T) {
+	skipKernelBuiltinRemoved(t)
 	env := newTestEnv(t)
 	conn := env.connectAndJoin("driver", "main",
 		[]string{"tool_use", "cancel"},
@@ -911,6 +939,7 @@ func TestCancel(t *testing.T) {
 }
 
 func TestCancelScopedToSession(t *testing.T) {
+	skipKernelBuiltinRemoved(t)
 	env := newTestEnv(t)
 
 	// Session A spawns a process
@@ -1056,7 +1085,7 @@ func TestExecWithSpecialCharacters(t *testing.T) {
 	writeJSON(t, conn, Message{
 		Type:  "tool_use",
 		ID:    "t5",
-		Name:  string(ToolShellExec),
+		Name:  testShellToolName,
 		Input: json.RawMessage(`{"command":"echo 'hello world'"}`),
 	})
 
@@ -1085,7 +1114,7 @@ func TestToolResultRoutedToCorrectSession(t *testing.T) {
 	writeJSON(t, connA, Message{
 		Type:  "tool_use",
 		ID:    "ta1",
-		Name:  string(ToolShellExec),
+		Name:  testShellToolName,
 		Input: json.RawMessage(`{"command":"echo from_a"}`),
 	})
 
@@ -1140,7 +1169,7 @@ func TestParallelToolUseSameSession(t *testing.T) {
 		writeJSON(t, conn, Message{
 			Type:  "tool_use",
 			ID:    fmt.Sprintf("batch-%d", i),
-			Name:  string(ToolShellExec),
+			Name:  testShellToolName,
 			Input: json.RawMessage(fmt.Sprintf(`{"command":"sleep 0.3 && echo result-%d"}`, i)),
 		})
 	}
@@ -1171,6 +1200,7 @@ func TestParallelToolUseSameSession(t *testing.T) {
 // TestParallelSpawnAndExec simulates the LLM issuing SPAWN (subagents) and EXEC
 // tools simultaneously from the same session — verifying they don't block each other.
 func TestParallelSpawnAndExec(t *testing.T) {
+	skipKernelBuiltinRemoved(t)
 	env := newTestEnv(t)
 	conn := env.connectAndJoin("driver", "main",
 		[]string{"tool_use"},
@@ -1257,7 +1287,7 @@ func TestLongRunningExecBatch(t *testing.T) {
 		writeJSON(t, conn, Message{
 			Type:  "tool_use",
 			ID:    fmt.Sprintf("slow-%d", i),
-			Name:  string(ToolShellExec),
+			Name:  testShellToolName,
 			Input: json.RawMessage(fmt.Sprintf(`{"command":"sleep 0.5 && echo done-%d"}`, i)),
 		})
 	}
@@ -1301,11 +1331,11 @@ func TestToolResultsNotLeakedAcrossSessions(t *testing.T) {
 
 	// Both sessions fire EXEC at the same time
 	writeJSON(t, connA, Message{
-		Type: "tool_use", ID: "a1", Name: string(ToolShellExec),
+		Type: "tool_use", ID: "a1", Name: testShellToolName,
 		Input: json.RawMessage(`{"command":"sleep 0.2 && echo from-a"}`),
 	})
 	writeJSON(t, connB, Message{
-		Type: "tool_use", ID: "b1", Name: string(ToolShellExec),
+		Type: "tool_use", ID: "b1", Name: testShellToolName,
 		Input: json.RawMessage(`{"command":"sleep 0.2 && echo from-b"}`),
 	})
 
@@ -1331,6 +1361,7 @@ func TestToolResultsNotLeakedAcrossSessions(t *testing.T) {
 }
 
 func TestSpawnDeniedAtMaxDepth(t *testing.T) {
+	skipKernelBuiltinRemoved(t)
 	env := newTestEnv(t)
 
 	// Client at depth=maxSpawnDepth should be denied SPAWN
@@ -1351,6 +1382,7 @@ func TestSpawnDeniedAtMaxDepth(t *testing.T) {
 }
 
 func TestSpawnAllowedBelowMaxDepth(t *testing.T) {
+	skipKernelBuiltinRemoved(t)
 	env := newTestEnv(t)
 
 	// Client at depth=0 (default) should be allowed to SPAWN
@@ -1382,6 +1414,7 @@ func TestSpawnAllowedBelowMaxDepth(t *testing.T) {
 }
 
 func TestSpawnDeniedAtMaxChildren(t *testing.T) {
+	skipKernelBuiltinRemoved(t)
 	env := newTestEnv(t)
 
 	conn := env.connectAndJoin("driver", "main",
@@ -1454,6 +1487,7 @@ func TestSpawnDeniedAtMaxChildren(t *testing.T) {
 }
 
 func TestSpawnTokenPropagatedInEnv(t *testing.T) {
+	skipKernelBuiltinRemoved(t)
 	env := newTestEnv(t)
 
 	// Client at depth=1 spawns a process — child should get TABULA_SPAWN_TOKEN
@@ -1508,6 +1542,7 @@ func TestSpawnTokenPropagatedInEnv(t *testing.T) {
 }
 
 func TestSpawnChildrenCountedPerSession(t *testing.T) {
+	skipKernelBuiltinRemoved(t)
 	env := newTestEnv(t)
 
 	// Session A can spawn up to max
@@ -1594,6 +1629,7 @@ func TestSpawnTokenOneTimeUse(t *testing.T) {
 }
 
 func TestNoTokenMeansDepthZero(t *testing.T) {
+	skipKernelBuiltinRemoved(t)
 	env := newTestEnv(t)
 
 	// Connect without token — depth should be 0 (boot process)
@@ -1621,6 +1657,7 @@ func TestNoTokenMeansDepthZero(t *testing.T) {
 }
 
 func TestKillScopedToSession(t *testing.T) {
+	skipKernelBuiltinRemoved(t)
 	env := newTestEnv(t)
 
 	// Session A spawns a process
@@ -1668,6 +1705,7 @@ func TestKillScopedToSession(t *testing.T) {
 }
 
 func TestListScopedToSession(t *testing.T) {
+	skipKernelBuiltinRemoved(t)
 	env := newTestEnv(t)
 
 	// Session A spawns a process
@@ -1728,6 +1766,7 @@ func TestListScopedToSession(t *testing.T) {
 }
 
 func TestShutdownGraceful(t *testing.T) {
+	skipKernelBuiltinRemoved(t)
 	env := newTestEnv(t)
 	env.Hub.ShutdownTimeout = 5 * time.Second
 

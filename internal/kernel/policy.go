@@ -117,6 +117,13 @@ func (pe *PolicyEngine) CanUseTool(sender *Client, toolName string, toolID strin
 }
 
 // CanSpawn validates the before_spawn hook and resource limits (depth, MaxChildren).
+//
+// TODO(skill-plugin-arch): unused after kernel cleanup (Phase 1 D1.2 removed
+// the only callsite in tool_service.go::handleSpawn). Kept as dead code per
+// creative §7 (D1.11 option b) until subagent plugin GA in tabula-bundles
+// restores the spawn-cap invariant; remove together with SpawnTokenStore,
+// generateSpawnToken, Hub.MaxChildren, Hub.MaxSpawnDepth, and the
+// before_spawn registry entry once that lands.
 func (pe *PolicyEngine) CanSpawn(sender *Client, command string, toolID string, session string) error {
 	// Security hook (fail-closed).
 	hookPayload, _ := json.Marshal(map[string]string{

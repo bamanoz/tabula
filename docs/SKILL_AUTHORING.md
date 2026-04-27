@@ -1,73 +1,74 @@
 # Skill Authoring
 
-This document explains how to write a skill using the current built-in
-assistant convention.
+This document explains how to write **skills**: per-call, stateless tool
+providers. Long-lived components are **plugins**; author those with
+[PLUGIN_AUTHORING.md](PLUGIN_AUTHORING.md). The architectural rationale lives
+in [plans/SKILL_PLUGIN_ARCHITECTURE.md](plans/SKILL_PLUGIN_ARCHITECTURE.md).
 
-It is practical on purpose: what files to create, what contracts matter, and
-which parts are stable versus still evolving.
+## When to write a skill vs a plugin
 
-## Scope of this document
+Pick a **skill** if your component:
 
-At the platform level, Tabula does not require that a skill be expressed as a
-directory with `SKILL.md` and `run.py`. The kernel only cares about the wire
-protocol, executable commands, and the boot JSON it receives.
+- exposes one or more tools that run to completion per call;
+- has no persistent state between calls;
+- doesn't need to subscribe to bus events;
+- doesn't spawn its own children.
 
-This document is about the current built-in `assistant` convention, because
-that is the main user-facing extension model in the repo today.
+Pick a **plugin** if your component:
 
-## What a skill is in the assistant convention
+- runs continuously (driver, gateway, daemon);
+- subscribes to lifecycle events (`before_tool_call`, `session_start`, ...);
+- holds state, caches connections, or supervises children;
+- registers tools dynamically (e.g. MCP first-class `mcp__server__tool`).
 
-In the built-in assistant convention, a skill is commonly represented as a
-directory that contains at least:
+Most new capabilities should start as a skill. Reach for a plugin only when
+one of the long-lived requirements actually applies.
 
-```text
-my-skill/
-├── SKILL.md
-└── run.py
-```
+## Where things live
 
-Here, `SKILL.md` is both:
-
-- machine-readable metadata for boot
-- human-readable documentation for users and agents
-
-`run.py` is one common executable entrypoint used by built-in skills. It is not
-required by the platform.
-
-There is no separate format for "skills written by the agent" inside this
-convention. The same structure is used whether a human writes the skill, a
-bundle installs it, or the agent creates it for itself.
-
-## Where skills live
-
-At runtime, the active skill surface is flat:
+At runtime, the active surface is flat:
 
 ```text
 ~/.tabula/skills/
 ```
 
-In source, skills may live in one of three places:
+In source, components may live in three places:
 
-- distro-specific skills in [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib):
-  `familiar/skills/`, `guardian/skills/`, `ouroboros/skills/`
-- shared bundles in [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles):
-  `base/`, `files/`, `drivers/`, `memory/`, `caveman/`
-- the kernel-side Python runtime contract in this repo: `skills/_pylib/`
+- distro-specific in `tabula-distrib/<name>/skills/...` or
+  `tabula-distrib/<name>/plugins/...`;
+- shared in [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles)
+  (`base/`, `files/`, `drivers/`, `memory/`, `caveman/`, `coder-*/`);
+- shared SDK/runtime libraries are packaged with bundles (the Phase 3 reference
+  Python plugin SDK lives in `examples/plugin-sdk-python/`; final SDK authority
+  moves to `tabula-bundles` during library relocation).
 
-The active distro plus its declared bundles are fanned out into
-`~/.tabula/skills/` by `tabula-distro install`.
+The active distro plus its bundles are fanned out into `~/.tabula/skills/`
+by `tabula-distro install`.
 
-When you write a new skill for your local agent, the important place is the
-runtime surface the boot script sees.
+---
 
-## The minimum viable skill
+# Authoring a skill
 
-`SKILL.md`:
+A skill is a directory with a `SKILL.md` manifest and one or more executable
+entry points referenced by `tools[].exec`. The kernel runs the `exec`
+command per tool call, pipes JSON params on stdin, and reads the result
+from stdout.
+
+## Minimum viable skill
+
+`my-skill/SKILL.md`:
 
 ```md
 ---
 name: my-skill
 description: "Short one-line description"
+tools:
+  - name: my_tool
+    description: "What this tool does"
+    params:
+      text: { type: string, description: "Input text" }
+    required: [text]
+    exec: "<venv_python> skills/my-skill/run.py tool my_tool"
 ---
 
 # my-skill
@@ -75,122 +76,24 @@ description: "Short one-line description"
 Explain what the skill does and how to use it.
 ```
 
-One possible executable entrypoint:
+`my-skill/run.py`:
 
 ```python
 #!/usr/bin/env python3
 from __future__ import annotations
-
-import os
-import sys
-
-ROOT = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+import json, sys
 
 
-def main() -> None:
-    print("hello from my-skill")
+def tool_my_tool(params: dict) -> str:
+    return params.get("text", "").upper()
 
 
-if __name__ == "__main__":
-    main()
-```
-
-This skill does not yet connect to the kernel or expose tools, but it shows the
-common built-in file shape.
-
-## `SKILL.md`
-
-In the assistant convention, `SKILL.md` is the first thing boot reads.
-
-Current commonly used frontmatter fields:
-
-- `name` — skill identifier; defaults to directory name if omitted
-- `description` — one-line summary; injected into the system prompt
-- `user-invocable: true` — exposes the skill as `/name` in the CLI gateway
-- `tools` — JSON array of tool definitions
-
-Example:
-
-```md
----
-name: weather
-description: "Get weather for a city"
-user-invocable: true
-tools:
-  [
-    {
-      "name": "get_weather",
-      "description": "Get weather for a location",
-      "params": {
-        "location": {"type": "string", "description": "City or place"}
-      },
-      "required": ["location"]
-    }
-  ]
----
-
-# weather
-
-Full documentation body.
-```
-
-### What boot uses from `SKILL.md`
-
-Depending on distro, boot may use `SKILL.md` to:
-
-- discover tools
-- discover slash commands
-- inject descriptions into the system prompt
-- filter or group skills by naming convention
-
-Assistant boot is dynamic and reads many skills recursively. Guardian boot is
-mostly fixed and does not depend on flexible skill discovery the same way.
-
-## Skill types
-
-The kernel does not have a hardcoded "skill type" field, but in practice there
-are four common shapes.
-
-### 1. Tool skill
-
-In the assistant convention, a tool skill exposes one or more LLM tools through
-`SKILL.md` frontmatter and usually implements them through an executable
-entrypoint. If no explicit `exec` is supplied, assistant boot currently assumes
-the `run.py tool <name>` convention.
-
-Example shape:
-
-```text
-files/
-├── SKILL.md
-└── run.py
-```
-
-Common built-in fallback shape:
-
-```python
-#!/usr/bin/env python3
-from __future__ import annotations
-
-import json
-import sys
-
-
-def tool_echo(params: dict) -> str:
-    return params.get("text", "")
-
-
-TOOLS = {
-    "echo": tool_echo,
-}
+TOOLS = {"my_tool": tool_my_tool}
 
 
 def main() -> None:
     if len(sys.argv) >= 3 and sys.argv[1] == "tool":
-        tool_name = sys.argv[2]
-        handler = TOOLS[tool_name]
+        handler = TOOLS[sys.argv[2]]
         params = json.load(sys.stdin)
         print(handler(params))
         return
@@ -201,106 +104,194 @@ if __name__ == "__main__":
     main()
 ```
 
-Execution model in assistant today:
+That's the whole skill. The script name is arbitrary; only the `exec`
+command matters.
 
-- the driver emits `tool_use`
-- the kernel spawns an executable command for the tool
-- if `exec` was omitted, assistant boot may synthesize something like
-  `python3 skills/foo/run.py tool echo`
-- JSON params are piped on stdin
-- stdout becomes the tool result
+## `SKILL.md` frontmatter
 
-This means each tool call is process-isolated.
+Required fields:
 
-### 2. Gateway skill
+- `name` — skill identifier, defaults to the directory name.
+- `description` — one-line summary; injected into the system prompt.
+- `tools` — array of `{name, description, params, required, exec}`.
 
-A gateway is a long-running process that joins a session and relays messages
-between a user-facing interface and the kernel.
+Optional:
 
-Examples:
+- `user-invocable: true` — exposes the skill as a `/name` slash command in
+  the gateway. The body of `SKILL.md` becomes the instruction text.
 
-- `gateway-cli`
-- `gateway-api`
-- `gateway-telegram`
+```md
+---
+name: weather
+description: "Get weather for a city"
+user-invocable: true
+tools:
+  - name: get_weather
+    description: "Get weather for a location"
+    params:
+      location: { type: string, description: "City or place" }
+    required: [location]
+    exec: "<venv_python> skills/weather/run.py tool get_weather"
+---
 
-Typical protocol shape:
+# weather
 
-- sends: `message`, sometimes `cancel`, sometimes direct `tool_use`
-- receives: stream events, `done`, `error`, status messages
-
-Gateways usually:
-
-1. connect to `TABULA_URL`
-2. send `connect`
-3. join a session
-4. optionally spawn the active driver if one is not running
-5. relay user messages and display streamed output
-
-### 3. Hook skill
-
-A hook skill subscribes to kernel lifecycle events using the `hooks` field in
-its `connect` message.
-
-Examples:
-
-- `hook-logger`
-- `hook-permissions`
-
-Minimal pattern:
-
-```python
-conn.send({
-    "type": "connect",
-    "name": "my-hook",
-    "sends": ["hook_result"],
-    "receives": ["hook"],
-    "hooks": [
-        {"event": "after_message", "priority": 0},
-    ],
-})
+Full documentation body.
 ```
 
-Hook skills may be:
+## Tool execution model
 
-- **void** — observe only
-- **modifying** — pass, modify, or block
-- **claiming** — first claimer wins
+- Driver emits `tool_use`.
+- Kernel resolves the tool name to its `exec` command.
+- Kernel spawns the command, pipes JSON params on stdin.
+- Stdout becomes the tool result.
+- Each call is fully process-isolated.
 
-If you subscribe to a modifying hook, you must send `hook_result`.
+This means skills can be written in any language. The `exec` command can
+target a Python script, a Node script, a shell script, or a compiled
+binary.
 
-### 4. Driver or subagent skill
+## Slash commands
 
-These are advanced skill types. In most cases you should not write one from
-scratch unless you are extending provider support or changing core runtime
-behavior.
+If `user-invocable: true` is set, the CLI gateway exposes the skill as
+`/name`. The body of `SKILL.md` becomes the instruction text. The gateway
+appends the user's arguments and sends the result as a normal message.
 
-Shared runtimes exist for these in the `drivers` bundle
-([`tabula-bundles`](https://github.com/bamanoz/tabula-bundles)):
+This is the easiest way to create a behavior preset without adding a tool.
 
-- `skills._drivers.driver_runtime`
-- `skills._drivers.subagent_runtime`
+---
 
-If you need a normal capability, a tool skill is almost always the right shape.
+# Authoring a plugin
 
-## Connecting to the kernel
+A plugin is a directory with a `plugin.toml` manifest and an entry point that
+registers tools and event subscriptions through a Plugin API. The kernel
+launches the plugin as a long-lived subprocess and routes events and tool calls
+to it over stdio NDJSON. See the canonical plugin guide in
+[PLUGIN_AUTHORING.md](PLUGIN_AUTHORING.md).
 
-Long-running skills connect over WebSocket using `skills/_pylib/kernel_client.py`.
+## Plugin manifest
 
-Minimal pattern:
+`my-plugin/plugin.toml`:
+
+```toml
+id = "my-plugin"
+name = "My Plugin"
+version = "0.1.0"
+runtime = "python"          # python | node
+entry = "run.py"            # path relative to plugin dir
+tags = ["hook"]             # optional, free strings, kernel-ignored
+
+[config.schema]
+type = "object"
+additionalProperties = false
+properties = {}
+
+[config.defaults]
+```
+
+A `README.md` next to `plugin.toml` is optional human documentation; it is
+not parsed.
+
+## Plugin entry point
+
+### Python
+
+```python
+def register(api):
+    cfg = api.config
+    log = api.log
+
+    @api.on("before_tool_call", priority=80)
+    def gate(event):
+        # `shell_exec` is provided by the `base/shell` skill in a bundle, not
+        # by a built-in kernel tool.
+        if event["name"] == "shell_exec":
+            return {"deny": "shell disabled"}
+        return None  # pass
+
+    api.registerTool({
+        "name": "my_dynamic_tool",
+        "description": "Registered at plugin start",
+        "schema": {"type": "object", "properties": {}},
+    }, handler=lambda call: {"ok": True})
+
+    log.info("my-plugin registered", extra={"version": "0.1.0"})
+```
+
+### TypeScript
+
+```typescript
+export default function register(api: PluginAPI) {
+  const cfg = api.config;
+  api.on("before_tool_call", (event) => {
+    // `shell_exec` is provided by the `base/shell` skill in a bundle, not by
+    // a built-in kernel tool.
+    if (event.name === "shell_exec") return { deny: "shell disabled" };
+    return null;
+  }, { priority: 80 });
+
+  api.registerTool(
+    {
+      name: "my_dynamic_tool",
+      description: "Registered at plugin start",
+      schema: { type: "object", properties: {} },
+    },
+    async (call) => ({ ok: true }),
+  );
+}
+```
+
+## Plugin API surface
+
+Stable starting set:
+
+- `api.on(event, handler, { priority })` — subscribe to bus events.
+- `api.registerTool(spec, handler)` — register a tool dynamically.
+- `api.send(msg)` — publish to the bus.
+- `api.spawn(cmd, args)` — spawn a child under the plugin's process group.
+- `api.config` — merged manifest defaults and user override.
+- `api.log` — structured logging into kernel log.
+
+Plugins own their children: spawn under your own process group leader, trap
+SIGTERM, call `killpg` on shutdown. Kernel manages level-one supervision
+only — it doesn't reach into plugin children.
+
+## Available bus events
+
+- `before_message`, `after_message`
+- `before_tool_call`, `after_tool_call`
+- `session_start`, `session_end`
+- `before_spawn`, `after_spawn`
+- `cancel`
+
+Hook semantics:
+
+- **void** — observe only;
+- **modifying** — return a rewritten payload (`{params: {...}}`) or deny
+  (`{deny: "reason"}`);
+- **claiming** — first claimer wins.
+
+---
+
+# Connecting to the kernel directly
+
+Long-running components should normally be plugins and use
+[PLUGIN_AUTHORING.md](PLUGIN_AUTHORING.md). Low-level clients that still need a
+raw WebSocket connection can use the shared Python kernel client helper (today
+available in the legacy runtime package, moving to `tabula_plugin_sdk` during
+library relocation):
 
 ```python
 #!/usr/bin/env python3
 from __future__ import annotations
-
-import os
-import sys
+import os, sys
 
 ROOT = os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from skills._pylib.kernel_client import KernelConnection
-from skills._pylib.protocol import MSG_CONNECT, MSG_JOIN, MSG_MESSAGE
+from tabula_plugin_sdk.kernel_client import KernelConnection
+from tabula_plugin_sdk.protocol import MSG_CONNECT, MSG_JOIN, MSG_MESSAGE
 
 
 def main() -> None:
@@ -312,9 +303,9 @@ def main() -> None:
         "sends": [MSG_MESSAGE],
         "receives": [MSG_MESSAGE],
     })
-    conn.recv()  # connected
+    conn.recv()                                # connected
     conn.send({"type": MSG_JOIN, "session": "main"})
-    conn.recv()  # joined
+    conn.recv()                                # joined
     conn.send({"type": MSG_MESSAGE, "text": "hello"})
     conn.close()
 
@@ -323,156 +314,88 @@ if __name__ == "__main__":
     main()
 ```
 
-`KernelConnection.send()` injects the protocol version automatically if you do
-not provide it.
+`KernelConnection.send()` injects the protocol version automatically.
 
-## Slash commands
+For plugin authors: do **not** open WebSocket directly. Use the
+`register(api)` API instead — the plugin runtime owns the kernel transport
+for you.
 
-If assistant-style `SKILL.md` contains:
+---
 
-```md
-user-invocable: true
-```
+# Naming conventions
 
-then the CLI gateway exposes the skill as `/name`.
+Some names carry behavior by convention (not enforced by the kernel):
 
-The body of `SKILL.md` becomes the instruction text for that slash command.
-The gateway appends the user's arguments and sends the result as a normal
-message.
+- `gateway-*` — user interface plugin.
+- `hook-*` — bus subscriber plugin.
+- `coder-*` bundle prefix — components used by the `coder` distro.
 
-This is the easiest way to create a lightweight behavior preset without adding
-a new tool.
+These are project conventions; distros and bundles enforce them.
 
-## Tool definitions
+# Environment variables
 
-Tool definitions in frontmatter use the kernel tool schema shape:
+Common runtime variables your component can rely on:
 
-- `name` — globally unique tool name
-- `description` — short explanation
-- `params` — object of parameter definitions
-- `required` — list of required parameter names
+- `TABULA_HOME` — root of the installed runtime, usually `~/.tabula`.
+- `TABULA_URL` — kernel WebSocket URL.
+- `TABULA_PROVIDER` — active LLM provider.
+- `TABULA_SESSION` — current session for some tool invocation paths.
+- `TABULA_SPAWN_TOKEN` — inherited by spawned subagent children.
 
-Example:
+Do not assume every variable is always present.
 
-```json
-{
-  "name": "get_weather",
-  "description": "Get weather for a location",
-  "params": {
-    "location": {"type": "string", "description": "City or place"}
-  },
-  "required": ["location"]
-}
-```
+# When to use `tabula_plugin_sdk`
 
-Tool names must not collide with kernel tools:
+Use it when it removes boilerplate and matches an existing pattern:
 
-- `shell_exec`
-- `process_spawn`
-- `process_kill`
-- `process_list`
+- `kernel_client.KernelConnection`;
+- protocol constants from `tabula_plugin_sdk.protocol`;
+- path helpers from `tabula_plugin_sdk.paths`;
+- config helpers already used by existing components.
 
-## Naming conventions that already matter
+Be careful with deeper imports: only the small set above is treated as
+public surface today.
 
-Some names have behavior attached by convention.
+# Stability
 
-- `driver-<provider>` and `subagent-<provider>` are filtered by the active
-  provider in assistant boot.
-- `gateway-*` implies a user interface skill in project convention.
-- `hook-*` implies a hook subscriber in project convention.
+Three contracts in Tabula, ordered by stability:
 
-The kernel itself does not enforce these names, but boot logic and team
-conventions do.
+1. **Wire protocol** (`internal/kernel/protocol.go`, mirrored by
+   `tabula_plugin_sdk.protocol`) — closest to stable.
+2. **`SKILL.md` frontmatter contract** — Anthropic-compatible base
+   (`name`, `description`, `tools`, `user-invocable`); plus Tabula-specific
+   `tools[].exec`. Stable in practice, not yet explicitly versioned.
+3. **`plugin.toml` contract and `register(api)` surface** — being
+   introduced; expect refinements during the migration window.
 
-## Environment variables you can rely on
+Prefer stable contracts when designing reusable community components.
 
-Common runtime variables:
+# Recommended workflow
 
-- `TABULA_HOME` — root of the installed runtime, usually `~/.tabula`
-- `TABULA_URL` — kernel WebSocket URL
-- `TABULA_PROVIDER` — active provider in assistant-like distros
-- `TABULA_SESSION` — current session for some tool invocation paths
-- `TABULA_SPAWN_TOKEN` — inherited by spawned children for spawn-depth policy
+1. Decide skill vs plugin (see top of this doc).
+2. Create the directory.
+3. Write `SKILL.md` or `plugin.toml` first.
+4. Implement the smallest useful entry point.
+5. Test it as a subprocess (skills) or by booting the distro (plugins).
+6. Only then add config complexity or helper abstractions.
 
-Depending on how the skill is launched, more variables may exist. Do not assume
-everything is always present.
+For most new capabilities, start with a skill.
 
-## When to use `skills/_pylib/`
+# Examples in the repo
 
-Use `skills/_pylib/` when it removes boilerplate and matches an existing pattern.
+- skill: `files/files/` and `coder-git/git/` in
+  [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles);
+- hook plugins: `base/hook-logger/`, `base/hook-permissions/`;
+- gateway plugins: `familiar/plugins/gateway-cli/` in
+  [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib);
+- driver / subagent runtime: `drivers/driver/`, `drivers/subagent/` in
+  `tabula-bundles`;
+- minimal fixed distro boot: `guardian/boot.py` in `tabula-distrib`.
 
-Good candidates:
+# Migration timeline
 
-- `kernel_client.KernelConnection`
-- protocol constants from `skills._pylib.protocol`
-- path helpers from `skills._pylib.paths`
-- config loading helpers already used by existing skills
-
-Be careful with deeper imports.
-
-### Current stability note
-
-There are three different contracts in Tabula, and they are not equally stable:
-
-1. **Wire protocol** (`internal/kernel/protocol.go`, `skills/_pylib/protocol.py`)
-   — closest to stable
-2. **assistant `SKILL.md` frontmatter contract** — mostly stable in practice,
-   not yet explicitly versioned
-3. **`skills/_pylib/` runtime API** — useful, but not yet a formally versioned
-   public package
-
-If you are writing reusable community skills, prefer depending on:
-
-- the wire protocol
-- a small subset of `skills/_pylib/` helpers and, if needed, the current
-  assistant fallback `run.py tool <name>` convention
-- a small subset of `skills/_pylib/` helpers
-
-Do not assume every helper inside `skills/_pylib/` is permanent API.
-
-## Where to put docs
-
-Keep the skill's operational documentation inside its own `SKILL.md`.
-
-Useful sections include:
-
-- what the skill does
-- how to run it
-- protocol shape
-- config keys
-- environment variables
-- important caveats
-
-Remember: the user and the agent both read this file.
-
-## Recommended development flow
-
-1. create the skill directory
-2. write `SKILL.md` first
-3. implement the smallest useful `run.py`
-4. test it as a subprocess or long-running skill, depending on its type
-5. only then add config complexity or helper abstractions
-
-For most new capabilities, start with a tool skill before reaching for a
-gateway, hook, or custom runtime.
-
-## Examples in the repo
-
-Useful reference skills (in their respective repos):
-
-- tool skill: `files/files/` in [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles)
-- hook skill: `base/hook-logger/` in `tabula-bundles`
-- gateway: `familiar/skills/gateway-cli/` in [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib)
-- subagent runtime: `drivers/subagent-openai/` in `tabula-bundles`
-- minimal fixed distro boot: `guardian/boot.py` in `tabula-distrib`
-
-## Future stabilization work
-
-Still to be made explicit:
-
-- versioned familiar `SKILL.md` contract
-- narrower, documented public surface for `skills/_pylib/`
-- clearer contract for community-distributed skills and bundles
-
-Until then, write skills conservatively: simple file layout, small dependency
-on shared runtime internals, explicit docs.
+The hook / gateway / driver / mcp components are listed in
+[plans/SKILL_PLUGIN_ARCHITECTURE.md §8](plans/SKILL_PLUGIN_ARCHITECTURE.md)
+as targets for the SKILL→plugin migration. New code that fits the plugin
+shape should be authored as a plugin once the runtime ships; existing code
+will be migrated invasively (no compat shims).
