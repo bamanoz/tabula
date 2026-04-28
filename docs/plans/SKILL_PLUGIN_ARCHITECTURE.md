@@ -1,8 +1,16 @@
 # Skill / Plugin Architecture
 
-Status: design (approved 2026-04-26), implementation not started.
+Status: historical design (approved 2026-04-26); superseded in part by
+`memory-bank/creative/creative-plugin-runtime.md` §13 and
+`memory-bank/creative/creative-sdk-and-distro.md` §7 on 2026-04-27.
 Scope: kernel boundary, manifest formats, bundle layout, migration plan.
 Out of scope: sandbox, opencode integration, harness distro (отдельные документы).
+
+> Historical note: examples in this plan that mention a generic `api.spawn` or
+> `api.spawn_supervised` are not a current SDK promise. For the active contract,
+> child spawning is subagent-plugin-owned, `TABULA_SPAWN_TOKEN` is not a common
+> runtime variable, and `before_spawn`/`after_spawn` are reserved/subagent-owned
+> names rather than kernel-emitted generic events.
 
 ## 1. Motivation
 
@@ -319,9 +327,9 @@ kernel → plugin : { "method": "shutdown" }
 | `drivers/driver`                                  | long-lived LLM driver               |
 | `drivers/subagent`                                | tool registrar + supervisor         |
 | `coder/skills/gateway-tui`                        | long-lived TTY frontend             |
-| `familiar/skills/gateway-cli`                     | long-lived transport                |
-| `familiar/skills/gateway-api`                     | long-lived transport                |
-| `familiar/skills/gateway-telegram`                | long-lived transport                |
+| `claw/skills/gateway-cli`                         | long-lived transport                |
+| `claw/skills/gateway-api`                         | long-lived transport                |
+| `claw/skills/gateway-telegram`                    | long-lived transport                |
 
 ### 8.2 Components остаются skills
 

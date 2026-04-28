@@ -9,22 +9,11 @@ VERSION="${1:?usage: package-skills.sh <version>}"
 mkdir -p extra
 
 tar -czf "extra/tabula-skills-${VERSION}.tar.gz" \
-  --exclude='skills/_pylib/__pycache__' \
-  --exclude='skills/_pylib/.pytest_cache' \
-  --exclude='skills/_pylib/.pytest_cache/**' \
-  --exclude='skills/_pylib/*.pyc' \
-  --exclude='skills/_pylib/*/__pycache__' \
-  --exclude='skills/_tslib/node_modules' \
-  --exclude='skills/_tslib/node_modules/**' \
-  --exclude='skills/_tslib/.bun' \
-  --exclude='skills/_tslib/.bun/**' \
   --exclude='skills/.venv' \
   --exclude='tools/tabula-distro/**/__pycache__' \
   --exclude='tools/tabula-distro/**/*.pyc' \
   --exclude='tools/tabula-distro/tests' \
   --exclude='tools/tabula-distro/.pytest_cache' \
-  skills/_pylib/ \
-  skills/_tslib/ \
   config/global.toml \
   examples/boot-cicd.py \
   bin/tabula-server \
@@ -34,6 +23,7 @@ tar -czf "extra/tabula-skills-${VERSION}.tar.gz" \
   bin/tabula-api \
   bin/tabula-api.ps1 \
   bin/tabula-coder \
+  bin/tabula-claw \
   bin/tabula-install-distro \
   bin/tabula-install-distro.ps1 \
   scripts/install-distro.py \

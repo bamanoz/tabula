@@ -69,6 +69,77 @@ func TestParseSkillExecMap_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestValidateBootSkillTools_ValidTrimsAndPreservesMetadata(t *testing.T) {
+	raw := json.RawMessage(`[{"name":" echo ","description":"Echo text","params":{"text":{"type":"string"}},"required":["text"],"exec":" python skills/echo/run.py "}]`)
+
+	bootTools, parsed, err := validateBootSkillTools(raw)
+	if err != nil {
+		t.Fatalf("validateBootSkillTools: %v", err)
+	}
+	if len(bootTools) != 1 || len(parsed) != 1 {
+		t.Fatalf("expected 1 boot tool and parsed descriptor, got %d/%d", len(bootTools), len(parsed))
+	}
+	if parsed[0].Name != "echo" || parsed[0].Exec != "python skills/echo/run.py" {
+		t.Fatalf("expected trimmed name/exec, got %+v", parsed[0])
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(bootTools[0], &meta); err != nil {
+		t.Fatalf("unmarshal boot metadata: %v", err)
+	}
+	if meta["description"] != "Echo text" || meta["params"] == nil || meta["required"] == nil {
+		t.Fatalf("expected non-exec metadata to be preserved, got %#v", meta)
+	}
+}
+
+func TestValidateBootSkillTools_MissingOrBlankFieldsFail(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  json.RawMessage
+		want string
+	}{
+		{name: "missing name", raw: json.RawMessage(`[{"exec":"run.sh"}]`), want: "skills[0].name is required"},
+		{name: "blank name", raw: json.RawMessage(`[{"name":"  ","exec":"run.sh"}]`), want: "skills[0].name is required"},
+		{name: "missing exec", raw: json.RawMessage(`[{"name":"echo"}]`), want: "skills[0].exec is required"},
+		{name: "blank exec", raw: json.RawMessage(`[{"name":"echo","exec":"  "}]`), want: "skills[0].exec is required"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := validateBootSkillTools(tt.raw)
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if got := err.Error(); got != tt.want {
+				t.Fatalf("expected %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestValidateBootSkillTools_DuplicateNamesFail(t *testing.T) {
+	_, _, err := validateBootSkillTools(json.RawMessage(`[{"name":"echo","exec":"a.sh"},{"name":" echo ","exec":"b.sh"}]`))
+	if err == nil {
+		t.Fatal("expected duplicate-name validation error")
+	}
+	if got := err.Error(); got != `skills[1].name duplicates skills[0].name "echo"` {
+		t.Fatalf("unexpected error: %q", got)
+	}
+}
+
+func TestValidateBootSkillTools_LegacyToolsFallbackInvalidDescriptorFails(t *testing.T) {
+	cfg := &BootConfig{Tools: json.RawMessage(`[{"name":"legacy"}]`)}
+	raw, legacy := resolveBootSkills(cfg)
+	if !legacy {
+		t.Fatal("expected legacy tools fallback")
+	}
+	_, _, err := validateBootSkillTools(raw)
+	if err == nil {
+		t.Fatal("expected missing exec validation error")
+	}
+	if got := err.Error(); got != "skills[0].exec is required" {
+		t.Fatalf("unexpected error: %q", got)
+	}
+}
+
 func TestResolveBootSkills_PrefersSkillsField(t *testing.T) {
 	cfg := &BootConfig{
 		Skills: json.RawMessage(`[{"name":"a","exec":"a.sh"}]`),
@@ -154,7 +225,7 @@ func TestLoadEnvFileDoesNotOverrideExistingValues(t *testing.T) {
 func TestHealthEndpoint(t *testing.T) {
 	hub := kernel.NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
 	mux := http.NewServeMux()
-	registerKernelHTTPHandlers(mux, hub)
+	registerKernelHTTPHandlers(mux, hub, "127.0.0.1:8089")
 
 	req := httptest.NewRequest(http.MethodGet, "http://tabula.local/health", nil)
 	rec := httptest.NewRecorder()
@@ -190,7 +261,7 @@ func TestHealthEndpoint(t *testing.T) {
 func TestHealthEndpointRejectsNonGET(t *testing.T) {
 	hub := kernel.NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
 	mux := http.NewServeMux()
-	registerKernelHTTPHandlers(mux, hub)
+	registerKernelHTTPHandlers(mux, hub, "127.0.0.1:8089")
 
 	req := httptest.NewRequest(http.MethodPost, "http://tabula.local/health", nil)
 	rec := httptest.NewRecorder()
@@ -204,33 +275,165 @@ func TestHealthEndpointRejectsNonGET(t *testing.T) {
 	}
 }
 
-func TestFilterKernelTools_DefaultKeepsAllBuiltins(t *testing.T) {
-	filtered, err := filterKernelTools(embeddedToolsJSON, nil)
-	if err != nil {
-		t.Fatalf("filterKernelTools: %v", err)
+func TestPluginSnapshotEndpointAllowsLoopbackRequest(t *testing.T) {
+	hub := kernel.NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	mux := http.NewServeMux()
+	registerKernelHTTPHandlers(mux, hub, "127.0.0.1:8089")
+
+	req := httptest.NewRequest(http.MethodGet, "http://localhost:8089/internal/snapshot/plugins", nil)
+	req.Host = "localhost:8089"
+	req.RemoteAddr = "127.0.0.1:34567"
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if len(filtered) != 4 {
-		t.Fatalf("expected 4 builtin tools, got %d", len(filtered))
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("expected application/json content type, got %q", got)
 	}
 }
 
-func TestFilterKernelTools_RespectsBootSelection(t *testing.T) {
-	filtered, err := filterKernelTools(embeddedToolsJSON, []string{"shell_exec", "process_list"})
+func TestPluginSnapshotEndpointAllowsIPv6LoopbackRequest(t *testing.T) {
+	hub := kernel.NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	mux := http.NewServeMux()
+	registerKernelHTTPHandlers(mux, hub, "[::1]:8089")
+
+	req := httptest.NewRequest(http.MethodGet, "http://[::1]:8089/internal/snapshot/plugins", nil)
+	req.Host = "[::1]:8089"
+	req.RemoteAddr = "[::1]:34567"
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPluginSnapshotEndpointRejectsRemoteAddress(t *testing.T) {
+	hub := kernel.NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	mux := http.NewServeMux()
+	registerKernelHTTPHandlers(mux, hub, "0.0.0.0:8089")
+
+	req := httptest.NewRequest(http.MethodGet, "http://localhost:8089/internal/snapshot/plugins", nil)
+	req.Host = "localhost:8089"
+	req.RemoteAddr = "203.0.113.10:34567"
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected status 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPluginSnapshotEndpointRejectsRemoteHost(t *testing.T) {
+	hub := kernel.NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	mux := http.NewServeMux()
+	registerKernelHTTPHandlers(mux, hub, "0.0.0.0:8089")
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/internal/snapshot/plugins", nil)
+	req.Host = "example.com"
+	req.RemoteAddr = "127.0.0.1:34567"
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected status 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPluginSnapshotEndpointRejectsMalformedRemoteAddr(t *testing.T) {
+	hub := kernel.NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	mux := http.NewServeMux()
+	registerKernelHTTPHandlers(mux, hub, "127.0.0.1:8089")
+
+	req := httptest.NewRequest(http.MethodGet, "http://localhost:8089/internal/snapshot/plugins", nil)
+	req.Host = "localhost:8089"
+	req.RemoteAddr = "not-a-host-port"
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected status 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPluginSnapshotEndpointRejectsForwardedLocalityHeaders(t *testing.T) {
+	hub := kernel.NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	mux := http.NewServeMux()
+	registerKernelHTTPHandlers(mux, hub, "127.0.0.1:8089")
+
+	req := httptest.NewRequest(http.MethodGet, "http://localhost:8089/internal/snapshot/plugins", nil)
+	req.Host = "localhost:8089"
+	req.RemoteAddr = "203.0.113.10:34567"
+	req.Header.Set("X-Forwarded-For", "127.0.0.1")
+	req.Header.Set("X-Forwarded-Host", "localhost:8089")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected status 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPluginSnapshotEndpointRejectsNonGETBeforeSnapshot(t *testing.T) {
+	hub := kernel.NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	mux := http.NewServeMux()
+	registerKernelHTTPHandlers(mux, hub, "127.0.0.1:8089")
+
+	req := httptest.NewRequest(http.MethodPost, "http://localhost:8089/internal/snapshot/plugins", nil)
+	req.Host = "localhost:8089"
+	req.RemoteAddr = "127.0.0.1:34567"
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected status 405, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Allow"); got != http.MethodGet {
+		t.Fatalf("expected Allow: GET, got %q", got)
+	}
+}
+
+func TestFilterKernelTools_DefaultIsEmpty(t *testing.T) {
+	filtered, warnings, err := filterKernelTools(embeddedToolsJSON, nil)
 	if err != nil {
 		t.Fatalf("filterKernelTools: %v", err)
 	}
-	var names []string
-	for _, raw := range filtered {
-		var tool struct {
-			Name string `json:"name"`
-		}
-		if err := json.Unmarshal(raw, &tool); err != nil {
-			t.Fatalf("unmarshal tool: %v", err)
-		}
-		names = append(names, tool.Name)
+	if len(filtered) != 0 {
+		t.Fatalf("expected no builtin tools by default, got %d", len(filtered))
 	}
-	if len(names) != 2 || names[0] != "shell_exec" || names[1] != "process_list" {
-		t.Fatalf("unexpected filtered builtin names: %#v", names)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings for empty default, got %#v", warnings)
+	}
+}
+
+func TestFilterKernelTools_ExplicitLegacySelectionWarnsAndReturnsEmpty(t *testing.T) {
+	filtered, warnings, err := filterKernelTools(embeddedToolsJSON, []string{"shell_exec", "process_list"})
+	if err != nil {
+		t.Fatalf("filterKernelTools: %v", err)
+	}
+	if len(filtered) != 0 {
+		t.Fatalf("expected explicit legacy tools to be empty, got %d", len(filtered))
+	}
+	if len(warnings) != 2 {
+		t.Fatalf("expected 2 warnings, got %#v", warnings)
+	}
+	if warnings[0] == "" || warnings[1] == "" {
+		t.Fatalf("expected non-empty warnings, got %#v", warnings)
+	}
+}
+
+func TestFilterKernelTools_UnknownSelectionWarnsAndReturnsEmpty(t *testing.T) {
+	filtered, warnings, err := filterKernelTools(embeddedToolsJSON, []string{"does_not_exist"})
+	if err != nil {
+		t.Fatalf("filterKernelTools: %v", err)
+	}
+	if len(filtered) != 0 {
+		t.Fatalf("expected unknown kernel tool selection to be empty, got %d", len(filtered))
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %#v", warnings)
 	}
 }
 
@@ -239,10 +442,7 @@ func TestLoadToolMetas_ParsesEmbeddedToolNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadToolMetas: %v", err)
 	}
-	if len(metas) != 4 {
-		t.Fatalf("expected 4 tool metas, got %d", len(metas))
-	}
-	if metas[0].Name != "shell_exec" || metas[1].Name != "process_spawn" || metas[2].Name != "process_kill" || metas[3].Name != "process_list" {
-		t.Fatalf("unexpected tool metas: %#v", metas)
+	if len(metas) != 0 {
+		t.Fatalf("expected empty embedded kernel tool metadata, got %#v", metas)
 	}
 }

@@ -76,8 +76,15 @@ ignores tags/UI hints unless a distro or UI chooses to use them.
 
 If a plugin crashes, the kernel supervisor restarts it with exponential backoff
 (default 1s → 30s, at most 5 restarts per 60s window). Manifest/schema/protocol
-handshake failures are non-restartable. Diagnostics are available from
-`GET /internal/snapshot/plugins`.
+handshake failures are non-restartable.
+
+Plugin diagnostics are available from `GET /internal/snapshot/plugins` only for
+local loopback callers. The endpoint returns operational metadata including
+plugin ids, status, PID, restart count, last error, registered tool names,
+subscriptions, and registration time. Do not expose it through public ingress or
+unauthenticated reverse proxies; deployments that need remote diagnostics should
+bind the kernel to loopback and place any remote access behind a separate
+authenticated private channel.
 
 ## Protocol framing and methods
 

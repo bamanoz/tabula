@@ -1,10 +1,10 @@
 #!/bin/bash
 # Tabula installer — downloads pre-built kernel from GitHub Releases.
 #
-# This installs only the kernel layer (binary, launchers, skills/_pylib, venv,
-# tabula-distro). After it finishes, install a distro separately:
+# This installs only the kernel layer (binary, launchers, venv, tabula-distro).
+# After it finishes, install a distro separately:
 #
-#   tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=familiar'
+#   tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw'
 #   tabula-distro install /path/to/local/distro
 #
 # Usage:
@@ -303,7 +303,7 @@ for a in data.get('assets', []):
   printf '%s\n' "${VERSION#v}" > "$TABULA_HOME/VERSION"
   install -m 755 "$TABULA_HOME/bin/tabula-install-distro" "$BIN_DIR/tabula-install-distro"
   install -m 755 "$TABULA_HOME/scripts/install-distro.py" "$BIN_DIR/install-distro.py"
-  chmod +x "$BIN_DIR/tabula-server" "$BIN_DIR/tabula-cli" "$BIN_DIR/tabula-api" "$BIN_DIR/tabula-coder" "$BIN_DIR/tabula-install-distro" 2>/dev/null || true
+  chmod +x "$BIN_DIR/tabula-server" "$BIN_DIR/tabula-cli" "$BIN_DIR/tabula-api" "$BIN_DIR/tabula-coder" "$BIN_DIR/tabula-claw" "$BIN_DIR/tabula-install-distro" 2>/dev/null || true
   ok "Skills and config installed"
 
   # Python
@@ -342,7 +342,7 @@ for a in data.get('assets', []):
   printf 'Add your API key:\n'
   printf '  echo "ANTHROPIC_API_KEY=sk-..." >> %s\n\n' "$env_file"
   printf 'Install a distro (this is required before the kernel can do anything useful):\n'
-  printf '  tabula-distro install '\''git+https://github.com/bamanoz/tabula-distrib.git@main#path=familiar'\''\n'
+  printf '  tabula-distro install '\''git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw'\''\n'
   printf '  tabula-distro install /path/to/local/distro\n\n'
   printf 'Then connect:\n'
   printf '  tabula-cli\n\n'

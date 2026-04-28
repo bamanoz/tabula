@@ -30,18 +30,6 @@ func (h *Hub) forEachProcess(fn func(pid int, proc *SpawnedProcess)) {
 	h.processes.ForEach(fn)
 }
 
-func (h *Hub) clientDepthByName(name string) (int, bool) {
-	return h.clients.DepthByName(name)
-}
-
-func (h *Hub) seedSpawnToken(token string, entry spawnTokenEntry) {
-	h.tokens.Seed(token, entry)
-}
-
-func (h *Hub) spawnTokenEntry(token string) (spawnTokenEntry, bool) {
-	return h.tokens.Get(token)
-}
-
 func (h *Hub) registerSpawnedCommand(cmd *exec.Cmd, command, session string) *SpawnedProcess {
 	return h.processes.Register(cmd, command, session)
 }

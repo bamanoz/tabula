@@ -13,8 +13,6 @@ import (
 // ProcessLauncher abstracts OS process creation.
 // This allows swapping local processes for remote workers in the future.
 type ProcessLauncher interface {
-	// Start launches a command and returns the process handle.
-	Start(command string, env []string) (ProcessHandle, error)
 	// Run executes a command synchronously and returns output.
 	Run(command string) ([]byte, error)
 	// CombinedOutput executes a command and returns combined stdout+stderr.
@@ -31,25 +29,6 @@ type ProcessHandle interface {
 
 // LocalProcessLauncher is the default implementation using os/exec.
 type LocalProcessLauncher struct{}
-
-func (l *LocalProcessLauncher) Start(command string, env []string) (ProcessHandle, error) {
-	cmd := shell.SpawnCommand(command)
-	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", os.DevNull, err)
-	}
-	cmd.Stdout = devNull
-	cmd.Stderr = devNull
-	cmd.Env = env
-
-	if err := cmd.Start(); err != nil {
-		devNull.Close()
-		return nil, err
-	}
-	devNull.Close()
-
-	return &localProcessHandle{cmd: cmd, devNull: devNull}, nil
-}
 
 func (l *LocalProcessLauncher) Run(command string) ([]byte, error) {
 	cmd := shell.Command(command + " 2>&1")
@@ -85,8 +64,7 @@ func (h *localProcessHandle) Wait() error {
 	return err
 }
 
-// ProcessManager handles SPAWN/KILL/LIST tool execution.
-// It bridges the message layer (ToolService) with the process layer (ProcessSupervisor + ProcessLauncher).
+// ProcessManager handles command-backed skill tool execution.
 type ProcessManager struct {
 	hub      *Hub
 	launcher ProcessLauncher
@@ -97,42 +75,6 @@ func NewProcessManager(hub *Hub, launcher ProcessLauncher) *ProcessManager {
 		launcher = &LocalProcessLauncher{}
 	}
 	return &ProcessManager{hub: hub, launcher: launcher}
-}
-
-// SpawnResult holds the outcome of a spawn operation.
-type SpawnResult struct {
-	PID   int
-	Error string
-}
-
-// Spawn starts a new process and registers it with the supervisor.
-// Validation (depth, MaxChildren, hooks) is done by PolicyEngine.CanSpawn before calling this.
-func (pm *ProcessManager) Spawn(command, session string, childDepth int) SpawnResult {
-	token, err := pm.hub.generateSpawnToken(childDepth)
-	if err != nil {
-		return SpawnResult{Error: err.Error()}
-	}
-
-	env := append(os.Environ(), "TABULA_SPAWN_TOKEN="+token)
-	handle, err := pm.launcher.Start(command, env)
-	if err != nil {
-		return SpawnResult{Error: err.Error()}
-	}
-
-	pid := handle.PID()
-
-	// Create a minimal exec.Cmd for ProcessSupervisor's bookkeeping.
-	// The actual process operations go through the Handle.
-	cmd := shell.Command(command)
-	cmd.Env = env
-
-	proc := pm.hub.processes.RegisterWithPID(pid, cmd, command, session)
-	proc.Handle = handle
-
-	pm.hub.Logger.Info("spawned process", "pid", pid, "command", command, "session", session)
-	pm.hub.afterSpawn(pid, proc)
-
-	return SpawnResult{PID: pid}
 }
 
 // Kill terminates a process by PID.
@@ -179,7 +121,7 @@ func (pm *ProcessManager) execTool(session, toolID, toolName, logMsg string, exe
 		result := formatCommandResult(out, err)
 
 		pm.hub.Logger.Debug(logMsg, "tool", toolName, "session", session, "bytes", len(result))
-		pm.hub.sendToolResult(session, toolID, result)
+		pm.hub.sendToolResultForTool(session, toolID, toolName, result)
 		pm.hub.emitAfterToolCall(session, toolID, map[string]string{
 			"tool": toolName, "id": toolID, "output": result,
 		})

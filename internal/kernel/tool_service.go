@@ -43,18 +43,26 @@ func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 
 	effectiveInput, ok := s.hub.policy.CanUseTool(sender, toolName, toolID, msg.Input, session)
 	if !ok {
-		s.hub.sendToolResult(session, toolID, "ERROR: blocked by hook")
+		s.hub.sendToolResultForTool(session, toolID, toolName, "ERROR: blocked by hook")
 		return
 	}
 	msg.Input = effectiveInput
+	s.hub.broadcastToSession(session, string(MsgToolUse), &Message{
+		Type:  string(MsgToolUse),
+		ID:    toolID,
+		Name:  toolName,
+		Input: msg.Input,
+	}, sender)
 
 	s.handleDynamicTool(session, toolID, toolName, msg.Input)
 }
 
 func (s *ToolService) handleDynamicTool(session, toolID, toolName string, input json.RawMessage) {
+	s.hub.toolExecMu.RLock()
 	entry, ok := s.hub.toolExec[toolName]
+	s.hub.toolExecMu.RUnlock()
 	if !ok {
-		s.hub.sendToolResult(session, toolID, fmt.Sprintf("ERROR: unknown tool %s", toolName))
+		s.hub.sendToolResultForTool(session, toolID, toolName, fmt.Sprintf("ERROR: unknown tool %s", toolName))
 		return
 	}
 	switch entry.Source {
@@ -63,13 +71,13 @@ func (s *ToolService) handleDynamicTool(session, toolID, toolName string, input 
 	case toolSourcePlugin:
 		s.handlePluginTool(session, toolID, toolName, entry, input)
 	default:
-		s.hub.sendToolResult(session, toolID, fmt.Sprintf("ERROR: tool %s has unknown dispatch source", toolName))
+		s.hub.sendToolResultForTool(session, toolID, toolName, fmt.Sprintf("ERROR: tool %s has unknown dispatch source", toolName))
 	}
 }
 
 func (s *ToolService) handlePluginTool(session, toolID, toolName string, entry toolDispatch, input json.RawMessage) {
 	if entry.Plugin == nil || !entry.Plugin.IsAlive() || !entry.Plugin.IsRegistered() {
-		s.hub.sendToolResult(session, toolID, fmt.Sprintf("ERROR: plugin tool %s is unavailable", toolName))
+		s.hub.sendToolResultForTool(session, toolID, toolName, fmt.Sprintf("ERROR: plugin tool %s is unavailable", toolName))
 		return
 	}
 	deadline := resolveToolDeadline(entry.DeadlineMs)
@@ -82,7 +90,7 @@ func (s *ToolService) handlePluginTool(session, toolID, toolName string, entry t
 	})
 	if err != nil {
 		s.hub.Logger.Warn("plugin tool_call failed", "tool", toolName, "session", session, "err", err)
-		s.hub.sendToolResult(session, toolID, fmt.Sprintf("ERROR: plugin tool %s failed: %v", toolName, err))
+		s.hub.sendToolResultForTool(session, toolID, toolName, fmt.Sprintf("ERROR: plugin tool %s failed: %v", toolName, err))
 		return
 	}
 
@@ -102,7 +110,7 @@ func (s *ToolService) handlePluginTool(session, toolID, toolName string, entry t
 			entry.Plugin.CancelPending(toolID)
 			output = fmt.Sprintf("ERROR: plugin timeout after %dms", int(deadline/time.Millisecond))
 		}
-		s.hub.sendToolResult(session, toolID, output)
+		s.hub.sendToolResultForTool(session, toolID, toolName, output)
 		s.hub.emitAfterToolCall(session, toolID, map[string]string{
 			"tool": toolName, "id": toolID, "output": output,
 		})

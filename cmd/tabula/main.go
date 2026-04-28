@@ -33,11 +33,18 @@ var (
 	date    = "unknown"
 )
 
+var legacyKernelToolNames = map[string]bool{
+	"shell_exec":    true,
+	"process_spawn": true,
+	"process_kill":  true,
+	"process_list":  true,
+}
+
 var upgrader = websocket.Upgrader{
 	CheckOrigin: checkWebSocketOrigin,
 }
 
-func registerKernelHTTPHandlers(mux *http.ServeMux, hub *kernel.Hub) {
+func registerKernelHTTPHandlers(mux *http.ServeMux, hub *kernel.Hub, listenerHost string) {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
@@ -63,7 +70,7 @@ func registerKernelHTTPHandlers(mux *http.ServeMux, hub *kernel.Hub) {
 		w.Write(hub.SnapshotSessions())
 	})
 
-	mux.HandleFunc("/internal/snapshot/plugins", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/internal/snapshot/plugins", internalDiagnosticsGuard(listenerHost, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -71,7 +78,63 @@ func registerKernelHTTPHandlers(mux *http.ServeMux, hub *kernel.Hub) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(hub.SnapshotPlugins())
-	})
+	}))
+}
+
+func internalDiagnosticsGuard(listenerHost string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !isLocalInternalDiagnosticsRequest(r, listenerHost) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	}
+}
+
+func isLocalInternalDiagnosticsRequest(r *http.Request, listenerHost string) bool {
+	if r == nil {
+		return false
+	}
+	remoteHost, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err != nil || !isLoopbackHost(remoteHost) {
+		return false
+	}
+
+	requestHost := normalizeHostOnly(r.Host)
+	if isLoopbackHost(requestHost) || strings.EqualFold(requestHost, "localhost") {
+		return true
+	}
+
+	// If the listener itself was explicitly bound to a loopback host, allow the
+	// normalized listener host as an equivalent Host header. Wildcard binds do not
+	// authorize public-looking Host values.
+	listenerHost = normalizeHostOnly(listenerHost)
+	return listenerHost != "" && !isWildcardHost(listenerHost) && isLoopbackHost(listenerHost) && strings.EqualFold(requestHost, listenerHost)
+}
+
+func normalizeHostOnly(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(raw); err == nil {
+		return strings.ToLower(strings.Trim(host, "[]"))
+	}
+	return strings.ToLower(strings.Trim(raw, "[]"))
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.ToLower(strings.Trim(strings.TrimSpace(host), "[]"))
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func isWildcardHost(host string) bool {
+	host = strings.ToLower(strings.Trim(strings.TrimSpace(host), "[]"))
+	return host == "" || host == "0.0.0.0" || host == "::"
 }
 
 func main() {
@@ -161,10 +224,13 @@ func serveCmd() int {
 	slog.Info("boot config loaded", "url", bootConfig.URL, "spawn_count", len(bootConfig.Spawn))
 
 	// Load and merge tools
-	kernelTools, err := filterKernelTools(embeddedToolsJSON, bootConfig.KernelTools)
+	kernelTools, kernelToolWarnings, err := filterKernelTools(embeddedToolsJSON, bootConfig.KernelTools)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: invalid embedded kernel.tools.json: %v\n", err)
 		return 1
+	}
+	for _, warning := range kernelToolWarnings {
+		slog.Warn(warning)
 	}
 	allTools := make([]json.RawMessage, len(kernelTools))
 	copy(allTools, kernelTools)
@@ -175,22 +241,14 @@ func serveCmd() int {
 		if fromLegacy {
 			slog.Warn("boot config uses deprecated `tools` field; rename to `skills` per docs/plans/SKILL_PLUGIN_ARCHITECTURE.md")
 		}
-		var bootTools []json.RawMessage
-		if err := json.Unmarshal(skillsJSON, &bootTools); err != nil {
-			fmt.Fprintf(os.Stderr, "error: invalid boot skills: %v\n", err)
-			return 1
-		}
-		allTools = append(allTools, bootTools...)
-
-		parsed, err := parseSkillExecMap(skillsJSON)
+		bootTools, parsed, err := validateBootSkillTools(skillsJSON)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: invalid boot skills for exec dispatch: %v\n", err)
 			return 1
 		}
+		allTools = append(allTools, bootTools...)
 		for _, t := range parsed {
-			if t.Exec != "" {
-				skillExec[t.Name] = t.Exec
-			}
+			skillExec[t.Name] = t.Exec
 		}
 		slog.Info("merged skill tools", "count", len(bootTools))
 	}
@@ -219,14 +277,11 @@ func serveCmd() int {
 	hub := kernel.NewHub(toolsJSON, skillExec, maxSpawnDepth, maxChildren, logger.Logger)
 	hub.SetInitMeta(bootConfig.Meta)
 	hub.ProjectRoot = os.Getenv("TABULA_PROJECT_ROOT")
-	if err := hub.LoadPlugins(bootConfig.Plugins); err != nil {
-		slog.Warn("one or more plugins failed to load", "error", err)
-	}
 	hub.StartReaper()
 
 	// Start HTTP/WebSocket server
 	mux := http.NewServeMux()
-	registerKernelHTTPHandlers(mux, hub)
+	registerKernelHTTPHandlers(mux, hub, listenAddr)
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -246,6 +301,12 @@ func serveCmd() int {
 	go func() {
 		if err := server.Serve(listener); err != http.ErrServerClosed {
 			slog.Error("server error", "error", err)
+		}
+	}()
+
+	go func() {
+		if err := hub.LoadPlugins(bootConfig.Plugins); err != nil {
+			slog.Warn("one or more plugins failed to load", "error", err)
 		}
 	}()
 
@@ -373,10 +434,13 @@ func runCmd(args []string) int {
 	}
 
 	// Load tools.
-	kernelTools, err := filterKernelTools(embeddedToolsJSON, bootConfig.KernelTools)
+	kernelTools, kernelToolWarnings, err := filterKernelTools(embeddedToolsJSON, bootConfig.KernelTools)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: invalid embedded kernel.tools.json: %v\n", err)
 		return 1
+	}
+	for _, warning := range kernelToolWarnings {
+		slog.Warn(warning)
 	}
 	allTools := make([]json.RawMessage, len(kernelTools))
 	copy(allTools, kernelTools)
@@ -387,22 +451,14 @@ func runCmd(args []string) int {
 		if fromLegacy {
 			slog.Warn("boot config uses deprecated `tools` field; rename to `skills` per docs/plans/SKILL_PLUGIN_ARCHITECTURE.md")
 		}
-		var bootTools []json.RawMessage
-		if err := json.Unmarshal(skillsJSON, &bootTools); err != nil {
-			fmt.Fprintf(os.Stderr, "error: invalid boot skills: %v\n", err)
-			return 1
-		}
-		allTools = append(allTools, bootTools...)
-
-		parsed, err := parseSkillExecMap(skillsJSON)
+		bootTools, parsed, err := validateBootSkillTools(skillsJSON)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: invalid boot skills for exec dispatch: %v\n", err)
 			return 1
 		}
+		allTools = append(allTools, bootTools...)
 		for _, t := range parsed {
-			if t.Exec != "" {
-				skillExec[t.Name] = t.Exec
-			}
+			skillExec[t.Name] = t.Exec
 		}
 	}
 
@@ -436,7 +492,7 @@ func runCmd(args []string) int {
 
 	// Start HTTP/WebSocket server (driver needs WebSocket).
 	mux := http.NewServeMux()
-	registerKernelHTTPHandlers(mux, hub)
+	registerKernelHTTPHandlers(mux, hub, listenAddr)
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -612,6 +668,38 @@ func parseSkillExecMap(raw json.RawMessage) ([]skillToolExec, error) {
 	return parsed, nil
 }
 
+func validateBootSkillTools(raw json.RawMessage) ([]json.RawMessage, []skillToolExec, error) {
+	var bootTools []json.RawMessage
+	if err := json.Unmarshal(raw, &bootTools); err != nil {
+		return nil, nil, err
+	}
+	parsed, err := parseSkillExecMap(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(parsed) != len(bootTools) {
+		return nil, nil, fmt.Errorf("skills metadata count mismatch")
+	}
+	seen := make(map[string]int, len(parsed))
+	for i, t := range parsed {
+		name := strings.TrimSpace(t.Name)
+		exec := strings.TrimSpace(t.Exec)
+		if name == "" {
+			return nil, nil, fmt.Errorf("skills[%d].name is required", i)
+		}
+		if exec == "" {
+			return nil, nil, fmt.Errorf("skills[%d].exec is required", i)
+		}
+		if first, ok := seen[name]; ok {
+			return nil, nil, fmt.Errorf("skills[%d].name duplicates skills[%d].name %q", i, first, name)
+		}
+		seen[name] = i
+		parsed[i].Name = name
+		parsed[i].Exec = exec
+	}
+	return bootTools, parsed, nil
+}
+
 // loadEnvFile loads KEY=VALUE entries from a .env file without overriding shell env.
 func loadEnvFile(path string) {
 	f, err := os.Open(path)
@@ -683,34 +771,39 @@ func isJSONEmpty(raw json.RawMessage) bool {
 	return s == "" || s == "null" || s == "[]" || s == "{}"
 }
 
-func filterKernelTools(raw json.RawMessage, enabled []string) ([]json.RawMessage, error) {
-	allowed := map[string]bool{}
-	if len(enabled) == 0 {
-		enabled = []string{"shell_exec", "process_spawn", "process_kill", "process_list"}
-	}
-	for _, name := range enabled {
-		allowed[strings.TrimSpace(name)] = true
-	}
-
+func filterKernelTools(raw json.RawMessage, enabled []string) ([]json.RawMessage, []string, error) {
 	var all []json.RawMessage
 	if err := json.Unmarshal(raw, &all); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	metas, err := loadToolMetas(raw)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(metas) != len(all) {
-		return nil, fmt.Errorf("kernel tool metadata count mismatch")
+		return nil, nil, fmt.Errorf("kernel tool metadata count mismatch")
 	}
 
-	filtered := make([]json.RawMessage, 0, len(all))
-	for i, item := range all {
-		if allowed[metas[i].Name] {
-			filtered = append(filtered, item)
+	// Kernel builtin LLM tools have been removed from the live tool catalog.
+	// Keep parsing the embedded metadata above so repository packaging mistakes
+	// still fail loudly, but never re-advertise stale builtin tool descriptors.
+	if len(enabled) == 0 {
+		return []json.RawMessage{}, nil, nil
+	}
+
+	warnings := make([]string, 0, len(enabled))
+	for _, name := range enabled {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if legacyKernelToolNames[name] {
+			warnings = append(warnings, fmt.Sprintf("kernel tool %q is deprecated and no longer advertised; use dynamic skills/plugins instead", name))
+		} else {
+			warnings = append(warnings, fmt.Sprintf("unknown kernel tool %q ignored; kernel builtin tools are no longer advertised", name))
 		}
 	}
-	return filtered, nil
+	return []json.RawMessage{}, warnings, nil
 }
 
 // runBoot executes the boot command and parses its JSON output.

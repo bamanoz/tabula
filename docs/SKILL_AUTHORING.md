@@ -248,21 +248,24 @@ Stable starting set:
 - `api.on(event, handler, { priority })` — subscribe to bus events.
 - `api.registerTool(spec, handler)` — register a tool dynamically.
 - `api.send(msg)` — publish to the bus.
-- `api.spawn(cmd, args)` — spawn a child under the plugin's process group.
 - `api.config` — merged manifest defaults and user override.
 - `api.log` — structured logging into kernel log.
 
 Plugins own their children: spawn under your own process group leader, trap
 SIGTERM, call `killpg` on shutdown. Kernel manages level-one supervision
-only — it doesn't reach into plugin children.
+only — it doesn't reach into plugin children. The common plugin SDK does not
+currently expose a stable generic `spawn` helper; subagent spawning is owned by
+the subagent plugin and remains evidence-gated during the migration window.
 
 ## Available bus events
 
 - `before_message`, `after_message`
 - `before_tool_call`, `after_tool_call`
 - `session_start`, `session_end`
-- `before_spawn`, `after_spawn`
 - `cancel`
+
+Spawn-specific event names are reserved for a future/subagent-owned contract;
+the kernel does not emit generic spawn events from built-in tools.
 
 Hook semantics:
 
@@ -340,7 +343,9 @@ Common runtime variables your component can rely on:
 - `TABULA_URL` — kernel WebSocket URL.
 - `TABULA_PROVIDER` — active LLM provider.
 - `TABULA_SESSION` — current session for some tool invocation paths.
-- `TABULA_SPAWN_TOKEN` — inherited by spawned subagent children.
+
+Subagent child credentials, if any, are private to the subagent plugin contract;
+do not rely on a common runtime spawn-token environment variable.
 
 Do not assume every variable is always present.
 
@@ -386,7 +391,7 @@ For most new capabilities, start with a skill.
 - skill: `files/files/` and `coder-git/git/` in
   [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles);
 - hook plugins: `base/hook-logger/`, `base/hook-permissions/`;
-- gateway plugins: `familiar/plugins/gateway-cli/` in
+- gateway plugins: `claw/plugins/gateway-cli/` in
   [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib);
 - driver / subagent runtime: `drivers/driver/`, `drivers/subagent/` in
   `tabula-bundles`;

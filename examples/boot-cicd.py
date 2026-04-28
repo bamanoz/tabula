@@ -14,13 +14,11 @@ import json
 import os
 import sys
 
-if TABULA_HOME := os.environ.get("TABULA_HOME"):
-    if TABULA_HOME not in sys.path:
-        sys.path.insert(0, TABULA_HOME)
-
 TABULA_HOME = os.environ.get("TABULA_HOME", os.path.join(os.path.expanduser("~"), ".tabula"))
-if TABULA_HOME not in sys.path:
-    sys.path.insert(0, TABULA_HOME)
+HOME_LIB = os.path.join(TABULA_HOME, "_lib", "python", "src")
+for path in (HOME_LIB, TABULA_HOME):
+    if path not in sys.path:
+        sys.path.insert(0, path)
 
 
 def load_env() -> None:
@@ -42,7 +40,7 @@ load_env()
 
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
 
-from skills._drivers.provider_selection import build_driver_command, resolve_provider
+from tabula_drivers.provider_selection import build_driver_command, resolve_provider
 
 VENV_PYTHON = os.path.join(TABULA_HOME, ".venv", "bin", "python3")
 

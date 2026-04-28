@@ -31,13 +31,14 @@ type Runtime interface {
 // package (avoids an import cycle). Hub.RegisterPlugin will pass
 // kernel.PluginProtocolVersion through ProtocolVersion.
 type SpawnOptions struct {
-	ProtocolVersion int
-	RegisterTimeout time.Duration
-	Logger          *slog.Logger
-	RuntimeCommands map[string]string
-	OnMessage       func(*Handle, *Message)
-	OnStartProcess  func(*Handle, *exec.Cmd)
-	OnExit          func(*Handle, error)
+	ProtocolVersion  int
+	RegisterTimeout  time.Duration
+	Logger           *slog.Logger
+	RuntimeCommands  map[string]string
+	OnMessage        func(*Handle, *Message)
+	OnStartProcess   func(*Handle, *exec.Cmd)
+	OnExit           func(*Handle, error)
+	ValidateRegister func(*RegisterParams) error
 }
 
 // DefaultRuntime is the in-tree Runtime implementation backed by os/exec and
@@ -134,8 +135,21 @@ func buildCommand(ctx context.Context, manifest *Manifest, opts SpawnOptions) (*
 		"TABULA_PLUGIN_ID="+manifest.ID,
 		"TABULA_PLUGIN_PROTOCOL_VERSION="+strconv.Itoa(opts.ProtocolVersion),
 	)
+	if manifest.RootDir != "" {
+		libSrc := filepath.Join(filepath.Dir(filepath.Dir(manifest.RootDir)), "_lib", "python", "src")
+		if stat, err := os.Stat(libSrc); err == nil && stat.IsDir() {
+			cmd.Env = append(cmd.Env, prependPathEnv("PYTHONPATH", libSrc))
+		}
+	}
 	configurePluginProcessGroup(cmd)
 	return cmd, nil
+}
+
+func prependPathEnv(name, value string) string {
+	if current := os.Getenv(name); current != "" {
+		return name + "=" + value + string(os.PathListSeparator) + current
+	}
+	return name + "=" + value
 }
 
 func runtimeCommand(runtime string, overrides map[string]string) string {
@@ -222,6 +236,16 @@ func waitForRegister(ctx context.Context, handle *Handle, opts SpawnOptions, eve
 			}
 			if reg.ProtocolVersion != opts.ProtocolVersion {
 				return NonRestartable(fmt.Errorf("plugin runtime: protocol mismatch for %s: kernel=%d plugin=%d", handle.ID(), opts.ProtocolVersion, reg.ProtocolVersion))
+			}
+			normalized, err := NormalizeRegisterParams(&reg)
+			if err != nil {
+				return NonRestartable(fmt.Errorf("plugin runtime: invalid register catalog for %s: %w", handle.ID(), err))
+			}
+			reg = *normalized
+			if opts.ValidateRegister != nil {
+				if err := opts.ValidateRegister(&reg); err != nil {
+					return NonRestartable(fmt.Errorf("plugin runtime: register rejected for %s: %w", handle.ID(), err))
+				}
 			}
 			if err := handle.MarkRegistered(&reg); err != nil {
 				return NonRestartable(fmt.Errorf("plugin runtime: register rejected for %s: %w", handle.ID(), err))

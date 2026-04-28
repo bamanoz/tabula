@@ -99,10 +99,10 @@ type ManifestHook struct {
 // disk plus an optional per-plugin user config override.
 type BootEntry struct {
 	// ManifestPath is the absolute or distro-relative path to plugin.toml.
-	ManifestPath string
+	ManifestPath string `json:"manifest_path"`
 	// Config is the user override merged on top of Manifest.Config before
 	// being delivered to the plugin in register_request.config.
-	Config map[string]any
+	Config map[string]any `json:"config"`
 }
 
 // LoadManifest parses and validates a plugin.toml file according to the

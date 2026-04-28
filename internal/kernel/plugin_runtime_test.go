@@ -57,7 +57,7 @@ func TestRegisterPluginSpawnsAndRegistersHandle(t *testing.T) {
 
 func TestRegisterPluginFailureDoesNotMutateRegistry(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
-	hub.pluginRuntime = &fakePluginRuntime{err: errors.New("register timeout")}
+	hub.pluginRuntime = &fakePluginRuntime{err: plugin.NonRestartable(errors.New("register timeout"))}
 	manifest := &plugin.Manifest{ID: "slow", Name: "Slow", Version: "1.0.0", Runtime: "python", Entry: "run.py"}
 
 	err := hub.RegisterPlugin(manifest, nil)
@@ -69,6 +69,23 @@ func TestRegisterPluginFailureDoesNotMutateRegistry(t *testing.T) {
 	}
 	if len(hub.toolExec) != 0 {
 		t.Fatalf("tool dispatch mutated after failed register: %#v", hub.toolExec)
+	}
+}
+
+func TestRegisterPluginInvalidCatalogFromRuntimeDoesNotMutateRegistry(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	hub.pluginRuntime = fakeInvalidPluginRuntime{}
+	manifest := &plugin.Manifest{ID: "bad", Name: "Bad", Version: "1.0.0", Runtime: "python", Entry: "run.py"}
+
+	err := hub.RegisterPlugin(manifest, nil)
+	if err == nil || !strings.Contains(err.Error(), "register rejected") {
+		t.Fatalf("expected register rejected error, got %v", err)
+	}
+	if hub.plugins.Len() != 0 {
+		t.Fatalf("registry mutated after invalid register: %d", hub.plugins.Len())
+	}
+	if len(hub.toolExec) != 0 {
+		t.Fatalf("tool dispatch mutated after invalid register: %#v", hub.toolExec)
 	}
 }
 
@@ -123,6 +140,22 @@ type fakePluginRuntime struct {
 	exitDelay   time.Duration
 	lastConfig  map[string]any
 	lastOptions plugin.SpawnOptions
+}
+
+type fakeInvalidPluginRuntime struct{}
+
+func (fakeInvalidPluginRuntime) Spawn(ctx context.Context, manifest *plugin.Manifest, config map[string]any, opts plugin.SpawnOptions) (*plugin.Handle, error) {
+	h := plugin.NewHandle(manifest.ID, nil)
+	h.MarkAlive()
+	if err := h.MarkRegistered(&plugin.RegisterParams{
+		ProtocolVersion: opts.ProtocolVersion,
+		PluginID:        manifest.ID,
+		Tools:           []plugin.ToolSpec{{Name: "bad_tool"}},
+		Subscriptions:   []plugin.SubscriptionSpec{{Event: "unsupported_event"}},
+	}); err != nil {
+		return nil, err
+	}
+	return h, nil
 }
 
 func (r *fakePluginRuntime) Spawn(ctx context.Context, manifest *plugin.Manifest, config map[string]any, opts plugin.SpawnOptions) (*plugin.Handle, error) {

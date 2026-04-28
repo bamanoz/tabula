@@ -3,7 +3,7 @@
 # Installs the kernel layer only. After this script finishes, install a
 # distro separately:
 #
-#   tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=familiar'
+#   tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw'
 #   tabula-distro install C:\path\to\local\distro
 #
 # Usage:
@@ -259,7 +259,7 @@ try {
     Write-Host "  echo ANTHROPIC_API_KEY=sk-... >> $EnvFile"
     Write-Host ""
     Write-Host "Install a distro (required before the kernel can do anything useful):"
-    Write-Host "  tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=familiar'"
+    Write-Host "  tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw'"
     Write-Host "  tabula-distro install C:\path\to\local\distro"
     Write-Host ""
     Write-Host "Then connect:"

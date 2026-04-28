@@ -161,11 +161,11 @@ The boot script emits one JSON object with fields like:
 - `kernel_tools` — legacy compatibility field; the kernel builtin tool catalog
   is empty in the skill/plugin architecture
 
-Familiar and guardian use the same contract, but generate different payloads.
+Claw and guardian use the same contract, but generate different payloads.
 
-### Familiar boot
+### Claw boot
 
-`familiar/boot.py` (in the [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib)
+`claw/boot.py` (in the [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib)
 repo) is the more dynamic boot implementation.
 
 It does the following:
@@ -179,7 +179,7 @@ It does the following:
 - launches long-lived plugins (drivers, gateways, subagent runtime, mcp)
 - writes subagent prompt state under `~/.tabula/state/subagent/`
 
-This is where most of the familiar distro behavior is assembled.
+This is where most of the claw distro behavior is assembled.
 
 ### Guardian boot
 
@@ -207,7 +207,7 @@ Tabula is split across three repositories:
   plugins (`plugin.toml`) on the same level. Bundles are referenced from
   distros via `distro.toml`.
 - [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib) — the
-  ready-to-use distros: `coder/`, `familiar/`, `guardian/`. Each declares
+  ready-to-use distros: `coder/`, `claw/`, `guardian/`. Each declares
   its bundle dependencies in `distro.toml`.
 
 A distro never embeds bundle source. It declares dependencies and the
@@ -236,8 +236,8 @@ The selected distro is activated through symlinks/copies under
 `~/.tabula/distrib/<name>/`:
 
 ```text
-~/.tabula/distrib/familiar/current   -> <generation>
-~/.tabula/distrib/active             -> familiar
+~/.tabula/distrib/claw/current       -> <generation>
+~/.tabula/distrib/active             -> claw
 ~/.tabula/boot.py                    -> distrib/active/current/boot.py
 ~/.tabula/templates/*                -> distrib/active/current/templates/*
 ~/.tabula/skills/*                   -> distrib/active/current/skills/* + bundle skills
@@ -246,7 +246,7 @@ The selected distro is activated through symlinks/copies under
 
 Shared SDK packages such as `tabula_plugin_sdk` are installed into
 `~/.tabula/.venv` by the installer from bundled package artifacts. They are not
-materialized as special `_pylib` / `_tslib` directories in the runtime surface.
+materialized as special legacy support directories in the runtime surface.
 
 This flat runtime surface is important: the active agent sees one `skills/`
 tree and one `plugins/` tree, not a multi-distro layout.
@@ -398,8 +398,11 @@ its own process group) launches a child subagent process. Results flow back
 into the parent session as `<subagent_result id="...">...</subagent_result>`
 in the next turn.
 
-`MaxSpawnDepth`, `MaxChildren`, and the spawn token live inside the subagent
-plugin itself — the kernel does not enforce them as a global invariant.
+Target ownership for the skill/plugin architecture is that `MaxSpawnDepth`,
+`MaxChildren`, and child authentication live inside the subagent plugin itself —
+the kernel should not enforce them as a global invariant. During migration,
+removing the remaining kernel bridge is gated on external driver/subagent plugin
+evidence for equivalent depth, child-count, auth, lifecycle, and cleanup tests.
 
 The next operational layer (run registry, control surface, orphan recovery,
 tool allowlist on spawn) is described in
@@ -409,7 +412,7 @@ tool allowlist on spawn) is described in
 
 Prompt assembly is done in boot, not in the kernel.
 
-Familiar pulls from:
+Claw pulls from:
 
 - distro templates under `templates/`
 - user-editable project files like `IDENTITY.md`, `SOUL.md`, `USER.md`,
@@ -440,7 +443,7 @@ There are two main installation paths.
 After the kernel installer finishes, install a distro yourself:
 
 ```bash
-tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=familiar'
+tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw'
 ```
 
 ### Source install
@@ -471,7 +474,7 @@ The source tree is split across three repos:
   installer.
 - `tabula-bundles/` — reusable collections of skills and plugins (`base/`,
   `files/`, `drivers/`, `memory/`, `caveman/`, `coder-*/`).
-- `tabula-distrib/` — `coder/`, `familiar/`, `guardian/` distros, each with
+- `tabula-distrib/` — `coder/`, `claw/`, `guardian/` distros, each with
   its own `boot.py`, `templates/`, optional in-tree `skills/`/`plugins/`,
   and `distro.toml`.
 
@@ -565,7 +568,7 @@ Those are the places where contracts matter.
 - `docs/plans/SKILL_PLUGIN_ARCHITECTURE.md` — skill/plugin design doc
 - `docs/plans/COMPETITIVE_LESSONS.md` — actionable lessons from peer projects
 - [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib) — `coder/`,
-  `familiar/`, `guardian/` distros
+  `claw/`, `guardian/` distros
 - [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles) — reusable
   bundles
 - `internal/kernel/protocol.go` — Go-side protocol constants

@@ -75,6 +75,60 @@ func TestHandlePluginProtocolUpdateToolsReplacesDispatchEntries(t *testing.T) {
 	}
 }
 
+func TestHandlePluginProtocolUpdateToolsRejectsInvalidCatalogAtomically(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	h := plugin.NewHandle("mcp", nil)
+	h.MarkAlive()
+	if err := h.MarkRegistered(&plugin.RegisterParams{PluginID: "mcp", Tools: []plugin.ToolSpec{{Name: "old"}}}); err != nil {
+		t.Fatalf("MarkRegistered: %v", err)
+	}
+	hub.registerPluginHandle(h)
+
+	msg, err := plugin.NewMessage(plugin.MethodUpdateTools, plugin.UpdateToolsParams{
+		Tools: []plugin.ToolSpec{{Name: " "}, {Name: "new"}},
+	})
+	if err != nil {
+		t.Fatalf("NewMessage: %v", err)
+	}
+	hub.handlePluginProtocolMessage(h, msg)
+
+	if _, ok := hub.toolExec["old"]; !ok {
+		t.Fatal("old plugin tool dispatch entry should remain after invalid update")
+	}
+	if _, ok := hub.toolExec["new"]; ok {
+		t.Fatal("invalid update must not add partial new dispatch entries")
+	}
+	tools := h.Tools()
+	if len(tools) != 1 || tools[0].Name != "old" {
+		t.Fatalf("invalid update mutated handle tools: %+v", tools)
+	}
+}
+
+func TestRegisterPluginHandleRejectsInvalidSubscriptionEvent(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	h := plugin.NewHandle("bad", nil)
+	h.MarkAlive()
+	if err := h.MarkRegistered(&plugin.RegisterParams{
+		PluginID:      "bad",
+		Tools:         []plugin.ToolSpec{{Name: "bad_tool"}},
+		Subscriptions: []plugin.SubscriptionSpec{{Event: "unsupported_event"}},
+	}); err != nil {
+		t.Fatalf("MarkRegistered: %v", err)
+	}
+
+	hub.registerPluginHandle(h)
+
+	if hub.plugins != nil && hub.plugins.Get("bad") != nil {
+		t.Fatal("invalid plugin should not be registered")
+	}
+	if _, ok := hub.toolExec["bad_tool"]; ok {
+		t.Fatal("invalid plugin should not install dispatch entries")
+	}
+	if h.IsAlive() {
+		t.Fatal("invalid plugin handle should be closed")
+	}
+}
+
 func TestPluginToolDispatchRoundTrip(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
 	var buf bytes.Buffer
@@ -117,6 +171,44 @@ func TestPluginToolDispatchRoundTrip(t *testing.T) {
 	msg := waitForMessage(t, c.recvCh)
 	if msg.Type != string(MsgToolResult) || msg.ID != "tc-1" || msg.Output != "pong" {
 		t.Fatalf("tool_result message: %+v", msg)
+	}
+}
+
+func TestPluginToolResultRequiresExactlyOneResultOrError(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	var buf bytes.Buffer
+	h := plugin.NewHandle("hello", nil)
+	h.SetWriter(plugin.NewWriter(&buf))
+	h.MarkAlive()
+	if err := h.MarkRegistered(&plugin.RegisterParams{PluginID: "hello", Tools: []plugin.ToolSpec{{Name: "hello_ping"}}}); err != nil {
+		t.Fatalf("MarkRegistered: %v", err)
+	}
+	hub.registerPluginHandle(h)
+
+	ch, err := h.SendToolCall(&plugin.ToolCallParams{CallID: "tc-ambiguous", Name: "hello_ping"})
+	if err != nil {
+		t.Fatalf("SendToolCall: %v", err)
+	}
+	msg, err := plugin.NewMessage(plugin.MethodToolResult, plugin.ToolResultParams{
+		CallID: "tc-ambiguous",
+		Result: json.RawMessage(`"pong"`),
+		Error:  "also failed",
+	})
+	if err != nil {
+		t.Fatalf("NewMessage: %v", err)
+	}
+	hub.handlePluginProtocolMessage(h, msg)
+
+	if got := h.PendingCount(); got != 0 {
+		t.Fatalf("invalid tool_result should release pending call, got %d", got)
+	}
+	select {
+	case got, ok := <-ch:
+		if ok {
+			t.Fatalf("invalid tool_result should close pending call without delivery, got %+v", got)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("invalid tool_result should release pending call")
 	}
 }
 
@@ -176,6 +268,73 @@ func TestPluginHookSubscriberEventReplyRoundTrip(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for hook dispatch")
 	}
+}
+
+func TestPluginEventReplyRejectsUnknownActionWithoutFailOpen(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	defer pw.Close()
+	h := plugin.NewHandle("guard", nil)
+	h.SetWriter(plugin.NewWriter(pw))
+	h.MarkAlive()
+	if err := h.MarkRegistered(&plugin.RegisterParams{
+		PluginID:      "guard",
+		Subscriptions: []plugin.SubscriptionSpec{{Event: "before_tool_call", Priority: 90, TimeoutMs: intPtr(50)}},
+	}); err != nil {
+		t.Fatalf("MarkRegistered: %v", err)
+	}
+	hub.registerPluginHandle(h)
+
+	done := make(chan bool, 1)
+	go func() {
+		_, ok := hub.dispatchHook("before_tool_call", json.RawMessage(`{"tool":"x"}`), "s1")
+		done <- ok
+	}()
+
+	reader := plugin.NewReader(pr)
+	outbound, err := reader.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+	var event plugin.EventParams
+	if err := outbound.DecodeParams(&event); err != nil {
+		t.Fatalf("DecodeParams: %v", err)
+	}
+	reply, err := plugin.NewMessage(plugin.MethodEventReply, plugin.EventReplyParams{
+		CallID: event.CallID,
+		Action: "allow-please",
+	})
+	if err != nil {
+		t.Fatalf("NewMessage: %v", err)
+	}
+	hub.handlePluginProtocolMessage(h, reply)
+
+	if got := h.PendingCount(); got != 0 {
+		t.Fatalf("invalid event_reply should release plugin pending call, got %d", got)
+	}
+	select {
+	case ok := <-done:
+		if ok {
+			t.Fatal("unknown event_reply action must not pass a security hook")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for security hook timeout")
+	}
+}
+
+func TestPluginEventReplyRejectsEmptyCallID(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	h := plugin.NewHandle("guard", nil)
+	h.MarkAlive()
+	if err := h.MarkRegistered(&plugin.RegisterParams{PluginID: "guard"}); err != nil {
+		t.Fatalf("MarkRegistered: %v", err)
+	}
+	msg, err := plugin.NewMessage(plugin.MethodEventReply, plugin.EventReplyParams{Action: plugin.ActionDeny})
+	if err != nil {
+		t.Fatalf("NewMessage: %v", err)
+	}
+	hub.handlePluginProtocolMessage(h, msg)
 }
 
 func TestPluginToolDispatchTimeoutCleansPending(t *testing.T) {
@@ -305,3 +464,5 @@ func waitForMessage(t *testing.T, ch <-chan *Message) *Message {
 		return nil
 	}
 }
+
+func intPtr(v int) *int { return &v }

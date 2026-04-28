@@ -178,7 +178,7 @@ def _cmd_gc(args: argparse.Namespace, home: Path) -> int:
             lock = lockmod.load(lock_path)
             if lock is None:
                 continue
-            for lck in list(lock.bundles.values()) + list(lock.skills.values()) + list(lock.plugins.values()):
+            for lck in list(lock.bundles.values()) + list(lock.skills.values()) + list(lock.plugins.values()) + list(lock.clients.values()):
                 if lck.resolved_sha:
                     keep.add(lck.resolved_sha)
     removed = cache.gc(keep)
@@ -224,7 +224,11 @@ def _print_summary(home: Path, distro_name: str, gen, lock: lockmod.Lock, *, cha
         print("  plugins:")
         for name, entry in sorted(lock.plugins.items()):
             print(f"    {name:20s} {_describe_lock(entry)}")
-    if not lock.bundles and not lock.skills and not lock.plugins:
+    if lock.clients:
+        print("  clients:")
+        for name, entry in sorted(lock.clients.items()):
+            print(f"    {name:20s} {_describe_lock(entry)}")
+    if not lock.bundles and not lock.skills and not lock.plugins and not lock.clients:
         print("  (no external sources)")
 
 

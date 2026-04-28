@@ -626,40 +626,6 @@ func TestSecurityHookTimeoutBlocksToolCall(t *testing.T) {
 	}
 }
 
-func TestSecurityHookTimeoutBlocksSpawn(t *testing.T) {
-	skipKernelBuiltinRemoved(t)
-	env := newTestEnv(t)
-
-	_ = env.connectHook("slow-spawn", []HookSubscription{
-		{Event: "before_spawn", Priority: 100},
-	})
-
-	drv := env.connectAndJoin("driver", "main",
-		[]string{"tool_use"},
-		[]string{"tool_result"},
-	)
-
-	go func() {
-		writeJSON(t, drv, Message{
-			Type:  "tool_use",
-			Name:  "process_spawn",
-			ID:    "s1",
-			Input: json.RawMessage(`{"command":"sleep 60"}`),
-		})
-	}()
-
-	result := readMsgTimeout(t, drv, 10*time.Second)
-	if result == nil {
-		t.Fatal("expected a result after hook timeout")
-	}
-	if result.Type != "tool_result" {
-		t.Fatalf("expected tool_result, got %s", result.Type)
-	}
-	if !strings.Contains(result.Output, "blocked by hook") {
-		t.Fatalf("expected 'blocked by hook' for timed-out security hook, got %s", result.Output)
-	}
-}
-
 func TestDomainHookTimeoutPassesThrough(t *testing.T) {
 	env := newTestEnv(t)
 

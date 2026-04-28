@@ -12,14 +12,14 @@ configured is an agent.
 Tabula is not a chatbot app and not a framework. It is an **environment** for
 building and living with an agent.
 
-- A small Go kernel owns routing, sessions, processes, and hooks.
+- A small Go kernel owns routing, sessions, process supervision, and hooks.
 - **Skills** are separate processes that plug into the kernel over WebSocket.
   They can be written by you, installed from a bundle, or written by the agent
   itself.
 - Your agent's identity, memory, and config live as plain files under
   `~/.tabula/`. Like dotfiles, for an agent.
 - **Distros** package a kernel + a set of skills + a personality into a
-  product. Three ship today: `familiar` (general-purpose), `guardian`
+  product. Three ship today: `claw` (general-purpose), `guardian`
   (sandboxed code execution), and `ouroboros` (self-hosting/evolving). You can
   build your own.
 
@@ -47,8 +47,8 @@ That design makes a few things natural:
   file-writing and shell tools, so it can create, edit, and install skills for
   itself using the same mechanisms a human extender would use.
 - **Process isolation is real.** A skill is a real OS process. Crashes don't
-  take down the kernel. Subagents are real child processes with their own
-  session, not fake threads.
+  take down the kernel. Subagents are supervised by userland plugins as real
+  child processes with their own session, not fake threads.
 - **State is inspectable.** Everything lives in plain files under
   `~/.tabula/`. You can `cat`, `diff`, `grep`, and put it in git.
 - **The kernel stays small.** Features live in skills, not in the core. Same
@@ -60,10 +60,11 @@ Tabula is useful today, but it is in the "strong core, maturing extension
 surface" phase.
 
 - **Solid:** kernel, process-based skills, distro model, official Anthropic /
-  OpenAI SDK drivers, OpenAI-compatible HTTP gateway, real subagent processes,
-  local memory via MemPalace.
-- **Maturing:** stable familiar skill-manifest versioning, subagent ops,
-  self-edit safety (git-backed rollback), skill distribution story.
+  OpenAI SDK drivers, OpenAI-compatible HTTP gateway, plugin-owned subagent
+  processes, local memory via MemPalace.
+- **Maturing:** stable claw skill-manifest versioning, subagent ops,
+  packaged SDK distribution, self-edit safety (git-backed rollback), skill
+  distribution story.
 
 The project favors small, composable primitives over big features. It will
 stay that way.
@@ -109,7 +110,7 @@ cd tabula
 bash scripts/install-dev.sh                                        # kernel only
 
 # then install a distro (pick one):
-tabula-distro install ../tabula-distrib/familiar                   # local checkout
+tabula-distro install ../tabula-distrib/claw                       # local checkout
 tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=guardian'
 ```
 
@@ -147,9 +148,10 @@ user ──▶ gateway ──▶ kernel ──▶ driver ──▶ tools / hooks
 
 Pieces:
 
-- **Kernel** — small Go server. Owns sessions, routing, processes, hooks,
-  built-in tools (`shell_exec`, `process_spawn`, `process_kill`,
-  `process_list`).
+- **Kernel** — small Go server. Owns sessions, routing, process supervision,
+  hooks, and plugin/skill dispatch. It publishes no LLM-visible tools by
+  default; `shell_exec`-style tools and subagent operations are supplied by the
+  active distro's skills/plugins.
 - **Boot** — command from `TABULA_BOOT` that emits one JSON config for the
   kernel. In the built-in distros this is currently implemented in Python.
 - **Drivers** — one provider loop per process (Anthropic, OpenAI).
@@ -164,15 +166,14 @@ Pieces:
 ```text
 ~/.tabula/
 ├── distrib/
-│   ├── familiar/current/
+│   ├── claw/current/
 │   ├── guardian/current/
 │   ├── ouroboros/current/
-│   └── active -> familiar
+│   └── active -> claw
 ├── boot.py         -> distrib/active/current/boot.py
 ├── templates/      -> distrib/active/current/templates
-├── skills/
-│   ├── _pylib/     # kernel Python contract (from tabula repo)
-│   └── ...         # distro skills + bundle skills
+├── skills/         # distro skills + bundle skills
+├── plugins/        # distro plugins + bundle plugins
 ├── config/global.toml
 ├── secrets.json
 ├── .env
@@ -183,8 +184,11 @@ Pieces:
 ```
 
 The active distro plus the bundles it declares fan out into `boot.py`,
-`templates/`, and `skills/`. The kernel-side Python contract lives in
-`skills/_pylib/`.
+`templates/`, `skills/`, and `plugins/`. Shared SDK/support packages are
+installed as normal package artifacts (for example into `.venv` or bundle
+`_lib` payloads). During the library-relocation migration, source installs may
+still stage temporary legacy support directories for compatibility; don't treat
+those as the long-term authoring surface.
 Files like `IDENTITY.md`, `SOUL.md`, `AGENTS.md` under `templates/` are the
 agent's personality — edit them, or let the agent edit them.
 
@@ -196,7 +200,7 @@ They live in
 bundle dependencies against
 [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles).
 
-### `familiar`
+### `claw`
 
 Default general-purpose agent.
 
@@ -232,7 +236,7 @@ More about what each distro contains lives in the
 - [`docs/PHILOSOPHY.md`](docs/PHILOSOPHY.md) — why Tabula is shaped like Linux / Neovim
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how kernel, boot, distros, and skills fit together
 - [`docs/SKILL_AUTHORING.md`](docs/SKILL_AUTHORING.md) — practical guide to writing skills
-- [`docs/DISTROS.md`](docs/DISTROS.md) — what distros are and what `familiar` / `guardian` / `ouroboros` mean
+- [`docs/DISTROS.md`](docs/DISTROS.md) — what distros are and what `claw` / `guardian` / `ouroboros` mean
 - [`docs/distro-config.md`](docs/distro-config.md) — `distro.toml` reference
 
 ## Common commands
@@ -316,7 +320,7 @@ Useful environment variables:
 
 ## Writing skills
 
-A common built-in convention, used by the `familiar` distro, is a skill
+A common built-in convention, used by the `claw` distro, is a skill
 directory like this:
 
 ```text
@@ -325,21 +329,21 @@ my-skill/
 └── run.py       # one possible entrypoint used by many built-in skills
 ```
 
-In `familiar`, `SKILL.md` frontmatter declares tools, commands,
-compatibility, and spawn policy. Familiar boot discovers skills, parses
-frontmatter, assembles the system prompt, and exposes tools to the active
-driver. Some built-in familiar paths also default to `run.py`, but that is a
-convention of the current distro, not a platform rule.
+In `claw`, `SKILL.md` frontmatter declares tools, commands, and
+compatibility metadata. Claw boot discovers skills, parses frontmatter,
+assembles the system prompt, and exposes tools to the active driver. Some
+built-in claw paths also default to `run.py`, but that is a convention of
+the current distro, not a platform rule.
 
 This is the same mechanism the agent uses when it writes a new skill for
 itself — there is no separate "agent-authored skills" path.
 
 See the
 [`skill-contract`](https://github.com/bamanoz/tabula-bundles/tree/main/base/skill-contract)
-skill in `tabula-bundles` for the current familiar skill convention. Contract
-versioning across the wire protocol, boot output, familiar skill manifests,
-and `skills/_pylib/` is still being stabilized; don't rely on internal lib APIs
-yet.
+skill in `tabula-bundles` for the current claw skill convention. Contract
+versioning across the wire protocol, boot output, claw skill manifests,
+and packaged SDK contracts is still being stabilized; don't rely on temporary
+legacy support-dir internals yet.
 
 ## Testing
 

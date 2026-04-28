@@ -103,12 +103,20 @@ func (h *Hub) startPluginLifecycle(manifest *plugin.Manifest, config map[string]
 		defer close(done)
 		err := supervisor.Supervise(ctx, manifest, config, plugin.SupervisorOptions{
 			SpawnOptions: plugin.SpawnOptions{
-				ProtocolVersion: PluginProtocolVersion,
-				Logger:          h.Logger,
-				OnMessage:       h.handlePluginProtocolMessage,
-				OnStartProcess:  h.handlePluginProcessStart,
+				ProtocolVersion:  PluginProtocolVersion,
+				Logger:           h.Logger,
+				OnMessage:        h.handlePluginProtocolMessage,
+				OnStartProcess:   h.handlePluginProcessStart,
+				ValidateRegister: h.validatePluginRegisterParams,
 			},
 			OnStart: func(handle *plugin.Handle) {
+				if err := h.validatePluginHandleCatalog(handle); err != nil {
+					if handle != nil {
+						handle.Close()
+					}
+					markReady(plugin.NonRestartable(fmt.Errorf("plugin %s register rejected: %w", manifest.ID, err)))
+					return
+				}
 				h.recordPluginStart(handle)
 				h.registerPluginHandle(handle)
 				h.Logger.Info("plugin registered", "plugin", handle.ID())

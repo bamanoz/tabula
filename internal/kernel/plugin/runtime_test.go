@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -71,6 +72,53 @@ sleep 1
 	})
 	if err == nil || !strings.Contains(err.Error(), "protocol mismatch") {
 		t.Fatalf("expected protocol mismatch, got %v", err)
+	}
+}
+
+func TestDefaultRuntimeRejectsInvalidRegisterCatalogNonRestartable(t *testing.T) {
+	root := t.TempDir()
+	writePluginScript(t, root, `
+IFS= read -r line
+printf '%s\n' '{"method":"register","params":{"protocol_version":42,"plugin_id":"bad","tools":[{"name":""}],"subscriptions":[]}}'
+sleep 1
+`)
+
+	_, err := NewRuntime().Spawn(context.Background(), testManifest(root, "bad"), nil, SpawnOptions{
+		ProtocolVersion: 42,
+		RegisterTimeout: time.Second,
+		RuntimeCommands: map[string]string{"python": "/bin/sh"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid register catalog") {
+		t.Fatalf("expected invalid register catalog, got %v", err)
+	}
+	var nonRestartable *NonRestartableError
+	if !errors.As(err, &nonRestartable) {
+		t.Fatalf("expected non-restartable invalid catalog error, got %T %v", err, err)
+	}
+}
+
+func TestDefaultRuntimeRegisterValidatorRejectsSubscriptionNonRestartable(t *testing.T) {
+	root := t.TempDir()
+	writePluginScript(t, root, `
+IFS= read -r line
+printf '%s\n' '{"method":"register","params":{"protocol_version":42,"plugin_id":"bad","tools":[],"subscriptions":[{"event":"before_spawn"}]}}'
+sleep 1
+`)
+
+	_, err := NewRuntime().Spawn(context.Background(), testManifest(root, "bad"), nil, SpawnOptions{
+		ProtocolVersion: 42,
+		RegisterTimeout: time.Second,
+		RuntimeCommands: map[string]string{"python": "/bin/sh"},
+		ValidateRegister: func(reg *RegisterParams) error {
+			return errors.New("unsupported event before_spawn")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "register rejected") {
+		t.Fatalf("expected validator rejection, got %v", err)
+	}
+	var nonRestartable *NonRestartableError
+	if !errors.As(err, &nonRestartable) {
+		t.Fatalf("expected non-restartable validator error, got %T %v", err, err)
 	}
 }
 

@@ -78,7 +78,7 @@ Tabula currently ships three distros in the
 [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib) repo:
 
 - `coder`
-- `familiar`
+- `claw`
 - `guardian`
 
 They share the same kernel and protocol, but they are different products.
@@ -101,7 +101,7 @@ What it includes:
 - shared bundles: `base`, `files`, `drivers`, `memory`, `coder-git`,
   `coder-tasks`, `coder-review`, `coder-subagents`, `coder-workspace`
 
-### `familiar`
+### `claw`
 
 The default general-purpose distro.
 
@@ -125,7 +125,7 @@ What it includes:
 
 How it works:
 
-- `familiar/boot.py` scans the active runtime tree
+- `claw/boot.py` scans the active runtime tree
 - reads `SKILL.md` and `plugin.toml`
 - assembles the main system prompt from templates and project files
 - exposes discovered tools and slash commands
@@ -170,7 +170,7 @@ What it does **not** include:
 How it works:
 
 - `guardian/boot.py` builds a fixed runtime
-- does not depend on broad dynamic discovery the way familiar does
+- does not depend on broad dynamic discovery the way claw does
 - exposes one tool and a small prompt surface
 
 Philosophy:
@@ -227,7 +227,7 @@ From a local path, `local:` URI, or `git+...` URI:
 ```bash
 tabula-distro install ./path/to/my-distro
 tabula-distro install local:./path/to/my-distro
-tabula-distro install "git+https://github.com/bamanoz/tabula-distrib.git@main#path=familiar"
+tabula-distro install "git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw"
 ```
 
 What this does:
@@ -267,7 +267,7 @@ Good answers:
 
 You do not need every skill in every distro.
 
-- Familiar is broad.
+- Claw is broad.
 - Guardian is narrow.
 - Ouroboros is moderate but very opinionated about self-state.
 
@@ -275,7 +275,7 @@ That is a feature, not inconsistency.
 
 ### 3. Should boot be dynamic or fixed?
 
-Familiar-style boot:
+Claw-style boot:
 
 - scans a skill tree
 - discovers tools and slash commands
@@ -323,6 +323,6 @@ Skills and plugins are how an agent grows.
 Bundles are how capabilities are shared.
 Distros are how complete agents become recognizable products.
 
-Today there are three built-in distros (`coder`, `familiar`, `guardian`).
+Today there are three built-in distros (`coder`, `claw`, `guardian`).
 That is enough to demonstrate the model — coding-tuned / general-purpose /
 sandboxed — but not enough to call the ecosystem mature yet.

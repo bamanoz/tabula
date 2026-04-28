@@ -15,7 +15,6 @@ type Hub struct {
 	clients   *ClientRegistry
 	sessions  *SessionRegistry
 	processes *ProcessSupervisor
-	tokens    *SpawnTokenStore
 	hooks     *HookEngine
 	policy    *PolicyEngine
 	tools     *ToolService
@@ -43,17 +42,11 @@ type Hub struct {
 	// payload. Skill tools are populated at NewHub time; plugin tools are
 	// inserted by Hub.RegisterPlugin (D2.14, future) on register-reply
 	// and atomically replaced on update_tools.
-	toolExec  map[string]toolDispatch
-	toolsJSON json.RawMessage
-	initMeta  json.RawMessage
-	Logger    *slog.Logger
-	// MaxSpawnDepth and MaxChildren are dead code as of Phase 1 D1.2 (the
-	// only kernel-side callsite was handleSpawn, removed). Kept per creative
-	// §7 (D1.11 option b) until subagent plugin GA in tabula-bundles
-	// re-establishes spawn caps in plugin-land.
-	// TODO(skill-plugin-arch): remove after subagent plugin GA.
-	MaxSpawnDepth   int
-	MaxChildren     int
+	toolExec        map[string]toolDispatch
+	toolExecMu      sync.RWMutex
+	toolsJSON       json.RawMessage
+	initMeta        json.RawMessage
+	Logger          *slog.Logger
 	MaxClients      int           // max concurrent clients (default 100)
 	ShutdownTimeout time.Duration // grace period before SIGKILL (default 3s)
 	// ProjectRoot is the absolute workspace/project root exposed to skills via
@@ -72,7 +65,7 @@ func (h *Hub) SetInitMeta(meta json.RawMessage) {
 // constructed in main.go from `bootConfig.Skills` (or the deprecated
 // `bootConfig.Tools` legacy alias). It is converted internally to the
 // unified Hub.toolExec dispatch table per creative §4.
-func NewHub(toolsJSON json.RawMessage, skillExec map[string]string, maxSpawnDepth int, maxChildren int, logger *slog.Logger) *Hub {
+func NewHub(toolsJSON json.RawMessage, skillExec map[string]string, _ int, _ int, logger *slog.Logger) *Hub {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -87,7 +80,6 @@ func NewHub(toolsJSON json.RawMessage, skillExec map[string]string, maxSpawnDept
 		clients:         NewClientRegistry(),
 		sessions:        NewSessionRegistry(),
 		processes:       NewProcessSupervisor(logger, 3*time.Second),
-		tokens:          NewSpawnTokenStore(),
 		hooks:           NewHookEngine(logger),
 		plugins:         plugin.NewRegistry(),
 		pluginRuns:      make(map[string]*pluginLifecycle),
@@ -96,8 +88,6 @@ func NewHub(toolsJSON json.RawMessage, skillExec map[string]string, maxSpawnDept
 		toolExec:        dispatch,
 		toolsJSON:       toolsJSON,
 		Logger:          logger,
-		MaxSpawnDepth:   maxSpawnDepth,
-		MaxChildren:     maxChildren,
 		MaxClients:      100,
 		ShutdownTimeout: 3 * time.Second,
 	}

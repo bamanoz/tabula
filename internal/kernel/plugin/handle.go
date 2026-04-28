@@ -165,12 +165,16 @@ func (h *Handle) MarkRegistered(reg *RegisterParams) error {
 	if reg == nil {
 		return errors.New("plugin: nil register params")
 	}
+	normalized, err := NormalizeRegisterParams(reg)
+	if err != nil {
+		return fmt.Errorf("plugin: invalid register catalog: %w", err)
+	}
 	if reg.PluginID != "" && reg.PluginID != h.id {
 		return fmt.Errorf("plugin: register plugin_id mismatch: manifest=%s register=%s", h.id, reg.PluginID)
 	}
 	h.mu.Lock()
-	h.tools = append([]ToolSpec(nil), reg.Tools...)
-	h.subscriptions = append([]SubscriptionSpec(nil), reg.Subscriptions...)
+	h.tools = append([]ToolSpec(nil), normalized.Tools...)
+	h.subscriptions = append([]SubscriptionSpec(nil), normalized.Subscriptions...)
 	h.mu.Unlock()
 	h.registered.Store(true)
 	return nil
@@ -179,13 +183,18 @@ func (h *Handle) MarkRegistered(reg *RegisterParams) error {
 // ApplyUpdateTools atomically replaces the tool catalog after an
 // update_tools message (creative §2.5 / D2.10). The Removed list is
 // advisory only; the new Tools slice is authoritative.
-func (h *Handle) ApplyUpdateTools(p *UpdateToolsParams) {
+func (h *Handle) ApplyUpdateTools(p *UpdateToolsParams) error {
 	if p == nil {
-		return
+		return errors.New("plugin: nil update_tools params")
+	}
+	normalized, err := NormalizeUpdateToolsParams(p)
+	if err != nil {
+		return fmt.Errorf("plugin: invalid update_tools catalog: %w", err)
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.tools = append([]ToolSpec(nil), p.Tools...)
+	h.tools = append([]ToolSpec(nil), normalized.Tools...)
+	return nil
 }
 
 // SendEvent writes an `event` JSON-RPC message to the plugin's stdin.

@@ -37,10 +37,10 @@ const (
 // architecture migration (see docs/plans/SKILL_PLUGIN_ARCHITECTURE.md §4.1).
 //
 // The constants below are kept as deprecated identifiers so that:
-//   1. Existing tests can reference them while being marked t.Skip per
-//      creative §7 dead-code-keep policy (D1.11 option b).
-//   2. The subagent plugin (in tabula-bundles) can re-use the same string
-//      values for its `process_spawn` semantics when it lands.
+//  1. Existing tests can reference them while being marked t.Skip per
+//     creative §7 dead-code-keep policy (D1.11 option b).
+//  2. The subagent plugin (in tabula-bundles) can re-use the same string
+//     values for its `process_spawn` semantics when it lands.
 //
 // TODO(skill-plugin-arch): remove these constants once subagent plugin GA in
 // tabula-bundles restores the spawn invariant via plugin-side dispatch.

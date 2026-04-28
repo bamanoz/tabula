@@ -4,13 +4,20 @@
 Tabula — агентская платформа на Go с экосистемой skills и долгоживущих компонентов (gateways, drivers, hooks, MCP bridge). Текущая архитектурная инициатива — разделить перегруженную абстракцию «skill» на две: декларативный per-call **skill** и программный long-lived **plugin**, и привести kernel к минимальному инвариантному ядру (bus + hook engine + two-tier supervisor).
 
 ## Current Task Context
-- Task: Реализация skill/plugin архитектуры из `docs/plans/SKILL_PLUGIN_ARCHITECTURE.md`
-- Task ID: skill-plugin-architecture
+- Task: Grouped post-reflection skill/plugin architecture follow-ups
+- Task ID: skill-plugin-architecture-followups
 - Intent: implement
 - Category: deep
 - Level: 4
 
 ## Success Criteria
+- Legacy builtin metadata is either removed from runtime-relevant paths or explicitly guarded/documented as non-runtime-only.
+- `/internal/snapshot/plugins` has authenticated/local-only behavior or strict locality assumptions documented and verified for non-local deployments.
+- External `tabula-bundles` migrations complete for hook, MCP, driver/subagent, gateway plugins, and remaining per-call skills with `tools[].exec`.
+- Subagent plugin owns spawn-token/MaxChildren/depth coverage, enabling removal of D1.11(b) dead code and skipped kernel spawn tests.
+- Phase 6 SDK/lib relocation removes in-repo and distro `_pylib`/`_tslib` preserve behavior after bundled wheel/tarball packages exist.
+
+## Previous Architecture Success Criteria
 - Kernel: пустой LLM-tool catalog (shell_exec, process_* убраны); `RunSkillTool` → internal `SkillExec`.
 - Реализован `PluginRuntime` (stdio JSON-RPC) с reference example для Python и далее для TS.
 - Все компоненты из §8.1 design doc мигрированы в plugins; компоненты из §8.2 остаются skills с обновлённым `SKILL.md` (включая `exec` в tools).

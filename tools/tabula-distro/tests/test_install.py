@@ -23,9 +23,32 @@ def _touch(p: Path, content: str = "") -> None:
 def _make_skill(root: Path, name: str, marker: str = "v1") -> Path:
     d = root / name
     d.mkdir(parents=True, exist_ok=True)
-    _touch(d / "SKILL.md", f"# {name}\n")
+    _touch(d / "SKILL.md", _skill_manifest(name))
     _touch(d / "marker.txt", marker)
     return d
+
+
+def _make_skill_with_manifest(root: Path, name: str, manifest: str, marker: str = "v1") -> Path:
+    d = root / name
+    d.mkdir(parents=True, exist_ok=True)
+    _touch(d / "SKILL.md", manifest)
+    _touch(d / "marker.txt", marker)
+    return d
+
+
+def _skill_manifest(name: str, exec_cmd: str | None = None) -> str:
+    tool_name = name.replace("-", "_")
+    exec_cmd = exec_cmd or f"python skills/{name}/run.py"
+    return (
+        "---\n"
+        f"name: {name}\n"
+        "tools:\n"
+        f"  - name: {tool_name}\n"
+        f"    description: Run {name}\n"
+        f"    exec: {exec_cmd}\n"
+        "---\n"
+        f"# {name}\n"
+    )
 
 
 def _make_plugin(root: Path, name: str, marker: str = "v1") -> Path:
@@ -39,6 +62,21 @@ def _make_plugin(root: Path, name: str, marker: str = "v1") -> Path:
         'entry = "run.py"\n'
     ))
     _touch(d / "run.py", "# plugin\n")
+    _touch(d / "marker.txt", marker)
+    return d
+
+
+def _make_client(root: Path, name: str, marker: str = "v1") -> Path:
+    d = root / name
+    d.mkdir(parents=True, exist_ok=True)
+    _touch(d / "client.toml", (
+        f'id = "{name}"\n'
+        f'name = "{name}"\n'
+        'version = "0.1.0"\n'
+        'runtime = "python"\n'
+        'entry = "run.py"\n'
+    ))
+    _touch(d / "run.py", "# client\n")
     _touch(d / "marker.txt", marker)
     return d
 
@@ -166,12 +204,11 @@ class InstallTests(unittest.TestCase):
             home = root / "home"
             distro = _make_minimal_distro(root, "demo")
 
-            # bundle with two skills + support dir
+            # bundle with two skills + packaged support library
             bundle = root / "ext" / "bundles" / "memory"
             _make_skill(bundle, "memory-save", "save-v1")
             _make_skill(bundle, "memory-search", "search-v1")
-            (bundle / "_memory").mkdir(parents=True)
-            _touch(bundle / "_memory" / "lib.py", "X=1\n")
+            _touch(bundle / "_lib" / "python" / "src" / "pkg" / "__init__.py", "X=1\n")
 
             # standalone external skill
             ext_skill = root / "ext" / "skills" / "weather"
@@ -198,7 +235,8 @@ class InstallTests(unittest.TestCase):
                 home / "distrib" / "demo" / "skills" / "weather" / "marker.txt",
             ):
                 self.assertTrue(p.exists(), p)
-            self.assertFalse((home / "distrib" / "demo" / "skills" / "_memory").exists())
+            self.assertTrue((home / "distrib" / "demo" / "_lib" / "python" / "src" / "pkg" / "__init__.py").exists())
+            self.assertTrue((home / "_lib" / "python" / "src" / "pkg" / "__init__.py").exists())
 
             self.assertTrue((home / "boot.py").is_symlink())
             self.assertTrue((home / "distrib" / "active").is_symlink())
@@ -228,6 +266,67 @@ class InstallTests(unittest.TestCase):
             self.assertTrue((home / "plugins" / "hook-permissions" / "plugin.toml").exists())
             self.assertIn("base-shell", lock.skills)
             self.assertIn("hook-permissions", lock.plugins)
+
+    def test_bundle_install_clients(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            bundle = root / "ext" / "bundles" / "clients"
+            _make_client(bundle, "driver", "driver-v1")
+            _make_client(bundle, "subagent", "subagent-v1")
+
+            (distro / "distro.toml").write_text(
+                '[distro]\nname="demo"\n\n'
+                '[[bundles]]\nname="clients"\nsource="local:../ext/bundles/clients"\n',
+                encoding="utf-8",
+            )
+
+            _gen, lock = installmod.install(distro, home)
+            self.assertTrue((home / "distrib" / "demo" / "clients" / "driver" / "client.toml").exists())
+            self.assertTrue((home / "clients" / "driver" / "run.py").exists())
+            self.assertFalse((home / "skills" / "driver").exists())
+            self.assertIn("driver", lock.clients)
+            self.assertIn("subagent", lock.clients)
+
+    def test_client_manifest_is_validated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+            bundle = root / "ext" / "bundles" / "clients"
+            bad = bundle / "driver"
+            bad.mkdir(parents=True)
+            _touch(bad / "client.toml", 'id="wrong"\nruntime="python"\nentry="run.py"\n')
+            _touch(bad / "run.py", "# client\n")
+            (distro / "distro.toml").write_text(
+                '[distro]\nname="demo"\n\n'
+                '[[bundles]]\nname="clients"\nsource="local:../ext/bundles/clients"\n',
+                encoding="utf-8",
+            )
+            with self.assertRaises(installmod.InstallError) as cm:
+                installmod.install(distro, home)
+            self.assertIn("must match directory name", str(cm.exception))
+
+    def test_client_manifest_entry_must_stay_inside_component(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+            bundle = root / "ext" / "bundles" / "clients"
+            bad = bundle / "driver"
+            bad.mkdir(parents=True)
+            _touch(bad / "client.toml", 'id="driver"\nruntime="python"\nentry="../run.py"\n')
+            _touch(bundle / "run.py", "# outside\n")
+            (distro / "distro.toml").write_text(
+                '[distro]\nname="demo"\n\n'
+                '[[bundles]]\nname="clients"\nsource="local:../ext/bundles/clients"\n',
+                encoding="utf-8",
+            )
+            with self.assertRaises(installmod.InstallError) as cm:
+                installmod.install(distro, home)
+            self.assertIn("entry escapes", str(cm.exception))
 
     def test_install_with_standalone_plugin_entry(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -394,6 +493,139 @@ class InstallTests(unittest.TestCase):
                 installmod.install(distro, home)
             self.assertIn("component not found: missing", str(cm.exception))
 
+    def test_skill_manifest_tools_missing_exec_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+            _make_skill_with_manifest(
+                root / "ext" / "skills",
+                "bad-skill",
+                "---\nname: bad-skill\ntools:\n  - name: bad_tool\n---\n# bad\n",
+            )
+            (distro / "distro.toml").write_text(
+                '[distro]\nname="demo"\n'
+                '[[skills]]\nname="bad-skill"\nsource="local:../ext/skills/bad-skill"\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(installmod.InstallError) as cm:
+                installmod.install(distro, home)
+            self.assertIn("skill bad-skill: tools[0].exec is required", str(cm.exception))
+            self.assertFalse((home / "distrib" / "demo" / "current").exists())
+
+    def test_skill_manifest_tools_blank_exec_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+            _make_skill_with_manifest(
+                root / "ext" / "skills",
+                "bad-skill",
+                "---\nname: bad-skill\ntools:\n  - name: bad_tool\n    exec: '  '\n---\n# bad\n",
+            )
+            (distro / "distro.toml").write_text(
+                '[distro]\nname="demo"\n'
+                '[[skills]]\nname="bad-skill"\nsource="local:../ext/skills/bad-skill"\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(installmod.InstallError) as cm:
+                installmod.install(distro, home)
+            self.assertIn("skill bad-skill: tools[0].exec is required", str(cm.exception))
+
+    def test_skill_manifest_tools_missing_name_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+            _make_skill_with_manifest(
+                root / "ext" / "skills",
+                "bad-skill",
+                "---\nname: bad-skill\ntools:\n  - exec: python run.py\n---\n# bad\n",
+            )
+            (distro / "distro.toml").write_text(
+                '[distro]\nname="demo"\n'
+                '[[skills]]\nname="bad-skill"\nsource="local:../ext/skills/bad-skill"\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(installmod.InstallError) as cm:
+                installmod.install(distro, home)
+            self.assertIn("skill bad-skill: tools[0].name is required", str(cm.exception))
+
+    def test_skill_manifest_tools_blank_name_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+            _make_skill_with_manifest(
+                root / "ext" / "skills",
+                "bad-skill",
+                "---\nname: bad-skill\ntools:\n  - name: '  '\n    exec: python run.py\n---\n# bad\n",
+            )
+            (distro / "distro.toml").write_text(
+                '[distro]\nname="demo"\n'
+                '[[skills]]\nname="bad-skill"\nsource="local:../ext/skills/bad-skill"\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(installmod.InstallError) as cm:
+                installmod.install(distro, home)
+            self.assertIn("skill bad-skill: tools[0].name is required", str(cm.exception))
+
+    def test_skill_manifest_tools_invalid_shape_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+            _make_skill_with_manifest(
+                root / "ext" / "skills",
+                "bad-skill",
+                "---\nname: bad-skill\ntools: invalid\n---\n# bad\n",
+            )
+            (distro / "distro.toml").write_text(
+                '[distro]\nname="demo"\n'
+                '[[skills]]\nname="bad-skill"\nsource="local:../ext/skills/bad-skill"\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(installmod.InstallError) as cm:
+                installmod.install(distro, home)
+            self.assertIn("skill bad-skill: tools must be a YAML list", str(cm.exception))
+
+    def test_bundle_invalid_skill_manifest_failure_is_atomic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            bundle_v1 = root / "ext" / "bundles" / "mixed"
+            _make_skill(bundle_v1, "valid-skill", "skill-v1")
+            _make_plugin(bundle_v1, "valid-plugin", "plugin-v1")
+            (distro / "distro.toml").write_text(
+                '[distro]\nname="demo"\n'
+                '[[bundles]]\nname="mixed"\nsource="local:../ext/bundles/mixed"\n',
+                encoding="utf-8",
+            )
+            installmod.install(distro, home)
+            current_before = (home / "distrib" / "demo" / "current").resolve()
+            lock_before = (home / "distrib" / "demo" / "distro.lock.json").read_text(encoding="utf-8")
+
+            _make_skill_with_manifest(
+                bundle_v1,
+                "bad-skill",
+                "---\nname: bad-skill\ntools:\n  - name: broken\n---\n# bad\n",
+            )
+            with self.assertRaises(installmod.InstallError) as cm:
+                installmod.install(distro, home)
+
+            self.assertIn("bundle mixed -> skill bad-skill: tools[0].exec is required", str(cm.exception))
+            self.assertEqual((home / "distrib" / "demo" / "current").resolve(), current_before)
+            self.assertEqual((home / "distrib" / "demo" / "distro.lock.json").read_text(encoding="utf-8"), lock_before)
+            self.assertFalse((home / "distrib" / "demo" / "skills" / "bad-skill").exists())
+            self.assertFalse((home / "skills" / "bad-skill").exists())
+
     def test_lock_v1_loads_as_v2_with_empty_plugins(self):
         data = {
             "version": 1,
@@ -553,17 +785,19 @@ class InstallTests(unittest.TestCase):
             self.assertIn("foo", lock.skills)
             self.assertIsNotNone(lock.skills["foo"].resolved_path)
 
-    def test_symlinked_in_tree_skill_is_materialized(self):
-        """Legacy dev pattern: source distro skills/<x> is a symlink to a repo skill dir."""
+    def test_in_tree_client_runtime_surface_is_linked(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
             distro = _make_minimal_distro(root)
-            shared = root / "shared" / "gateway-cli"
-            _make_skill(shared.parent, "gateway-cli", "shared")
-            (distro / "skills" / "gateway-cli").symlink_to(shared)
+            client = distro / "clients" / "gateway-cli"
+            client.mkdir(parents=True)
+            _touch(client / "client.toml", 'id="gateway-cli"\nruntime="python"\nentry="run.py"\n')
+            _touch(client / "run.py", "print('gateway')\n")
             installmod.install(distro, home)
-            self.assertTrue((home / "distrib" / "demo" / "skills" / "gateway-cli" / "marker.txt").exists())
+            self.assertTrue((home / "distrib" / "demo" / "clients" / "gateway-cli" / "run.py").exists())
+            self.assertTrue((home / "clients" / "gateway-cli").is_symlink())
+            self.assertTrue((home / "clients" / "gateway-cli" / "run.py").exists())
 
 
 if __name__ == "__main__":

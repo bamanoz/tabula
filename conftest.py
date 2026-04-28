@@ -5,9 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
-PYTHON_CONTRACT_FILES = {
-    "skills/_pylib/test_protocol.py",
-}
+PYTHON_CONTRACT_FILES: set[str] = set()
 
 
 def pytest_configure(config):

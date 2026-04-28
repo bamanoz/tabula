@@ -7,8 +7,8 @@ import "encoding/json"
 // TimeoutMs, if non-nil, overrides the default hook wait timeout:
 //   - nil: use HookEngine default (5s).
 //   - 0:   wait indefinitely (until the subscriber disconnects). Used for
-//          interactive hooks like approval UX, where the reply comes from a
-//          human on the other side of a UI client.
+//     interactive hooks like approval UX, where the reply comes from a
+//     human on the other side of a UI client.
 //   - >0:  override with the specified number of milliseconds.
 type HookSubscription struct {
 	Event     string `json:"event"`
@@ -49,8 +49,6 @@ var HookEvents = map[string]HookEventDef{
 	"session_start":    {Strategy: strategyModifying, Type: HookDomain},
 	"session_end":      {Strategy: strategyVoid, Type: HookObservability},
 	"cancel":           {Strategy: strategyVoid, Type: HookObservability},
-	"before_spawn":     {Strategy: strategyModifying, Type: HookSecurity},
-	"after_spawn":      {Strategy: strategyVoid, Type: HookObservability},
 }
 
 func (h *Hub) rebuildHookIndex() {

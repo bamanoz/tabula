@@ -1,0 +1,72 @@
+# Grep Transcript — skill-plugin-architecture-followups — Attempt 1
+
+Date: 2026-04-27
+
+## Secrets / credential terms in changed working set
+
+Command:
+
+```sh
+grep -rEn "(api[_-]?key|secret|token|password|bearer)" cmd/tabula/main.go internal/kernel/plugin internal/kernel/plugin_tools.go internal/kernel/plugin_runtime.go tools/tabula-distro/src/tabula_distro/install.py README.md tests/README.md docs/ARCHITECTURE.md docs/PLUGIN_AUTHORING.md docs/SKILL_AUTHORING.md skills/_pylib/protocol.py skills/_pylib/SKILL.md skills/_tslib/src/protocol.ts skills/_tslib/src/paths.ts
+```
+
+Output:
+
+```text
+README.md:178:├── secrets.json
+README.md:287:- `secrets.json` — secret store entries referenced from config
+README.md:305:api_key = { source = "store", id = "driver-openai.api_key" }
+docs/SKILL_AUTHORING.md:348:do not rely on a common runtime spawn-token environment variable.
+skills/_pylib/SKILL.md:47:`secrets.json`, and schema defaults.
+skills/_tslib/src/protocol.ts:96:	token?: string;
+```
+
+Interpretation: no hard-coded real secret was found. README examples use placeholders / secret-store references. The remaining `token` field in `skills/_tslib/src/protocol.ts` mirrors the generic WebSocket envelope and is not a spawn-token helper.
+
+## Spawn / token / event-surface active-doc checks
+
+Patterns checked: `api.spawn|TABULA_SPAWN_TOKEN|tabulaSpawnToken|DEFAULT_KERNEL_TOOLS|before_spawn|after_spawn`
+
+Relevant active hits:
+
+```text
+docs/ARCHITECTURE.md:355: - `before_spawn`, `after_spawn` (reserved legacy names; no longer emitted by ...)
+docs/PLUGIN_AUTHORING.md:175: `block`, `claim`). `before_spawn` and `after_spawn` remain reserved event names,
+skills/_pylib/protocol.py:58: DEFAULT_KERNEL_TOOLS = []
+skills/_pylib/protocol.py:70: HOOK_BEFORE_SPAWN = "before_spawn"
+skills/_pylib/protocol.py:71: HOOK_AFTER_SPAWN = "after_spawn"
+skills/_tslib/src/protocol.ts:55: export const DEFAULT_KERNEL_TOOLS = [] as const;
+skills/_tslib/src/protocol.ts:67: export const HOOK_BEFORE_SPAWN = "before_spawn";
+skills/_tslib/src/protocol.ts:68: export const HOOK_AFTER_SPAWN = "after_spawn";
+```
+
+Historical plan hits under `docs/plans/SKILL_PLUGIN_ARCHITECTURE.md` are explicitly marked historical/superseded at the top of that file.
+
+Interpretation: active docs and temporary SDK surfaces no longer advertise stable generic `api.spawn`, common `TABULA_SPAWN_TOKEN`, or populated default kernel tools. Reserved `before_spawn` / `after_spawn` names remain documented as reserved/subagent-owned.
+
+## Injection / untrusted execution search notes
+
+Patterns checked in changed Go / Python surfaces included `exec.Command`, `shell=True`, `subprocess`, `eval`, `Function`, `os.system`, `read_text`, and `write_text`.
+
+Relevant hits:
+
+```text
+internal/kernel/plugin/runtime.go:132: cmd := exec.CommandContext(ctx, bin, entry)
+tools/tabula-distro/src/tabula_distro/install.py:474: text = path.read_text(encoding="utf-8")
+```
+
+Interpretation: plugin runtime execution uses manifest-validated runtime + entry (`plugin.toml` validation forbids absolute / `..` entry paths). Distro installer reads `SKILL.md` from staged/resolved source paths to validate advertised tools before copying. No new `eval`, raw SQL, or user-input shell construction was introduced by BUILD.
+
+## Logging / PII search notes
+
+Relevant changed logging surfaces:
+
+```text
+internal/kernel/plugin_tools.go:195: h.Logger.LogAttrs(context.Background(), level, params.Msg, slog.String("plugin", handle.ID()))
+internal/kernel/plugin/runtime.go:269: logger.Info("plugin stderr", "plugin", id, "line", sc.Text())
+cmd/tabula/main.go:216: slog.Info("running boot", "command", bootCmd)
+cmd/tabula/main.go:312: slog.Info("spawning boot process", "command", cmd)
+cmd/tabula/main.go:814: slog.Error("boot script stderr", "output", stderr.String())
+```
+
+Interpretation: no direct secret value logging was introduced in the audited BUILD changes. Existing trusted plugin/boot/stderr forwarding can log sensitive data if upstream code emits it; recorded as a non-blocking warning for operator/plugin discipline.

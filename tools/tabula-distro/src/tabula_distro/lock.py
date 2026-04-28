@@ -20,7 +20,8 @@ Format (version 2)::
         }
       },
       "skills": { ... same shape ... },
-      "plugins": { ... same shape ... }
+      "plugins": { ... same shape ... },
+      "clients": { ... same shape ... }
     }
 """
 from __future__ import annotations
@@ -72,6 +73,7 @@ class Lock:
     bundles: dict[str, LockEntry] = field(default_factory=dict)
     skills: dict[str, LockEntry] = field(default_factory=dict)
     plugins: dict[str, LockEntry] = field(default_factory=dict)
+    clients: dict[str, LockEntry] = field(default_factory=dict)
     generated_at: str | None = None
     distro_source: str | None = None  # original URI passed to install (for `update`)
     distro_version: str | None = None  # [distro].version, if declared
@@ -85,6 +87,7 @@ class Lock:
             "bundles": {k: v.to_json() for k, v in self.bundles.items()},
             "skills": {k: v.to_json() for k, v in self.skills.items()},
             "plugins": {k: v.to_json() for k, v in self.plugins.items()},
+            "clients": {k: v.to_json() for k, v in self.clients.items()},
         }
         if self.distro_source is not None:
             out["distro_source"] = self.distro_source
@@ -107,6 +110,7 @@ class Lock:
             bundles={k: LockEntry.from_json(v) for k, v in data.get("bundles", {}).items()},
             skills={k: LockEntry.from_json(v) for k, v in data.get("skills", {}).items()},
             plugins={k: LockEntry.from_json(v) for k, v in data.get("plugins", {}).items()},
+            clients={k: LockEntry.from_json(v) for k, v in data.get("clients", data.get("drivers", {})).items()},
             generated_at=data.get("generated_at"),
             distro_source=data.get("distro_source"),
             distro_version=data.get("distro_version"),
@@ -118,6 +122,7 @@ def _migrate_v1_to_v2(data: dict) -> dict:
     migrated = dict(data)
     migrated["version"] = LOCK_VERSION
     migrated.setdefault("plugins", {})
+    migrated.setdefault("clients", {})
     return migrated
 
 

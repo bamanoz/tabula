@@ -72,7 +72,7 @@ func (h *Hub) initMessage(context string) *Message {
 	msg := &Message{
 		Type:    string(MsgInit),
 		Context: context,
-		Tools:   h.toolsJSON,
+		Tools:   h.initToolsJSON(),
 	}
 	meta := map[string]any{}
 	if len(h.initMeta) > 0 {
@@ -87,4 +87,65 @@ func (h *Hub) initMessage(context string) *Message {
 		}
 	}
 	return msg
+}
+
+func (h *Hub) initToolsJSON() json.RawMessage {
+	type initTool struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description,omitempty"`
+		Params      json.RawMessage `json:"params,omitempty"`
+		Required    []string        `json:"required,omitempty"`
+	}
+
+	var tools []map[string]any
+	if len(h.toolsJSON) > 0 {
+		_ = json.Unmarshal(h.toolsJSON, &tools)
+	}
+	seen := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		if name, _ := tool["name"].(string); name != "" {
+			seen[name] = true
+		}
+	}
+	if h.plugins != nil {
+		for _, handle := range h.plugins.All() {
+			for _, tool := range handle.Tools() {
+				if tool.Name == "" || seen[tool.Name] {
+					continue
+				}
+				entry := map[string]any{
+					"name":        tool.Name,
+					"description": tool.Description,
+					"required":    []string{},
+				}
+				if len(tool.Schema) > 0 {
+					var schema map[string]any
+					if json.Unmarshal(tool.Schema, &schema) == nil {
+						if props, ok := schema["properties"].(map[string]any); ok {
+							entry["params"] = props
+						}
+						if required, ok := schema["required"].([]any); ok {
+							items := make([]string, 0, len(required))
+							for _, item := range required {
+								if s, ok := item.(string); ok {
+									items = append(items, s)
+								}
+							}
+							entry["required"] = items
+						}
+					}
+				}
+				if _, ok := entry["params"]; !ok {
+					entry["params"] = map[string]any{}
+				}
+				tools = append(tools, entry)
+				seen[tool.Name] = true
+			}
+		}
+	}
+	raw, err := json.Marshal(tools)
+	if err != nil {
+		return h.toolsJSON
+	}
+	return raw
 }

@@ -2,7 +2,9 @@ package kernel
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/bamanoz/tabula/internal/kernel/plugin"
 )
@@ -15,11 +17,16 @@ func (h *Hub) registerPluginHandle(handle *plugin.Handle) {
 	if handle == nil {
 		return
 	}
+	if err := h.validatePluginHandleCatalog(handle); err != nil {
+		h.Logger.Warn("plugin registration rejected", "plugin", handle.ID(), "err", err)
+		handle.Close()
+		return
+	}
 	if h.plugins == nil {
 		h.plugins = plugin.NewRegistry()
 	}
 	if prior := h.plugins.Add(handle); prior != nil {
-		h.removePluginTools(prior)
+		h.removePluginToolsLocked(prior)
 		prior.Close()
 	}
 	h.replacePluginTools(handle)
@@ -30,7 +37,9 @@ func (h *Hub) replacePluginTools(handle *plugin.Handle) {
 	if handle == nil {
 		return
 	}
-	h.removePluginTools(handle)
+	h.toolExecMu.Lock()
+	defer h.toolExecMu.Unlock()
+	h.removePluginToolsLocked(handle)
 	for _, tool := range handle.Tools() {
 		if tool.Name == "" {
 			continue
@@ -50,6 +59,12 @@ func (h *Hub) replacePluginTools(handle *plugin.Handle) {
 }
 
 func (h *Hub) removePluginTools(handle *plugin.Handle) {
+	h.toolExecMu.Lock()
+	defer h.toolExecMu.Unlock()
+	h.removePluginToolsLocked(handle)
+}
+
+func (h *Hub) removePluginToolsLocked(handle *plugin.Handle) {
 	if handle == nil {
 		return
 	}
@@ -74,6 +89,13 @@ func (h *Hub) handlePluginProtocolMessage(handle *plugin.Handle, msg *plugin.Mes
 			h.Logger.Warn("invalid plugin tool_result", "plugin", handle.ID(), "err", err)
 			return
 		}
+		if err := validatePluginToolResult(params); err != nil {
+			h.Logger.Warn("invalid plugin tool_result", "plugin", handle.ID(), "err", err)
+			if params.CallID != "" {
+				handle.CancelPending(params.CallID)
+			}
+			return
+		}
 		if !handle.DeliverResult(params.CallID, msg) {
 			h.Logger.Warn("unsolicited plugin tool_result", "plugin", handle.ID(), "callId", params.CallID)
 		}
@@ -85,7 +107,14 @@ func (h *Hub) handlePluginProtocolMessage(handle *plugin.Handle, msg *plugin.Mes
 			h.Logger.Warn("invalid plugin update_tools", "plugin", handle.ID(), "err", err)
 			return
 		}
-		handle.ApplyUpdateTools(&params)
+		if _, err := plugin.NormalizeUpdateToolsParams(&params); err != nil {
+			h.Logger.Warn("invalid plugin update_tools", "plugin", handle.ID(), "err", err)
+			return
+		}
+		if err := handle.ApplyUpdateTools(&params); err != nil {
+			h.Logger.Warn("invalid plugin update_tools", "plugin", handle.ID(), "err", err)
+			return
+		}
 		h.replacePluginTools(handle)
 	case plugin.MethodLog:
 		h.logPluginMessage(handle, msg)
@@ -124,8 +153,8 @@ func (h *Hub) handlePluginEventReply(handle *plugin.Handle, msg *plugin.Message)
 		h.Logger.Warn("invalid plugin event_reply", "plugin", handle.ID(), "err", err)
 		return
 	}
-	if !handle.DeliverResult(params.CallID, msg) {
-		h.Logger.Warn("unsolicited plugin event_reply", "plugin", handle.ID(), "callId", params.CallID)
+	if params.CallID == "" {
+		h.Logger.Warn("invalid plugin event_reply", "plugin", handle.ID(), "err", "callId is required")
 		return
 	}
 	action := string(ActionPass)
@@ -140,6 +169,12 @@ func (h *Hub) handlePluginEventReply(handle *plugin.Handle, msg *plugin.Message)
 		action = string(ActionClaim)
 	default:
 		h.Logger.Warn("unknown plugin event_reply action", "plugin", handle.ID(), "action", params.Action)
+		handle.CancelPending(params.CallID)
+		return
+	}
+	if !handle.DeliverResult(params.CallID, msg) {
+		h.Logger.Warn("unsolicited plugin event_reply", "plugin", handle.ID(), "callId", params.CallID)
+		return
 	}
 	h.hooks.HandleResult(&Message{
 		Type:    string(MsgHookResult),
@@ -166,4 +201,40 @@ func (h *Hub) logPluginMessage(handle *plugin.Handle, msg *plugin.Message) {
 		level = slog.LevelError
 	}
 	h.Logger.LogAttrs(context.Background(), level, params.Msg, slog.String("plugin", handle.ID()))
+}
+
+func (h *Hub) validatePluginRegisterParams(reg *plugin.RegisterParams) error {
+	if reg == nil {
+		return fmt.Errorf("register params are required")
+	}
+	if _, err := plugin.NormalizeRegisterParams(reg); err != nil {
+		return err
+	}
+	for i, sub := range reg.Subscriptions {
+		event := strings.TrimSpace(sub.Event)
+		if _, ok := HookEvents[event]; !ok {
+			return fmt.Errorf("subscriptions[%d].event %q is not supported", i, event)
+		}
+	}
+	return nil
+}
+
+func (h *Hub) validatePluginHandleCatalog(handle *plugin.Handle) error {
+	return h.validatePluginRegisterParams(&plugin.RegisterParams{
+		PluginID:      handle.ID(),
+		Tools:         handle.Tools(),
+		Subscriptions: handle.Subscriptions(),
+	})
+}
+
+func validatePluginToolResult(params plugin.ToolResultParams) error {
+	if params.CallID == "" {
+		return fmt.Errorf("callId is required")
+	}
+	hasResult := len(params.Result) > 0
+	hasError := params.Error != ""
+	if hasResult == hasError {
+		return fmt.Errorf("exactly one of result or error is required")
+	}
+	return nil
 }

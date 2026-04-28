@@ -3,7 +3,7 @@ set -euo pipefail
 
 PYTHON_BIN="${PYTHON_BIN:-.venv/bin/python3}"
 LAYER="${1:-unit}"
-PYTHONPATH="tools/tabula-distro/src:skills/_pylib${PYTHONPATH:+:$PYTHONPATH}"
+PYTHONPATH="tools/tabula-distro/src${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONPATH
 
 run_pytest_allow_empty() {
@@ -31,14 +31,14 @@ case "$LAYER" in
     exit $?
     ;;
   contract)
-    exec "$PYTHON_BIN" -m pytest -m contract skills/_pylib/test_protocol.py -q
+    exec "$PYTHON_BIN" -m pytest -m contract tests tools/tabula-distro/tests -q
     ;;
   all)
     "$0" unit
     exec "$0" contract
     ;;
   list)
-    exec "$PYTHON_BIN" -m pytest --collect-only tests tools/tabula-distro/tests skills/_pylib/test_protocol.py -q
+    exec "$PYTHON_BIN" -m pytest --collect-only tests tools/tabula-distro/tests -q
     ;;
   *)
     echo "usage: scripts/test-python.sh [unit|smoke|e2e|contract|all|list]" >&2

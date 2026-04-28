@@ -40,9 +40,14 @@ func (h *Hub) broadcastToSession(session, msgType string, msg *Message, exclude 
 
 // sendToolResult sends a tool_result to a session.
 func (h *Hub) sendToolResult(session, toolID, output string) {
+	h.sendToolResultForTool(session, toolID, "", output)
+}
+
+func (h *Hub) sendToolResultForTool(session, toolID, toolName, output string) {
 	h.broadcastToSession(session, string(MsgToolResult), &Message{
 		Type:   string(MsgToolResult),
 		ID:     toolID,
+		Name:   toolName,
 		Output: output,
 	}, nil)
 }

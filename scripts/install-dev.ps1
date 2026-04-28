@@ -100,7 +100,7 @@ if (Test-Path (Join-Path $RepoRoot "bin" "tabula-coder")) {
 }
 Copy-Item (Join-Path $RepoRoot "scripts" "install-distro.py") -Destination (Join-Path $BinDir "install-distro.py") -Force
 
-# Install a distro separately with tabula-distro, e.g. ../tabula-distrib/familiar.
+# Install a distro separately with tabula-distro, e.g. ../tabula-distrib/claw.
 
 # Add to PATH
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")

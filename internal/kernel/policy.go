@@ -14,29 +14,21 @@ func (e *PolicyError) Error() string { return e.Reason }
 // It coordinates existing components (HookEngine, ProcessSupervisor, ClientRegistry)
 // without duplicating their logic.
 type PolicyEngine struct {
-	hub       *Hub
-	processes *ProcessSupervisor
+	hub *Hub
 }
 
 // NewPolicyEngine creates a PolicyEngine.
 func NewPolicyEngine(hub *Hub) *PolicyEngine {
-	return &PolicyEngine{
-		hub:       hub,
-		processes: hub.processes,
-	}
+	return &PolicyEngine{hub: hub}
 }
 
-// CanConnect validates a spawn token and returns the depth for the connecting client.
-// Returns (0, nil) for root clients (empty token).
+// CanConnect validates connect-time policy. Kernel-managed spawn tokens were
+// removed when subagent process ownership moved to plugin-side orchestration.
 func (pe *PolicyEngine) CanConnect(token string) (int, error) {
-	if token == "" {
-		return 0, nil
+	if token != "" {
+		return 0, &PolicyError{Reason: "spawn tokens are no longer accepted by the kernel"}
 	}
-	entry, ok := pe.hub.tokens.Consume(token)
-	if !ok {
-		return 0, &PolicyError{Reason: "invalid or expired spawn token"}
-	}
-	return entry.depth, nil
+	return 0, nil
 }
 
 // CanJoin runs the session_start hook and returns (context, blocked).
@@ -114,39 +106,4 @@ func (pe *PolicyEngine) CanUseTool(sender *Client, toolName string, toolID strin
 		return input, true
 	}
 	return modified.Input, true
-}
-
-// CanSpawn validates the before_spawn hook and resource limits (depth, MaxChildren).
-//
-// TODO(skill-plugin-arch): unused after kernel cleanup (Phase 1 D1.2 removed
-// the only callsite in tool_service.go::handleSpawn). Kept as dead code per
-// creative §7 (D1.11 option b) until subagent plugin GA in tabula-bundles
-// restores the spawn-cap invariant; remove together with SpawnTokenStore,
-// generateSpawnToken, Hub.MaxChildren, Hub.MaxSpawnDepth, and the
-// before_spawn registry entry once that lands.
-func (pe *PolicyEngine) CanSpawn(sender *Client, command string, toolID string, session string) error {
-	// Security hook (fail-closed).
-	hookPayload, _ := json.Marshal(map[string]string{
-		"tool": string(ToolProcessSpawn), "id": toolID, "command": command,
-	})
-	if _, ok := pe.hub.dispatchHookExcept("before_spawn", hookPayload, session, sender); !ok {
-		return &PolicyError{Reason: "spawn blocked by hook"}
-	}
-
-	// Resource limits.
-	childDepth := sender.depth + 1
-	if childDepth >= pe.hub.MaxSpawnDepth {
-		return &PolicyError{Reason: fmt.Sprintf("max spawn depth reached (%d)", pe.hub.MaxSpawnDepth)}
-	}
-
-	alive := 0
-	pe.processes.ForEach(func(_ int, p *SpawnedProcess) {
-		if p.Alive && p.Session == session {
-			alive++
-		}
-	})
-	if alive >= pe.hub.MaxChildren {
-		return &PolicyError{Reason: fmt.Sprintf("too many active subagents (%d)", pe.hub.MaxChildren)}
-	}
-	return nil
 }

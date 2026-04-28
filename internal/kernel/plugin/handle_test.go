@@ -91,14 +91,48 @@ func TestHandleApplyUpdateToolsReplacesCatalog(t *testing.T) {
 		t.Fatalf("MarkRegistered: %v", err)
 	}
 
-	h.ApplyUpdateTools(&UpdateToolsParams{
+	if err := h.ApplyUpdateTools(&UpdateToolsParams{
 		Tools:   []ToolSpec{{Name: "new1"}, {Name: "new2"}},
 		Removed: []string{"old"},
-	})
+	}); err != nil {
+		t.Fatalf("ApplyUpdateTools: %v", err)
+	}
 
 	tools := h.Tools()
 	if len(tools) != 2 || tools[0].Name != "new1" || tools[1].Name != "new2" {
 		t.Fatalf("Tools after update: %+v", tools)
+	}
+}
+
+func TestHandleRegisterRejectsInvalidCatalogWithoutRegistering(t *testing.T) {
+	h := NewHandle("hello", nil)
+	h.MarkAlive()
+	err := h.MarkRegistered(&RegisterParams{PluginID: "hello", Tools: []ToolSpec{{Name: " "}}})
+	if err == nil {
+		t.Fatal("expected invalid catalog error")
+	}
+	if h.IsRegistered() {
+		t.Fatal("invalid catalog must not flip registered")
+	}
+	if len(h.Tools()) != 0 {
+		t.Fatalf("invalid catalog mutated tools: %+v", h.Tools())
+	}
+}
+
+func TestHandleApplyUpdateToolsRejectsInvalidCatalogAtomically(t *testing.T) {
+	h := NewHandle("mcp", nil)
+	h.MarkAlive()
+	if err := h.MarkRegistered(&RegisterParams{PluginID: "mcp", Tools: []ToolSpec{{Name: "old"}}}); err != nil {
+		t.Fatalf("MarkRegistered: %v", err)
+	}
+
+	err := h.ApplyUpdateTools(&UpdateToolsParams{Tools: []ToolSpec{{Name: "old"}, {Name: "old"}}})
+	if err == nil {
+		t.Fatal("expected duplicate-name update error")
+	}
+	tools := h.Tools()
+	if len(tools) != 1 || tools[0].Name != "old" {
+		t.Fatalf("invalid update mutated tools: %+v", tools)
 	}
 }
 
