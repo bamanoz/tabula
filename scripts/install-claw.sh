@@ -15,6 +15,9 @@ save_env_value() {
   local value="$2"
   local env_file="$TABULA_HOME/.env"
   [ -n "$value" ] || return 0
+  if [ "$key" = "TABULA_PROVIDER" ] && [ "$value" = "mock" ]; then
+    return 0
+  fi
   mkdir -p "$TABULA_HOME"
   if [ -f "$env_file" ]; then
     local tmp="${env_file}.tmp"

@@ -26,7 +26,7 @@ func (h *Hub) registerPluginHandle(handle *plugin.Handle) {
 		h.plugins = plugin.NewRegistry()
 	}
 	if prior := h.plugins.Add(handle); prior != nil {
-		h.removePluginToolsLocked(prior)
+		h.removePluginTools(prior)
 		prior.Close()
 	}
 	h.replacePluginTools(handle)

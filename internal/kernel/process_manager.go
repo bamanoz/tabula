@@ -128,13 +128,6 @@ func (pm *ProcessManager) execTool(session, toolID, toolName, logMsg string, exe
 	}()
 }
 
-// RunCommand executes a shell command asynchronously and sends the result.
-func (pm *ProcessManager) RunCommand(session, toolID, command string) {
-	pm.execTool(session, toolID, string(ToolShellExec), "exec completed", func() ([]byte, error) {
-		return pm.launcher.Run(command)
-	})
-}
-
 // SkillExec encapsulates per-call execution of skill tools registered via
 // the boot config (`SKILL.md` `tools[].exec`). It is the kernel-internal
 // counterpart to skill subprocesses described in

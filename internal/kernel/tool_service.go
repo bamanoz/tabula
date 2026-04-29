@@ -30,10 +30,8 @@ func NewToolService(hub *Hub) *ToolService {
 // HandleToolUse routes a tool_use message through the before_tool_call hook
 // and dispatches the result to a registered skill-exec tool.
 //
-// As of Phase 1 D1.2 of the skill/plugin architecture migration, kernel no
-// longer hosts builtin LLM tools (shell_exec, process_spawn, process_kill,
-// process_list). All tools flow through Hub.toolExec (skill exec dispatch).
-// Phase 2 will extend this with plugin-tool dispatch.
+// The kernel does not host builtin LLM tools. Runtime tools are dispatched
+// through the unified tool registry populated by boot skills and plugins.
 func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 	toolName := msg.Name
 	toolID := msg.ID

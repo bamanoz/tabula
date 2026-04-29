@@ -172,6 +172,23 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(len(c.plugins), 1)
             self.assertEqual(c.plugins[0].name, "hello")
 
+    def test_source_alias_override_merges_by_alias_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "d"
+            root.mkdir()
+            (root / "distro.toml").write_text(
+                '[sources.tabula-bundles]\nsource="git+https://example.invalid/bundles.git@main"\n'
+                '[[bundles]]\nname="base"\nsource="source:tabula-bundles#path=base"\n',
+                encoding="utf-8",
+            )
+            (root / "distro.override.toml").write_text(
+                '[sources.tabula-bundles]\nsource="local:/tmp/tabula-bundles"\n',
+                encoding="utf-8",
+            )
+            c = cfg.load(root)
+            self.assertEqual(c.sources["tabula-bundles"].source, "local:/tmp/tabula-bundles")
+            self.assertEqual(c.bundles[0].source, "source:tabula-bundles#path=base")
+
 
 class InstallTests(unittest.TestCase):
     def _with_fake_git_cache(self, mapping: dict[str, Path], fn):
@@ -243,6 +260,93 @@ class InstallTests(unittest.TestCase):
 
             self.assertIn("memory", lock.bundles)
             self.assertIn("weather", lock.skills)
+
+    def test_source_alias_installs_multiple_bundles_with_shared_lib_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            repo = root / "tabula-bundles"
+            _make_skill(repo / "base", "shell", "shell-v1")
+            _make_skill(repo / "caveman", "caveman-compress", "caveman-v1")
+            _touch(repo / "_lib" / "python" / "src" / "shared" / "__init__.py", "X=1\n")
+            _touch(repo / "base" / "bundle.toml", '[bundle]\nname="base"\n')
+            _touch(repo / "caveman" / "bundle.toml", '[bundle]\nname="caveman"\n')
+
+            (distro / "distro.toml").write_text(
+                '[distro]\nname="demo"\n'
+                '[sources.tabula-bundles]\nsource="local:../tabula-bundles"\n'
+                '[[bundles]]\nname="base"\nsource="source:tabula-bundles#path=base"\n'
+                '[[bundles]]\nname="caveman"\nsource="source:tabula-bundles#path=caveman"\n',
+                encoding="utf-8",
+            )
+
+            _gen, lock = installmod.install(distro, home)
+            self.assertTrue((home / "skills" / "shell" / "marker.txt").exists())
+            self.assertTrue((home / "skills" / "caveman-compress" / "marker.txt").exists())
+            self.assertTrue((home / "_lib" / "python" / "src" / "shared" / "__init__.py").exists())
+            self.assertEqual(lock.bundles["base"].source, "local:../tabula-bundles#path=base")
+            self.assertEqual(lock.bundles["caveman"].source, "local:../tabula-bundles#path=caveman")
+            self.assertEqual(lock.bundles["base"].resolved_path, str((repo / "base").resolve()))
+
+    def test_mixed_bundle_sources_with_identical_shared_lib_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            local_repo = root / "local-repo"
+            git_repo = root / "git-repo"
+            _make_skill(local_repo / "base", "shell", "shell-v1")
+            _make_skill(git_repo / "caveman", "caveman-compress", "caveman-v1")
+            _touch(local_repo / "_lib" / "python" / "src" / "shared" / "__init__.py", "X=1\n")
+            _touch(git_repo / "_lib" / "python" / "src" / "shared" / "__init__.py", "X=1\n")
+
+            (distro / "distro.toml").write_text(
+                '[distro]\nname="demo"\n'
+                '[[bundles]]\nname="base"\nsource="local:../local-repo/base"\n'
+                '[[bundles]]\nname="caveman"\nsource="local:../git-repo/caveman"\n',
+                encoding="utf-8",
+            )
+
+            installmod.install(distro, home)
+            self.assertEqual(
+                (home / "_lib" / "python" / "src" / "shared" / "__init__.py").read_text(encoding="utf-8"),
+                "X=1\n",
+            )
+            self.assertTrue((home / "skills" / "shell" / "marker.txt").exists())
+            self.assertTrue((home / "skills" / "caveman-compress" / "marker.txt").exists())
+
+    def test_mixed_bundle_sources_with_different_shared_lib_fail_clearly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            local_repo = root / "local-repo"
+            git_repo = root / "git-repo"
+            _make_skill(local_repo / "base", "shell", "shell-v1")
+            _make_skill(git_repo / "caveman", "caveman-compress", "caveman-v1")
+            _touch(local_repo / "_lib" / "python" / "src" / "shared" / "__init__.py", "X=1\n")
+            _touch(git_repo / "_lib" / "python" / "src" / "shared" / "__init__.py", "X=2\n")
+
+            (distro / "distro.toml").write_text(
+                '[distro]\nname="demo"\n'
+                '[[bundles]]\nname="base"\nsource="local:../local-repo/base"\n'
+                '[[bundles]]\nname="caveman"\nsource="local:../git-repo/caveman"\n'
+                'override=true\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(installmod.InstallError) as cm:
+                installmod.install(distro, home)
+            message = str(cm.exception)
+            self.assertIn("shared lib _lib/python differs between bundle sources", message)
+            self.assertIn("bundle: base", message)
+            self.assertIn("bundle: caveman", message)
+            self.assertIn("hash: sha256:", message)
+            self.assertNotIn("set override = true", message)
 
     def test_bundle_install_mixed_skills_and_plugins(self):
         with tempfile.TemporaryDirectory() as tmp:

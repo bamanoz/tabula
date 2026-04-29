@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""
-CI/CD boot script for Tabula.
-
-Minimal boot script that spawns only the LLM driver for non-interactive use.
-No session registry, no MCP, no hooks — just the driver.
-
-Usage:
-  TABULA_HOME=/path/to/work TABULA_BOOT="python3 boot-cicd.py" tabula run --prompt "..."
-"""
+"""Minimal CI/CD boot script for non-interactive Tabula runs."""
 from __future__ import annotations
 
 import json
@@ -40,25 +32,10 @@ load_env()
 
 TABULA_URL = os.environ.get("TABULA_URL", "ws://localhost:8089/ws")
 
-from tabula_drivers.provider_selection import build_driver_command, resolve_provider
-
-VENV_PYTHON = os.path.join(TABULA_HOME, ".venv", "bin", "python3")
-
-
-def find_driver() -> str | None:
-    """Find the driver for the configured provider."""
-    provider = resolve_provider(os.environ.get("TABULA_PROVIDER"), tabula_home=TABULA_HOME, require_ready=False)
-    return build_driver_command(provider, tabula_home=TABULA_HOME, python_executable=VENV_PYTHON) + " --session main"
-
-
 def main():
-    driver = find_driver()
-
     config = {
         "url": TABULA_URL,
-        "spawn": [driver],
-        "tools": [],
-        "commands": [],
+        "skills": [],
     }
 
     json.dump(config, sys.stdout, ensure_ascii=False)

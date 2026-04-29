@@ -1,0 +1,7 @@
+[bundles.my-bundle]
+source = "source:ext#path=my-bundle"
+
+[suites.my-suite]
+set = "empty"
+bundles = ["my-bundle"]
+tests = ["test_my_bundle.py"]

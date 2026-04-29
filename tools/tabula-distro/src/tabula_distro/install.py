@@ -205,6 +205,15 @@ class InstalledBundleComponents:
     clients: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class InstalledSharedLib:
+    name: str
+    fingerprint: str
+    source_path: Path
+    source_uri: str
+    bundle_name: str
+
+
 def install(distro_dir: str | Path, home: Path, *,
             override_name: str | None = None,
             offline: bool = False,
@@ -310,7 +319,7 @@ def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lock
     cache = GitCache(plan.home / "cache")
     prior_lock = lockmod.load(gens.distro_root(plan.home, distro.name) / "distro.lock.json")
     new_lock = lockmod.Lock(distro=distro.name)
-    installed_lib_roots: set[Path] = set()
+    installed_libs: dict[str, InstalledSharedLib] = {}
 
     for entry in distro.skills:
         resolved_dir, lock_entry = _resolve(entry.source, distro.path, cache, plan,
@@ -335,9 +344,9 @@ def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lock
         _check_bundle_compat(entry.name, manifest, kernel_version)
         if manifest.version is not None:
             lock_entry.version = str(manifest.version)
-        installed = _install_bundle(resolved_dir, skills_dir, plugins_dir, clients_dir, lib_dir, installed_lib_roots, manifest=manifest,
-                                     allowlist=entry.components, override=entry.override,
-                                     bundle_name=entry.name)
+        installed = _install_bundle(resolved_dir, skills_dir, plugins_dir, clients_dir, lib_dir, installed_libs, manifest=manifest,
+                                      allowlist=entry.components, override=entry.override,
+                                      bundle_name=entry.name, source_uri=lock_entry.source)
         new_lock.bundles[entry.name] = lock_entry
         for name in installed.skills:
             new_lock.skills[name] = replace(lock_entry)
@@ -408,33 +417,52 @@ def _should_use_lock_for(names: str | tuple[str, ...], plan: Plan) -> bool:
 def _resolve(uri: str, base_dir: Path, cache: GitCache, plan: Plan, *,
              prior: lockmod.LockEntry | None,
              lock_names: tuple[str, ...] | None = None) -> tuple[Path, lockmod.LockEntry]:
-    src = srcmod.parse(uri, base_dir=base_dir)
+    effective_uri = _expand_source_alias(uri, plan.distro.sources)
+    src = srcmod.parse(effective_uri, base_dir=base_dir)
 
     if isinstance(src, LocalSource):
         if not src.path.is_dir():
             raise InstallError(f"local source not a directory: {src.path}")
-        return src.path, lockmod.LockEntry(source=uri, resolved_path=str(src.path),
-                                           fetched_at=lockmod.now_iso())
+        return src.path, lockmod.LockEntry(source=effective_uri, resolved_path=str(src.path),
+                                            fetched_at=lockmod.now_iso())
 
     assert isinstance(src, GitSource)
-    if prior is not None and prior.source == uri and prior.resolved_sha and _should_use_lock_for(lock_names or (uri,), plan):
+    if prior is not None and prior.source == effective_uri and prior.resolved_sha and _should_use_lock_for(lock_names or (uri, effective_uri), plan):
         # Reuse pinned sha from lock; treat ref as the pinned sha.
         pinned = GitSource(url=src.url, ref=prior.resolved_sha, subpath=src.subpath, pinned_sha=True)
         try:
             checkout = cache.fetch(pinned, offline=plan.offline)
         except Exception as exc:
             if plan.offline:
-                raise InstallError(f"frozen install failed for {uri}: {exc}") from exc
+                raise InstallError(f"frozen install failed for {effective_uri}: {exc}") from exc
             checkout = cache.fetch(src, offline=False)
-            return _git_result(uri, src, checkout)
+            return _git_result(effective_uri, src, checkout)
         return checkout.worktree if not src.subpath else (checkout.worktree / src.subpath), \
-            lockmod.LockEntry(source=uri, resolved_sha=checkout.sha,
+            lockmod.LockEntry(source=effective_uri, resolved_sha=checkout.sha,
                               resolved_ref=prior.resolved_ref or src.ref,
                               subpath=src.subpath or None,
                               fetched_at=prior.fetched_at or lockmod.now_iso())
 
     checkout = cache.fetch(src, offline=plan.offline)
-    return _git_result(uri, src, checkout)
+    return _git_result(effective_uri, src, checkout)
+
+
+def _expand_source_alias(uri: str, sources: dict[str, cfg.SourceAlias]) -> str:
+    expanded = uri
+    seen: set[str] = set()
+    while expanded.startswith("source:"):
+        body, subpath = srcmod.split_fragment(expanded)
+        alias = body[len("source:"):]
+        if not alias:
+            raise InstallError(f"empty source alias in {uri!r}")
+        if alias in seen:
+            raise InstallError(f"circular source alias in {uri!r}: {alias}")
+        seen.add(alias)
+        entry = sources.get(alias)
+        if entry is None:
+            raise InstallError(f"unknown source alias {alias!r} in {uri!r}")
+        expanded = srcmod.join_path_fragment(entry.source, subpath)
+    return expanded
 
 
 def _git_result(uri: str, src: GitSource, checkout) -> tuple[Path, lockmod.LockEntry]:
@@ -636,9 +664,9 @@ def _validate_client_manifest(src: Path, *, label: str) -> None:
 
 
 def _install_bundle(bundle_root: Path, skills_dir: Path, plugins_dir: Path, clients_dir: Path, lib_dir: Path,
-                    installed_lib_roots: set[Path], *,
+                    installed_libs: dict[str, InstalledSharedLib], *,
                     manifest: BundleManifest, allowlist: tuple[str, ...] | None,
-                    override: bool, bundle_name: str) -> InstalledBundleComponents:
+                    override: bool, bundle_name: str, source_uri: str) -> InstalledBundleComponents:
     if not bundle_root.is_dir():
         raise InstallError(f"bundle {bundle_name}: source is not a directory: {bundle_root}")
 
@@ -676,38 +704,68 @@ def _install_bundle(bundle_root: Path, skills_dir: Path, plugins_dir: Path, clie
             installed_clients.append(name)
         else:
             raise InstallError(f"bundle {bundle_name}: component {name!r} has no SKILL.md, plugin.toml or client.toml")
-    _install_bundle_lib(bundle_root, lib_dir, installed_lib_roots, override=override, bundle_name=bundle_name)
+    _install_bundle_lib(bundle_root, lib_dir, installed_libs, bundle_name=bundle_name, source_uri=source_uri)
     return InstalledBundleComponents(skills=tuple(installed_skills), plugins=tuple(installed_plugins), clients=tuple(installed_clients))
 
 
-def _install_bundle_lib(bundle_root: Path, lib_dir: Path, installed_lib_roots: set[Path], *,
-                        override: bool, bundle_name: str) -> None:
+def _install_bundle_lib(bundle_root: Path, lib_dir: Path, installed_libs: dict[str, InstalledSharedLib], *,
+                        bundle_name: str, source_uri: str) -> None:
     roots = []
     for src in (bundle_root / "_lib", bundle_root.parent / "_lib"):
         if src.is_dir() and src not in roots:
             roots.append(src)
     for src in roots:
-        resolved = src.resolve()
-        if resolved in installed_lib_roots:
-            continue
-        _install_lib_root(src, lib_dir, override=override, bundle_name=bundle_name)
-        installed_lib_roots.add(resolved)
+        _install_lib_root(src, lib_dir, installed_libs, bundle_name=bundle_name, source_uri=source_uri)
 
 
-def _install_lib_root(src: Path, lib_dir: Path, *, override: bool, bundle_name: str) -> None:
+def _install_lib_root(src: Path, lib_dir: Path, installed_libs: dict[str, InstalledSharedLib], *,
+                      bundle_name: str, source_uri: str) -> None:
     for entry in sorted(src.iterdir()):
         if not entry.is_dir() or entry.name.startswith(".") or entry.name in IGNORE_NAMES:
             continue
         dst = lib_dir / entry.name
-        if dst.exists() and _trees_equal(entry, dst):
-            continue
-        _install_component(entry, dst, override=override, label=f"bundle {bundle_name} -> _lib/{entry.name}")
+        fingerprint = _fingerprint_tree(entry)
+        existing = installed_libs.get(entry.name)
+        if existing is None and dst.exists():
+            existing = InstalledSharedLib(
+                name=entry.name,
+                fingerprint=_fingerprint_tree(dst),
+                source_path=dst,
+                source_uri="in-tree",
+                bundle_name="in-tree distro",
+            )
+            installed_libs[entry.name] = existing
+        if existing is not None:
+            if existing.fingerprint == fingerprint:
+                continue
+            raise InstallError(_shared_lib_conflict_message(entry.name, existing, entry, fingerprint, bundle_name, source_uri))
+        _copytree(entry, dst)
+        installed_libs[entry.name] = InstalledSharedLib(
+            name=entry.name,
+            fingerprint=fingerprint,
+            source_path=entry.resolve(),
+            source_uri=source_uri,
+            bundle_name=bundle_name,
+        )
 
 
-def _trees_equal(a: Path, b: Path) -> bool:
-    if not a.is_dir() or not b.is_dir():
-        return False
-    return _fingerprint_tree(a) == _fingerprint_tree(b)
+def _shared_lib_conflict_message(lib_name: str, existing: InstalledSharedLib, candidate_path: Path,
+                                 candidate_fingerprint: str, bundle_name: str, source_uri: str) -> str:
+    return (
+        f"shared lib _lib/{lib_name} differs between bundle sources:\n"
+        f"existing:\n"
+        f"  bundle: {existing.bundle_name}\n"
+        f"  source: {existing.source_uri}\n"
+        f"  lib: {existing.source_path}\n"
+        f"  hash: sha256:{existing.fingerprint}\n"
+        f"candidate:\n"
+        f"  bundle: {bundle_name}\n"
+        f"  source: {source_uri}\n"
+        f"  lib: {candidate_path.resolve()}\n"
+        f"  hash: sha256:{candidate_fingerprint}\n"
+        f"Use a shared source alias if these bundles should share one repo checkout, "
+        f"or align the shared _lib/{lib_name} contents."
+    )
 
 
 def _bundle_component_candidates(bundle_root: Path, manifest: BundleManifest, *,

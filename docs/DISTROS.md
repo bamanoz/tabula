@@ -99,7 +99,7 @@ What it includes:
 
 - distro-specific TUI gateway plugin (TypeScript/Ink) under `coder/`
 - shared bundles: `base`, `files`, `drivers`, `memory`, `coder-git`,
-  `coder-tasks`, `coder-review`, `coder-subagents`, `coder-workspace`
+  `coder-tasks`, `coder-review`, `subagents`, `coder-workspace`
 
 ### `claw`
 
@@ -235,8 +235,8 @@ What this does:
 1. resolve the distro source (clone+checkout for git+, copy for local)
 2. validate that it provides `boot.py`, `templates/`, `skills/`, optional
    `plugins/`, and `distro.toml`
-3. resolve every bundle declared in `distro.toml` (git+ or local: sources;
-   pinned via lockfile)
+3. resolve every bundle declared in `distro.toml` (`git+`, `local:`, or
+   `source:<alias>` sources; pinned via lockfile)
 4. lay everything out under `~/.tabula/distrib/<name>/<generation>/`
 5. update `~/.tabula/distrib/<name>/current` and (if requested)
    `~/.tabula/distrib/active`

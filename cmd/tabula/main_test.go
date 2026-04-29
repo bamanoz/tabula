@@ -125,66 +125,6 @@ func TestValidateBootSkillTools_DuplicateNamesFail(t *testing.T) {
 	}
 }
 
-func TestValidateBootSkillTools_LegacyToolsFallbackInvalidDescriptorFails(t *testing.T) {
-	cfg := &BootConfig{Tools: json.RawMessage(`[{"name":"legacy"}]`)}
-	raw, legacy := resolveBootSkills(cfg)
-	if !legacy {
-		t.Fatal("expected legacy tools fallback")
-	}
-	_, _, err := validateBootSkillTools(raw)
-	if err == nil {
-		t.Fatal("expected missing exec validation error")
-	}
-	if got := err.Error(); got != "skills[0].exec is required" {
-		t.Fatalf("unexpected error: %q", got)
-	}
-}
-
-func TestResolveBootSkills_PrefersSkillsField(t *testing.T) {
-	cfg := &BootConfig{
-		Skills: json.RawMessage(`[{"name":"a","exec":"a.sh"}]`),
-		Tools:  json.RawMessage(`[{"name":"b","exec":"b.sh"}]`),
-	}
-	raw, legacy := resolveBootSkills(cfg)
-	if legacy {
-		t.Fatal("expected legacy=false when skills is populated")
-	}
-	if string(raw) != `[{"name":"a","exec":"a.sh"}]` {
-		t.Fatalf("expected skills field to win, got %s", raw)
-	}
-}
-
-func TestResolveBootSkills_FallsBackToLegacyTools(t *testing.T) {
-	cfg := &BootConfig{
-		Tools: json.RawMessage(`[{"name":"b","exec":"b.sh"}]`),
-	}
-	raw, legacy := resolveBootSkills(cfg)
-	if !legacy {
-		t.Fatal("expected legacy=true when only tools is populated")
-	}
-	if string(raw) != `[{"name":"b","exec":"b.sh"}]` {
-		t.Fatalf("expected tools fallback, got %s", raw)
-	}
-}
-
-func TestResolveBootSkills_EmptyJSONTreatedAsAbsent(t *testing.T) {
-	cfg := &BootConfig{
-		Skills: json.RawMessage(`[]`),
-		Tools:  json.RawMessage(`[]`),
-	}
-	raw, legacy := resolveBootSkills(cfg)
-	if raw != nil || legacy {
-		t.Fatalf("expected nil/false for empty JSON arrays, got raw=%s legacy=%v", raw, legacy)
-	}
-}
-
-func TestResolveBootSkills_NilConfig(t *testing.T) {
-	raw, legacy := resolveBootSkills(nil)
-	if raw != nil || legacy {
-		t.Fatalf("expected nil/false for nil config, got raw=%s legacy=%v", raw, legacy)
-	}
-}
-
 func TestLoadEnvFileLoadsMissingValues(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")
@@ -392,57 +332,5 @@ func TestPluginSnapshotEndpointRejectsNonGETBeforeSnapshot(t *testing.T) {
 	}
 	if got := rec.Header().Get("Allow"); got != http.MethodGet {
 		t.Fatalf("expected Allow: GET, got %q", got)
-	}
-}
-
-func TestFilterKernelTools_DefaultIsEmpty(t *testing.T) {
-	filtered, warnings, err := filterKernelTools(embeddedToolsJSON, nil)
-	if err != nil {
-		t.Fatalf("filterKernelTools: %v", err)
-	}
-	if len(filtered) != 0 {
-		t.Fatalf("expected no builtin tools by default, got %d", len(filtered))
-	}
-	if len(warnings) != 0 {
-		t.Fatalf("expected no warnings for empty default, got %#v", warnings)
-	}
-}
-
-func TestFilterKernelTools_ExplicitLegacySelectionWarnsAndReturnsEmpty(t *testing.T) {
-	filtered, warnings, err := filterKernelTools(embeddedToolsJSON, []string{"shell_exec", "process_list"})
-	if err != nil {
-		t.Fatalf("filterKernelTools: %v", err)
-	}
-	if len(filtered) != 0 {
-		t.Fatalf("expected explicit legacy tools to be empty, got %d", len(filtered))
-	}
-	if len(warnings) != 2 {
-		t.Fatalf("expected 2 warnings, got %#v", warnings)
-	}
-	if warnings[0] == "" || warnings[1] == "" {
-		t.Fatalf("expected non-empty warnings, got %#v", warnings)
-	}
-}
-
-func TestFilterKernelTools_UnknownSelectionWarnsAndReturnsEmpty(t *testing.T) {
-	filtered, warnings, err := filterKernelTools(embeddedToolsJSON, []string{"does_not_exist"})
-	if err != nil {
-		t.Fatalf("filterKernelTools: %v", err)
-	}
-	if len(filtered) != 0 {
-		t.Fatalf("expected unknown kernel tool selection to be empty, got %d", len(filtered))
-	}
-	if len(warnings) != 1 {
-		t.Fatalf("expected 1 warning, got %#v", warnings)
-	}
-}
-
-func TestLoadToolMetas_ParsesEmbeddedToolNames(t *testing.T) {
-	metas, err := loadToolMetas(embeddedToolsJSON)
-	if err != nil {
-		t.Fatalf("loadToolMetas: %v", err)
-	}
-	if len(metas) != 0 {
-		t.Fatalf("expected empty embedded kernel tool metadata, got %#v", metas)
 	}
 }

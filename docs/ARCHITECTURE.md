@@ -53,11 +53,8 @@ The kernel publishes **no** LLM-visible tools by default. The native tool
 catalog is empty; everything (including `shell_exec`-style commands) is
 delivered by skills or plugins from the active distro.
 
-This is intentional: distros decide their tool surface, and the kernel does
-not impose `shell_exec` / `process_spawn` / `process_kill` / `process_list`
-as a baseline. See
-[plans/SKILL_PLUGIN_ARCHITECTURE.md §4](plans/SKILL_PLUGIN_ARCHITECTURE.md)
-for the rationale.
+This is intentional: distros decide their tool surface, and the kernel does not
+impose command execution or process-management tools as a baseline.
 
 Internally, the kernel still owns process spawning and skill execution
 (`SkillExec`, `PluginRuntime`), but those are not LLM tools.
@@ -154,12 +151,10 @@ The active `boot.py` is copied (or symlinked) from the installed distro under
 The boot script emits one JSON object with fields like:
 
 - `url` — kernel WebSocket URL
-- `spawn` — process commands to launch at startup
-- `tools` — skill tools to expose to the active driver
-- `commands` — slash commands for gateways
-- `context` — assembled system prompt
-- `kernel_tools` — legacy compatibility field; the kernel builtin tool catalog
-  is empty in the skill/plugin architecture
+- `skills` — static per-call skill tool descriptors; each entry includes an
+  `exec` command used by the kernel for dispatch
+- `plugins` — plugin manifest paths for long-lived runtime components
+- `meta` — opaque client-facing metadata forwarded on `init.meta`
 
 Claw and guardian use the same contract, but generate different payloads.
 
@@ -173,10 +168,10 @@ It does the following:
 - loads `.env`
 - scans the flat `skills/` and `plugins/` runtime surfaces recursively
 - reads `SKILL.md` frontmatter for skills and `plugin.toml` for plugins
-- discovers tool skills and slash commands
+- discovers skill tools for `skills[]`
 - builds the system prompt from templates and project files
 - selects the active provider through the unified `drivers/driver` plugin
-- launches long-lived plugins (drivers, gateways, subagent runtime, mcp)
+- declares long-lived plugins for kernel-managed lifecycle
 - writes subagent prompt state under `~/.tabula/state/subagent/`
 
 This is where most of the claw distro behavior is assembled.
@@ -187,11 +182,8 @@ This is where most of the claw distro behavior is assembled.
 
 It does not scan a flexible skill tree. It builds a fixed runtime:
 
-- empty spawn list
 - one tool: `execute_code`
-- no slash commands
 - a system prompt composed from four fixed templates
-- no kernel tools exposed
 
 Guardian is a good example of a distro with the same kernel contract but a
 completely different runtime philosophy.
@@ -393,10 +385,9 @@ They are:
 - attached to their own session
 - configured with `parent_session`, `agent_id`, `initial_task`, and limits
 
-The parent driver requests a spawn through the subagent plugin, which (under
-its own process group) launches a child subagent process. Results flow back
-into the parent session as `<subagent_result id="...">...</subagent_result>`
-in the next turn.
+The parent driver requests a spawn through the subagent plugin, which owns the
+child process group. Results are returned through `subagent_wait` or
+`subagent_spawn` with `mode="sync"` as structured tool results.
 
 Target ownership for the skill/plugin architecture is that `MaxSpawnDepth`,
 `MaxChildren`, and child authentication live inside the subagent plugin itself —
@@ -519,32 +510,36 @@ Current bundles:
 - `drivers/` — `driver`, `subagent`, plus `_drivers/` shared support code
 - `memory/` — memory-save, memory-search, memory-admin
 - `caveman/` — minimal experimental skill set
-- `coder-git/`, `coder-tasks/`, `coder-review/`, `coder-subagents/`,
+- `coder-git/`, `coder-tasks/`, `coder-review/`, `subagents/`,
   `coder-workspace/` — components used by the `coder` distro
 
 A distro lists bundles in `distro.toml`:
 
 ```toml
+[sources.tabula-bundles]
+source = "git+https://github.com/bamanoz/tabula-bundles.git@main"
+
 [[bundles]]
 name = "base"
-source = "git+https://github.com/bamanoz/tabula-bundles.git@main#path=base"
+source = "source:tabula-bundles#path=base"
 
 [[bundles]]
 name = "drivers"
-source = "git+https://github.com/bamanoz/tabula-bundles.git@main#path=drivers"
+source = "source:tabula-bundles#path=drivers"
 ```
 
 For dev work you can override these locally with a `distro.override.toml`
-pointing at `local:` paths.
+that changes `[sources.tabula-bundles]` to a single `local:` checkout.
 
 At install time, bundle components are linked into the flat runtime surface:
-skill components under `skills/`, plugin components under `plugins/`.
+skill components under `skills/`, plugin components under `plugins/`, and
+client components under `clients/`.
 
 ## Current boundaries
 
 If you are extending Tabula, the important seams are:
 
-- **kernel <-> skill** — `tools[].exec` command, JSON over stdin/stdout per
+- **kernel <-> skill** — `skills[].exec` command, JSON over stdin/stdout per
   call.
 - **kernel <-> plugin** — long-lived stdio NDJSON JSON-RPC (`register`,
   `tool_call`, `tool_result`, `event`, `event_reply`, `update_tools`, `send`,

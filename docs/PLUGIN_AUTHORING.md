@@ -172,9 +172,8 @@ For modifying or claiming hook events, return one of:
 ```
 
 The kernel maps these to its existing hook engine actions (`pass`, `modify`,
-`block`, `claim`). `before_spawn` and `after_spawn` remain reserved event names,
-but the kernel no longer emits them for a built-in `process_spawn` tool; spawn
-semantics move to plugins such as the future subagent runtime.
+`block`, `claim`). `before_spawn` and `after_spawn` remain reserved event names;
+process lifecycle semantics belong to domain plugins such as `subagents`.
 
 ## Child processes and shutdown
 

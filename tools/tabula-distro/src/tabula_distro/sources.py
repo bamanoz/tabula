@@ -1,9 +1,10 @@
 """Source URI parsing and resolution.
 
-Two forms are supported:
+Three forms are supported:
 
     local:<path>                     # <path> relative to distro.toml or absolute
     git+<url>@<ref>[#path=<subdir>]  # <ref> is a tag, branch, or commit sha
+    source:<alias>[#path=<subdir>]   # resolved by distro config before parsing
 
 A ``ref`` that looks like a 7..40-character hex string is treated as a commit
 sha; otherwise it is passed to ``git`` as-is (tag or branch).
@@ -47,12 +48,15 @@ class SourceError(ValueError):
 
 def parse(uri: str, *, base_dir: Path) -> Source:
     if uri.startswith("local:"):
-        raw = uri[len("local:"):]
+        body, subpath = split_fragment(uri)
+        raw = body[len("local:"):]
         if not raw:
             raise SourceError(f"empty local: path in {uri!r}")
         path = Path(raw)
         if not path.is_absolute():
             path = (base_dir / path)
+        if subpath:
+            path = path / subpath
         return LocalSource(path=path.resolve())
 
     if uri.startswith("git+"):
@@ -78,6 +82,31 @@ def parse(uri: str, *, base_dir: Path) -> Source:
         )
 
     raise SourceError(f"unsupported source URI: {uri!r}")
+
+
+def split_fragment(uri: str) -> tuple[str, str]:
+    """Return (source_without_fragment, optional path fragment)."""
+
+    if "#" not in uri:
+        return uri, ""
+    body, frag = uri.split("#", 1)
+    subpath = ""
+    for part in frag.split("&"):
+        if part.startswith("path="):
+            subpath = part[len("path="):].strip("/")
+        else:
+            raise SourceError(f"unknown fragment in source alias: {part!r}")
+    return body, subpath
+
+
+def join_path_fragment(base_uri: str, subpath: str) -> str:
+    """Append or combine a #path fragment on a source URI."""
+
+    if not subpath:
+        return base_uri
+    body, base_subpath = split_fragment(base_uri)
+    combined = "/".join(part.strip("/") for part in (base_subpath, subpath) if part.strip("/"))
+    return f"{body}#path={combined}"
 
 
 def git(*args: str, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess:

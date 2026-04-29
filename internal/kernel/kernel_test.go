@@ -257,19 +257,19 @@ func TestRemovedKernelBuiltinsNotExposedOrExecutable(t *testing.T) {
 	if init.Type != "init" {
 		t.Fatalf("expected init, got %s", init.Type)
 	}
-	for _, removed := range []KernelTool{ToolShellExec, ToolProcessSpawn, ToolProcessKill, ToolProcessList} {
-		if strings.Contains(string(init.Tools), `"`+string(removed)+`"`) {
+	for _, removed := range []string{"shell_exec", "process_spawn", "process_kill", "process_list"} {
+		if strings.Contains(string(init.Tools), `"`+removed+`"`) {
 			t.Fatalf("unexpected removed kernel builtin %s leaked in init tools: %s", removed, string(init.Tools))
 		}
 	}
 
-	for i, removed := range []KernelTool{ToolShellExec, ToolProcessSpawn, ToolProcessKill, ToolProcessList} {
-		writeJSON(t, conn, Message{Type: "tool_use", ID: fmt.Sprintf("removed-%d", i), Name: string(removed), Input: json.RawMessage(`{}`)})
+	for i, removed := range []string{"shell_exec", "process_spawn", "process_kill", "process_list"} {
+		writeJSON(t, conn, Message{Type: "tool_use", ID: fmt.Sprintf("removed-%d", i), Name: removed, Input: json.RawMessage(`{}`)})
 		result := readMsg(t, conn)
 		if result.Type != "tool_result" {
 			t.Fatalf("%s: expected tool_result, got %s", removed, result.Type)
 		}
-		expected := "unknown tool " + string(removed)
+		expected := "unknown tool " + removed
 		if !strings.Contains(result.Output, expected) {
 			t.Fatalf("%s: expected removed builtin to be rejected with %q, got %q", removed, expected, result.Output)
 		}
@@ -1156,7 +1156,7 @@ func TestValidateValidMessages(t *testing.T) {
 		{Type: "connect", Name: "test", Sends: []string{"message"}},
 		{Type: "join", Session: "main"},
 		{Type: "message", Text: "hello"},
-		{Type: "tool_use", ID: "t1", Name: string(ToolShellExec)},
+		{Type: "tool_use", ID: "t1", Name: "shell_exec"},
 		{Type: "hook_result", ID: "h1", Action: "pass"},
 		{Type: "done"},
 		{Type: "cancel"},

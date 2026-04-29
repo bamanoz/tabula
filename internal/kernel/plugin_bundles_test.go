@@ -3,7 +3,6 @@ package kernel
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -160,12 +159,10 @@ func TestTabulaBundlesMCPPluginLiveE2E(t *testing.T) {
 		t.Fatalf("mcp_call result: %+v", msg)
 	}
 
-	cmd := exec.Command("python3", filepath.Join(root, "base", "mcp", "run.py"), "tool", "mcp_list_servers")
-	cmd.Env = append(os.Environ(), "TABULA_HOME="+home, "PYTHONPATH="+filepath.Join(root, "_lib", "python", "src")+string(os.PathListSeparator)+repoRoot(t))
-	cmd.Stdin = strings.NewReader(`{}`)
-	out, err := cmd.CombinedOutput()
-	if err != nil || !strings.Contains(string(out), `"fake"`) {
-		t.Fatalf("legacy MCP tool command failed: err=%v output=%s", err, out)
+	hub.tools.handleDynamicTool("mcp-live", "tc-discover", "mcp_discover", json.RawMessage(`{}`))
+	msg = waitForMessage(t, recv.recvCh)
+	if msg.Type != string(MsgToolResult) || !strings.Contains(msg.Output, `"fake"`) {
+		t.Fatalf("mcp_discover result: %+v", msg)
 	}
 }
 
@@ -203,7 +200,7 @@ entry = "run.py"
 		CleanRunReset:  time.Hour,
 	}
 
-	manifest, err := plugin.LoadManifest(filepath.Join(root, "coder-subagents", "subagents"))
+	manifest, err := plugin.LoadManifest(filepath.Join(root, "subagents", "subagents"))
 	if err != nil {
 		t.Fatalf("LoadManifest(subagents): %v", err)
 	}

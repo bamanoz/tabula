@@ -9,9 +9,12 @@ Schema (all sections optional; absent file = empty config, legacy behavior):
     [requires]
     kernel = ">=0.8.0,<1.0.0"   # enforced by tabula-distro install
 
+    [sources.tabula-bundles]
+    source = "git+https://github.com/bamanoz/tabula-bundles.git@main"
+
     [[bundles]]
     name       = "memory"
-    source     = "local:../../bundles/memory"
+    source     = "source:tabula-bundles#path=memory"
     components = ["memory-save", "memory-search"] # optional allowlist
     override   = false                            # explicit conflict override
 
@@ -58,11 +61,18 @@ class SkillEntry:
 
 
 @dataclass(frozen=True)
+class SourceAlias:
+    name: str
+    source: str
+
+
+@dataclass(frozen=True)
 class DistroConfig:
     path: Path  # directory containing distro.toml (the distro root)
     name: str
     version: Version | None = None
     requires_kernel: Constraint | None = None
+    sources: dict[str, SourceAlias] = field(default_factory=dict)
     bundles: tuple[BundleEntry, ...] = ()
     skills: tuple[SkillEntry, ...] = ()
     plugins: tuple[SkillEntry, ...] = ()
@@ -97,6 +107,7 @@ def load(distro_dir: Path, *, override_name: str | None = None) -> DistroConfig:
         name=name,
         version=version,
         requires_kernel=requires_kernel,
+        sources=_parse_sources(_section(merged, "sources")),
         bundles=tuple(_parse_bundle(entry) for entry in merged.get("bundles", [])),
         skills=tuple(_parse_skill(entry) for entry in merged.get("skills", [])),
         plugins=tuple(_parse_skill(entry) for entry in merged.get("plugins", [])),
@@ -119,9 +130,15 @@ def _merge(base: dict, override: dict) -> dict:
     if not override:
         return base
     result = dict(base)
-    for dict_key in ("distro", "requires"):
+    for dict_key in ("distro", "requires", "sources"):
         if dict_key in override:
-            result[dict_key] = {**_section(base, dict_key), **_section(override, dict_key)}
+            merged_section = {**_section(base, dict_key)}
+            for key, value in _section(override, dict_key).items():
+                if isinstance(value, dict) and isinstance(merged_section.get(key), dict):
+                    merged_section[key] = {**merged_section[key], **value}
+                else:
+                    merged_section[key] = value
+            result[dict_key] = merged_section
     for list_key in ("bundles", "skills", "plugins"):
         if list_key not in override:
             continue
@@ -167,6 +184,16 @@ def _parse_skill(entry: dict) -> SkillEntry:
         source=entry["source"],
         override=bool(entry.get("override", False)),
     )
+
+
+def _parse_sources(section: dict) -> dict[str, SourceAlias]:
+    aliases: dict[str, SourceAlias] = {}
+    for name, data in section.items():
+        if not isinstance(data, dict):
+            raise ConfigError(f"source alias {name!r}: expected TOML table")
+        _require(data, ("source",), kind=f"source alias {name!r}")
+        aliases[name] = SourceAlias(name=name, source=data["source"])
+    return aliases
 
 
 def _require(entry: dict, keys: tuple[str, ...], *, kind: str) -> None:
