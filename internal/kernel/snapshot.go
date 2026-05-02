@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/bamanoz/tabula/internal/kernel/plugin"
+	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
 )
 
 type snapshotProcessInfo struct {
@@ -37,6 +38,27 @@ type snapshotPluginInfo struct {
 
 type snapshotPluginsInfo struct {
 	Plugins []snapshotPluginInfo `json:"plugins"`
+}
+
+type snapshotRuntimeInfo struct {
+	ID           string               `json:"id"`
+	Attached     bool                 `json:"attached"`
+	PID          int                  `json:"pid"`
+	Capabilities []string             `json:"capabilities"`
+	WorkerCount  int                  `json:"worker_count,omitempty"`
+	LastError    *string              `json:"last_error,omitempty"`
+	ConnectedAt  string               `json:"connected_at,omitempty"`
+	Targets      []snapshotTargetInfo `json:"targets,omitempty"`
+}
+
+type snapshotTargetInfo struct {
+	Kind  string   `json:"kind"`
+	ID    string   `json:"id"`
+	Tools []string `json:"tools,omitempty"`
+}
+
+type snapshotRuntimesInfo struct {
+	Runtimes []snapshotRuntimeInfo `json:"runtimes"`
 }
 
 // SnapshotSessions returns a JSON snapshot of all sessions with state and metadata.
@@ -145,6 +167,34 @@ func (h *Hub) SnapshotPlugins() []byte {
 	return data
 }
 
+func snapshotRuntimes(h *Hub) []byte {
+	out := snapshotRuntimesInfo{Runtimes: []snapshotRuntimeInfo{}}
+	if h == nil || h.runtimes == nil {
+		data, _ := json.Marshal(out)
+		return data
+	}
+	for _, attachment := range h.runtimes.Snapshot() {
+		info := snapshotRuntimeInfo{
+			ID:           attachment.ID,
+			Attached:     attachment.Attached,
+			PID:          attachment.PID,
+			Capabilities: runtimeCapabilityNames(attachment.Capabilities),
+			WorkerCount:  attachment.Health.WorkerCount,
+			Targets:      runtimeTargets(attachment.Capabilities),
+		}
+		if attachment.LastError != "" {
+			err := attachment.LastError
+			info.LastError = &err
+		}
+		if !attachment.ConnectedAt.IsZero() {
+			info.ConnectedAt = formatSnapshotTime(attachment.ConnectedAt)
+		}
+		out.Runtimes = append(out.Runtimes, info)
+	}
+	data, _ := json.Marshal(out)
+	return data
+}
+
 func (h *Hub) snapshotPluginHandles() []*plugin.Handle {
 	if h == nil || h.plugins == nil {
 		return nil
@@ -203,4 +253,37 @@ func pluginSubscriptionEvents(subs []plugin.SubscriptionSpec) []string {
 
 func formatSnapshotTime(t time.Time) string {
 	return t.UTC().Format("2006-01-02T15:04:05Z07:00")
+}
+
+func runtimeCapabilityNames(capabilities []runtimeapi.Capability) []string {
+	set := make(map[string]struct{})
+	for _, capability := range capabilities {
+		for _, tool := range capability.Tools {
+			if tool != "" {
+				set[tool] = struct{}{}
+			}
+		}
+	}
+	names := make([]string, 0, len(set))
+	for name := range set {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func runtimeTargets(capabilities []runtimeapi.Capability) []snapshotTargetInfo {
+	targets := make([]snapshotTargetInfo, 0, len(capabilities))
+	for _, capability := range capabilities {
+		tools := append([]string(nil), capability.Tools...)
+		sort.Strings(tools)
+		targets = append(targets, snapshotTargetInfo{Kind: string(capability.Target.Kind), ID: capability.Target.ID, Tools: tools})
+	}
+	sort.Slice(targets, func(i, j int) bool {
+		if targets[i].Kind == targets[j].Kind {
+			return targets[i].ID < targets[j].ID
+		}
+		return targets[i].Kind < targets[j].Kind
+	})
+	return targets
 }

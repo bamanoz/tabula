@@ -19,6 +19,7 @@ type Hub struct {
 	policy    *PolicyEngine
 	tools     *ToolService
 	plugins   *plugin.Registry
+	runtimes  *RuntimeRegistry
 	// pluginRuns tracks active supervisor lifecycles by plugin id. It is kept
 	// outside plugin.Registry so replacement/cancellation state does not leak
 	// into the public plugin handle snapshot/order semantics.
@@ -82,6 +83,7 @@ func NewHub(toolsJSON json.RawMessage, skillExec map[string]string, _ int, _ int
 		processes:       NewProcessSupervisor(logger, 3*time.Second),
 		hooks:           NewHookEngine(logger),
 		plugins:         plugin.NewRegistry(),
+		runtimes:        NewRuntimeRegistry(),
 		pluginRuns:      make(map[string]*pluginLifecycle),
 		pluginStates:    make(map[string]*pluginLifecycleState),
 		pluginRuntime:   plugin.NewRuntime(),

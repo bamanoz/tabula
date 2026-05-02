@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -20,6 +21,9 @@ import (
 	"github.com/bamanoz/tabula/internal/kernel"
 	"github.com/bamanoz/tabula/internal/kernel/plugin"
 	"github.com/bamanoz/tabula/internal/logging"
+	runtimeauth "github.com/bamanoz/tabula/internal/runtime/auth"
+	runtimecodec "github.com/bamanoz/tabula/internal/runtime/codec"
+	"github.com/bamanoz/tabula/internal/runtime/transport/unixsock"
 
 	"github.com/gorilla/websocket"
 )
@@ -43,13 +47,13 @@ func registerKernelHTTPHandlers(mux *http.ServeMux, hub *kernel.Hub, listenerHos
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status":                       "ok",
-			"version":                      version,
-			"kernel_version":               version,
-			"commit":                       commit,
-			"protocol_version":             kernel.ProtocolVersion,
-			"min_plugin_protocol_version":  kernel.MinPluginProtocolVersion,
-			"max_plugin_protocol_version":  kernel.MaxPluginProtocolVersion,
+			"status":                      "ok",
+			"version":                     version,
+			"kernel_version":              version,
+			"commit":                      commit,
+			"protocol_version":            kernel.ProtocolVersion,
+			"min_plugin_protocol_version": kernel.MinPluginProtocolVersion,
+			"max_plugin_protocol_version": kernel.MaxPluginProtocolVersion,
 		})
 	})
 
@@ -71,6 +75,16 @@ func registerKernelHTTPHandlers(mux *http.ServeMux, hub *kernel.Hub, listenerHos
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(hub.SnapshotPlugins())
+	}))
+
+	mux.HandleFunc("/internal/snapshot/runtimes", internalDiagnosticsGuard(listenerHost, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(hub.SnapshotRuntimes())
 	}))
 }
 
@@ -141,6 +155,9 @@ func main() {
 	case "run":
 		os.Exit(runCmd(os.Args[2:]))
 		return
+	case "status":
+		os.Exit(statusCmd(os.Args[2:]))
+		return
 	case "serve":
 		// Fall through to server mode.
 	default:
@@ -158,7 +175,7 @@ func main() {
 			os.Exit(0)
 		}
 		// No subcommand — print usage.
-		fmt.Fprintf(os.Stderr, "Usage: tabula <command>\n\nCommands:\n  serve   Start the kernel WebSocket server (default)\n  run     One-shot prompt → response\n\nFlags:\n  --version    Show version\n  --protocol   Show kernel plugin protocol range (JSON)\n")
+		fmt.Fprintf(os.Stderr, "Usage: tabula <command>\n\nCommands:\n  serve   Start the kernel WebSocket server (default)\n  run     One-shot prompt → response\n  status  Show kernel/runtime/tenant status\n\nFlags:\n  --version    Show version\n  --protocol   Show kernel plugin protocol range (JSON)\n")
 		os.Exit(1)
 	}
 
@@ -252,6 +269,7 @@ func serveCmd() int {
 	if !strings.Contains(listenAddr, ":") {
 		listenAddr += ":8089"
 	}
+	wsEndpoint := bootConfig.URL
 
 	// Set environment for all child processes
 	os.Setenv("TABULA_URL", bootConfig.URL)
@@ -265,6 +283,18 @@ func serveCmd() int {
 	hub.SetInitMeta(bootConfig.Meta)
 	hub.ProjectRoot = os.Getenv("TABULA_PROJECT_ROOT")
 	hub.StartReaper()
+
+	runtimeStore := runtimeauth.NewMemoryStore()
+	if _, err := runtimeauth.IssueLocalTokenFile(runtimeStore, runtimeauth.RuntimeTokenPath(tabulaHome), runtimeauth.LocalRuntimeID, time.Now()); err != nil {
+		fmt.Fprintf(os.Stderr, "error: runtime token setup failed: %v\n", err)
+		return 1
+	}
+	slog.Info("runtime token issued", "runtime_id", runtimeauth.LocalRuntimeID)
+	if err := writeKernelStatusFiles(tabulaHome, wsEndpoint, time.Now().UTC()); err != nil {
+		fmt.Fprintf(os.Stderr, "error: kernel status setup failed: %v\n", err)
+		return 1
+	}
+	defer removeKernelStatusFiles(tabulaHome)
 
 	// Start HTTP/WebSocket server
 	mux := http.NewServeMux()
@@ -283,6 +313,31 @@ func serveCmd() int {
 		return 1
 	}
 	slog.Info("listening", "addr", listenAddr)
+
+	runtimeListener, err := unixsock.Listen(filepath.Join(tabulaHome, "run", "runtime.sock"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: cannot listen for runtime connections: %v\n", err)
+		listener.Close()
+		return 1
+	}
+	slog.Info("runtime listener ready", "path", runtimeListener.Path())
+	runtimeStop := make(chan struct{})
+	go func() {
+		authenticator := runtimeauth.Authenticator{Store: runtimeStore, KernelID: runtimeauth.DefaultKernelID}
+		serveErr := runtimeListener.Serve(func(ctx context.Context, c *runtimecodec.Conn) {
+			if serveErr := hub.ServeAuthenticatedRuntime(ctx, c, kernel.RuntimeAttachOptions{Auth: authenticator, Logger: logger.Logger}); serveErr != nil {
+				slog.Warn("runtime connection closed", "error", serveErr)
+			}
+		})
+		select {
+		case <-runtimeStop:
+			// Expected shutdown path.
+		default:
+			if serveErr != nil {
+				slog.Error("runtime listener error", "error", serveErr)
+			}
+		}
+	}()
 
 	server := &http.Server{Handler: mux}
 	go func() {
@@ -309,6 +364,8 @@ func serveCmd() int {
 	slog.Info("shutting down")
 	close(stopReload)
 	hub.Shutdown()
+	close(runtimeStop)
+	runtimeListener.Close()
 	server.Close()
 	return 0
 }
