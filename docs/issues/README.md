@@ -3,6 +3,9 @@
 This directory holds independently-grabbable issues for the
 remote runtime / multi-backend execution program.
 
+**Start here:** `TASK.md` — the multi-agent execution brief.
+Read it before grabbing any issue.
+
 - Plan: `docs/plans/REMOTE_RUNTIME.md`
 - ADR: `docs/adr/0001-runtime-daemon-and-execution-backends.md`
 - **Amendments: `AMENDMENTS.md` (authoritative; overrides
