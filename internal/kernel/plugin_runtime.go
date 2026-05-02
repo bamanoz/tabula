@@ -72,6 +72,36 @@ func (h *Hub) LoadPlugins(entries []plugin.BootEntry) error {
 	return errors.Join(errs...)
 }
 
+// ReloadPlugins stops every active plugin lifecycle and re-loads from the
+// supplied boot entries. Used by the reload-trigger watcher to pick up
+// distro reinstalls without a full kernel restart. Best-effort: individual
+// plugin start failures are returned via LoadPlugins' joined error.
+func (h *Hub) ReloadPlugins(entries []plugin.BootEntry) error {
+	if h == nil {
+		return errors.New("kernel: nil Hub")
+	}
+	h.shutdownAllPluginLifecycles()
+	return h.LoadPlugins(entries)
+}
+
+func (h *Hub) shutdownAllPluginLifecycles() {
+	h.pluginRunsMu.Lock()
+	runs := h.pluginRuns
+	h.pluginRuns = make(map[string]*pluginLifecycle)
+	h.pluginRunsMu.Unlock()
+	for id, run := range runs {
+		if run == nil {
+			continue
+		}
+		run.cancel()
+		select {
+		case <-run.done:
+		case <-time.After(10 * time.Second):
+			h.Logger.Warn("plugin lifecycle did not exit within reload deadline", "plugin", id)
+		}
+	}
+}
+
 func (h *Hub) handlePluginExit(handle *plugin.Handle, err error) {
 	if h == nil || handle == nil {
 		return
@@ -103,11 +133,12 @@ func (h *Hub) startPluginLifecycle(manifest *plugin.Manifest, config map[string]
 		defer close(done)
 		err := supervisor.Supervise(ctx, manifest, config, plugin.SupervisorOptions{
 			SpawnOptions: plugin.SpawnOptions{
-				ProtocolVersion:  PluginProtocolVersion,
-				Logger:           h.Logger,
-				OnMessage:        h.handlePluginProtocolMessage,
-				OnStartProcess:   h.handlePluginProcessStart,
-				ValidateRegister: h.validatePluginRegisterParams,
+				MinProtocolVersion: MinPluginProtocolVersion,
+				MaxProtocolVersion: MaxPluginProtocolVersion,
+				Logger:             h.Logger,
+				OnMessage:          h.handlePluginProtocolMessage,
+				OnStartProcess:     h.handlePluginProcessStart,
+				ValidateRegister:   h.validatePluginRegisterParams,
 			},
 			OnStart: func(handle *plugin.Handle) {
 				if err := h.validatePluginHandleCatalog(handle); err != nil {

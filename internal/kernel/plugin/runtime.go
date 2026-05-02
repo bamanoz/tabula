@@ -29,16 +29,18 @@ type Runtime interface {
 
 // SpawnOptions configures Runtime.Spawn without importing the parent kernel
 // package (avoids an import cycle). Hub.RegisterPlugin will pass
-// kernel.PluginProtocolVersion through ProtocolVersion.
+// kernel.MinPluginProtocolVersion/MaxPluginProtocolVersion through
+// MinProtocolVersion/MaxProtocolVersion.
 type SpawnOptions struct {
-	ProtocolVersion  int
-	RegisterTimeout  time.Duration
-	Logger           *slog.Logger
-	RuntimeCommands  map[string]string
-	OnMessage        func(*Handle, *Message)
-	OnStartProcess   func(*Handle, *exec.Cmd)
-	OnExit           func(*Handle, error)
-	ValidateRegister func(*RegisterParams) error
+	MinProtocolVersion int
+	MaxProtocolVersion int
+	RegisterTimeout    time.Duration
+	Logger             *slog.Logger
+	RuntimeCommands    map[string]string
+	OnMessage          func(*Handle, *Message)
+	OnStartProcess     func(*Handle, *exec.Cmd)
+	OnExit             func(*Handle, error)
+	ValidateRegister   func(*RegisterParams) error
 }
 
 // DefaultRuntime is the in-tree Runtime implementation backed by os/exec and
@@ -54,8 +56,11 @@ func (r *DefaultRuntime) Spawn(ctx context.Context, manifest *Manifest, config m
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	if opts.ProtocolVersion <= 0 {
-		return nil, errors.New("plugin runtime: protocol version is required")
+	if opts.MinProtocolVersion <= 0 || opts.MaxProtocolVersion <= 0 {
+		return nil, errors.New("plugin runtime: min/max protocol version is required")
+	}
+	if opts.MinProtocolVersion > opts.MaxProtocolVersion {
+		return nil, fmt.Errorf("plugin runtime: min protocol %d > max protocol %d", opts.MinProtocolVersion, opts.MaxProtocolVersion)
 	}
 	if err := ValidateManifest(manifest); err != nil {
 		return nil, &ManifestError{Path: manifestPath(manifest), Err: err}
@@ -96,9 +101,10 @@ func (r *DefaultRuntime) Spawn(ctx context.Context, manifest *Manifest, config m
 	go waitForExit(handle, cmd, opts.OnExit)
 
 	if err := handle.SendRegisterRequest(&RegisterRequestParams{
-		ProtocolVersion: opts.ProtocolVersion,
-		PluginID:        manifest.ID,
-		Config:          handle.Config(),
+		MinProtocolVersion: opts.MinProtocolVersion,
+		MaxProtocolVersion: opts.MaxProtocolVersion,
+		PluginID:           manifest.ID,
+		Config:             handle.Config(),
 	}); err != nil {
 		_ = terminatePluginProcessGroup(cmd)
 		handle.Close()
@@ -133,7 +139,8 @@ func buildCommand(ctx context.Context, manifest *Manifest, opts SpawnOptions) (*
 	cmd.Dir = manifest.RootDir
 	cmd.Env = append(os.Environ(),
 		"TABULA_PLUGIN_ID="+manifest.ID,
-		"TABULA_PLUGIN_PROTOCOL_VERSION="+strconv.Itoa(opts.ProtocolVersion),
+		"TABULA_PLUGIN_PROTOCOL_MIN="+strconv.Itoa(opts.MinProtocolVersion),
+		"TABULA_PLUGIN_PROTOCOL_MAX="+strconv.Itoa(opts.MaxProtocolVersion),
 	)
 	if manifest.RootDir != "" {
 		libSrc := filepath.Join(filepath.Dir(filepath.Dir(manifest.RootDir)), "_lib", "python", "src")
@@ -159,8 +166,6 @@ func runtimeCommand(runtime string, overrides map[string]string) string {
 	switch runtime {
 	case "python":
 		return "python3"
-	case "node":
-		return "node"
 	default:
 		return ""
 	}
@@ -234,8 +239,8 @@ func waitForRegister(ctx context.Context, handle *Handle, opts SpawnOptions, eve
 			if err := ev.msg.DecodeParams(&reg); err != nil {
 				return NonRestartable(fmt.Errorf("plugin runtime: invalid register params for %s: %w", handle.ID(), err))
 			}
-			if reg.ProtocolVersion != opts.ProtocolVersion {
-				return NonRestartable(fmt.Errorf("plugin runtime: protocol mismatch for %s: kernel=%d plugin=%d", handle.ID(), opts.ProtocolVersion, reg.ProtocolVersion))
+			if reg.ProtocolVersion < opts.MinProtocolVersion || reg.ProtocolVersion > opts.MaxProtocolVersion {
+				return NonRestartable(fmt.Errorf("plugin runtime: protocol negotiation failed for %s: kernel range [%d,%d], plugin chose %d", handle.ID(), opts.MinProtocolVersion, opts.MaxProtocolVersion, reg.ProtocolVersion))
 			}
 			normalized, err := NormalizeRegisterParams(&reg)
 			if err != nil {

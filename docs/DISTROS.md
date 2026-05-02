@@ -37,19 +37,25 @@ fetches them.
 At install time, the distro is copied into:
 
 ```text
-~/.tabula/distrib/<name>/<generation>/
+$TABULA_HOME/distrib/<name>/<generation>/
 ```
 
-and `~/.tabula/distrib/<name>/current` points at the latest generation. The
-active distro is selected via `~/.tabula/distrib/active`, and Tabula fans out
+and `$TABULA_HOME/distrib/<name>/current` points at the latest generation. The
+active distro is selected via `$TABULA_HOME/distrib/active`, and Tabula fans out
 the flat runtime surface:
 
 ```text
-~/.tabula/boot.py    -> distrib/active/current/boot.py
-~/.tabula/templates/ -> distrib/active/current/templates/*
-~/.tabula/skills/    -> distrib/active/current/skills/* + bundle skills
-~/.tabula/plugins/   -> distrib/active/current/plugins/* + bundle plugins
+$TABULA_HOME/boot.py    -> distrib/active/current/boot.py
+$TABULA_HOME/templates/ -> distrib/active/current/templates/*
+$TABULA_HOME/skills/    -> distrib/active/current/skills/* + bundle skills
+$TABULA_HOME/plugins/   -> distrib/active/current/plugins/* + bundle plugins
 ```
+
+`$TABULA_HOME/skills` is distro-managed. Distros that want compatibility with
+external Agent Skills installers should scan external roots such as an assistant
+workspace's `skills/` and `.agents/skills/` directories or
+`${XDG_CONFIG_HOME:-~/.config}/agents/skills` separately and treat them as
+instruction-only unless explicitly trusted.
 
 Shared SDK packages such as `tabula_plugin_sdk` are installed into the Tabula
 venv by the installer from bundled package artifacts. They are runtime
@@ -98,8 +104,7 @@ What it is for:
 What it includes:
 
 - distro-specific TUI gateway plugin (TypeScript/Ink) under `coder/`
-- shared bundles: `base`, `files`, `drivers`, `memory`, `coder-git`,
-  `coder-tasks`, `coder-review`, `subagents`, `coder-workspace`
+- shared bundles: `base`, `files`, `drivers`, `memory`, `code`, `subagents`
 
 ### `claw`
 
@@ -119,7 +124,7 @@ What it includes:
 - unified driver plugin (Anthropic and OpenAI selected per-turn)
 - gateways: CLI, HTTP API, Telegram (distro-specific)
 - tool and support components via bundles: `files`, `base` (sessions, pair,
-  clawhub, timer, cron, hook-logger, hook-permissions, observer,
+  timer, cron, hook-logger, hook-permissions, observer,
   skill-contract, tabula-guide), `memory` (save/search/admin), `mcp`
 - shared subagent runtime (from the `drivers` bundle)
 
@@ -189,7 +194,7 @@ These concepts are related but different.
 Smallest extension units.
 
 - **Skill** (`SKILL.md` + `tools[].exec`): per-call subprocess; stateless;
-  declarative tool provider. Examples: `files`, `coder-git`, `memory-save`.
+  declarative tool provider. Examples: `files`, `code/git`, `memory-save`.
 - **Plugin** (`plugin.toml` + `register(api)`): long-lived process; subscribes
   to events; registers tools dynamically; has state. Examples: `mcp`,
   `hook-permissions`, `drivers/driver`, `gateway-tui`.
@@ -237,9 +242,9 @@ What this does:
    `plugins/`, and `distro.toml`
 3. resolve every bundle declared in `distro.toml` (`git+`, `local:`, or
    `source:<alias>` sources; pinned via lockfile)
-4. lay everything out under `~/.tabula/distrib/<name>/<generation>/`
-5. update `~/.tabula/distrib/<name>/current` and (if requested)
-   `~/.tabula/distrib/active`
+4. lay everything out under `$TABULA_HOME/distrib/<name>/<generation>/`
+5. update `$TABULA_HOME/distrib/<name>/current` and (if requested)
+   `$TABULA_HOME/distrib/active`
 6. rebuild the flat `boot.py`, `templates/`, `skills/`, and `plugins/` surface
 
 For development, clone `tabula-distrib` next to this repo and run

@@ -195,6 +195,52 @@ func TestHookSessionStartCanInjectInitContext(t *testing.T) {
 
 // --- Modifying hook tests ---
 
+func TestHookSessionStart_ConcatenatesContextAcrossHooks(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Two hooks both rewrite session_start with different `context`.
+	// Higher priority runs first; lower priority must see the first
+	// hook's context as input and the engine must concatenate the two
+	// contributions instead of replacing.
+	hookHigh := env.connectHook("hi", []HookSubscription{
+		{Event: "session_start", Priority: 20},
+	})
+	hookLow := env.connectHook("lo", []HookSubscription{
+		{Event: "session_start", Priority: 10},
+	})
+
+	conn := env.connect("cli", []string{"message"}, []string{"init"})
+
+	go func() {
+		writeJSON(t, conn, Message{Type: "join", Session: "s1"})
+	}()
+
+	h1 := readMsg(t, hookHigh)
+	writeJSON(t, hookHigh, Message{
+		Type:    "hook_result",
+		ID:      h1.ID,
+		Action:  "modify",
+		Payload: json.RawMessage(`{"context":"FIRST"}`),
+	})
+
+	h2 := readMsg(t, hookLow)
+	writeJSON(t, hookLow, Message{
+		Type:    "hook_result",
+		ID:      h2.ID,
+		Action:  "modify",
+		Payload: json.RawMessage(`{"context":"SECOND"}`),
+	})
+
+	_ = readMsg(t, conn) // joined
+	init := readMsg(t, conn)
+	if init.Type != "init" {
+		t.Fatalf("expected init, got %s", init.Type)
+	}
+	if !strings.Contains(init.Context, "FIRST") || !strings.Contains(init.Context, "SECOND") {
+		t.Fatalf("expected concatenated context with FIRST and SECOND, got %q", init.Context)
+	}
+}
+
 func TestHookModifying_PassThrough(t *testing.T) {
 	env := newTestEnv(t)
 

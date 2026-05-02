@@ -38,7 +38,7 @@ def _make_skill_with_manifest(root: Path, name: str, manifest: str, marker: str 
 
 def _skill_manifest(name: str, exec_cmd: str | None = None) -> str:
     tool_name = name.replace("-", "_")
-    exec_cmd = exec_cmd or f"python skills/{name}/run.py"
+    exec_cmd = exec_cmd or f"python skills/{name}/scripts/run.py"
     return (
         "---\n"
         f"name: {name}\n"
@@ -730,7 +730,7 @@ class InstallTests(unittest.TestCase):
             self.assertFalse((home / "distrib" / "demo" / "skills" / "bad-skill").exists())
             self.assertFalse((home / "skills" / "bad-skill").exists())
 
-    def test_lock_v1_loads_as_v2_with_empty_plugins(self):
+    def test_lock_v1_migrates_to_current_with_empty_plugins(self):
         data = {
             "version": 1,
             "distro": "demo",
@@ -740,8 +740,25 @@ class InstallTests(unittest.TestCase):
         }
         lock = lockmod.Lock.from_json(data)
         self.assertEqual(lock.plugins, {})
-        self.assertEqual(lock.to_json()["version"], 2)
+        self.assertEqual(lock.to_json()["version"], lockmod.LOCK_VERSION)
         self.assertEqual(lock.to_json()["plugins"], {})
+
+    def test_lock_v2_migrates_to_v3(self):
+        data = {
+            "version": 2,
+            "distro": "demo",
+            "generated_at": "2026-04-21T14:30:00Z",
+            "kernel_version": "0.9.0",
+            "bundles": {},
+            "skills": {},
+            "plugins": {},
+            "clients": {},
+        }
+        lock = lockmod.Lock.from_json(data)
+        self.assertEqual(lock.kernel_version, "0.9.0")
+        self.assertIsNone(lock.plugin_protocol_version)
+        self.assertEqual(lock.sdk_versions, {})
+        self.assertEqual(lock.to_json()["version"], 3)
 
     def test_bundle_skips_directories_without_skill_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -902,6 +919,22 @@ class InstallTests(unittest.TestCase):
             self.assertTrue((home / "distrib" / "demo" / "clients" / "gateway-cli" / "run.py").exists())
             self.assertTrue((home / "clients" / "gateway-cli").is_symlink())
             self.assertTrue((home / "clients" / "gateway-cli" / "run.py").exists())
+
+    def test_install_writes_reload_trigger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root)
+            installmod.install(distro, home)
+            trigger = home / "run" / "reload.touch"
+            self.assertTrue(trigger.exists(), "reload.touch should be created on install")
+            first_mtime = trigger.stat().st_mtime
+            # second install (no-op fingerprint match) must still bump the trigger
+            # so a kernel that missed the first install picks up the no-op too.
+            import time as _time
+            _time.sleep(0.05)
+            installmod.install(distro, home)
+            self.assertGreater(trigger.stat().st_mtime, first_mtime)
 
 
 if __name__ == "__main__":

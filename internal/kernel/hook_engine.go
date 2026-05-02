@@ -162,11 +162,43 @@ func (e *HookEngine) dispatchModifying(event string, payload json.RawMessage, se
 			return nil, false
 		case ActionModify:
 			if result.Payload != nil {
-				current = result.Payload
+				current = e.mergePayload(event, current, result.Payload)
 			}
 		}
 	}
 	return current, true
+}
+
+// mergePayload merges a hook's modify response with the running payload.
+// For session_start the `context` field is additive across hooks: each
+// subscriber contributes a system-prompt fragment, so we concatenate rather
+// than replace. All other fields are taken from the new payload.
+func (e *HookEngine) mergePayload(event string, prev, next json.RawMessage) json.RawMessage {
+	if event != "session_start" || len(prev) == 0 {
+		return next
+	}
+	var prevMap, nextMap map[string]any
+	if err := json.Unmarshal(prev, &prevMap); err != nil {
+		return next
+	}
+	if err := json.Unmarshal(next, &nextMap); err != nil {
+		return next
+	}
+	prevCtx, _ := prevMap["context"].(string)
+	nextCtx, _ := nextMap["context"].(string)
+	if prevCtx == "" || nextCtx == "" {
+		return next
+	}
+	merged := make(map[string]any, len(nextMap))
+	for k, v := range nextMap {
+		merged[k] = v
+	}
+	merged["context"] = prevCtx + "\n\n" + nextCtx
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return next
+	}
+	return out
 }
 
 func (e *HookEngine) dispatchClaiming(event string, payload json.RawMessage, session string, entries []hookEntry) (json.RawMessage, bool) {

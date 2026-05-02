@@ -124,7 +124,7 @@ def parse_tools(frontmatter: str, rel_path: str) -> list[dict]:
     for tool in tools:
         name = tool.get("name")
         if name and "exec" not in tool:
-            tool["exec"] = f"{VENV_PYTHON} skills/{rel_path}/run.py tool {name}"
+            tool["exec"] = f"{VENV_PYTHON} skills/{rel_path}/scripts/run.py tool {name}"
         tool.setdefault("params", {})
         tool.setdefault("required", [])
     return [tool for tool in tools if tool.get("name") and tool.get("exec")]

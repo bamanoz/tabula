@@ -68,6 +68,9 @@ LDFLAGS="-X main.version=$VERSION_STR -X main.commit=$COMMIT_STR -X main.date=$D
 ( cd "$REPO_ROOT" && go build -ldflags "$LDFLAGS" -o "$BIN_DIR/tabula" ./cmd/tabula/ )
 # Record installed kernel version for tabula-distro compatibility checks.
 echo "$VERSION_STR" > "$TABULA_HOME/VERSION"
+# Record kernel's supported plugin protocol version range so the distro tool
+# can enforce `requires.protocol_version` on plugin manifests offline.
+"$BIN_DIR/tabula" --protocol > "$TABULA_HOME/PROTOCOL"
 if [ "$(uname)" = "Darwin" ]; then
   codesign --force --sign - "$BIN_DIR/tabula" 2>/dev/null || true
 fi

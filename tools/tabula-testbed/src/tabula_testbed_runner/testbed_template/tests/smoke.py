@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 import time
 import unittest
 import urllib.request
@@ -64,6 +65,17 @@ class BaselineSmoke(TestbedCase):
             ping = client.call_tool("testbed_dynamic_ping", {"value": "pong"}).json()
             self.assertEqual(ping, {"ok": True, "pong": "pong"})
 
+    def test_progressive_disclosure_references_are_installed(self):
+        skills_dir = Path(self.tabula_home) / "skills"
+        expected = [
+            skills_dir / "tabula-guide" / "references" / "overview.md",
+            skills_dir / "tabula-guide" / "references" / "troubleshooting.md",
+            skills_dir / "skill-contract" / "references" / "skill-format.md",
+            skills_dir / "skill-contract" / "references" / "examples.md",
+        ]
+        missing = [str(path) for path in expected if not path.is_file()]
+        self.assertEqual(missing, [])
+
     def test_session_start_and_message_hooks(self):
         session = "testbed-message-hooks"
         receiver = self.make_client("testbed-message-receiver", session)
@@ -112,6 +124,48 @@ class BaselineSmoke(TestbedCase):
                 self.assertIn("blocked by hook", blocked.output)
             finally:
                 client.call_tool("testbed_hook_blocker_reset", {})
+
+    def test_hook_logger_writes_audit_log(self):
+        log_file = Path(self.tabula_home) / "logs" / "hook-logger" / "hooks.jsonl"
+        before_size = log_file.stat().st_size if log_file.exists() else 0
+        with self.make_client("testbed-hook-logger", "testbed-hook-logger") as client:
+            client.call_tool("testbed_echo", {"text": "audit"})
+
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if log_file.exists() and log_file.stat().st_size > before_size:
+                entries = [json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+                events = {entry.get("event") for entry in entries}
+                self.assertIn("session_start", events)
+                self.assertIn("after_tool_call", events)
+                return
+            time.sleep(0.1)
+        self.fail(f"hook-logger did not write audit log: {log_file}")
+
+    def test_hook_permissions_blocks_denied_command(self):
+        permissions_file = Path(self.tabula_home) / "config" / "plugins" / "hook-permissions" / "config.toml"
+        previous = permissions_file.read_text(encoding="utf-8") if permissions_file.exists() else None
+        permissions_file.parent.mkdir(parents=True, exist_ok=True)
+        permissions_file.write_text(
+            '[[rules]]\n'
+            'tool = "shell_exec"\n'
+            'command = "echo denied-by-hook-permissions"\n'
+            'effect = "deny"\n'
+            '\n'
+            '[[rules]]\n'
+            'tool = "*"\n'
+            'effect = "allow"\n',
+            encoding="utf-8",
+        )
+        try:
+            with self.make_client("testbed-hook-permissions", "testbed-hook-permissions") as client:
+                blocked = client.call_tool("shell_exec", {"command": "echo denied-by-hook-permissions"})
+                self.assertIn("ERROR: blocked by hook", blocked.output)
+        finally:
+            if previous is None:
+                permissions_file.unlink(missing_ok=True)
+            else:
+                permissions_file.write_text(previous, encoding="utf-8")
 
     def test_dynamic_tool_update(self):
         with self.make_client("testbed-dynamic", "testbed-dynamic") as client:

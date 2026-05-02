@@ -36,8 +36,11 @@ func TestRegisterPluginSpawnsAndRegistersHandle(t *testing.T) {
 	if fake.spawned != 1 {
 		t.Fatalf("spawn count: %d", fake.spawned)
 	}
-	if fake.lastOptions.ProtocolVersion != PluginProtocolVersion {
-		t.Fatalf("protocol version: %d", fake.lastOptions.ProtocolVersion)
+	if fake.lastOptions.MaxProtocolVersion != MaxPluginProtocolVersion {
+		t.Fatalf("protocol max version: %d", fake.lastOptions.MaxProtocolVersion)
+	}
+	if fake.lastOptions.MinProtocolVersion != MinPluginProtocolVersion {
+		t.Fatalf("protocol min version: %d", fake.lastOptions.MinProtocolVersion)
 	}
 	if fake.lastConfig["override"] != true {
 		t.Fatalf("config not passed to runtime: %#v", fake.lastConfig)
@@ -148,7 +151,7 @@ func (fakeInvalidPluginRuntime) Spawn(ctx context.Context, manifest *plugin.Mani
 	h := plugin.NewHandle(manifest.ID, nil)
 	h.MarkAlive()
 	if err := h.MarkRegistered(&plugin.RegisterParams{
-		ProtocolVersion: opts.ProtocolVersion,
+		ProtocolVersion: opts.MaxProtocolVersion,
 		PluginID:        manifest.ID,
 		Tools:           []plugin.ToolSpec{{Name: "bad_tool"}},
 		Subscriptions:   []plugin.SubscriptionSpec{{Event: "unsupported_event"}},
@@ -258,7 +261,7 @@ func registeredTestPluginFromManifest(manifest *plugin.Manifest, tool string) *p
 	h := plugin.NewHandle(manifest.ID, nil)
 	h.MarkAlive()
 	_ = h.MarkRegistered(&plugin.RegisterParams{
-		ProtocolVersion: PluginProtocolVersion,
+		ProtocolVersion: MaxPluginProtocolVersion,
 		PluginID:        manifest.ID,
 		Tools:           []plugin.ToolSpec{{Name: tool}},
 		Subscriptions:   []plugin.SubscriptionSpec{{Event: "before_tool_call", Priority: 10}},
@@ -273,6 +276,11 @@ name = "` + id + `"
 version = "1.0.0"
 runtime = "python"
 entry = "run.py"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=0.1.0,<0.2.0"
 `
 	if err := os.WriteFile(filepath.Join(dir, "plugin.toml"), []byte(content), 0o644); err != nil {
 		t.Fatalf("write plugin.toml: %v", err)
@@ -332,5 +340,50 @@ func stopPluginRun(t *testing.T, hub *Hub, id string) {
 	if run != nil {
 		run.cancel()
 		<-run.done
+	}
+}
+
+func TestReloadPluginsStopsExistingAndStartsFresh(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	fake := &fakePluginRuntime{}
+	hub.pluginRuntime = fake
+	root := t.TempDir()
+	pluginA := filepath.Join(root, "alpha")
+	pluginB := filepath.Join(root, "beta")
+	if err := os.Mkdir(pluginA, 0o755); err != nil {
+		t.Fatalf("mkdir alpha: %v", err)
+	}
+	if err := os.Mkdir(pluginB, 0o755); err != nil {
+		t.Fatalf("mkdir beta: %v", err)
+	}
+	writePluginToml(t, pluginA, "alpha")
+	writePluginToml(t, pluginB, "beta")
+
+	if err := hub.LoadPlugins([]plugin.BootEntry{{ManifestPath: pluginA}}); err != nil {
+		t.Fatalf("initial LoadPlugins: %v", err)
+	}
+	if hub.plugins.Get("alpha") == nil {
+		t.Fatal("alpha not registered after initial load")
+	}
+
+	if err := hub.ReloadPlugins([]plugin.BootEntry{{ManifestPath: pluginB}}); err != nil {
+		t.Fatalf("ReloadPlugins: %v", err)
+	}
+	defer stopPluginRun(t, hub, "beta")
+
+	if hub.plugins.Get("alpha") != nil {
+		t.Fatal("alpha should have been stopped during reload")
+	}
+	if hub.plugins.Get("beta") == nil {
+		t.Fatal("beta not registered after reload")
+	}
+	hub.pluginRunsMu.Lock()
+	if _, ok := hub.pluginRuns["alpha"]; ok {
+		hub.pluginRunsMu.Unlock()
+		t.Fatal("alpha lifecycle still tracked after reload")
+	}
+	hub.pluginRunsMu.Unlock()
+	if got := fake.spawnCount(); got != 2 {
+		t.Fatalf("expected 2 spawns (initial + reload), got %d", got)
 	}
 }

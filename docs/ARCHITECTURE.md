@@ -94,8 +94,9 @@ Wire compatibility is tracked separately:
 
 - kernel client protocol: `ProtocolVersion` in `internal/kernel/protocol.go`
   and `tabula_plugin_sdk.protocol` for WebSocket clients;
-- plugin protocol: `PluginProtocolVersion` in `internal/kernel/protocol.go`,
-  negotiated during the stdio `register_request` / `register` handshake;
+- plugin protocol: `[MinPluginProtocolVersion, MaxPluginProtocolVersion]`
+  in `internal/kernel/protocol.go`, negotiated during the stdio
+  `register_request` / `register` handshake;
 - Python/TypeScript SDK packages: independent SemVer artifacts, pinned by the
   bundle/distro release that ships them.
 
@@ -144,7 +145,7 @@ In a normal install, `tabula-server` sets this to something like:
 ```
 
 The active `boot.py` is copied (or symlinked) from the installed distro under
-`~/.tabula/distrib/<distro>/current/boot.py` by `tabula-distro`.
+`$TABULA_HOME/distrib/<distro>/current/boot.py` by `tabula-distro`.
 
 ### Boot output
 
@@ -172,7 +173,7 @@ It does the following:
 - builds the system prompt from templates and project files
 - selects the active provider through the unified `drivers/driver` plugin
 - declares long-lived plugins for kernel-managed lifecycle
-- writes subagent prompt state under `~/.tabula/state/subagent/`
+- writes subagent prompt state under `$TABULA_HOME/state/subagent/`
 
 This is where most of the claw distro behavior is assembled.
 
@@ -203,7 +204,7 @@ Tabula is split across three repositories:
   its bundle dependencies in `distro.toml`.
 
 A distro never embeds bundle source. It declares dependencies and the
-`tabula-distro` installer composes the runtime surface in `~/.tabula/`.
+`tabula-distro` installer composes the runtime surface in `$TABULA_HOME/`.
 
 ## Distros
 
@@ -220,24 +221,24 @@ with:
 `tabula-distro install <source>` resolves the distro itself from a local path,
 `local:` URI, or `git+...@ref#path=...` URI; resolves the bundles declared in
 `distro.toml`; and lays the result out under
-`~/.tabula/distrib/<name>/<generation>/` with `current` and `active` symlinks.
+`$TABULA_HOME/distrib/<name>/<generation>/` with `current` and `active` symlinks.
 
 ### Active distro layout
 
 The selected distro is activated through symlinks/copies under
-`~/.tabula/distrib/<name>/`:
+`$TABULA_HOME/distrib/<name>/`:
 
 ```text
-~/.tabula/distrib/claw/current       -> <generation>
-~/.tabula/distrib/active             -> claw
-~/.tabula/boot.py                    -> distrib/active/current/boot.py
-~/.tabula/templates/*                -> distrib/active/current/templates/*
-~/.tabula/skills/*                   -> distrib/active/current/skills/* + bundle skills
-~/.tabula/plugins/*                  -> distrib/active/current/plugins/* + bundle plugins
+$TABULA_HOME/distrib/claw/current       -> <generation>
+$TABULA_HOME/distrib/active             -> claw
+$TABULA_HOME/boot.py                    -> distrib/active/current/boot.py
+$TABULA_HOME/templates/*                -> distrib/active/current/templates/*
+$TABULA_HOME/skills/*                   -> distrib/active/current/skills/* + bundle skills
+$TABULA_HOME/plugins/*                  -> distrib/active/current/plugins/* + bundle plugins
 ```
 
 Shared SDK packages such as `tabula_plugin_sdk` are installed into
-`~/.tabula/.venv` by the installer from bundled package artifacts. They are not
+`$TABULA_HOME/.venv` by the installer from bundled package artifacts. They are not
 materialized as special legacy support directories in the runtime surface.
 
 This flat runtime surface is important: the active agent sees one `skills/`
@@ -266,7 +267,7 @@ tools:
     description: "..."
     params: { cwd: { type: string } }
     required: []
-    exec: "<venv_python> skills/git/run.py tool git_status"
+    exec: "<venv_python> skills/git/scripts/run.py tool git_status"
 ---
 
 # Git skill
@@ -295,12 +296,34 @@ version = "0.3.0"
 runtime = "python"      # python | node
 entry = "run.py"
 tags = ["mcp_bridge"]   # optional, free strings, kernel-ignored
+```
 
-[config.schema]
-# JSON Schema for plugin config
+Plugin runtime config is owned by the plugin, not by `plugin.toml`. Python
+plugins should load it with `tabula_plugin_sdk.load_plugin_config(plugin_id, ...)`.
+The standard precedence is:
 
-[config.defaults]
-# default values
+1. code defaults passed by the plugin
+2. `$TABULA_HOME/config/global.toml` under `[plugins.<plugin-id>]`
+3. `$TABULA_HOME/config/plugins/<plugin-id>/config.toml`
+4. environment variables declared by the plugin
+5. explicit runtime or CLI arguments
+
+Example plugin-local config:
+
+```toml
+# $TABULA_HOME/config/plugins/mcp/config.toml
+[servers.filesystem]
+transport = "stdio"
+command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+```
+
+Equivalent global config:
+
+```toml
+# $TABULA_HOME/config/global.toml
+[plugins.mcp.servers.filesystem]
+transport = "stdio"
+command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 ```
 
 Plugins talk to the kernel over stdio NDJSON JSON-RPC: `register`,
@@ -312,7 +335,7 @@ implemented authoring surface.
 
 | Role today                         | Shape                       |
 |------------------------------------|-----------------------------|
-| Per-call tool sets (`coder-git`, `files`, `memory`, `pty-tools`) | skill |
+| Per-call tool sets (`code/git`, `files`, `memory`, `pty-tools`) | skill |
 | Hooks (`hook-permissions`, `hook-approvals`, `caveman`, ...)     | plugin |
 | MCP bridge                          | plugin |
 | LLM drivers (`drivers/driver`)     | plugin |
@@ -427,9 +450,9 @@ There are two main installation paths.
 - download the Go binary from GitHub Releases
 - download the runtime payload tarball (launchers, examples, service files,
   bundled SDK package artifacts, and the `tabula-distro` source)
-- create `~/.tabula/.venv` and install Python runtime dependencies
+- create `$TABULA_HOME/.venv` and install Python runtime dependencies
 - install `tabula-distro` from the bundled tools/ directory and expose it on
-  `~/.tabula/bin`
+  `$TABULA_HOME/bin`
 
 After the kernel installer finishes, install a distro yourself:
 
@@ -442,10 +465,10 @@ tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#pa
 `scripts/install-dev.sh` / `scripts/install-dev.ps1`:
 
 - build the Go binary from source
-- install shared SDK packages into `~/.tabula/.venv`
+- install shared SDK packages into `$TABULA_HOME/.venv`
 - copy service files
 - create a venv with dev dependencies
-- install `tabula-distro` (editable) and expose it on `~/.tabula/bin`
+- install `tabula-distro` (editable) and expose it on `$TABULA_HOME/bin`
 
 Same follow-up: install a distro with `tabula-distro install <path-or-uri>`.
 
@@ -471,13 +494,13 @@ The source tree is split across three repos:
 
 ### Installed active layout
 
-The running agent sees a flat tree under `~/.tabula/`:
+The running agent sees a flat tree under `$TABULA_HOME/`:
 
 - one active `boot.py`
 - one active `templates/`
 - one active `skills/`
 - one active `plugins/`
-- shared SDK packages installed in `~/.tabula/.venv`
+- shared SDK packages installed in `$TABULA_HOME/.venv`
 
 ### Tool execution layout
 
@@ -504,14 +527,13 @@ manifest filename does.
 
 Current bundles:
 
-- `base/` — clawhub, cron, hook-logger, hook-permissions, observer, pair,
+- `base/` — cron, hook-logger, hook-permissions, observer, pair,
   sessions, skill-contract, tabula-guide, timer, mcp
 - `files/` — the `files` skill
 - `drivers/` — `driver`, `subagent`, plus `_drivers/` shared support code
 - `memory/` — memory-save, memory-search, memory-admin
 - `caveman/` — minimal experimental skill set
-- `coder-git/`, `coder-tasks/`, `coder-review/`, `subagents/`,
-  `coder-workspace/` — components used by the `coder` distro
+- `code/`, `subagents/` — components used by the `coder` distro
 
 A distro lists bundles in `distro.toml`:
 

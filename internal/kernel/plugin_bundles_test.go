@@ -22,12 +22,14 @@ func TestTabulaBundlesHookPluginsLiveE2E(t *testing.T) {
 	t.Setenv("TABULA_PROJECT_ROOT", repoRoot(t))
 	t.Setenv("PYTHONPATH", filepath.Join(root, "_lib", "python", "src")+string(os.PathListSeparator)+repoRoot(t))
 
-	writeJSONFile(t, filepath.Join(home, "config", "plugins", "hook-permissions", "permissions.json"), map[string]any{
-		"rules": []map[string]string{{"tool": "danger_tool", "effect": "deny"}},
-	})
-	writeJSONFile(t, filepath.Join(home, "config", "skills", "hook-approvals", "rules.json"), map[string]any{
-		"rules": []map[string]string{{"tool": "rewrite_tool", "effect": "allow_always"}},
-	})
+	writeTextFile(t, filepath.Join(home, "config", "plugins", "hook-permissions", "config.toml"), `[[rules]]
+tool = "danger_tool"
+effect = "deny"
+`)
+	writeTextFile(t, filepath.Join(home, "config", "plugins", "hook-approvals", "config.toml"), `[[rules]]
+tool = "rewrite_tool"
+effect = "allow_always"
+`)
 
 	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
 	hub.pluginSupervisorPolicy = plugin.SupervisorPolicy{
@@ -43,8 +45,8 @@ func TestTabulaBundlesHookPluginsLiveE2E(t *testing.T) {
 		path string
 	}{
 		{"hook-permissions", filepath.Join(root, "base", "hook-permissions")},
-		{"hook-workspace-boundary", filepath.Join(root, "coder-workspace", "hook-workspace-boundary")},
-		{"hook-approvals", filepath.Join(root, "coder-workspace", "hook-approvals")},
+		{"hook-workspace-boundary", filepath.Join(root, "code", "hook-workspace-boundary")},
+		{"hook-approvals", filepath.Join(root, "code", "hook-approvals")},
 		{"hook-caveman", filepath.Join(root, "caveman", "hook-caveman")},
 		{"hook-logger", filepath.Join(root, "base", "hook-logger")},
 	}
@@ -109,11 +111,10 @@ func TestTabulaBundlesMCPPluginLiveE2E(t *testing.T) {
 	if err := os.WriteFile(fake, []byte(fakeMCPServerPython), 0o755); err != nil {
 		t.Fatalf("write fake mcp server: %v", err)
 	}
-	writeJSONFile(t, filepath.Join(home, "config", "plugins", "mcp", "servers.json"), map[string]any{
-		"servers": map[string]any{
-			"fake": map[string]any{"transport": "stdio", "command": []string{"python3", fake}},
-		},
-	})
+	writeTextFile(t, filepath.Join(home, "config", "plugins", "mcp", "config.toml"), `[servers.fake]
+transport = "stdio"
+command = ["python3", "`+strings.ReplaceAll(fake, `\`, `\\`)+`"]
+`)
 
 	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
 	hub.pluginSupervisorPolicy = plugin.SupervisorPolicy{
@@ -159,6 +160,12 @@ func TestTabulaBundlesMCPPluginLiveE2E(t *testing.T) {
 		t.Fatalf("mcp_call result: %+v", msg)
 	}
 
+	hub.tools.handleDynamicTool("mcp-live", "tc-call-arguments", "mcp_call", json.RawMessage(`{"server":"fake","tool":"echo","arguments":{"message":"via arguments"}}`))
+	msg = waitForMessage(t, recv.recvCh)
+	if msg.Type != string(MsgToolResult) || !strings.Contains(msg.Output, "via arguments") {
+		t.Fatalf("mcp_call arguments alias result: %+v", msg)
+	}
+
 	hub.tools.handleDynamicTool("mcp-live", "tc-discover", "mcp_discover", json.RawMessage(`{}`))
 	msg = waitForMessage(t, recv.recvCh)
 	if msg.Type != string(MsgToolResult) || !strings.Contains(msg.Output, `"fake"`) {
@@ -190,6 +197,9 @@ entry = "run.py"
 	if err := os.WriteFile(runner, []byte(fakeSubagentRunnerPython), 0o755); err != nil {
 		t.Fatalf("write fake subagent runner: %v", err)
 	}
+	writeTextFile(t, filepath.Join(home, "config", "plugins", "subagents", "config.toml"), `max_children = 1
+max_spawn_depth = 3
+`)
 
 	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
 	hub.pluginSupervisorPolicy = plugin.SupervisorPolicy{
@@ -204,7 +214,7 @@ entry = "run.py"
 	if err != nil {
 		t.Fatalf("LoadManifest(subagents): %v", err)
 	}
-	if err := hub.RegisterPlugin(manifest, map[string]any{"max_children": 1, "max_spawn_depth": 3}); err != nil {
+	if err := hub.RegisterPlugin(manifest, nil); err != nil {
 		t.Fatalf("RegisterPlugin(subagents): %v", err)
 	}
 	defer stopPluginRun(t, hub, "subagents")
@@ -300,16 +310,12 @@ while running and time.time() < deadline:
 sys.exit(0)
 `
 
-func writeJSONFile(t *testing.T, path string, value any) {
+func writeTextFile(t *testing.T, path string, value string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
 	}
-	raw, err := json.Marshal(value)
-	if err != nil {
-		t.Fatalf("marshal json: %v", err)
-	}
-	if err := os.WriteFile(path, raw, 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(value), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }

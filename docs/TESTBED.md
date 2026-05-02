@@ -1,7 +1,7 @@
 # Tabula Testbed
 
 `tabula-testbed` runs bundle and skill tests in an isolated Tabula runtime. It
-does not modify `~/.tabula`, restart your active kernel, or use fixed ports.
+does not modify your real `$TABULA_HOME`, restart your active kernel, or use fixed ports.
 
 Install from a Tabula checkout:
 

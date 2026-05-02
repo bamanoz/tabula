@@ -301,6 +301,10 @@ for a in data.get('assets', []):
   fi
   # Record installed kernel version for tabula-distro compatibility checks.
   printf '%s\n' "${VERSION#v}" > "$TABULA_HOME/VERSION"
+  # Record kernel's supported plugin protocol version range so the distro
+  # tool can enforce `requires.protocol_version` offline.
+  "$BIN_DIR/tabula" --protocol > "$TABULA_HOME/PROTOCOL" 2>/dev/null || \
+    printf '{"plugin_protocol_min": 1, "plugin_protocol_max": 1}\n' > "$TABULA_HOME/PROTOCOL"
   install -m 755 "$TABULA_HOME/bin/tabula-install-distro" "$BIN_DIR/tabula-install-distro"
   install -m 755 "$TABULA_HOME/scripts/install-distro.py" "$BIN_DIR/install-distro.py"
   chmod +x "$BIN_DIR/tabula-server" "$BIN_DIR/tabula-cli" "$BIN_DIR/tabula-api" "$BIN_DIR/tabula-coder" "$BIN_DIR/tabula-claw" "$BIN_DIR/tabula-install-distro" 2>/dev/null || true

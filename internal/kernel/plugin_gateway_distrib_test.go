@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,16 +26,6 @@ func TestTabulaDistribGatewayPluginWrappersLiveE2E(t *testing.T) {
 	t.Setenv("TABULA_HOME", home)
 	t.Setenv("PYTHONPATH", filepath.Join(bundlesRoot, "_lib", "python", "src")+string(os.PathListSeparator)+repoRoot(t))
 
-	for _, name := range []string{"gateway-api", "gateway-telegram"} {
-		runner := filepath.Join(home, "skills", name, "run.py")
-		if err := os.MkdirAll(filepath.Dir(runner), 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", runner, err)
-		}
-		if err := os.WriteFile(runner, []byte(fakeGatewayRunnerPython), 0o755); err != nil {
-			t.Fatalf("write fake %s: %v", name, err)
-		}
-	}
-
 	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
 	hub.pluginSupervisorPolicy = plugin.SupervisorPolicy{
 		InitialBackoff: time.Millisecond,
@@ -44,33 +35,69 @@ func TestTabulaDistribGatewayPluginWrappersLiveE2E(t *testing.T) {
 		CleanRunReset:  time.Hour,
 	}
 
-	plugins := []struct {
-		id     string
-		path   string
-		status string
-	}{
-		{"gateway-api", filepath.Join(root, "claw", "plugins", "gateway-api-plugin"), "gateway_api_status"},
-		{"gateway-telegram", filepath.Join(root, "claw", "plugins", "gateway-telegram-plugin"), "gateway_telegram_status"},
+	// Stage a copy of the plugin directory and replace daemon.py with a
+	// no-op stub so the test does not actually start the Telegram polling.
+	src := filepath.Join(root, "claw", "plugins", "gateway-telegram-plugin")
+	stagedRoot := t.TempDir()
+	staged := filepath.Join(stagedRoot, "gateway-telegram-plugin")
+	if err := copyDir(src, staged); err != nil {
+		t.Fatalf("stage plugin: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(staged, "daemon.py"), []byte(fakeGatewayRunnerPython), 0o755); err != nil {
+		t.Fatalf("write fake daemon: %v", err)
+	}
+
 	recv := addToolResultCaptureClient(t, hub, "gateway-wrapper")
-	for _, item := range plugins {
-		manifest, err := plugin.LoadManifest(item.path)
-		if err != nil {
-			t.Fatalf("LoadManifest(%s): %v", item.id, err)
-		}
-		if err := hub.RegisterPlugin(manifest, nil); err != nil {
-			t.Fatalf("RegisterPlugin(%s): %v", item.id, err)
-		}
-		defer stopPluginRun(t, hub, item.id)
 
-		hub.tools.handleDynamicTool("gateway-wrapper", item.id+"-status", item.status, json.RawMessage(`{}`))
-		msg := waitForMessage(t, recv.recvCh)
-		if msg.Type != string(MsgToolResult) || !strings.Contains(msg.Output, `"running":true`) || !strings.Contains(msg.Output, `"pid"`) {
-			t.Fatalf("%s status result: %+v", item.id, msg)
-		}
-
-		gracefulStopPluginRun(t, hub, item.id)
+	manifest, err := plugin.LoadManifest(staged)
+	if err != nil {
+		t.Fatalf("LoadManifest: %v", err)
 	}
+	if err := hub.RegisterPlugin(manifest, nil); err != nil {
+		t.Fatalf("RegisterPlugin: %v", err)
+	}
+	defer stopPluginRun(t, hub, "gateway-telegram")
+
+	hub.tools.handleDynamicTool("gateway-wrapper", "gateway-telegram-status", "gateway_telegram_status", json.RawMessage(`{}`))
+	msg := waitForMessage(t, recv.recvCh)
+	if msg.Type != string(MsgToolResult) || !strings.Contains(msg.Output, `"running":true`) || !strings.Contains(msg.Output, `"pid"`) {
+		t.Fatalf("gateway-telegram status result: %+v", msg)
+	}
+
+	gracefulStopPluginRun(t, hub, "gateway-telegram")
+}
+
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+		in, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(out, in); err != nil {
+			out.Close()
+			return err
+		}
+		return out.Close()
+	})
 }
 
 const fakeGatewayRunnerPython = `#!/usr/bin/env python3

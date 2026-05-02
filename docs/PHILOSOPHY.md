@@ -22,8 +22,8 @@ Tabula is the same idea applied to AI agents.
 | ---------------------- | ------------------------------------- |
 | `nvim` core            | `bin/tabula` (Go kernel)              |
 | Plugins                | Skills (per-call) + Plugins (long-lived) |
-| `runtimepath`          | `~/.tabula/skills/`                   |
-| `~/.config/nvim/`      | `~/.tabula/`                          |
+| `runtimepath`          | `$TABULA_HOME/skills/`                |
+| `~/.config/nvim/`      | `$TABULA_HOME/`                       |
 | `init.lua`             | `IDENTITY.md`, `SOUL.md`, `AGENTS.md` |
 | Plugin manager         | `tabula-distro` + bundles             |
 | `:help`                | `SKILL.md` / `README.md` per component |
@@ -70,14 +70,14 @@ This is the main reason Tabula is not a Python library.
 
 ### 3. Plain files as state
 
-Everything user-facing lives as files under `~/.tabula/`. You can `cat`,
+Everything user-facing lives as files under `$TABULA_HOME/`. You can `cat`,
 `diff`, `grep`, edit by hand, put in git. Nothing is hidden in a database.
 
 This is what makes self-modification natural. The agent reads and writes
 the same files you do. No special "agent storage" layer.
 
 Plugins may hold runtime state in memory or persist their own state to
-flat files under `~/.tabula/state/<plugin-id>/`, but core lifecycle
+flat files under `$TABULA_HOME/state/<plugin-id>/`, but core lifecycle
 information (sessions, identity, prompts) stays inspectable.
 
 ### 4. Self-modification is normal

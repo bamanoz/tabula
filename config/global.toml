@@ -16,25 +16,6 @@ max_turns = 5
 sleep_ms = 25
 default_waves = 1
 
-[gateway.api]
-# provider_override = "openai"
-# auth_token = { source = "store", id = "gateway-api.auth_token" }
-
-[gateway.api.session]
-idle_ttl = 900
-max_age = 21600
-cleanup_interval = 30
-
-[gateway.telegram]
-# provider_override = "openai"
-api_timeout = 10
-# bot_tokens = { source = "store", id = "gateway.telegram.bot_tokens" }
-
-[gateway.telegram.session]
-idle_ttl = 900
-max_age = 21600
-cleanup_interval = 30
-
 [sessions]
 idle_timeout = 300
 poll_interval = 2

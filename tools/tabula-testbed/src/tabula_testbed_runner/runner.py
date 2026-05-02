@@ -404,6 +404,11 @@ def main(argv: list[str] | None = None) -> int:
         run(["go", "build", "-ldflags", ldflags, "-o", str(bin_dir / "tabula"), "./cmd/tabula/"], cwd=repo_root)
         (home / "VERSION").write_text(version + "\n", encoding="utf-8")
 
+        # Snapshot the kernel's plugin protocol range so the distro installer's
+        # compat check has the same source of truth as install-dev.sh.
+        protocol_blob = output([str(bin_dir / "tabula"), "--protocol"])
+        (home / "PROTOCOL").write_text(protocol_blob + "\n", encoding="utf-8")
+
         generated = home / "generated-testbed"
         generate_args = [
             str(python), str(testbed_dir / "generate.py"),

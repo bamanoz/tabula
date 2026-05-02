@@ -20,7 +20,7 @@ sleep 1
 
 	seen := make(chan *Message, 1)
 	h, err := NewRuntime().Spawn(context.Background(), testManifest(root, "hello"), map[string]any{"override": true}, SpawnOptions{
-		ProtocolVersion: 42,
+		MinProtocolVersion: 42, MaxProtocolVersion: 42,
 		RegisterTimeout: time.Second,
 		RuntimeCommands: map[string]string{"python": "/bin/sh"},
 		OnMessage: func(_ *Handle, msg *Message) {
@@ -66,12 +66,12 @@ sleep 1
 `)
 
 	_, err := NewRuntime().Spawn(context.Background(), testManifest(root, "bad"), nil, SpawnOptions{
-		ProtocolVersion: 42,
+		MinProtocolVersion: 42, MaxProtocolVersion: 42,
 		RegisterTimeout: time.Second,
 		RuntimeCommands: map[string]string{"python": "/bin/sh"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "protocol mismatch") {
-		t.Fatalf("expected protocol mismatch, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "protocol negotiation failed") {
+		t.Fatalf("expected protocol negotiation failed, got %v", err)
 	}
 }
 
@@ -84,7 +84,7 @@ sleep 1
 `)
 
 	_, err := NewRuntime().Spawn(context.Background(), testManifest(root, "bad"), nil, SpawnOptions{
-		ProtocolVersion: 42,
+		MinProtocolVersion: 42, MaxProtocolVersion: 42,
 		RegisterTimeout: time.Second,
 		RuntimeCommands: map[string]string{"python": "/bin/sh"},
 	})
@@ -106,7 +106,7 @@ sleep 1
 `)
 
 	_, err := NewRuntime().Spawn(context.Background(), testManifest(root, "bad"), nil, SpawnOptions{
-		ProtocolVersion: 42,
+		MinProtocolVersion: 42, MaxProtocolVersion: 42,
 		RegisterTimeout: time.Second,
 		RuntimeCommands: map[string]string{"python": "/bin/sh"},
 		ValidateRegister: func(reg *RegisterParams) error {
@@ -132,7 +132,7 @@ sleep 1
 `)
 
 	_, err := NewRuntime().Spawn(context.Background(), testManifest(root, "badjson"), nil, SpawnOptions{
-		ProtocolVersion: 42,
+		MinProtocolVersion: 42, MaxProtocolVersion: 42,
 		RegisterTimeout: time.Second,
 		RuntimeCommands: map[string]string{"python": "/bin/sh"},
 	})
@@ -142,6 +142,8 @@ sleep 1
 }
 
 func testManifest(root, id string) *Manifest {
+	kernelC, _ := ParseConstraint(">=0.9.0,<1.0.0")
+	sdkC, _ := ParseConstraint(">=0.1.0,<0.2.0")
 	return &Manifest{
 		ID:      id,
 		Name:    id,
@@ -150,6 +152,16 @@ func testManifest(root, id string) *Manifest {
 		Entry:   "plugin.sh",
 		RootDir: root,
 		Config:  map[string]any{"default": "yes"},
+		Requires: &Requires{
+			Kernel:           kernelC,
+			ProtocolVersions: []int{1},
+			SDK:              SDKRequirement{Name: "tabula-plugin-sdk", Range: sdkC},
+			Raw: RequiresRaw{
+				Kernel:          ">=0.9.0,<1.0.0",
+				ProtocolVersion: 1,
+				SDK:             "tabula-plugin-sdk>=0.1.0,<0.2.0",
+			},
+		},
 	}
 }
 

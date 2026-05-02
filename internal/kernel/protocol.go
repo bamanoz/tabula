@@ -31,11 +31,16 @@ const (
 	MsgStatus       MsgType = "status"
 )
 
-// PluginProtocolVersion is the current stdio JSON-RPC protocol version used
-// for kernel ↔ plugin communication (distinct from ProtocolVersion which
-// covers WebSocket kernel ↔ client). Bumped independently per
-// memory-bank/creative/creative-plugin-protocol.md §2.2.
-const PluginProtocolVersion = 1
+// MinPluginProtocolVersion and MaxPluginProtocolVersion bound the inclusive
+// range of stdio JSON-RPC protocol versions the kernel can speak with
+// plugins. The kernel advertises this range in register_request; the plugin
+// SDK picks the maximum version present in the intersection of its
+// SUPPORTED_PROTOCOL_VERSIONS and our [Min, Max] range. See
+// docs/PROTOCOL.md §2.
+const (
+	MinPluginProtocolVersion = 1
+	MaxPluginProtocolVersion = 1
+)
 
 // HookAction constants for hook responses.
 type HookAction string

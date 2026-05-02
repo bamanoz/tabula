@@ -43,10 +43,13 @@ func registerKernelHTTPHandlers(mux *http.ServeMux, hub *kernel.Hub, listenerHos
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status":           "ok",
-			"version":          version,
-			"commit":           commit,
-			"protocol_version": kernel.ProtocolVersion,
+			"status":                       "ok",
+			"version":                      version,
+			"kernel_version":               version,
+			"commit":                       commit,
+			"protocol_version":             kernel.ProtocolVersion,
+			"min_plugin_protocol_version":  kernel.MinPluginProtocolVersion,
+			"max_plugin_protocol_version":  kernel.MaxPluginProtocolVersion,
 		})
 	})
 
@@ -146,8 +149,16 @@ func main() {
 			fmt.Printf("tabula %s (%s) built %s\n", version, commit, date)
 			os.Exit(0)
 		}
+		// --protocol prints the kernel's plugin protocol range as JSON. Used
+		// by install scripts to write $TABULA_HOME/PROTOCOL so the distro
+		// installer can enforce `requires.protocol_version` offline.
+		if len(os.Args) == 2 && os.Args[1] == "--protocol" {
+			fmt.Printf("{\"plugin_protocol_min\": %d, \"plugin_protocol_max\": %d}\n",
+				kernel.MinPluginProtocolVersion, kernel.MaxPluginProtocolVersion)
+			os.Exit(0)
+		}
 		// No subcommand — print usage.
-		fmt.Fprintf(os.Stderr, "Usage: tabula <command>\n\nCommands:\n  serve   Start the kernel WebSocket server (default)\n  run     One-shot prompt → response\n\nFlags:\n  --version   Show version\n")
+		fmt.Fprintf(os.Stderr, "Usage: tabula <command>\n\nCommands:\n  serve   Start the kernel WebSocket server (default)\n  run     One-shot prompt → response\n\nFlags:\n  --version    Show version\n  --protocol   Show kernel plugin protocol range (JSON)\n")
 		os.Exit(1)
 	}
 
@@ -286,15 +297,63 @@ func serveCmd() int {
 		}
 	}()
 
+	// Watch for distro reinstall reload triggers.
+	stopReload := make(chan struct{})
+	go watchReloadTrigger(tabulaHome, bootCmd, hub, stopReload)
+
 	slog.Info("ready")
 
 	// Wait for signal
 	waitForShutdownSignal()
 
 	slog.Info("shutting down")
+	close(stopReload)
 	hub.Shutdown()
 	server.Close()
 	return 0
+}
+
+// watchReloadTrigger polls TABULA_HOME/run/reload.touch and triggers a plugin
+// reload when its mtime changes. Distro install code touches that file after
+// switching the active generation so the live kernel picks up new plugin/skill
+// code without a manual restart. Polling is intentional: avoids a new
+// fsnotify dependency, and 2s granularity is fine for a manual operator action.
+func watchReloadTrigger(tabulaHome, bootCmd string, hub *kernel.Hub, stop <-chan struct{}) {
+	triggerPath := filepath.Join(tabulaHome, "run", "reload.touch")
+	lastMtime := triggerMTime(triggerPath)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+		}
+		mt := triggerMTime(triggerPath)
+		if mt.IsZero() || mt.Equal(lastMtime) {
+			continue
+		}
+		lastMtime = mt
+		slog.Info("reload trigger fired; re-running boot", "path", triggerPath)
+		bootConfig, err := runBoot(bootCmd)
+		if err != nil {
+			slog.Error("reload boot failed", "error", err)
+			continue
+		}
+		if err := hub.ReloadPlugins(bootConfig.Plugins); err != nil {
+			slog.Warn("one or more plugins failed to reload", "error", err)
+		} else {
+			slog.Info("plugin reload complete", "count", len(bootConfig.Plugins))
+		}
+	}
+}
+
+func triggerMTime(path string) time.Time {
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
 }
 
 // runCmd handles "tabula run" — one-shot prompt → response.

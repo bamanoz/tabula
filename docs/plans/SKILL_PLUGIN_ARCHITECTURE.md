@@ -17,12 +17,12 @@ Out of scope: sandbox, opencode integration, harness distro (отдельные 
 Текущая абстракция «skill» в Tabula перегружена. Один и тот же манифест `SKILL.md` сегодня обслуживает четыре фундаментально разные роли:
 
 1. **Tool provider** — короткоживущий subprocess per call
-   (`coder-git`, `coder-tasks`, `files`, generic `mcp_*` tools).
+   (`code`, `files`, generic `mcp_*` tools).
 2. **Hook handler** — долгоживущий обработчик bus-событий
    (`hook-permissions`, `hook-approvals`, `hook-workspace-boundary`, `caveman`).
 3. **Gateway / driver / runtime** — долгоживущий процесс с собственным lifecycle и
-   внешним transport'ом (`gateway-tui`, `gateway-cli`, `gateway-api`,
-   `gateway-telegram`, `drivers/driver`, `drivers/subagent`, `consciousness`).
+   внешним transport'ом (`gateway-tui`, `gateway-cli`, `gateway-telegram`,
+   `drivers/driver`, `drivers/subagent`, `consciousness`).
 4. **Library** — shared-код без LLM-tool surface, опознаётся по `_` префиксу
    (`_pylib`, `_tslib`, `_drivers`, `_subagent_types`).
 
@@ -87,7 +87,7 @@ Anthropic-style skill manifest c YAML frontmatter, который Tabula раз�
 - `_` префикс / `skills = []` allowlist hack — libs переезжают из skills
   в обычные python/ts packages (см. §8.3).
 
-Пример (как сегодня в `coder-git/git/SKILL.md`, добавлен `exec`):
+Пример (как сегодня в `code/git/SKILL.md`, добавлен `exec`):
 
 ```yaml
 ---
@@ -98,10 +98,10 @@ tools:
     description: "Porcelain status of the working tree..."
     params: { cwd: { type: string, description: "..." } }
     required: []
-    exec: "<venv_python> skills/git/run.py tool git_status"
+    exec: "<venv_python> skills/git/scripts/run.py tool git_status"
   - name: git_diff
     ...
-    exec: "<venv_python> skills/git/run.py tool git_diff"
+    exec: "<venv_python> skills/git/scripts/run.py tool git_diff"
 ---
 
 # Git skill
@@ -321,22 +321,21 @@ kernel → plugin : { "method": "shutdown" }
 |---------------------------------------------------|-------------------------------------|
 | `base/mcp`                                        | tools + daemon + hot pool           |
 | `base/hook-permissions`                           | bus subscription                    |
-| `coder-workspace/hook-approvals`                  | bus subscription, state             |
-| `coder-workspace/hook-workspace-boundary`         | bus subscription                    |
-| `coder-workspace/caveman` (или `caveman/`)        | bus subscription                    |
+| `code/hook-approvals`                             | bus subscription, state             |
+| `code/hook-workspace-boundary`                    | bus subscription                    |
+| `caveman/`                                        | bus subscription                    |
 | `drivers/driver`                                  | long-lived LLM driver               |
 | `drivers/subagent`                                | tool registrar + supervisor         |
 | `coder/skills/gateway-tui`                        | long-lived TTY frontend             |
-| `claw/skills/gateway-cli`                         | long-lived transport                |
-| `claw/skills/gateway-api`                         | long-lived transport                |
-| `claw/skills/gateway-telegram`                    | long-lived transport                |
+| `claw/clients/gateway-cli`                        | external client (not plugin)        |
+| `claw/plugins/gateway-telegram-plugin`            | plugin-wrapped transport            |
 
 ### 8.2 Components остаются skills
 
 | Path                                  | Reason                       |
 |---------------------------------------|------------------------------|
 | `base/shell` (новый, после выноса)    | per-call shell exec          |
-| `coder-git`, `coder-tasks`, `coder-review` | per-call tool sets       |
+| `code` | per-call tool sets       |
 | `files`                                | per-call FS ops              |
 | `memory`                               | per-call read/write          |
 | `pty-tools` (новый)                   | per-call pty interactions    |
@@ -358,8 +357,8 @@ kernel → plugin : { "method": "shutdown" }
 ### 8.4 Hook-skills — инвазивная миграция
 
 Per-call hook-skill контракт (запуск `run.py` per event) полностью
-удаляется. `base/hook-permissions`, `coder-workspace/hook-approvals`,
-`coder-workspace/hook-workspace-boundary`, `caveman` переписываются на
+удаляется. `base/hook-permissions`, `code/hook-approvals`,
+`code/hook-workspace-boundary`, `caveman` переписываются на
 long-lived `register(api) + api.on(...)`. Никаких compat shim'ов.
 
 ### 8.5 Order of work

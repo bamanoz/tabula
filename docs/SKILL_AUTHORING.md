@@ -29,7 +29,7 @@ one of the long-lived requirements actually applies.
 At runtime, the active surface is flat:
 
 ```text
-~/.tabula/skills/
+$TABULA_HOME/skills/
 ```
 
 In source, components may live in three places:
@@ -42,8 +42,13 @@ In source, components may live in three places:
   Python plugin SDK lives in `examples/plugin-sdk-python/`; final SDK authority
   moves to `tabula-bundles` during library relocation).
 
-The active distro plus its bundles are fanned out into `~/.tabula/skills/`
+The active distro plus its bundles are fanned out into `$TABULA_HOME/skills/`
 by `tabula-distro install`.
+
+External Agent Skills installed by ecosystem tools such as `npx skills` should
+use `$TABULA_WORKSPACE/skills/`, `$TABULA_WORKSPACE/.agents/skills/`, or
+`${XDG_CONFIG_HOME:-~/.config}/agents/skills/`, not `$TABULA_HOME/skills/`.
+Claw discovers those roots as instruction-only skills.
 
 ---
 
@@ -68,7 +73,7 @@ tools:
     params:
       text: { type: string, description: "Input text" }
     required: [text]
-    exec: "<venv_python> skills/my-skill/run.py tool my_tool"
+    exec: "<venv_python> skills/my-skill/scripts/run.py tool my_tool"
 ---
 
 # my-skill
@@ -131,7 +136,7 @@ tools:
     params:
       location: { type: string, description: "City or place" }
     required: [location]
-    exec: "<venv_python> skills/weather/run.py tool get_weather"
+    exec: "<venv_python> skills/weather/scripts/run.py tool get_weather"
 ---
 
 # weather
@@ -161,118 +166,10 @@ This is the easiest way to create a behavior preset without adding a tool.
 
 ---
 
-# Authoring a plugin
+# Plugins
 
-A plugin is a directory with a `plugin.toml` manifest and an entry point that
-registers tools and event subscriptions through a Plugin API. The kernel
-launches the plugin as a long-lived subprocess and routes events and tool calls
-to it over stdio NDJSON. See the canonical plugin guide in
-[PLUGIN_AUTHORING.md](PLUGIN_AUTHORING.md).
-
-## Plugin manifest
-
-`my-plugin/plugin.toml`:
-
-```toml
-id = "my-plugin"
-name = "My Plugin"
-version = "0.1.0"
-runtime = "python"          # python | node
-entry = "run.py"            # path relative to plugin dir
-tags = ["hook"]             # optional, free strings, kernel-ignored
-
-[config.schema]
-type = "object"
-additionalProperties = false
-properties = {}
-
-[config.defaults]
-```
-
-A `README.md` next to `plugin.toml` is optional human documentation; it is
-not parsed.
-
-## Plugin entry point
-
-### Python
-
-```python
-def register(api):
-    cfg = api.config
-    log = api.log
-
-    @api.on("before_tool_call", priority=80)
-    def gate(event):
-        # `shell_exec` is provided by the `base/shell` skill in a bundle, not
-        # by a built-in kernel tool.
-        if event["name"] == "shell_exec":
-            return {"deny": "shell disabled"}
-        return None  # pass
-
-    api.registerTool({
-        "name": "my_dynamic_tool",
-        "description": "Registered at plugin start",
-        "schema": {"type": "object", "properties": {}},
-    }, handler=lambda call: {"ok": True})
-
-    log.info("my-plugin registered", extra={"version": "0.1.0"})
-```
-
-### TypeScript
-
-```typescript
-export default function register(api: PluginAPI) {
-  const cfg = api.config;
-  api.on("before_tool_call", (event) => {
-    // `shell_exec` is provided by the `base/shell` skill in a bundle, not by
-    // a built-in kernel tool.
-    if (event.name === "shell_exec") return { deny: "shell disabled" };
-    return null;
-  }, { priority: 80 });
-
-  api.registerTool(
-    {
-      name: "my_dynamic_tool",
-      description: "Registered at plugin start",
-      schema: { type: "object", properties: {} },
-    },
-    async (call) => ({ ok: true }),
-  );
-}
-```
-
-## Plugin API surface
-
-Stable starting set:
-
-- `api.on(event, handler, { priority })` — subscribe to bus events.
-- `api.registerTool(spec, handler)` — register a tool dynamically.
-- `api.send(msg)` — publish to the bus.
-- `api.config` — merged manifest defaults and user override.
-- `api.log` — structured logging into kernel log.
-
-Plugins own their children: spawn under your own process group leader, trap
-SIGTERM, call `killpg` on shutdown. Kernel manages level-one supervision
-only — it doesn't reach into plugin children. The common plugin SDK does not
-currently expose a stable generic `spawn` helper; subagent spawning is owned by
-the subagent plugin and remains evidence-gated during the migration window.
-
-## Available bus events
-
-- `before_message`, `after_message`
-- `before_tool_call`, `after_tool_call`
-- `session_start`, `session_end`
-- `cancel`
-
-Spawn-specific event names are reserved for a future/subagent-owned contract;
-the kernel does not emit generic spawn events from built-in tools.
-
-Hook semantics:
-
-- **void** — observe only;
-- **modifying** — return a rewritten payload (`{params: {...}}`) or deny
-  (`{deny: "reason"}`);
-- **claiming** — first claimer wins.
+Long-lived extensions, hook subscribers, dynamic tool providers, drivers, and
+gateways are plugins. Author them with [PLUGIN_AUTHORING.md](PLUGIN_AUTHORING.md).
 
 ---
 
@@ -363,44 +260,24 @@ public surface today.
 
 # Stability
 
-Three contracts in Tabula, ordered by stability:
-
-1. **Wire protocol** (`internal/kernel/protocol.go`, mirrored by
-   `tabula_plugin_sdk.protocol`) — closest to stable.
-2. **`SKILL.md` frontmatter contract** — Anthropic-compatible base
-   (`name`, `description`, `tools`, `user-invocable`); plus Tabula-specific
-   `tools[].exec`. Stable in practice, not yet explicitly versioned.
-3. **`plugin.toml` contract and `register(api)` surface** — being
-   introduced; expect refinements during the migration window.
-
-Prefer stable contracts when designing reusable community components.
+The `SKILL.md` frontmatter contract is the reusable skill authoring surface:
+Anthropic-compatible `name`, `description`, `tools`, and `user-invocable`, plus
+Tabula-specific `tools[].exec`. Plugin contracts are documented separately in
+[PLUGIN_AUTHORING.md](PLUGIN_AUTHORING.md).
 
 # Recommended workflow
 
 1. Decide skill vs plugin (see top of this doc).
 2. Create the directory.
-3. Write `SKILL.md` or `plugin.toml` first.
+3. Write `SKILL.md` first.
 4. Implement the smallest useful entry point.
-5. Test it as a subprocess (skills) or by booting the distro (plugins).
+5. Test it as a subprocess.
 6. Only then add config complexity or helper abstractions.
 
 For most new capabilities, start with a skill.
 
 # Examples in the repo
 
-- skill: `files/files/` and `coder-git/git/` in
+- skill: `files/files/` and `code/git/` in
   [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles);
-- hook plugins: `base/hook-logger/`, `base/hook-permissions/`;
-- gateway plugins: `claw/plugins/gateway-cli/` in
-  [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib);
-- driver / subagent runtime: `drivers/driver/`, `drivers/subagent/` in
-  `tabula-bundles`;
 - minimal fixed distro boot: `guardian/boot.py` in `tabula-distrib`.
-
-# Migration timeline
-
-The hook / gateway / driver / mcp components are listed in
-[plans/SKILL_PLUGIN_ARCHITECTURE.md §8](plans/SKILL_PLUGIN_ARCHITECTURE.md)
-as targets for the SKILL→plugin migration. New code that fits the plugin
-shape should be authored as a plugin once the runtime ships; existing code
-will be migrated invasively (no compat shims).

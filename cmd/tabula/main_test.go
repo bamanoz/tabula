@@ -179,10 +179,13 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 
 	var body struct {
-		Status          string `json:"status"`
-		Version         string `json:"version"`
-		Commit          string `json:"commit"`
-		ProtocolVersion int    `json:"protocol_version"`
+		Status                    string `json:"status"`
+		Version                   string `json:"version"`
+		KernelVersion             string `json:"kernel_version"`
+		Commit                    string `json:"commit"`
+		ProtocolVersion           int    `json:"protocol_version"`
+		MinPluginProtocolVersion  int    `json:"min_plugin_protocol_version"`
+		MaxPluginProtocolVersion  int    `json:"max_plugin_protocol_version"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("unmarshal health response: %v", err)
@@ -193,8 +196,14 @@ func TestHealthEndpoint(t *testing.T) {
 	if body.Version == "" || body.Commit == "" {
 		t.Fatalf("expected version and commit in response, got %+v", body)
 	}
+	if body.KernelVersion != body.Version {
+		t.Fatalf("expected kernel_version to mirror version, got %+v", body)
+	}
 	if body.ProtocolVersion != 1 {
 		t.Fatalf("expected protocol version 1, got %d", body.ProtocolVersion)
+	}
+	if body.MinPluginProtocolVersion != 1 || body.MaxPluginProtocolVersion != 1 {
+		t.Fatalf("expected plugin protocol range 1..1, got %+v", body)
 	}
 }
 

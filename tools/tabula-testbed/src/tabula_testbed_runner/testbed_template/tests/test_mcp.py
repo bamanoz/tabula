@@ -65,16 +65,14 @@ class MCPPluginSmoke(unittest.TestCase):
         fake.parent.mkdir(parents=True, exist_ok=True)
         fake.write_text(FAKE_MCP_SERVER, encoding="utf-8")
         fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
-        config = home / "config" / "plugins" / "mcp" / "servers.json"
+        config = home / "config" / "plugins" / "mcp" / "config.toml"
         config.parent.mkdir(parents=True, exist_ok=True)
-        config.write_text(json.dumps({
-            "servers": {
-                "fake": {
-                    "transport": "stdio",
-                    "command": ["python3", str(fake)],
-                }
-            }
-        }), encoding="utf-8")
+        config.write_text(
+            '[servers.fake]\n'
+            'transport = "stdio"\n'
+            f'command = ["python3", {json.dumps(str(fake))}]\n',
+            encoding="utf-8",
+        )
         return fake
 
     def test_mcp_plugin_registers_and_updates_tools(self):

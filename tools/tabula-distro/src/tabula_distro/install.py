@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import time
 import tomllib
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -14,6 +15,12 @@ from . import lock as lockmod
 from . import sources as srcmod
 from .cache import GitCache
 from .manifest import BundleManifest, ManifestError, load_bundle_manifest
+from .plugin_manifest import (
+    PluginManifest,
+    PluginManifestError,
+    PluginRequires,
+    load_plugin_manifest,
+)
 from .semver import Constraint, Version, VersionError
 from .sources import GitSource, LocalSource, Source
 
@@ -151,6 +158,140 @@ def _check_bundle_compat(bundle_name: str, manifest, kernel: Version | None) -> 
         )
 
 
+# Cached protocol range read from $TABULA_HOME/PROTOCOL. Tuple of (min, max) or
+# None if the file is absent / unreadable.
+def _read_kernel_protocol_range(home: Path) -> tuple[int, int] | None:
+    pfile = home / "PROTOCOL"
+    if not pfile.is_file():
+        return None
+    import json as _json
+    try:
+        data = _json.loads(pfile.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise InstallError(f"$TABULA_HOME/PROTOCOL is malformed: {exc}") from exc
+    lo = data.get("plugin_protocol_min")
+    hi = data.get("plugin_protocol_max")
+    if not isinstance(lo, int) or not isinstance(hi, int) or lo < 1 or hi < lo:
+        raise InstallError(f"$TABULA_HOME/PROTOCOL has invalid plugin protocol range: {data!r}")
+    return lo, hi
+
+
+def _read_installed_sdk_version(staging: Path, sdk_name: str) -> Version | None:
+    """Read installed SDK version from the staged ``_lib`` tree.
+
+    For ``tabula-plugin-sdk`` we read ``__version__`` from the package
+    ``__init__.py``. Returns ``None`` if the SDK isn't present (the plugin's
+    own bundle may carry it) — caller decides whether to fail.
+    """
+    if sdk_name == "tabula-plugin-sdk":
+        init = staging / "_lib" / "python" / "src" / "tabula_plugin_sdk" / "__init__.py"
+        if not init.is_file():
+            return None
+        text = init.read_text(encoding="utf-8")
+        import re as _re
+        m = _re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', text, _re.M)
+        if m is None:
+            raise InstallError(
+                f"_lib/python/src/tabula_plugin_sdk/__init__.py is missing __version__"
+            )
+        try:
+            return Version.parse(m.group(1))
+        except VersionError as exc:
+            raise InstallError(
+                f"_lib/python/src/tabula_plugin_sdk/__init__.py __version__ is malformed: {exc}"
+            ) from exc
+    if sdk_name == "@tabula/skill-sdk":
+        pkg = staging / "_lib" / "typescript" / "package.json"
+        if not pkg.is_file():
+            return None
+        import json as _json
+        try:
+            data = _json.loads(pkg.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise InstallError(f"_lib/typescript/package.json is malformed: {exc}") from exc
+        version_raw = data.get("version")
+        if not isinstance(version_raw, str):
+            raise InstallError(f"_lib/typescript/package.json missing version")
+        try:
+            return Version.parse(version_raw)
+        except VersionError as exc:
+            raise InstallError(f"_lib/typescript/package.json version is malformed: {exc}") from exc
+    return None
+
+
+def _check_plugin_compat(plugin_name: str, plugin_dir: Path, *,
+                          kernel: Version | None,
+                          kernel_protocol_range: tuple[int, int] | None,
+                          staging: Path) -> PluginRequires | None:
+    """Hard-fail on plugin manifest incompatibility.
+
+    Reads ``plugin.toml`` from ``plugin_dir`` and checks:
+
+    1. ``requires.kernel`` against the installed kernel version
+    2. ``requires.protocol_version`` intersects the kernel's range
+    3. ``requires.sdk`` matches the SDK version installed under ``_lib/``
+
+    Returns the parsed :class:`PluginRequires` (for callers that want to
+    record it) or ``None`` if the plugin has no ``[requires]`` block (rollout
+    tolerance — emits no error here).
+    """
+    try:
+        manifest = load_plugin_manifest(plugin_dir)
+    except PluginManifestError as exc:
+        raise InstallError(f"plugin {plugin_name!r}: {exc}") from exc
+    requires = manifest.requires
+    if requires is None:
+        # Tolerated during rollout. The kernel manifest loader is the
+        # canonical enforcement point; it accepts missing [requires] today
+        # and will be flipped to mandatory in lockstep with this installer.
+        return None
+
+    if requires.kernel is not None:
+        if kernel is None:
+            raise InstallError(
+                f"plugin {plugin_name!r} requires kernel {requires.kernel.raw}, "
+                f"but no kernel version is recorded at $TABULA_HOME/VERSION"
+            )
+        if not requires.kernel.matches(kernel):
+            raise InstallError(
+                f"plugin {plugin_name!r} requires kernel {requires.kernel.raw}, "
+                f"but installed kernel is {kernel}"
+            )
+
+    if requires.protocol_versions:
+        if kernel_protocol_range is None:
+            raise InstallError(
+                f"plugin {plugin_name!r} declares protocol_version "
+                f"{list(requires.protocol_versions)}, but $TABULA_HOME/PROTOCOL "
+                f"is missing (reinstall the kernel via install-dev.sh / install.sh)"
+            )
+        lo, hi = kernel_protocol_range
+        kernel_versions = set(range(lo, hi + 1))
+        intersection = sorted(set(requires.protocol_versions) & kernel_versions)
+        if not intersection:
+            raise InstallError(
+                f"plugin {plugin_name!r} supports protocol_version "
+                f"{list(requires.protocol_versions)}, but kernel speaks {lo}..{hi}"
+            )
+
+    if requires.sdk is not None:
+        installed = _read_installed_sdk_version(staging, requires.sdk.name)
+        if installed is None:
+            raise InstallError(
+                f"plugin {plugin_name!r} requires {requires.sdk.name}"
+                f"{requires.sdk.constraint.raw}, but no copy of {requires.sdk.name} "
+                f"is staged under _lib/ (ensure a bundle ships it)"
+            )
+        if not requires.sdk.constraint.matches(installed):
+            raise InstallError(
+                f"plugin {plugin_name!r} requires {requires.sdk.name}"
+                f"{requires.sdk.constraint.raw}, but installed {requires.sdk.name} "
+                f"is {installed}"
+            )
+
+    return requires
+
+
 def _resolve_distro_source(value: str | Path, home: Path, *, offline: bool) -> tuple[Path, str | None]:
     """Resolve a distro source (path / local: / git+) to a local directory.
 
@@ -267,6 +408,18 @@ def install(distro_dir: str | Path, home: Path, *,
     if kernel_version is not None:
         new_lock.kernel_version = str(kernel_version)
 
+    # Snapshot the live plugin protocol / SDK surface into the lock. These
+    # come from the kernel install (PROTOCOL file) and the staged `_lib/`
+    # tree, so they reflect the contract that this generation actually
+    # satisfies.
+    proto_range = _read_kernel_protocol_range(home)
+    if proto_range is not None:
+        new_lock.plugin_protocol_version = proto_range[1]
+    for sdk_name in ("tabula-plugin-sdk", "@tabula/skill-sdk"):
+        sdk_version = _read_installed_sdk_version(staging, sdk_name)
+        if sdk_version is not None:
+            new_lock.sdk_versions[sdk_name] = str(sdk_version)
+
     # If the staged tree is byte-identical to the current generation, reuse it
     # instead of promoting a new generation. Keeps `distrib/<name>/generations/`
     # from growing on every no-op re-install.
@@ -354,6 +507,20 @@ def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lock
             new_lock.plugins[name] = replace(lock_entry)
         for name in installed.clients:
             new_lock.clients[name] = replace(lock_entry)
+
+    # Plugin compat checks run last so the staged `_lib/` tree is fully
+    # populated by all bundles. We re-walk `staging/plugins` rather than
+    # tracking install-time paths because bundle-sourced plugins are copied
+    # into the staging tree by `_install_bundle`.
+    kernel_protocol_range = _read_kernel_protocol_range(plan.home)
+    for plugin_name in sorted(d.name for d in plugins_dir.iterdir() if d.is_dir()):
+        _check_plugin_compat(
+            plugin_name,
+            plugins_dir / plugin_name,
+            kernel=kernel_version,
+            kernel_protocol_range=kernel_protocol_range,
+            staging=staging,
+        )
 
     return new_lock
 
@@ -834,6 +1001,33 @@ def _refresh_runtime_surface(home: Path) -> None:
     _link_runtime(home / "distrib" / "active" / "templates", home / "templates")
     _link_runtime(home / "distrib" / "active" / "plugins", home / "plugins")
     _link_runtime(home / "distrib" / "active" / "skills", home / "skills")
+    _touch_reload_trigger(home)
+
+
+def _touch_reload_trigger(home: Path) -> None:
+    """Signal a running ``tabula serve`` to reload plugins.
+
+    Touches ``$TABULA_HOME/run/reload.touch`` atomically. The kernel polls
+    this file's mtime and calls ``Hub.ReloadPlugins`` when it changes. If
+    the kernel is not running the file simply sits there and is read on
+    next start as a no-op (current mtime is recorded as the baseline).
+    """
+    run_dir = home / "run"
+    try:
+        run_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    trigger = run_dir / "reload.touch"
+    tmp = run_dir / ".reload.touch.tmp"
+    try:
+        tmp.write_text(f"{time.time()}\n", encoding="utf-8")
+        os.replace(tmp, trigger)
+    except OSError:
+        # Best-effort; reinstall succeeded even if the signal didn't.
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def _link_runtime(src_dir: Path, dst_dir: Path, preserve: set[str] | None = None) -> None:

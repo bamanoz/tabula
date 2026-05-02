@@ -13,7 +13,7 @@ kernel and demonstrated by `examples/plugin-hello/`.
 ```text
 my-plugin/
 ├── plugin.toml
-├── run.py          # or run.js for node plugins
+├── run.py          # plugin entry script (Python)
 └── README.md       # optional human documentation
 ```
 
@@ -30,7 +30,7 @@ Minimum manifest:
 id = "my-plugin"
 name = "My Plugin"
 version = "0.1.0"
-runtime = "python"          # python | node
+runtime = "python"          # python (only Python is supported today)
 entry = "run.py"            # relative to this directory
 description = "Optional human summary"
 
@@ -42,9 +42,6 @@ deadline_ms = 30000
 [[hooks]]
 event = "before_tool_call"
 priority = 50
-
-[config.defaults]
-greeting = "hello"
 ```
 
 Validation rules enforced by `internal/kernel/plugin/manifest.go`:
@@ -52,7 +49,8 @@ Validation rules enforced by `internal/kernel/plugin/manifest.go`:
 - `id`, `name`, `version`, `runtime`, and `entry` are required.
 - `id` must match `^[a-z0-9_-]+$`.
 - `version` must be SemVer-shaped (`X.Y.Z`, with optional prerelease/build).
-- `runtime` is currently `python` or `node`.
+- `runtime` must be `python`. Skill SDKs exist in TypeScript, but plugins are
+  Python-only today. See `docs/plans/HERMES_COMPARISON_FOLLOWUPS.md` §P0.1.
 - `entry` must be relative and must not contain `..`.
 - advisory `[[tools]]` entries require non-empty `name`; `deadline_ms` must be
   non-negative.
@@ -60,6 +58,47 @@ Validation rules enforced by `internal/kernel/plugin/manifest.go`:
 
 Unknown manifest keys are tolerated for forward compatibility. The kernel
 ignores tags/UI hints unless a distro or UI chooses to use them.
+
+## Plugin config
+
+`plugin.toml` is not the runtime config file. A plugin owns its config contract
+in code and should load resolved values through the SDK.
+
+Python plugins use `load_plugin_config`:
+
+```python
+from tabula_plugin_sdk import load_plugin_config
+
+settings = load_plugin_config(
+    "my-plugin",
+    defaults={"greeting": "hello"},
+    env={"greeting": "TABULA_MY_PLUGIN_GREETING"},
+    explicit={"greeting": cli_args.greeting},
+)
+```
+
+The standard precedence is:
+
+1. code defaults
+2. `$TABULA_HOME/config/global.toml` under `[plugins.<plugin-id>]`
+3. `$TABULA_HOME/config/plugins/<plugin-id>/config.toml`
+4. environment variables declared by the plugin
+5. explicit runtime or CLI arguments
+
+Example plugin-local config:
+
+```toml
+# $TABULA_HOME/config/plugins/my-plugin/config.toml
+greeting = "hello from config"
+```
+
+Equivalent global config:
+
+```toml
+# $TABULA_HOME/config/global.toml
+[plugins.my-plugin]
+greeting = "hello from global config"
+```
 
 ## Lifecycle
 
@@ -113,9 +152,11 @@ Supported methods:
 | plugin → kernel | `update_tools` | atomically replace this plugin's tool catalog |
 | kernel → plugin | `shutdown` | request graceful exit |
 
-`PluginProtocolVersion` is separate from the WebSocket client protocol version.
-The kernel sends it in `register_request`; the plugin must echo a compatible
-version in `register`.
+The plugin protocol version is separate from the WebSocket client protocol version.
+The kernel advertises its supported range `[MinPluginProtocolVersion,
+MaxPluginProtocolVersion]` in `register_request`; the plugin must echo a
+compatible version in `register`. See `docs/PROTOCOL.md` for the negotiation
+details and bump rules.
 
 ## Python SDK example
 

@@ -1,28 +1,28 @@
 """distro.lock.json read/write.
 
-Format (version 2)::
+Format (version 3)::
 
     {
-      "version": 2,
+      "version": 3,
       "distro": "demo",
       "generated_at": "2026-04-21T14:30:00Z",
-      "bundles": {
-        "memory": {
-          "source":       "git+https://.../@main",
-          "resolved_sha": "abc123...",
-          "resolved_ref": "main",
-          "subpath":      "",
-          "fetched_at":   "2026-04-21T14:30:00Z"
-        },
-        "caveman": {
-          "source":       "local:../../bundles/caveman",
-          "resolved_path": "/abs/path"
-        }
+      "kernel_version": "0.9.0",
+      "plugin_protocol_version": 1,
+      "sdk_versions": {
+        "tabula-plugin-sdk": "0.1.0",
+        "@tabula/skill-sdk":  "0.1.0"
       },
-      "skills": { ... same shape ... },
-      "plugins": { ... same shape ... },
-      "clients": { ... same shape ... }
+      "bundles": { ... },
+      "skills":  { ... },
+      "plugins": { ... },
+      "clients": { ... }
     }
+
+The ``plugin_protocol_version`` and ``sdk_versions`` fields snapshot the
+protocol/SDK surface that was active when the generation was installed.
+They let ``tabula-distro status`` (and humans reading the lock) confirm the
+exact contract a generation satisfies — independent of any later SDK or
+kernel upgrade.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-LOCK_VERSION = 2
+LOCK_VERSION = 3
 
 
 @dataclass
@@ -78,6 +78,8 @@ class Lock:
     distro_source: str | None = None  # original URI passed to install (for `update`)
     distro_version: str | None = None  # [distro].version, if declared
     kernel_version: str | None = None  # installed kernel version at install time
+    plugin_protocol_version: int | None = None  # max plugin protocol version kernel can speak
+    sdk_versions: dict[str, str] = field(default_factory=dict)  # SDK name → version
 
     def to_json(self) -> dict:
         out: dict = {
@@ -95,6 +97,10 @@ class Lock:
             out["distro_version"] = self.distro_version
         if self.kernel_version is not None:
             out["kernel_version"] = self.kernel_version
+        if self.plugin_protocol_version is not None:
+            out["plugin_protocol_version"] = self.plugin_protocol_version
+        if self.sdk_versions:
+            out["sdk_versions"] = dict(sorted(self.sdk_versions.items()))
         return out
 
     @classmethod
@@ -102,6 +108,9 @@ class Lock:
         version = data.get("version")
         if version == 1:
             data = _migrate_v1_to_v2(data)
+            version = data.get("version")
+        if version == 2:
+            data = _migrate_v2_to_v3(data)
             version = data.get("version")
         if version != LOCK_VERSION:
             raise LockError(f"unsupported lock version: {version}")
@@ -115,14 +124,31 @@ class Lock:
             distro_source=data.get("distro_source"),
             distro_version=data.get("distro_version"),
             kernel_version=data.get("kernel_version"),
+            plugin_protocol_version=data.get("plugin_protocol_version"),
+            sdk_versions=dict(data.get("sdk_versions") or {}),
         )
 
 
 def _migrate_v1_to_v2(data: dict) -> dict:
     migrated = dict(data)
-    migrated["version"] = LOCK_VERSION
+    migrated["version"] = 2
     migrated.setdefault("plugins", {})
     migrated.setdefault("clients", {})
+    return migrated
+
+
+def _migrate_v2_to_v3(data: dict) -> dict:
+    """Bring a v2 lock forward.
+
+    v2 has no plugin protocol or SDK metadata. We don't fabricate values
+    on read — leaving them ``None`` simply means the next install will
+    populate them from the live kernel/staged ``_lib`` and rewrite the lock
+    at v3.
+    """
+    migrated = dict(data)
+    migrated["version"] = LOCK_VERSION
+    migrated.setdefault("plugin_protocol_version", None)
+    migrated.setdefault("sdk_versions", {})
     return migrated
 
 

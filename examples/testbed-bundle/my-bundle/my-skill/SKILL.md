@@ -7,7 +7,7 @@ tools:
     params:
       text: { type: string, description: "Text to echo." }
     required: []
-    exec: "python3 skills/my-skill/run.py tool my_echo"
+    exec: "python3 skills/my-skill/scripts/run.py tool my_echo"
 ---
 
 # My Skill

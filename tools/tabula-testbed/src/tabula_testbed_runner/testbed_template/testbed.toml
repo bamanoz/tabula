@@ -12,11 +12,8 @@ all = [
   "files",
   "memory",
   "caveman",
-  "coder-workspace",
   "subagents",
-  "coder-git",
-  "coder-review",
-  "coder-tasks",
+  "code",
   "test-fixtures",
 ]
 
@@ -35,20 +32,11 @@ source = "source:tabula-bundles#path=memory"
 [bundles.caveman]
 source = "source:tabula-bundles#path=caveman"
 
-[bundles.coder-workspace]
-source = "source:tabula-bundles#path=coder-workspace"
-
 [bundles.subagents]
 source = "source:tabula-bundles#path=subagents"
 
-[bundles.coder-git]
-source = "source:tabula-bundles#path=coder-git"
-
-[bundles.coder-review]
-source = "source:tabula-bundles#path=coder-review"
-
-[bundles.coder-tasks]
-source = "source:tabula-bundles#path=coder-tasks"
+[bundles.code]
+source = "source:tabula-bundles#path=code"
 
 [bundles.test-fixtures]
 source = "source:tabula-bundles#path=test-fixtures"
@@ -72,12 +60,32 @@ set = "empty"
 components = ["base:timer"]
 tests = ["tests/test_timer.py"]
 
+[suites.shell]
+set = "empty"
+components = ["base:shell"]
+tests = ["tests/test_shell.py"]
+
+[suites.code]
+set = "empty"
+components = ["code:ask-user", "code:git", "code:hook-approvals", "code:hook-workspace-boundary", "code:review", "code:todo", "code:workspace"]
+tests = ["tests/test_code.py"]
+
 [suites.sessions]
 set = "empty"
 components = ["base:sessions"]
 tests = ["tests/test_sessions.py"]
 
+[suites.memory]
+set = "empty"
+components = ["memory:memory-save", "memory:memory-search", "memory:memory-admin"]
+tests = ["tests/test_memory.py"]
+
+[suites.files]
+set = "empty"
+components = ["files:files"]
+tests = ["tests/test_files.py"]
+
 [suites.subagents]
 set = "empty"
-components = ["drivers:subagent", "subagents:subagents"]
+components = ["base:sessions", "drivers:subagent", "subagents:subagents"]
 tests = ["tests/test_subagents.py"]

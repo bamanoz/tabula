@@ -65,7 +65,7 @@ multi-language и реальные wire boundaries. Любая новая под
 ### 2. Permissions как first-class subsystem
 
 Базис уже есть: `base/hook-permissions` (kernel-level allow/deny) и
-`coder-workspace/hook-approvals` (file-based pattern rules с
+`code/hook-approvals` (file-based pattern rules с
 `allow_always`/`deny_always` по `tool`/`path`/`command`,
 subagent allowed_tools enforcement, `add_rule` через `MSG_MESSAGE.meta.rule_add`).
 Не переписывать — расширять и переводить в plugin-форму.
@@ -209,7 +209,7 @@ exchange через `kernel.RunOneShot` (`cmd/tabula/main.go:259`,
 
 - `project_root`, `session_owner`, `child_session`, `artifact_root`,
   `replay/export target` (OpenCode `project/`, `specs/project.md`).
-- Workspace boundary как plugin (уже есть как `coder-workspace/hook-workspace-boundary`,
+- Workspace boundary как plugin (уже есть как `code/hook-workspace-boundary`,
   расширить).
 
 ### 15. Custom slash commands

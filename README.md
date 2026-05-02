@@ -16,8 +16,8 @@ building and living with an agent.
 - **Skills** are separate processes that plug into the kernel over WebSocket.
   They can be written by you, installed from a bundle, or written by the agent
   itself.
-- Your agent's identity, memory, and config live as plain files under
-  `~/.tabula/`. Like dotfiles, for an agent.
+- Your agent's utilities live as plain files under
+  `$TABULA_HOME` (default `~/.tabula`). Like dotfiles, for an agent.
 - **Distros** package a kernel + a set of skills + a personality into a
   product. Three ship today: `claw` (general-purpose), `guardian`
   (sandboxed code execution), and `ouroboros` (self-hosting/evolving). You can
@@ -50,7 +50,7 @@ That design makes a few things natural:
   take down the kernel. Subagents are supervised by userland plugins as real
   child processes with their own session, not fake threads.
 - **State is inspectable.** Everything lives in plain files under
-  `~/.tabula/`. You can `cat`, `diff`, `grep`, and put it in git.
+  `$TABULA_HOME`. You can `cat`, `diff`, `grep`, and put it in git.
 - **The kernel stays small.** Features live in skills, not in the core. Same
   reason `grep` is not in `bash`.
 
@@ -77,7 +77,7 @@ stay that way.
 curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash
 ```
 
-Requires Python 3.11+. Installs to `~/.tabula/`.
+Requires Python 3.11+. Installs to `$TABULA_HOME` (default `~/.tabula`).
 
 Install a specific version:
 
@@ -119,7 +119,7 @@ Requires Go 1.26+ and Python 3.11+.
 ## Quick start
 
 ```bash
-echo 'ANTHROPIC_API_KEY=sk-ant-...' >> ~/.tabula/.env
+echo 'ANTHROPIC_API_KEY=sk-ant-...' >> "$TABULA_HOME/.env"
 tabula-server
 tabula-cli
 ```
@@ -127,7 +127,7 @@ tabula-cli
 Use OpenAI instead:
 
 ```bash
-cat >> ~/.tabula/.env <<'EOF'
+cat >> "$TABULA_HOME/.env" <<'EOF'
 TABULA_PROVIDER=openai
 OPENAI_API_KEY=sk-...
 EOF
@@ -161,10 +161,10 @@ Pieces:
 - **Subagents** — real child processes running their own driver in their own
   session.
 
-### `~/.tabula/` — the "dotfiles" of your agent
+### `$TABULA_HOME` — the "dotfiles" of your agent
 
 ```text
-~/.tabula/
+$TABULA_HOME/
 ├── distrib/
 │   ├── claw/current/
 │   ├── guardian/current/
@@ -207,7 +207,7 @@ Default general-purpose agent.
 - providers: Anthropic and OpenAI (official SDKs, from the `drivers` bundle)
 - gateways: CLI, OpenAI-compatible HTTP API, Telegram
 - tools: `files` (`read`, `list_dir`, `glob`, `grep`, `write`, `edit`, `multiedit`, `apply_patch`), `sessions`, `pair`, `mcp`,
-  `timer`, `cron`, `clawhub`
+  `timer`, `cron`
 - hooks: `hook-logger`, `hook-permissions`
 - observability: `observer`
 - memory: `memory-save`, `memory-search`, `memory-admin` (backed by MemPalace)
@@ -253,7 +253,7 @@ More about what each distro contains lives in the
 Direct `tabula serve` and `tabula run` need `TABULA_BOOT`:
 
 ```bash
-TABULA_BOOT='"$HOME/.tabula/.venv/bin/python3" "$HOME/.tabula/boot.py"' tabula serve
+TABULA_BOOT='"$TABULA_HOME/.venv/bin/python3" "$TABULA_HOME/boot.py"' tabula serve
 ```
 
 For CI-style minimal runs, `boot-cicd.py` is a driver-only boot without the
@@ -279,17 +279,18 @@ Tabula without a custom client.
 
 ## Configuration
 
-Three layers, in order of increasing formality:
+Core configuration uses these files:
 
 - `.env` — local overrides and API keys
-- `config/global.toml` — structured defaults (providers, gateways, sessions,
-  MCP, etc.)
+- `config/global.toml` — structured global config for providers, gateways,
+  sessions, and plugin defaults
+- `config/plugins/<plugin-id>/config.toml` — plugin-local config
 - `secrets.json` — secret store entries referenced from config
 
 Most installs start with only `.env`:
 
 ```bash
-# ~/.tabula/.env
+# $TABULA_HOME/.env
 TABULA_PROVIDER=anthropic
 ANTHROPIC_API_KEY=sk-ant-...
 ```
@@ -305,11 +306,60 @@ base_url = "https://api.openai.com/v1"
 api_key = { source = "store", id = "driver-openai.api_key" }
 ```
 
+Plugins use a standard precedence:
+
+1. code defaults
+2. `config/global.toml` under `[plugins.<plugin-id>]`
+3. `config/plugins/<plugin-id>/config.toml`
+4. plugin-declared environment variables
+5. explicit CLI/runtime arguments
+
+Example plugin-local config:
+
+```toml
+# $TABULA_HOME/config/plugins/observer/config.toml
+host = "127.0.0.1"
+port = 8091
+snapshot_poll_sec = 0.5
+```
+
+## External Agent Skills
+
+`$TABULA_HOME/skills` is managed by the active distro. Do not install
+third-party Agent Skills there directly.
+
+Claw has an assistant workspace separate from `$TABULA_HOME`, resolved as:
+
+```text
+TABULA_WORKSPACE -> $TABULA_HOME/config/global.toml [workspace].path -> ~/.agents
+```
+
+For compatibility with ecosystem installers, Claw discovers instruction-only
+skills from:
+
+- `$TABULA_WORKSPACE/skills/`
+- `$TABULA_WORKSPACE/.agents/skills/`
+- `~/.agents/skills/`
+- `${XDG_CONFIG_HOME:-~/.config}/agents/skills/`
+- OpenClaw roots: `~/.openclaw/skills/`, `~/.clawdbot/skills/`, `~/.moltbot/skills/`
+- `TABULA_EXTERNAL_SKILLS_DIR`
+- `TABULA_EXTERNAL_SKILLS_PATH` (`PATH`-style list)
+
+The Vercel skills installer works through its universal target:
+
+```bash
+npx skills add vercel-labs/agent-skills -a universal --skill frontend-design
+```
+
+External skills are instruction-only by default. Their `tools[].exec` entries
+are ignored unless those tools are also present in Tabula's active tool surface.
+
 Useful environment variables:
 
 | Variable                                   | Description                                |
 | ------------------------------------------ | ------------------------------------------ |
 | `TABULA_HOME`                              | Home directory, default `~/.tabula`        |
+| `TABULA_WORKSPACE`                         | Assistant workspace, default `~/.agents`   |
 | `TABULA_PROVIDER`                          | Active provider                            |
 | `TABULA_BOOT`                              | Boot command for `tabula serve / run`      |
 | `TABULA_URL`                               | Kernel WebSocket URL                       |

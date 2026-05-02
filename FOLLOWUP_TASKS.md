@@ -44,12 +44,12 @@ External `tabula-bundles` consumers больше не импортируют `sk
 
 - `base/mcp/SKILL.md`
 - `caveman/caveman-compress/SKILL.md`
-- `coder-git/git/SKILL.md`
-- `coder-review/review/SKILL.md`
-- `coder-subagents/subagents/SKILL.md`
-- `coder-tasks/todo/SKILL.md`
-- `coder-workspace/ask-user/SKILL.md`
-- `coder-workspace/workspace/SKILL.md`
+- `code/git/SKILL.md`
+- `code/review/SKILL.md`
+- `subagents/subagents/SKILL.md`
+- `code/todo/SKILL.md`
+- `code/ask-user/SKILL.md`
+- `code/workspace/SKILL.md`
 - `files/files/SKILL.md`
 - `memory/memory-admin/SKILL.md`
 - `memory/memory-save/SKILL.md`
@@ -147,8 +147,8 @@ Functional smoke tests не блокируют эту миграцию. Они �
 - `base/hook-permissions/plugin.toml`
 - `base/hook-logger/plugin.toml`
 - `base/observer/plugin.toml`
-- `coder-workspace/hook-workspace-boundary/plugin.toml`
-- `coder-workspace/hook-approvals/plugin.toml`
+- `code/hook-workspace-boundary/plugin.toml`
+- `code/hook-approvals/plugin.toml`
 - `caveman/hook-caveman/plugin.toml`
 
 Старые `SKILL.md` для этих components заменены на `README.md`, потому что distro installer считает `SKILL.md` и `plugin.toml` взаимоисключающими component kinds.
@@ -156,7 +156,7 @@ Functional smoke tests не блокируют эту миграцию. Они �
 Validation commands:
 
 ```bash
-PYTHONPATH="/Users/mak/src/tabula-bundles/_lib/python/src:/Users/mak/src/tabula" python3 -m py_compile base/hook-permissions/run.py base/hook-logger/run.py base/observer/run.py coder-workspace/hook-workspace-boundary/run.py coder-workspace/hook-approvals/run.py caveman/hook-caveman/run.py
+PYTHONPATH="/Users/mak/src/tabula-bundles/_lib/python/src:/Users/mak/src/tabula" python3 -m py_compile base/hook-permissions/run.py base/hook-logger/run.py base/observer/run.py code/hook-workspace-boundary/run.py code/hook-approvals/run.py caveman/hook-caveman/run.py
 go test ./internal/kernel -run TestTabulaBundlesHookPluginsLiveE2E -count=1 -timeout 30s
 go test ./internal/kernel/plugin ./internal/kernel -count=1 -timeout 90s
 PYTHONPATH="tools/tabula-distro/src" python3 -m unittest tools/tabula-distro/tests/test_install.py
@@ -267,20 +267,20 @@ MCP E2E использует fake stdio MCP server и проверяет:
 
 ### Статус
 
-Выполнено для primary spawn owner: `coder-subagents/subagents`.
+Выполнено для primary spawn owner: `subagents/subagents`.
 
 Решение по scope:
 
-- Primary migration target: `coder-subagents/subagents`, потому что именно этот component владеет spawn/list/wait/kill lifecycle.
+- Primary migration target: `subagents/subagents`, потому что именно этот component владеет spawn/list/wait/kill lifecycle.
 - `drivers/driver` и `drivers/subagent` пока остаются process runners, а не tool-owning plugins. Их миграция не закрывает spawn/depth/MaxChildren blocker сама по себе.
 
 Мигрированный plugin path:
 
-- `coder-subagents/subagents/plugin.toml`
+- `subagents/subagents/plugin.toml`
 
 Что изменено:
 
-- `coder-subagents/subagents/SKILL.md` заменен на `README.md`.
+- `subagents/subagents/SKILL.md` заменен на `README.md`.
 - `subagent_spawn`, `subagent_send`, `subagent_steer`, `subagent_wait`, `subagent_list`, `subagent_kill` теперь plugin tools.
 - Default limits: `max_spawn_depth=3`, `max_children=5`.
 - Limits configurable through plugin config.
@@ -291,7 +291,7 @@ MCP E2E использует fake stdio MCP server и проверяет:
 Validation commands:
 
 ```bash
-PYTHONPATH="/Users/mak/src/tabula-bundles/_lib/python/src:/Users/mak/src/tabula" python3 -m py_compile coder-subagents/subagents/run.py drivers/subagent/run.py drivers/driver/run.py
+PYTHONPATH="/Users/mak/src/tabula-bundles/_lib/python/src:/Users/mak/src/tabula" python3 -m py_compile subagents/subagents/run.py drivers/subagent/run.py drivers/driver/run.py
 go test ./internal/kernel -run TestTabulaBundlesSubagentsPluginLimitsLiveE2E -count=1 -timeout 30s
 go test ./internal/kernel/plugin ./internal/kernel -count=1 -timeout 90s
 PYTHONPATH="tools/tabula-distro/src" python3 -m unittest tools/tabula-distro/tests/test_install.py
@@ -344,27 +344,23 @@ Subagents E2E проверяет:
 
 - В `tabula-bundles` gateway components отсутствуют.
 - Реальные gateway sources находятся в `/Users/mak/src/tabula-distrib`.
-- Daemon gateways мигрированы на plugin-owned wrappers.
-- Interactive gateways (`gateway-cli`, `gateway-tui`) намеренно остаются user-owned launchers, потому что им нужно владеть terminal/UI lifecycle.
+- `gateway-telegram` мигрирован в plugin-owned wrapper (`claw/plugins/gateway-telegram-plugin`); daemon живёт внутри plugin dir.
+- `gateway-api` удалён целиком.
+- Interactive gateways (`gateway-cli`, `gateway-tui`) намеренно остаются client-owned launchers, потому что им нужно владеть terminal/UI lifecycle.
 
 Мигрированные plugin paths:
 
-- `/Users/mak/src/tabula-distrib/claw/plugins/gateway-api-plugin/plugin.toml`
 - `/Users/mak/src/tabula-distrib/claw/plugins/gateway-telegram-plugin/plugin.toml`
 
 Что изменено:
 
-- Добавлен wrapper plugin для `gateway-api`, который запускает и останавливает existing `gateway-api/run.py` daemon.
-- Добавлен wrapper plugin для `gateway-telegram`, который запускает и останавливает existing `gateway-telegram/run.py` daemon.
-- Добавлены status tools:
-  - `gateway_api_status`
-  - `gateway_telegram_status`
+- Wrapper plugin для `gateway-telegram` запускает и останавливает sibling `daemon.py`.
+- Status tool: `gateway_telegram_status`.
 - Shutdown path отправляет SIGTERM process group и при необходимости SIGKILL.
 
 Validation commands:
 
 ```bash
-PYTHONPATH="/Users/mak/src/tabula-bundles/_lib/python/src:/Users/mak/src/tabula" python3 -m py_compile claw/plugins/gateway-api-plugin/run.py claw/plugins/gateway-telegram-plugin/run.py claw/skills/gateway-api/run.py claw/skills/gateway-telegram/run.py guardian/skills/gateway-cli/run.py
 go test ./internal/kernel -run TestTabulaDistribGatewayPluginWrappersLiveE2E -count=1 -timeout 30s
 go test ./internal/kernel/plugin ./internal/kernel -count=1 -timeout 90s
 PYTHONPATH="tools/tabula-distro/src" python3 -m unittest tools/tabula-distro/tests/test_install.py
@@ -445,7 +441,7 @@ Validation result:
 
 ```text
 PYTHONPATH="src" python3 -m unittest tests/test_contract.py: Ran 6 tests, OK
-python3 -m compileall -q _lib/python/src base coder-subagents coder-workspace drivers coder-tasks: OK
+python3 -m compileall -q _lib/python/src base subagents drivers code: OK
 python3 -m pip wheel . --no-deps --wheel-dir dist: Successfully built tabula-plugin-sdk
 installed wheel contract tests: Ran 6 tests, OK
 grep skills._pylib / skills._tslib in tabula-bundles: no files found
@@ -556,17 +552,17 @@ _lib/typescript
 
 Мигрированные consumer areas:
 
-- Hook plugins: `base/hook-permissions`, `base/hook-logger`, `coder-workspace/hook-workspace-boundary`, `coder-workspace/hook-approvals`.
-- Subagents plugin: `coder-subagents/subagents`.
+- Hook plugins: `base/hook-permissions`, `base/hook-logger`, `code/hook-workspace-boundary`, `code/hook-approvals`.
+- Subagents plugin: `subagents/subagents`.
 - Driver runners/helpers: `drivers/driver`, `drivers/subagent`, `drivers/_drivers/*`.
-- Per-call/helper skills: `coder-workspace/ask-user`, `base/sessions`, `coder-tasks/todo`, `coder-workspace/workspace`, `base/pair`, `base/mcp/daemon.py`, `base/cron`.
+- Per-call/helper skills: `code/ask-user`, `base/sessions`, `code/todo`, `code/workspace`, `base/pair`, `base/mcp/daemon.py`, `base/cron`.
 
 Validation commands:
 
 ```bash
 grep -R "skills\._pylib\|skills\._tslib" /Users/mak/src/tabula-bundles
 PYTHONPATH="src" python3 -m unittest tests/test_contract.py
-python3 -m compileall -q _lib/python/src base coder-subagents coder-workspace drivers coder-tasks
+python3 -m compileall -q _lib/python/src base subagents drivers code
 go test ./internal/kernel -run 'TestTabulaBundles(HookPluginsLiveE2E|MCPPluginLiveE2E|SubagentsPluginLimitsLiveE2E)' -count=1 -timeout 60s
 PYTHONPATH="tools/tabula-distro/src" python3 -m unittest tools/tabula-distro/tests/test_install.py
 ```

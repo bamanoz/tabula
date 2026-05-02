@@ -68,10 +68,16 @@ func (m *Message) DecodeParams(out any) error {
 
 // RegisterRequestParams is sent by the kernel immediately after spawning a
 // plugin process (creative §2.3).
+//
+// The kernel advertises an inclusive range [MinProtocolVersion,
+// MaxProtocolVersion] of stdio protocol versions it can speak. The plugin
+// computes the intersection with its own SUPPORTED_PROTOCOL_VERSIONS and
+// replies with the maximum value. See docs/PROTOCOL.md §2.
 type RegisterRequestParams struct {
-	ProtocolVersion int            `json:"protocol_version"`
-	PluginID        string         `json:"plugin_id"`
-	Config          map[string]any `json:"config,omitempty"`
+	MinProtocolVersion int            `json:"min_protocol_version"`
+	MaxProtocolVersion int            `json:"max_protocol_version"`
+	PluginID           string         `json:"plugin_id"`
+	Config             map[string]any `json:"config,omitempty"`
 }
 
 // ToolCallParams carries a single LLM-driven tool invocation.

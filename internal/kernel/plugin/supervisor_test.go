@@ -33,7 +33,7 @@ func TestSupervisorRestartsWithExponentialBackoffAndCap(t *testing.T) {
 	var starts int
 	var slept []time.Duration
 	err := sup.Supervise(ctx, testManifestForSupervisor("flaky"), nil, SupervisorOptions{
-		SpawnOptions: SpawnOptions{ProtocolVersion: 1},
+		SpawnOptions: SpawnOptions{MinProtocolVersion: 1, MaxProtocolVersion: 1},
 		OnStart: func(*Handle) {
 			starts++
 		},
@@ -78,7 +78,7 @@ func TestSupervisorBackoffCapsAtPolicyMax(t *testing.T) {
 
 	var slept []time.Duration
 	_ = sup.Supervise(ctx, testManifestForSupervisor("capped"), nil, SupervisorOptions{
-		SpawnOptions: SpawnOptions{ProtocolVersion: 1},
+		SpawnOptions: SpawnOptions{MinProtocolVersion: 1, MaxProtocolVersion: 1},
 		Sleep: func(ctx context.Context, d time.Duration) error {
 			slept = append(slept, d)
 			return clock.Sleep(ctx, d)
@@ -124,7 +124,7 @@ func TestSupervisorCleanRunResetsRestartBudget(t *testing.T) {
 	var starts int
 	var slept []time.Duration
 	err := sup.Supervise(ctx, testManifestForSupervisor("reset"), nil, SupervisorOptions{
-		SpawnOptions: SpawnOptions{ProtocolVersion: 1},
+		SpawnOptions: SpawnOptions{MinProtocolVersion: 1, MaxProtocolVersion: 1},
 		OnStart:      func(*Handle) { starts++ },
 		Sleep: func(ctx context.Context, d time.Duration) error {
 			slept = append(slept, d)
@@ -154,7 +154,7 @@ func TestSupervisorDoesNotRestartManifestErrors(t *testing.T) {
 	sup := NewSupervisor(runtime, SupervisorPolicy{InitialBackoff: time.Millisecond})
 
 	err := sup.Supervise(context.Background(), testManifestForSupervisor("bad"), nil, SupervisorOptions{
-		SpawnOptions: SpawnOptions{ProtocolVersion: 1},
+		SpawnOptions: SpawnOptions{MinProtocolVersion: 1, MaxProtocolVersion: 1},
 	})
 	if err == nil {
 		t.Fatal("expected manifest error")
@@ -169,7 +169,7 @@ func TestSupervisorDoesNotRestartNonRestartableErrors(t *testing.T) {
 	sup := NewSupervisor(runtime, SupervisorPolicy{InitialBackoff: time.Millisecond})
 
 	err := sup.Supervise(context.Background(), testManifestForSupervisor("bad-protocol"), nil, SupervisorOptions{
-		SpawnOptions: SpawnOptions{ProtocolVersion: 1},
+		SpawnOptions: SpawnOptions{MinProtocolVersion: 1, MaxProtocolVersion: 1},
 	})
 	if err == nil || !strings.Contains(err.Error(), "protocol mismatch") {
 		t.Fatalf("expected protocol mismatch, got %v", err)
@@ -195,7 +195,7 @@ func TestSupervisorReportsRestartAttempts(t *testing.T) {
 	var restartErrs []error
 
 	_ = sup.Supervise(ctx, testManifestForSupervisor("notify"), nil, SupervisorOptions{
-		SpawnOptions: SpawnOptions{ProtocolVersion: 1},
+		SpawnOptions: SpawnOptions{MinProtocolVersion: 1, MaxProtocolVersion: 1},
 		OnRestart: func(_ *Handle, err error, restartCount int, _ time.Duration) {
 			restartCounts = append(restartCounts, restartCount)
 			restartErrs = append(restartErrs, err)
@@ -255,7 +255,7 @@ func (r *scriptedSupervisorRuntime) Spawn(_ context.Context, manifest *Manifest,
 		h.startedAt = startedAt
 		h.mu.Unlock()
 	}
-	_ = h.MarkRegistered(&RegisterParams{ProtocolVersion: opts.ProtocolVersion, PluginID: manifest.ID})
+	_ = h.MarkRegistered(&RegisterParams{ProtocolVersion: opts.MaxProtocolVersion, PluginID: manifest.ID})
 	if opts.OnExit != nil {
 		opts.OnExit(h, exitErr)
 	}
