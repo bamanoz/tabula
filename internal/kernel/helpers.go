@@ -28,12 +28,16 @@ func (h *Hub) allClients() []*Client {
 func (h *Hub) allHookSubscribers() []HookSubscriber {
 	clients := h.clients.All()
 	pluginHandles := h.pluginHandles()
-	subs := make([]HookSubscriber, 0, len(clients)+len(pluginHandles))
+	runtimeTargets := h.runtimeHookTargets()
+	subs := make([]HookSubscriber, 0, len(clients)+len(pluginHandles)+len(runtimeTargets))
 	for _, c := range clients {
 		subs = append(subs, c)
 	}
 	for _, p := range pluginHandles {
 		subs = append(subs, newPluginHookSubscriber(p))
+	}
+	for _, target := range runtimeTargets {
+		subs = append(subs, newRuntimeHookSubscriber(target))
 	}
 	return subs
 }
@@ -43,6 +47,13 @@ func (h *Hub) pluginHandles() []*plugin.Handle {
 		return nil
 	}
 	return h.plugins.All()
+}
+
+func (h *Hub) runtimeHookTargets() []runtimeHookTarget {
+	if h == nil || h.runtimes == nil {
+		return nil
+	}
+	return h.runtimes.HookTargets()
 }
 
 func (h *Hub) sessionProcesses(session string) []*SpawnedProcess {

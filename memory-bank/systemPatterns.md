@@ -1,5 +1,13 @@
 # System Patterns
 
+## execute-m2-m6-runtime-cutover-backlog — CREATIVE chosen patterns (2026-05-03)
+
+- **Single runtime session with callback sink**: runtime-backed plugin control uses one authenticated `RuntimeConn` per runtime plus a kernel-owned async sink for `catalog_update`, `hook_event_reply`, `plugin_send`, `plugin_log`, and `lifecycle_notice`; no second control connection and no caller-owned event backlog by default.
+- **Rich authoritative capability model**: runtime capabilities carry `ToolSpec` and `HookSpec` so the kernel can rebuild tool catalog, schemas, deadlines, and hook subscriptions without `plugin.Handle`; post-attach mutations flow through `catalog_update`.
+- **Manifest-seeded, worker-confirmed readiness**: manifests may seed diagnostics, but only worker-confirmed catalog state marks a target `ready`; runtime-hosted targets move through `manifest_loaded`, `initializing`, `ready`, `failed`, and `stale`.
+- **Worker op-envelope with single-reader demux**: runtime-to-worker NDJSON remains the internal boundary, but every frame now carries an explicit `op` so one runtime reader can route results, `tools_updated`, hook replies, bus sends, and logs safely.
+- **Fail-closed control frames, best-effort logs**: malformed `catalog_update`, `hook_event_reply`, `plugin_send`, and `lifecycle_notice` detach the runtime; `plugin_log` stays required but best-effort so logging pressure does not compromise availability.
+
 ## execute-remote-runtime-program — CREATIVE chosen patterns (2026-05-02)
 
 - **Typed Runtime API contract**: `internal/runtime/wire/` should own a typed operation envelope and operation-specific payloads. All transports consume the same wire contract; transport packages must not define divergent message shapes.

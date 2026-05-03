@@ -58,7 +58,7 @@ func Run(ctx context.Context, opts Options) error {
 		if err == nil || ctx.Err() != nil {
 			return nil
 		}
-		if !opts.Reconnect && opts.Dial != nil {
+		if !opts.Reconnect {
 			return err
 		}
 		if isFatalAuthOrConfig(err) {

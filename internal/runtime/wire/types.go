@@ -37,6 +37,18 @@ const (
 	OpReload Operation = "reload"
 	// OpReloadAck returns the targets affected by a Reload request.
 	OpReloadAck Operation = "reload_ack"
+	// OpHookEvent delivers a kernel-originated hook event to a runtime target.
+	OpHookEvent Operation = "hook_event"
+	// OpCatalogUpdate carries an authoritative runtime-originated catalog update.
+	OpCatalogUpdate Operation = "catalog_update"
+	// OpHookEventReply carries the terminal result for one hook_event call_id.
+	OpHookEventReply Operation = "hook_event_reply"
+	// OpPluginSend carries a runtime-originated plugin bus emission.
+	OpPluginSend Operation = "plugin_send"
+	// OpPluginLog carries a runtime-originated structured log record.
+	OpPluginLog Operation = "plugin_log"
+	// OpLifecycleNotice carries runtime-originated target lifecycle diagnostics.
+	OpLifecycleNotice Operation = "lifecycle_notice"
 )
 
 // ErrorCode is a canonical Runtime API wire error code.
@@ -159,12 +171,106 @@ func (t Target) Validate() error {
 	return nil
 }
 
-// Capability describes one target and the tools exposed by that target.
+// ToolSpec describes one tool exposed by a capability target.
+type ToolSpec struct {
+	// Name is the target-local tool name.
+	Name string `json:"name"`
+	// Description is optional human-readable tool metadata.
+	Description string `json:"description,omitempty"`
+	// Schema carries the authoritative JSON schema/params payload when known.
+	Schema json.RawMessage `json:"schema,omitempty"`
+	// DeadlineMS is the target-local default deadline when non-zero.
+	DeadlineMS int64 `json:"deadline_ms,omitempty"`
+}
+
+// Validate returns a protocol error when the tool metadata is incomplete.
+func (t ToolSpec) Validate() error {
+	if t.Name == "" {
+		return ProtocolErrorf("tool name is required")
+	}
+	return nil
+}
+
+// HookSpec describes one hook subscription exposed by a capability target.
+type HookSpec struct {
+	// Event is the canonical hook event name.
+	Event string `json:"event"`
+	// Priority is the runtime/kernel ordering hint for the subscription.
+	Priority int `json:"priority,omitempty"`
+	// TimeoutMS optionally overrides the default hook timeout.
+	TimeoutMS *int64 `json:"timeout_ms,omitempty"`
+}
+
+// Validate returns a protocol error when the hook metadata is incomplete.
+func (h HookSpec) Validate() error {
+	if h.Event == "" {
+		return ProtocolErrorf("hook event is required")
+	}
+	return nil
+}
+
+// CapabilityState describes whether capability metadata is only diagnostic or
+// actually invokable.
+type CapabilityState string
+
+const (
+	CapabilityStateManifestLoaded CapabilityState = "manifest_loaded"
+	CapabilityStateInitializing   CapabilityState = "initializing"
+	CapabilityStateReady          CapabilityState = "ready"
+	CapabilityStateFailed         CapabilityState = "failed"
+	CapabilityStateStale          CapabilityState = "stale"
+)
+
+// CapabilitySource identifies where the current capability metadata came from.
+type CapabilitySource string
+
+const (
+	CapabilitySourceManifest CapabilitySource = "manifest"
+	CapabilitySourceWorker   CapabilitySource = "worker"
+)
+
+// Capability describes one target and its authoritative tool/hook metadata.
 type Capability struct {
 	// Target is the skill or plugin capability owner.
 	Target Target `json:"target"`
-	// Tools lists tool names available on Target.
-	Tools []string `json:"tools,omitempty"`
+	// Tools lists the current authoritative tool metadata for Target.
+	Tools []ToolSpec `json:"tools,omitempty"`
+	// Hooks lists the current authoritative hook subscriptions for Target.
+	Hooks []HookSpec `json:"hooks,omitempty"`
+	// Revision is the monotonic runtime-local generation for Target metadata.
+	Revision int64 `json:"revision,omitempty"`
+	// State reports whether Target is merely known or actually ready.
+	State CapabilityState `json:"state"`
+	// Source reports whether Target metadata came from manifest or worker data.
+	Source CapabilitySource `json:"source"`
+}
+
+// Validate returns a protocol error when the capability metadata is incomplete.
+func (c Capability) Validate() error {
+	if err := c.Target.Validate(); err != nil {
+		return err
+	}
+	for _, tool := range c.Tools {
+		if err := tool.Validate(); err != nil {
+			return err
+		}
+	}
+	for _, hook := range c.Hooks {
+		if err := hook.Validate(); err != nil {
+			return err
+		}
+	}
+	switch c.State {
+	case CapabilityStateManifestLoaded, CapabilityStateInitializing, CapabilityStateReady, CapabilityStateFailed, CapabilityStateStale:
+	default:
+		return ProtocolErrorf("unknown capability state %q", c.State)
+	}
+	switch c.Source {
+	case CapabilitySourceManifest, CapabilitySourceWorker:
+	default:
+		return ProtocolErrorf("unknown capability source %q", c.Source)
+	}
+	return nil
 }
 
 // Envelope carries the op discriminator and optional call_id correlation for a
@@ -296,6 +402,128 @@ type ReloadAck struct {
 	Op Operation `json:"op"`
 	// EvictedTargets lists targets whose worker/config state was evicted.
 	EvictedTargets []Target `json:"evicted_targets,omitempty"`
+}
+
+// CatalogUpdate is the authoritative runtime-originated target metadata update.
+type CatalogUpdate struct {
+	Op Operation `json:"op"`
+	// Target identifies the target whose metadata changed.
+	Target Target `json:"target"`
+	// Tools is the full authoritative current tool set.
+	Tools []ToolSpec `json:"tools,omitempty"`
+	// Hooks is the full authoritative current hook set.
+	Hooks []HookSpec `json:"hooks,omitempty"`
+	// Removed is diagnostic only; kernel replaces from the full tool set.
+	Removed []string `json:"removed,omitempty"`
+	// Revision is the monotonic runtime-local generation for Target metadata.
+	Revision int64 `json:"revision"`
+	// State reports the target readiness state.
+	State CapabilityState `json:"state"`
+	// Source reports whether metadata is manifest- or worker-derived.
+	Source CapabilitySource `json:"source"`
+	// Diagnostic is an optional sanitized status string.
+	Diagnostic string `json:"diagnostic,omitempty"`
+}
+
+// HookEvent is a kernel-originated hook event routed to one runtime target.
+type HookEvent struct {
+	Op Operation `json:"op"`
+	// CallID is the correlation id for the hook event.
+	CallID string `json:"call_id"`
+	// Target identifies the target handling the hook event.
+	Target Target `json:"target"`
+	// Event is the canonical hook event name.
+	Event string `json:"event"`
+	// ReplyMode declares whether this hook expects a terminal reply.
+	ReplyMode HookReplyMode `json:"reply_mode"`
+	// Data is the raw JSON hook payload.
+	Data json.RawMessage `json:"data,omitempty"`
+	// SessionID optionally carries the session id for diagnostics/routing.
+	SessionID string `json:"session_id,omitempty"`
+}
+
+// HookReplyMode declares whether a runtime hook event expects a reply.
+type HookReplyMode string
+
+const (
+	HookReplyModeNone      HookReplyMode = "none"
+	HookReplyModeModifying HookReplyMode = "modifying"
+	HookReplyModeClaiming  HookReplyMode = "claiming"
+)
+
+// HookAction is the canonical action returned by a hook event reply.
+type HookAction string
+
+const (
+	HookActionOK      HookAction = "ok"
+	HookActionRewrite HookAction = "rewrite"
+	HookActionDeny    HookAction = "deny"
+	HookActionClaim   HookAction = "claim"
+)
+
+// HookEventReply is the terminal result for one hook_event call_id.
+type HookEventReply struct {
+	Op Operation `json:"op"`
+	// CallID correlates this reply with its HookEvent.
+	CallID string `json:"call_id"`
+	// Action is one canonical hook reply action.
+	Action HookAction `json:"action"`
+	// Data optionally carries rewritten or claimed payload.
+	Data json.RawMessage `json:"data,omitempty"`
+	// Reason is an optional sanitized explanation.
+	Reason string `json:"reason,omitempty"`
+}
+
+// PluginSend is a runtime-originated plugin bus emission.
+type PluginSend struct {
+	Op Operation `json:"op"`
+	// Target identifies the emitting plugin target.
+	Target Target `json:"target"`
+	// Channel is the transport channel. M2 only permits "bus".
+	Channel string `json:"channel"`
+	// Type is the emitted message type.
+	Type string `json:"type"`
+	// Payload is the raw JSON message payload.
+	Payload json.RawMessage `json:"payload,omitempty"`
+	// SessionID optionally scopes the send to one session.
+	SessionID string `json:"session_id,omitempty"`
+}
+
+// PluginLog is a runtime-originated structured plugin log record.
+type PluginLog struct {
+	Op Operation `json:"op"`
+	// Target identifies the emitting plugin target.
+	Target Target `json:"target"`
+	// Level is the structured log level.
+	Level string `json:"level"`
+	// Message is the sanitized human-readable log text.
+	Message string `json:"message"`
+	// Fields is an optional structured JSON object.
+	Fields json.RawMessage `json:"fields,omitempty"`
+}
+
+// LifecycleState is the canonical target lifecycle state.
+type LifecycleState string
+
+const (
+	LifecycleStateStarting LifecycleState = "starting"
+	LifecycleStateReady    LifecycleState = "ready"
+	LifecycleStateStopping LifecycleState = "stopping"
+	LifecycleStateExited   LifecycleState = "exited"
+	LifecycleStateCrashed  LifecycleState = "crashed"
+)
+
+// LifecycleNotice is a runtime-originated target lifecycle update.
+type LifecycleNotice struct {
+	Op Operation `json:"op"`
+	// Target identifies the target whose lifecycle changed.
+	Target Target `json:"target"`
+	// State is the canonical lifecycle state.
+	State LifecycleState `json:"state"`
+	// PID is the worker pid when known.
+	PID int `json:"pid,omitempty"`
+	// Message is an optional sanitized diagnostic string.
+	Message string `json:"message,omitempty"`
 }
 
 // ProtocolError reports a Runtime API protocol validation failure.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,7 +9,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	runtimeconfig "github.com/bamanoz/tabula/cmd/tabula-runtime/config"
 	"github.com/bamanoz/tabula/internal/kernel"
+	runtimeauth "github.com/bamanoz/tabula/internal/runtime/auth"
+	"github.com/bamanoz/tabula/internal/runtime/wire"
 )
 
 func TestWebSocketOriginCheck_DefaultAllowsLocalhost(t *testing.T) {
@@ -162,6 +166,62 @@ func TestLoadEnvFileDoesNotOverrideExistingValues(t *testing.T) {
 	}
 }
 
+func TestWriteLocalRuntimeConfigWritesDefaultDaemonConfig(t *testing.T) {
+	tabulaHome := t.TempDir()
+	if err := writeLocalRuntimeConfig(tabulaHome, nil); err != nil {
+		t.Fatalf("writeLocalRuntimeConfig: %v", err)
+	}
+	loaded, err := runtimeconfig.Load(filepath.Join(tabulaHome, "config", "runtime.toml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	kernelCfg, err := loaded.SingleKernel()
+	if err != nil {
+		t.Fatalf("SingleKernel: %v", err)
+	}
+	if kernelCfg.ID != runtimeauth.DefaultKernelID {
+		t.Fatalf("kernel id = %q", kernelCfg.ID)
+	}
+	if kernelCfg.URL != "unix://"+filepath.Join(tabulaHome, "run", "runtime.sock") {
+		t.Fatalf("kernel url = %q", kernelCfg.URL)
+	}
+	if kernelCfg.TokenFile != runtimeauth.RuntimeTokenPath(tabulaHome) {
+		t.Fatalf("token file = %q", kernelCfg.TokenFile)
+	}
+	if len(loaded.PluginDirs) != 1 || loaded.PluginDirs[0] != filepath.Join(tabulaHome, "plugins") {
+		t.Fatalf("plugin dirs = %#v", loaded.PluginDirs)
+	}
+}
+
+func TestReloadLocalRuntimeUsesAttachedRuntime(t *testing.T) {
+	fake := &fakeRuntimeReloader{attempted: true}
+	if err := reloadLocalRuntime(t.Context(), fake); err != nil {
+		t.Fatalf("reloadLocalRuntime: %v", err)
+	}
+	if fake.calls != 1 || fake.runtimeID != runtimeauth.LocalRuntimeID {
+		t.Fatalf("fake reloader = %+v", fake)
+	}
+}
+
+func TestReloadLocalRuntimeFailsWhenNotAttached(t *testing.T) {
+	if err := reloadLocalRuntime(t.Context(), &fakeRuntimeReloader{}); err == nil || err.Error() != "local runtime is not attached" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+type fakeRuntimeReloader struct {
+	attempted bool
+	err       error
+	calls     int
+	runtimeID string
+}
+
+func (f *fakeRuntimeReloader) ReloadAttachedRuntime(_ context.Context, runtimeID string, _ *wire.Target) (bool, error) {
+	f.calls++
+	f.runtimeID = runtimeID
+	return f.attempted, f.err
+}
+
 func TestHealthEndpoint(t *testing.T) {
 	hub := kernel.NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
 	mux := http.NewServeMux()
@@ -179,13 +239,13 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 
 	var body struct {
-		Status                    string `json:"status"`
-		Version                   string `json:"version"`
-		KernelVersion             string `json:"kernel_version"`
-		Commit                    string `json:"commit"`
-		ProtocolVersion           int    `json:"protocol_version"`
-		MinPluginProtocolVersion  int    `json:"min_plugin_protocol_version"`
-		MaxPluginProtocolVersion  int    `json:"max_plugin_protocol_version"`
+		Status                   string `json:"status"`
+		Version                  string `json:"version"`
+		KernelVersion            string `json:"kernel_version"`
+		Commit                   string `json:"commit"`
+		ProtocolVersion          int    `json:"protocol_version"`
+		MinPluginProtocolVersion int    `json:"min_plugin_protocol_version"`
+		MaxPluginProtocolVersion int    `json:"max_plugin_protocol_version"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("unmarshal health response: %v", err)

@@ -28,11 +28,19 @@ type PluginExecPolicy interface {
 
 // Worker is the runtime-side handle for one spawned skill/plugin worker.
 type Worker interface {
-	// Init sends WorkerInit and blocks until WorkerInitAck or ctx/process failure.
-	Init(ctx context.Context, init workerwire.WorkerInit) error
+	// Init sends WorkerInit and blocks until WorkerInitAck or ctx/process
+	// failure. The returned ack carries the worker's authoritative initial tool
+	// and hook metadata for later runtime catalog management.
+	Init(ctx context.Context, init workerwire.WorkerInit) (workerwire.WorkerInitAck, error)
 	// Call performs one synchronous WorkerCall. Cold workers must reject reused or
 	// overlapping calls; warm workers accept sequential calls.
 	Call(ctx context.Context, call workerwire.WorkerCall) (workerwire.WorkerResult, error)
+	// HookEvent performs one runtime-originated hook dispatch to the worker. A nil
+	// reply means the event was fire-and-forget and did not expect a response.
+	HookEvent(ctx context.Context, event workerwire.WorkerEvent) (*workerwire.WorkerEventReply, error)
+	// Events exposes async worker frames and transport/protocol failures observed
+	// by the single-reader router owned by the concrete policy implementation.
+	Events() <-chan WorkerAsyncEvent
 	// Shutdown requests cooperative shutdown and escalates according to policy.
 	Shutdown(ctx context.Context) error
 	// Wait blocks until process exit and returns exit details.
@@ -69,4 +77,14 @@ type ExitInfo struct {
 	Code     int
 	Signaled bool
 	Message  string
+}
+
+// WorkerAsyncEvent is one routed async observation from a worker process.
+// Frame carries decoded workerwire frame values such as WorkerToolsUpdated,
+// WorkerSend, WorkerLog, WorkerEventReply, or WorkerError. Err carries a
+// transport/protocol failure such as EOF or malformed NDJSON.
+type WorkerAsyncEvent struct {
+	Envelope workerwire.Envelope
+	Frame    any
+	Err      error
 }

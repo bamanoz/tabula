@@ -86,7 +86,6 @@ func NewHub(toolsJSON json.RawMessage, skillExec map[string]string, _ int, _ int
 		runtimes:        NewRuntimeRegistry(),
 		pluginRuns:      make(map[string]*pluginLifecycle),
 		pluginStates:    make(map[string]*pluginLifecycleState),
-		pluginRuntime:   plugin.NewRuntime(),
 		toolExec:        dispatch,
 		toolsJSON:       toolsJSON,
 		Logger:          logger,

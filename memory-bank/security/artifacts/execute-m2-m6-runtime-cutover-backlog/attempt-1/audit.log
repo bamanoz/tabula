@@ -1,0 +1,3 @@
+No dependency audit was run for attempt 1.
+
+Reason: the BUILD diff introduced no new dependency manifests or lockfile changes, so there were no new packages to audit.

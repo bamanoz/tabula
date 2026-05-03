@@ -7,6 +7,7 @@ import (
 
 	"github.com/bamanoz/tabula/internal/kernel/plugin"
 	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
+	"github.com/bamanoz/tabula/internal/runtime/wire"
 )
 
 type snapshotProcessInfo struct {
@@ -52,9 +53,16 @@ type snapshotRuntimeInfo struct {
 }
 
 type snapshotTargetInfo struct {
-	Kind  string   `json:"kind"`
-	ID    string   `json:"id"`
-	Tools []string `json:"tools,omitempty"`
+	Kind           string   `json:"kind"`
+	ID             string   `json:"id"`
+	Tools          []string `json:"tools,omitempty"`
+	Hooks          []string `json:"hooks,omitempty"`
+	State          string   `json:"state,omitempty"`
+	Source         string   `json:"source,omitempty"`
+	Revision       int64    `json:"revision,omitempty"`
+	PID            int      `json:"pid,omitempty"`
+	LifecycleState string   `json:"lifecycle_state,omitempty"`
+	Diagnostic     string   `json:"diagnostic,omitempty"`
 }
 
 type snapshotRuntimesInfo struct {
@@ -180,7 +188,7 @@ func snapshotRuntimes(h *Hub) []byte {
 			PID:          attachment.PID,
 			Capabilities: runtimeCapabilityNames(attachment.Capabilities),
 			WorkerCount:  attachment.Health.WorkerCount,
-			Targets:      runtimeTargets(attachment.Capabilities),
+			Targets:      runtimeTargets(attachment),
 		}
 		if attachment.LastError != "" {
 			err := attachment.LastError
@@ -258,9 +266,12 @@ func formatSnapshotTime(t time.Time) string {
 func runtimeCapabilityNames(capabilities []runtimeapi.Capability) []string {
 	set := make(map[string]struct{})
 	for _, capability := range capabilities {
+		if capability.State != wire.CapabilityStateReady {
+			continue
+		}
 		for _, tool := range capability.Tools {
-			if tool != "" {
-				set[tool] = struct{}{}
+			if tool.Name != "" {
+				set[tool.Name] = struct{}{}
 			}
 		}
 	}
@@ -272,12 +283,36 @@ func runtimeCapabilityNames(capabilities []runtimeapi.Capability) []string {
 	return names
 }
 
-func runtimeTargets(capabilities []runtimeapi.Capability) []snapshotTargetInfo {
-	targets := make([]snapshotTargetInfo, 0, len(capabilities))
-	for _, capability := range capabilities {
-		tools := append([]string(nil), capability.Tools...)
+func runtimeTargets(attachment RuntimeAttachment) []snapshotTargetInfo {
+	targets := make([]snapshotTargetInfo, 0, len(attachment.Capabilities))
+	for _, capability := range attachment.Capabilities {
+		tools := make([]string, 0, len(capability.Tools))
+		for _, tool := range capability.Tools {
+			if tool.Name != "" {
+				tools = append(tools, tool.Name)
+			}
+		}
 		sort.Strings(tools)
-		targets = append(targets, snapshotTargetInfo{Kind: string(capability.Target.Kind), ID: capability.Target.ID, Tools: tools})
+		hooks := make([]string, 0, len(capability.Hooks))
+		for _, hook := range capability.Hooks {
+			if hook.Event != "" {
+				hooks = append(hooks, hook.Event)
+			}
+		}
+		sort.Strings(hooks)
+		status := attachment.targetStatus[runtimeTargetKey(capability.Target)]
+		targets = append(targets, snapshotTargetInfo{
+			Kind:           string(capability.Target.Kind),
+			ID:             capability.Target.ID,
+			Tools:          tools,
+			Hooks:          hooks,
+			State:          string(capability.State),
+			Source:         string(capability.Source),
+			Revision:       capability.Revision,
+			PID:            status.PID,
+			LifecycleState: string(status.Lifecycle),
+			Diagnostic:     status.Message,
+		})
 	}
 	sort.Slice(targets, func(i, j int) bool {
 		if targets[i].Kind == targets[j].Kind {

@@ -1,10 +1,14 @@
 package kernel
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os/exec"
 	"testing"
+
+	runtimeauth "github.com/bamanoz/tabula/internal/runtime/auth"
+	runtimemock "github.com/bamanoz/tabula/internal/runtime/mock"
 )
 
 func TestSnapshotSessionsUsesRecordedPID(t *testing.T) {
@@ -124,5 +128,42 @@ func TestSnapshotPluginsRetainsFailedLifecycleState(t *testing.T) {
 	}
 	if len(got.Tools) != 0 {
 		t.Fatalf("failed plugin should not expose live tools: %+v", got.Tools)
+	}
+}
+
+func TestSnapshotRuntimesSanitizesDetachedLastError(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	hub.runtimes = NewRuntimeRegistry()
+	conn := runtimemock.New()
+	if err := hub.runtimes.RegisterHello(runtimeauth.LocalRuntimeID, conn, nil, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+
+	hub.runtimes.MarkDetached(runtimeauth.LocalRuntimeID, errors.New("token=super-secret password=hunter2"))
+
+	var snapshot struct {
+		Runtimes []struct {
+			Attached  bool    `json:"attached"`
+			LastError *string `json:"last_error"`
+		} `json:"runtimes"`
+	}
+	raw := hub.SnapshotRuntimes()
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatalf("SnapshotRuntimes returned invalid JSON: %v", err)
+	}
+	if len(snapshot.Runtimes) != 1 {
+		t.Fatalf("expected one runtime snapshot, got %s", string(raw))
+	}
+	got := snapshot.Runtimes[0]
+	if got.Attached {
+		t.Fatalf("expected runtime to be detached, got %+v", got)
+	}
+	if got.LastError == nil || *got.LastError != "runtime connection failed" {
+		t.Fatalf("expected sanitized runtime last_error, got %+v (snapshot=%s)", got.LastError, string(raw))
+	}
+	for _, forbidden := range []string{"super-secret", "hunter2", "token=", "password="} {
+		if bytes.Contains(raw, []byte(forbidden)) {
+			t.Fatalf("runtime snapshot leaked %q: %s", forbidden, string(raw))
+		}
 	}
 }

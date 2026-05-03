@@ -25,12 +25,21 @@ type Handler interface {
 	Health(context.Context, wire.Health) (wire.HealthResp, error)
 	ListCapabilities(context.Context, wire.ListCapabilities) (wire.ListCapabilitiesResp, error)
 	Reload(context.Context, wire.Reload) (wire.ReloadAck, error)
+	HookEvent(context.Context, wire.HookEvent) (wire.HookEventReply, error)
+}
+
+// AsyncFrameSource optionally supplies runtime-originated async plugin-control
+// frames that should be written to the peer on the same connection.
+type AsyncFrameSource interface {
+	AsyncFrames() <-chan any
 }
 
 // Conn is a concrete RuntimeConn backed by one codec connection.
 type Conn struct {
-	c       *codec.Conn
-	writeMu sync.Mutex
+	c         *codec.Conn
+	writeMu   sync.Mutex
+	runtimeID string
+	sink      runtimeapi.AsyncSink
 
 	done      chan struct{}
 	closeOnce sync.Once
@@ -47,14 +56,24 @@ var _ runtimeapi.RuntimeConn = (*Conn)(nil)
 
 // New creates a RuntimeConn and starts its response router.
 func New(c *codec.Conn) *Conn {
+	return NewWithSink(c, "", runtimeapi.NopAsyncSink())
+}
+
+// NewWithSink creates a RuntimeConn with a runtime-id-scoped async sink.
+func NewWithSink(c *codec.Conn, runtimeID string, sink runtimeapi.AsyncSink) *Conn {
+	if sink == nil {
+		sink = runtimeapi.NopAsyncSink()
+	}
 	rc := &Conn{
-		c:       c,
-		done:    make(chan struct{}),
-		pending: make(map[string]chan runtimeapi.InvokeResp),
-		cancels: make(map[string]chan error),
-		health:  make(chan runtimeapi.HealthResp, 1),
-		caps:    make(chan runtimeapi.ListCapabilitiesResp, 1),
-		reloads: make(chan runtimeapi.ReloadResp, 1),
+		c:         c,
+		runtimeID: runtimeID,
+		sink:      sink,
+		done:      make(chan struct{}),
+		pending:   make(map[string]chan runtimeapi.InvokeResp),
+		cancels:   make(map[string]chan error),
+		health:    make(chan runtimeapi.HealthResp, 1),
+		caps:      make(chan runtimeapi.ListCapabilitiesResp, 1),
+		reloads:   make(chan runtimeapi.ReloadResp, 1),
 	}
 	go rc.readLoop()
 	return rc
@@ -159,6 +178,23 @@ func (c *Conn) Reload(ctx context.Context, req runtimeapi.ReloadReq) (runtimeapi
 	}
 }
 
+func (c *Conn) SendHookEvent(ctx context.Context, req runtimeapi.HookEventReq) error {
+	replyMode := req.ReplyMode
+	if replyMode == "" {
+		replyMode = defaultHookReplyMode(req.Event)
+	}
+	frame := wire.HookEvent{
+		Op:        wire.OpHookEvent,
+		CallID:    req.CallID,
+		Target:    req.Target,
+		Event:     req.Event,
+		ReplyMode: replyMode,
+		Data:      req.Data,
+		SessionID: req.SessionID,
+	}
+	return c.write(ctx, frame)
+}
+
 func (c *Conn) Close() error {
 	c.closeWithUnavailable()
 	return c.c.Close(websocket.StatusNormalClosure, "")
@@ -188,6 +224,34 @@ func (c *Conn) readLoop() {
 			replaceLatest(c.caps, *f)
 		case *wire.ReloadAck:
 			replaceLatest(c.reloads, *f)
+		case *wire.CatalogUpdate:
+			if err := c.sink.CatalogUpdated(c.runtimeID, *f); err != nil {
+				c.protocolFailure(err)
+				return
+			}
+		case *wire.HookEventReply:
+			if err := c.sink.HookEventReplied(c.runtimeID, *f); err != nil {
+				c.protocolFailure(err)
+				return
+			}
+		case *wire.PluginSend:
+			if err := c.sink.PluginSent(c.runtimeID, *f); err != nil {
+				c.protocolFailure(err)
+				return
+			}
+		case *wire.PluginLog:
+			c.sink.PluginLogged(c.runtimeID, *f)
+		case *wire.LifecycleNotice:
+			if err := c.sink.LifecycleNoticed(c.runtimeID, *f); err != nil {
+				c.protocolFailure(err)
+				return
+			}
+		case *wire.HookEvent:
+			c.protocolFailure(wire.ProtocolErrorf("unexpected hook_event from runtime"))
+			return
+		case *wire.Hello, *wire.HelloAck, *wire.Invoke, *wire.Cancel, *wire.Health, *wire.ListCapabilities, *wire.Reload:
+			c.protocolFailure(wire.ProtocolErrorf("unexpected request frame %T from runtime", frame))
+			return
 		}
 	}
 }
@@ -288,6 +352,12 @@ func (c *Conn) closeWithUnavailable() {
 	})
 }
 
+func (c *Conn) protocolFailure(err error) {
+	c.sink.RuntimeProtocolError(c.runtimeID, err)
+	c.closeWithUnavailable()
+	_ = c.c.Close(websocket.StatusProtocolError, "runtime protocol error")
+}
+
 func replaceLatest[T any](ch chan T, value T) {
 	select {
 	case ch <- value:
@@ -344,6 +414,29 @@ func ServeAfterHandshake(ctx context.Context, c *codec.Conn, handler Handler) er
 		writeMu.Lock()
 		defer writeMu.Unlock()
 		return c.Write(ctx, frame)
+	}
+	if source, ok := handler.(AsyncFrameSource); ok {
+		if frames := source.AsyncFrames(); frames != nil {
+			go func() {
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case frame, ok := <-frames:
+						if !ok {
+							return
+						}
+						if frame == nil {
+							continue
+						}
+						if err := write(frame); err != nil && !errors.Is(err, io.EOF) {
+							_ = c.CloseNow()
+							return
+						}
+					}
+				}
+			}()
+		}
 	}
 	for {
 		raw, err := c.ReadRaw(ctx)
@@ -406,6 +499,19 @@ func ServeAfterHandshake(ctx context.Context, c *codec.Conn, handler Handler) er
 			if err := write(resp); err != nil {
 				return err
 			}
+		case *wire.HookEvent:
+			resp, err := handler.HookEvent(ctx, *f)
+			if err != nil {
+				return err
+			}
+			if resp.Op == "" {
+				continue
+			}
+			if err := write(resp); err != nil {
+				return err
+			}
+		case *wire.CatalogUpdate, *wire.HookEventReply, *wire.PluginSend, *wire.PluginLog, *wire.LifecycleNotice:
+			return fmt.Errorf("unexpected runtime-originated async frame %T on server connection", frame)
 		default:
 			return fmt.Errorf("unsupported runtime frame %T", frame)
 		}
@@ -444,6 +550,17 @@ func sanitizeProtocolError(err error) string {
 		return "protocol error"
 	}
 	return msg
+}
+
+func defaultHookReplyMode(event string) wire.HookReplyMode {
+	switch event {
+	case "after_message", "after_tool_call", "session_end", "cancel":
+		return wire.HookReplyModeNone
+	case "before_message", "before_tool_call", "session_start":
+		return wire.HookReplyModeModifying
+	default:
+		return wire.HookReplyModeModifying
+	}
 }
 
 // RawJSON returns a copy suitable for tests and handlers that need stable data.

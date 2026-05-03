@@ -267,6 +267,81 @@ def direct_checks(roots: dict[str, Path], component_map: dict[str, list[str]], t
         run([sys.executable, "-m", "py_compile", *sorted(set(py_files))])
 
 
+def verify_runtime_sidecar_layout(home: Path, bin_dir: Path) -> None:
+    runtime_bin = bin_dir / ("tabula-runtime.exe" if os.name == "nt" else "tabula-runtime")
+    if not runtime_bin.is_file():
+        raise SystemExit(f"missing runtime sidecar binary: {runtime_bin}")
+    run([str(runtime_bin), "--version"])
+
+    runtime_toml = home / "config" / "runtime.toml"
+    if not runtime_toml.is_file():
+        raise SystemExit(f"missing runtime config: {runtime_toml}")
+    cfg = load_toml(runtime_toml)
+    kernels = cfg.get("kernel", [])
+    if len(kernels) != 1:
+        raise SystemExit(f"runtime config expected exactly one [[kernel]] entry, got {len(kernels)}")
+    kernel = kernels[0]
+    token_file = str(kernel.get("token_file") or "")
+    url = str(kernel.get("url") or "")
+    plugin_dirs = cfg.get("plugin_dirs", [])
+    if not token_file.endswith("runtime-token"):
+        raise SystemExit(f"runtime config token_file is unexpected: {token_file}")
+    if not url.startswith("unix://"):
+        raise SystemExit(f"runtime config url must use unix://, got {url}")
+    if not plugin_dirs:
+        raise SystemExit("runtime config plugin_dirs is empty")
+
+
+def wait_for_supervised_runtime(bin_dir: Path, home: Path) -> int:
+    tabula_bin = bin_dir / ("tabula.exe" if os.name == "nt" else "tabula")
+    env = os.environ.copy()
+    env["TABULA_HOME"] = str(home)
+    deadline = time.time() + 20
+    last: str | None = None
+    while time.time() < deadline:
+        try:
+            raw = subprocess.check_output([str(tabula_bin), "status", "--json"], env=env, text=True)
+            body = json.loads(raw)
+            runtimes = body.get("runtimes", [])
+            for runtime in runtimes:
+                caps = runtime.get("capabilities") or []
+                if runtime.get("id") == "local" and runtime.get("attached") and int(runtime.get("pid") or 0) > 0 and len(caps) > 0:
+                    return int(runtime.get("pid") or 0)
+            last = raw.strip()
+        except Exception as exc:
+            last = str(exc)
+        time.sleep(0.5)
+    raise SystemExit(f"supervised runtime did not appear in status output: {last}")
+
+
+def process_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def wait_for_process_exit(pid: int, timeout: float) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not process_alive(pid):
+            return
+        time.sleep(0.1)
+    raise SystemExit(f"runtime child pid {pid} did not exit after kernel shutdown")
+
+
+def verify_runtime_teardown(home: Path, runtime_pid: int) -> None:
+    wait_for_process_exit(runtime_pid, 5)
+    runtime_socket = home / "run" / "runtime.sock"
+    if runtime_socket.exists():
+        raise SystemExit(f"runtime socket still exists after kernel shutdown: {runtime_socket}")
+
+
 def list_suites(specs: dict[str, SuiteSpec]) -> None:
     if JSON_MODE:
         print(json.dumps({"suites": [
@@ -373,6 +448,7 @@ def main(argv: list[str] | None = None) -> int:
     bin_dir = home / "bin"
     logs_dir = home / "logs"
     kernel: subprocess.Popen | None = None
+    runtime_pid = 0
     success = False
 
     log(f"==> Testbed home: {home}")
@@ -393,7 +469,7 @@ def main(argv: list[str] | None = None) -> int:
         run([str(pip), "install", "-q", "-r", str(repo_root / "scripts" / "requirements-dev.txt")])
         run([str(pip), "install", "-q", "-e", str(repo_root / "tools" / "tabula-distro")])
 
-        log("==> Building isolated kernel binary")
+        log("==> Building isolated kernel/runtime binaries")
         version = (repo_root / "VERSION").read_text(encoding="utf-8").strip()
         try:
             commit = output(["git", "rev-parse", "--short", "HEAD"], cwd=repo_root)
@@ -402,6 +478,7 @@ def main(argv: list[str] | None = None) -> int:
         date = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         ldflags = f"-X main.version={version} -X main.commit={commit} -X main.date={date}"
         run(["go", "build", "-ldflags", ldflags, "-o", str(bin_dir / "tabula"), "./cmd/tabula/"], cwd=repo_root)
+        run(["go", "build", "-ldflags", ldflags, "-o", str(bin_dir / "tabula-runtime"), "./cmd/tabula-runtime/"], cwd=repo_root)
         (home / "VERSION").write_text(version + "\n", encoding="utf-8")
 
         # Snapshot the kernel's plugin protocol range so the distro installer's
@@ -452,6 +529,12 @@ def main(argv: list[str] | None = None) -> int:
         log("==> Waiting for isolated kernel")
         wait_for_kernel(python, kernel_url)
 
+        log("==> Verifying runtime sidecar layout")
+        verify_runtime_sidecar_layout(home, bin_dir)
+
+        log("==> Waiting for supervised runtime attachment")
+        runtime_pid = wait_for_supervised_runtime(bin_dir, home)
+
         log("==> Running testbed smoke tests")
         runner_lib = Path(__file__).resolve().parents[1]
         smoke_env = env.copy()
@@ -477,6 +560,7 @@ def main(argv: list[str] | None = None) -> int:
             }, sort_keys=True))
         return 0
     finally:
+        teardown_error: str | None = None
         if kernel is not None and kernel.poll() is None:
             kernel.send_signal(signal.SIGTERM)
             try:
@@ -484,6 +568,12 @@ def main(argv: list[str] | None = None) -> int:
             except subprocess.TimeoutExpired:
                 kernel.kill()
                 kernel.wait(timeout=5)
+        if runtime_pid > 0:
+            try:
+                verify_runtime_teardown(home, runtime_pid)
+            except SystemExit as exc:
+                success = False
+                teardown_error = str(exc)
         if not success:
             keep = True
             diagnostics = {
@@ -492,17 +582,23 @@ def main(argv: list[str] | None = None) -> int:
                 "kernel_stdout": str(logs_dir / "kernel.out.log"),
                 "kernel_stderr": str(logs_dir / "kernel.err.log"),
             }
+            if teardown_error:
+                diagnostics["teardown_error"] = teardown_error
             log("==> Testbed failed; keeping diagnostics")
             log(f"    home: {diagnostics['home']}")
             log(f"    generated distro: {diagnostics['generated_distro']}")
             log(f"    kernel stdout: {diagnostics['kernel_stdout']}")
             log(f"    kernel stderr: {diagnostics['kernel_stderr']}")
+            if teardown_error:
+                log(f"    teardown error: {teardown_error}")
             if JSON_MODE:
                 print(json.dumps({"ok": False, "mode": "run", "suites": suites, "diagnostics": diagnostics}, sort_keys=True))
         if keep:
             log(f"==> Testbed home kept at {home}")
         else:
             shutil.rmtree(home, ignore_errors=True)
+        if teardown_error:
+            raise SystemExit(teardown_error)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/bamanoz/tabula/internal/kernel/plugin"
+	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
 )
 
 // toolSource discriminates the dispatch route for a registered LLM tool
@@ -22,6 +23,8 @@ const (
 	// dispatch shell only; the live spawn path lands when runtime.go/
 	// supervisor.go in internal/kernel/plugin land.
 	toolSourcePlugin
+	// toolSourceRuntime routes to a runtime-hosted target over Runtime API.
+	toolSourceRuntime
 )
 
 // toolDispatch is the value stored in Hub.toolExec for each registered
@@ -34,8 +37,10 @@ const (
 // boot). Reserved for future per-tool validation / debug snapshots.
 type toolDispatch struct {
 	Source     toolSource
-	Command    string          // toolSourceSkill: SKILL.md exec command
-	Plugin     *plugin.Handle  // toolSourcePlugin: owning plugin handle
+	Command    string         // toolSourceSkill: SKILL.md exec command
+	Plugin     *plugin.Handle // toolSourcePlugin: owning plugin handle
+	RuntimeID  string         // toolSourceRuntime: owning runtime id
+	Target     runtimeapi.Target
 	Schema     json.RawMessage // optional JSON schema for the tool
 	DeadlineMs int             // optional plugin tool deadline; defaulted by dispatcher
 }
@@ -47,4 +52,8 @@ type toolDispatch struct {
 // symmetric path.
 func skillDispatch(command string) toolDispatch {
 	return toolDispatch{Source: toolSourceSkill, Command: command}
+}
+
+func runtimeDispatch(runtimeID string, target runtimeapi.Target, schema json.RawMessage, deadlineMs int) toolDispatch {
+	return toolDispatch{Source: toolSourceRuntime, RuntimeID: runtimeID, Target: target, Schema: schema, DeadlineMs: deadlineMs}
 }

@@ -1,4 +1,4 @@
-# Tabula installer — downloads pre-built kernel from GitHub Releases.
+# Tabula installer — downloads pre-built kernel/runtime binaries from GitHub Releases.
 #
 # Installs the kernel layer only. After this script finishes, install a
 # distro separately:
@@ -163,9 +163,13 @@ try {
         if (Test-Path $legacyPath) { Remove-Item -Recurse -Force $legacyPath }
     }
 
-    # Extract binary from zip
+    # Extract binaries from zip
     Expand-Archive -Path (Join-Path $TmpDir $BinaryArchive) -DestinationPath $TmpDir -Force
     Copy-Item (Join-Path $TmpDir "tabula.exe") -Destination (Join-Path $BinDir "tabula.exe") -Force
+    $RuntimeExe = Join-Path $TmpDir "tabula-runtime.exe"
+    if (Test-Path $RuntimeExe) {
+        Copy-Item $RuntimeExe -Destination (Join-Path $BinDir "tabula-runtime.exe") -Force
+    }
     Ok "Binary installed"
 
     # Back up user config before tar overwrites it

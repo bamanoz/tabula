@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/bamanoz/tabula/internal/kernel/plugin"
+	runtimemock "github.com/bamanoz/tabula/internal/runtime/mock"
+	"github.com/bamanoz/tabula/internal/runtime/wire"
 )
 
 // TestNewHub_ConvertsSkillExecToDispatch verifies the legacy
@@ -74,5 +76,41 @@ func TestHandleDynamicTool_PluginSourceUnavailable(t *testing.T) {
 	default:
 		// In some race the message may go elsewhere; the important
 		// assertion is no panic and dispatch completed.
+	}
+}
+
+func TestHandleDynamicTool_RuntimeSourceInvokesAttachedRuntime(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	rc := runtimemock.New()
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
+	rc.OnInvoke("default", target, "mcp__echo").Return([]byte(`"ok"`))
+	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{{Target: target, Tools: []wire.ToolSpec{{Name: "mcp__echo"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	hub.syncRuntimeCapability("local", wire.Capability{Target: target, Tools: []wire.ToolSpec{{Name: "mcp__echo"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker})
+
+	c := &Client{
+		hub:      hub,
+		name:     "test",
+		session:  "s1",
+		recvCh:   make(chan *Message, 4),
+		receives: map[string]bool{string(MsgToolResult): true},
+		sends:    map[string]bool{},
+		state:    ClientJoined,
+		done:     make(chan struct{}),
+	}
+	if !hub.addClient(c) {
+		t.Fatal("addClient failed")
+	}
+	hub.sessions.GetOrCreate("s1").AddClient(c.name)
+
+	hub.tools.handleDynamicTool("s1", "tid-rt", "mcp__echo", json.RawMessage(`{}`))
+	msg := waitForMessage(t, c.recvCh)
+	if msg.Type != string(MsgToolResult) || msg.Output != "ok" {
+		t.Fatalf("unexpected runtime tool result: %+v", msg)
+	}
+	recorded := rc.RecordedInvokes()
+	if len(recorded) != 1 || recorded[0].TenantID != "default" || recorded[0].Tool != "mcp__echo" || recorded[0].Target != target {
+		t.Fatalf("unexpected runtime invoke record: %+v", recorded)
 	}
 }

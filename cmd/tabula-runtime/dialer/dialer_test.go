@@ -164,7 +164,7 @@ func TestRunServesManifestBackedInvokeOverUnix(t *testing.T) {
 			rc := runtimeconn.New(c)
 
 			caps, err := rc.ListCapabilities(connCtx)
-			if err != nil || len(caps.Targets) != 1 || caps.Targets[0].Target.ID != "fs" || len(caps.Targets[0].Tools) != 1 || caps.Targets[0].Tools[0] != "read_file" {
+			if err != nil || len(caps.Targets) != 1 || caps.Targets[0].Target.ID != "fs" || len(caps.Targets[0].Tools) != 1 || caps.Targets[0].Tools[0].Name != "read_file" {
 				t.Errorf("ListCapabilities = %#v, %v", caps, err)
 				return
 			}
@@ -187,7 +187,7 @@ func TestRunServesManifestBackedInvokeOverUnix(t *testing.T) {
 				return
 			}
 			health, err := rc.Health(connCtx)
-			if err != nil || health.WorkerCount != 1 {
+			if err != nil || health.WorkerCount != 2 {
 				t.Errorf("Health after invoke = %#v, %v", health, err)
 				return
 			}
@@ -255,6 +255,75 @@ func TestRunRetriesWithBackoff(t *testing.T) {
 	}
 	if got := attempts.Load(); got < 3 {
 		t.Fatalf("attempts = %d, want at least 3", got)
+	}
+}
+
+func TestRunWithoutReconnectExitsAfterKernelDisconnect(t *testing.T) {
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "runtime-token")
+	if err := os.WriteFile(tokenPath, []byte("secret-token\n"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	sock := filepath.Join("/tmp", "tabula-rt-dialer-"+filepath.Base(dir), "runtime.sock")
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(sock)) })
+	listener, err := unixsock.Listen(sock)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		serverDone <- listener.Serve(func(ctx context.Context, c *codec.Conn) {
+			defer c.CloseNow()
+			_, frame, err := c.Read(ctx)
+			if err != nil {
+				t.Errorf("read hello: %v", err)
+				return
+			}
+			hello, ok := frame.(*wire.Hello)
+			if !ok {
+				t.Errorf("expected hello, got %T", frame)
+				return
+			}
+			if hello.Token != "secret-token" || hello.RuntimeID != DefaultRuntimeID {
+				t.Errorf("unexpected hello: %#v", hello)
+			}
+			if err := c.Write(ctx, wire.HelloAck{Op: wire.OpHelloAck, Accepted: true, KernelID: "main"}); err != nil {
+				t.Errorf("write hello_ack: %v", err)
+			}
+			listener.Close()
+		})
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- Run(ctx, Options{
+			Kernel:          runtimeconfig.Kernel{ID: "local", URL: "unix://" + sock, TokenFile: tokenPath},
+			Handler:         daemon.NewHandler(),
+			Logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+			InitialBackoff:  time.Millisecond,
+			MaximumBackoff:  time.Millisecond,
+			ShutdownTimeout: time.Second,
+		})
+	}()
+
+	select {
+	case err := <-runDone:
+		if err == nil {
+			t.Fatal("expected disconnect error when reconnect is disabled")
+		}
+	case <-time.After(300 * time.Millisecond):
+		cancel()
+		<-runDone
+		t.Fatal("Run did not exit after kernel disconnect with reconnect disabled")
+	}
+	select {
+	case <-serverDone:
+	case <-time.After(time.Second):
+		t.Fatal("fake kernel listener did not stop")
 	}
 }
 
@@ -377,18 +446,18 @@ import os
 import sys
 
 init = json.loads(sys.stdin.readline())
-sys.stdout.write(json.dumps({"ready": True}) + "\n")
+sys.stdout.write(json.dumps({"op": "init_ack", "ready": True, "tools": [], "subscriptions": []}) + "\n")
 sys.stdout.flush()
 for line in sys.stdin:
     frame = json.loads(line)
-    if "reason" in frame:
+    if frame.get("op") == "shutdown":
         sys.exit(0)
     data = {
         "tool": frame.get("tool"),
         "tenant_env": os.environ.get("TABULA_TENANT_ID"),
         "tenant_init": init.get("tenant_id"),
     }
-    sys.stdout.write(json.dumps({"call_id": frame.get("call_id"), "ok": True, "data": data}) + "\n")
+    sys.stdout.write(json.dumps({"op": "result", "call_id": frame.get("call_id"), "ok": True, "data": data}) + "\n")
     sys.stdout.flush()
 `), 0o755); err != nil {
 		t.Fatalf("write worker: %v", err)

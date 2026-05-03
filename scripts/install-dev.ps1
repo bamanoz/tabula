@@ -77,15 +77,17 @@ $Pip = Join-Path $Venv "Scripts" "pip.exe"
 & $Pip install -q -r (Join-Path $ScriptDir "requirements-dev.txt")
 Write-Host "Python dependencies installed"
 
-# Go binary
-Write-Host "Building Go binary..."
+# Go binaries
+Write-Host "Building Go binaries..."
 $BinPath = Join-Path $BinDir "tabula.exe"
+$RuntimeBinPath = Join-Path $BinDir "tabula-runtime.exe"
 $VersionStr = (Get-Content (Join-Path $RepoRoot "VERSION") -Raw).Trim()
 try { $CommitStr = (& git -C $RepoRoot rev-parse --short HEAD).Trim() } catch { $CommitStr = "unknown" }
 $DateStr = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 $LdFlags = "-X main.version=$VersionStr -X main.commit=$CommitStr -X main.date=$DateStr"
 Push-Location $RepoRoot
 go build -ldflags $LdFlags -o $BinPath ./cmd/tabula/
+go build -ldflags $LdFlags -o $RuntimeBinPath ./cmd/tabula-runtime/
 Pop-Location
 
 # Record installed kernel version for tabula-distro compatibility checks.

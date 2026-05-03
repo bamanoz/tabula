@@ -64,6 +64,29 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
+// Save validates and writes a runtime.toml file, creating parent directories as
+// needed.
+func Save(path string, cfg Config) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("runtime config path is required")
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create runtime config dir %s: %w", filepath.Dir(path), err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("create runtime config %s: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := toml.NewEncoder(f).Encode(cfg); err != nil {
+		return fmt.Errorf("write runtime config %s: %w", path, err)
+	}
+	return nil
+}
+
 // Validate checks the M2-02 runtime-side config shape and expands environment
 // variables in path-like fields. It deliberately accepts token_file only; the
 // stale inline/path-like token key from early issue text is not a supported

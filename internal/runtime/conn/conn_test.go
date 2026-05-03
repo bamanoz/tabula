@@ -28,7 +28,7 @@ func TestCodecNetPipeRoundTripEveryOp(t *testing.T) {
 	defer server.CloseNow()
 
 	frames := []any{
-		wire.Hello{Op: wire.OpHello, RuntimeID: "local", Token: "redacted", ProtocolVersion: "1", Capabilities: []wire.Capability{{Target: pluginTarget("fs"), Tools: []string{"read"}}}},
+		wire.Hello{Op: wire.OpHello, RuntimeID: "local", Token: "redacted", ProtocolVersion: "1", Capabilities: []wire.Capability{{Target: pluginTarget("fs"), Tools: []wire.ToolSpec{{Name: "read"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}}},
 		wire.HelloAck{Op: wire.OpHelloAck, Accepted: true, KernelID: "main"},
 		wire.Invoke{Op: wire.OpInvoke, CallID: "call-1", TenantID: "default", Target: pluginTarget("fs"), Tool: "echo", Args: json.RawMessage(`{"x":1}`)},
 		wire.InvokeResult{Op: wire.OpInvokeResult, CallID: "call-1", OK: true, Data: json.RawMessage(`{"ok":true}`)},
@@ -37,9 +37,15 @@ func TestCodecNetPipeRoundTripEveryOp(t *testing.T) {
 		wire.Health{Op: wire.OpHealth},
 		wire.HealthResp{Op: wire.OpHealthResp, OK: true, WorkerCount: 1},
 		wire.ListCapabilities{Op: wire.OpListCapabilities},
-		wire.ListCapabilitiesResp{Op: wire.OpListCapabilitiesResp, Targets: []wire.Capability{{Target: pluginTarget("fs"), Tools: []string{"read"}}}},
+		wire.ListCapabilitiesResp{Op: wire.OpListCapabilitiesResp, Targets: []wire.Capability{{Target: pluginTarget("fs"), Tools: []wire.ToolSpec{{Name: "read"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}}},
 		wire.Reload{Op: wire.OpReload, Target: ptr(pluginTarget("fs"))},
 		wire.ReloadAck{Op: wire.OpReloadAck, EvictedTargets: []wire.Target{pluginTarget("fs")}},
+		wire.HookEvent{Op: wire.OpHookEvent, CallID: "hook-1", Target: pluginTarget("fs"), Event: "before_tool_call", ReplyMode: wire.HookReplyModeModifying, Data: json.RawMessage(`{"tool":"echo"}`)},
+		wire.HookEventReply{Op: wire.OpHookEventReply, CallID: "hook-1", Action: wire.HookActionOK},
+		wire.CatalogUpdate{Op: wire.OpCatalogUpdate, Target: pluginTarget("fs"), Tools: []wire.ToolSpec{{Name: "read"}}, Revision: 2, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker},
+		wire.PluginSend{Op: wire.OpPluginSend, Target: pluginTarget("fs"), Channel: "bus", Type: "event", Payload: json.RawMessage(`{"ok":true}`)},
+		wire.PluginLog{Op: wire.OpPluginLog, Target: pluginTarget("fs"), Level: "info", Message: "started"},
+		wire.LifecycleNotice{Op: wire.OpLifecycleNotice, Target: pluginTarget("fs"), State: wire.LifecycleStateReady, PID: 123},
 	}
 
 	for _, frame := range frames {
@@ -185,7 +191,132 @@ func TestServeRejectsMalformedNonInvokeFrame(t *testing.T) {
 	}
 }
 
+func TestRuntimeConnRoutesAsyncPluginControlFramesToSink(t *testing.T) {
+	clientWS, serverWS := websocketNetPipe(t)
+	client := codec.New(clientWS)
+	server := codec.New(serverWS)
+	defer client.CloseNow()
+
+	go func() {
+		_ = ServeAuthenticated(context.Background(), server, testHandler{})
+	}()
+
+	ack, err := Handshake(context.Background(), client, wire.Hello{Op: wire.OpHello, RuntimeID: "local", Token: "redacted", ProtocolVersion: "1"})
+	if err != nil {
+		t.Fatalf("Handshake: %v", err)
+	}
+	if !ack.Accepted {
+		t.Fatalf("handshake rejected: %#v", ack)
+	}
+
+	sink := &recordingAsyncSink{}
+	rc := NewWithSink(client, "local", sink)
+	defer rc.Close()
+
+	for _, frame := range []any{
+		wire.CatalogUpdate{Op: wire.OpCatalogUpdate, Target: pluginTarget("fs"), Tools: []wire.ToolSpec{{Name: "echo"}}, Revision: 3, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker},
+		wire.HookEventReply{Op: wire.OpHookEventReply, CallID: "hook-1", Action: wire.HookActionRewrite, Data: json.RawMessage(`{"tool":"echo"}`)},
+		wire.PluginSend{Op: wire.OpPluginSend, Target: pluginTarget("fs"), Channel: "bus", Type: "notify", Payload: json.RawMessage(`{"x":1}`)},
+		wire.PluginLog{Op: wire.OpPluginLog, Target: pluginTarget("fs"), Level: "info", Message: "ready"},
+		wire.LifecycleNotice{Op: wire.OpLifecycleNotice, Target: pluginTarget("fs"), State: wire.LifecycleStateReady, PID: 77},
+	} {
+		if err := server.Write(context.Background(), frame); err != nil {
+			t.Fatalf("Write(%T): %v", frame, err)
+		}
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		sink.mu.Lock()
+		ready := sink.catalogRevision == 3 && sink.hookReply.CallID == "hook-1" && sink.send.Type == "notify" && sink.log.Message == "ready" && sink.notice.PID == 77
+		sink.mu.Unlock()
+		if ready {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("async sink did not receive all frames: %+v", sink)
+}
+
+func TestServeWritesHandlerAsyncFramesToClientSink(t *testing.T) {
+	clientWS, serverWS := websocketNetPipe(t)
+	client := codec.New(clientWS)
+	server := codec.New(serverWS)
+	defer client.CloseNow()
+
+	h := asyncHandler{frames: make(chan any, 8)}
+	go func() {
+		_ = ServeAuthenticated(context.Background(), server, h)
+	}()
+
+	ack, err := Handshake(context.Background(), client, wire.Hello{Op: wire.OpHello, RuntimeID: "local", Token: "redacted", ProtocolVersion: "1"})
+	if err != nil {
+		t.Fatalf("Handshake: %v", err)
+	}
+	if !ack.Accepted {
+		t.Fatalf("handshake rejected: %#v", ack)
+	}
+
+	sink := &recordingAsyncSink{}
+	rc := NewWithSink(client, "local", sink)
+	defer rc.Close()
+
+	h.frames <- wire.CatalogUpdate{Op: wire.OpCatalogUpdate, Target: pluginTarget("fs"), Tools: []wire.ToolSpec{{Name: "echo"}}, Revision: 4, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}
+	h.frames <- wire.PluginLog{Op: wire.OpPluginLog, Target: pluginTarget("fs"), Level: "info", Message: "served async"}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		sink.mu.Lock()
+		ready := sink.catalogRevision == 4 && sink.log.Message == "served async"
+		sink.mu.Unlock()
+		if ready {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("handler async frames did not reach sink: %+v", sink)
+}
+
+func TestServeHandlesHookEventFrames(t *testing.T) {
+	clientWS, serverWS := websocketNetPipe(t)
+	client := codec.New(clientWS)
+	server := codec.New(serverWS)
+	defer client.CloseNow()
+
+	go func() {
+		_ = ServeAuthenticated(context.Background(), server, testHandler{})
+	}()
+
+	ack, err := Handshake(context.Background(), client, wire.Hello{Op: wire.OpHello, RuntimeID: "local", Token: "redacted", ProtocolVersion: "1"})
+	if err != nil {
+		t.Fatalf("Handshake: %v", err)
+	}
+	if !ack.Accepted {
+		t.Fatalf("handshake rejected: %#v", ack)
+	}
+
+	rc := New(client)
+	if err := rc.SendHookEvent(context.Background(), runtimeapi.HookEventReq{CallID: "hook-1", Target: pluginTarget("fs"), Event: "before_tool_call", ReplyMode: wire.HookReplyModeModifying, Data: json.RawMessage(`{"tool":"parallel"}`)}); err != nil {
+		t.Fatalf("SendHookEvent: %v", err)
+	}
+
+	got, err := rc.Invoke(context.Background(), runtimeapi.InvokeReq{CallID: "call-after-hook", TenantID: "default", Target: pluginTarget("fs"), Tool: "parallel"})
+	if err != nil {
+		t.Fatalf("Invoke after hook event: %v", err)
+	}
+	if !got.OK || got.CallID != "call-after-hook" {
+		t.Fatalf("connection did not remain usable after hook event: %#v", got)
+	}
+}
+
 type testHandler struct{}
+
+type asyncHandler struct {
+	testHandler
+	frames chan any
+}
+
+func (h asyncHandler) AsyncFrames() <-chan any { return h.frames }
 
 func (testHandler) Hello(context.Context, wire.Hello) (wire.HelloAck, error) {
 	return wire.HelloAck{Op: wire.OpHelloAck, Accepted: true, KernelID: "main"}, nil
@@ -207,12 +338,61 @@ func (testHandler) Health(context.Context, wire.Health) (wire.HealthResp, error)
 }
 
 func (testHandler) ListCapabilities(context.Context, wire.ListCapabilities) (wire.ListCapabilitiesResp, error) {
-	return wire.ListCapabilitiesResp{Op: wire.OpListCapabilitiesResp, Targets: []wire.Capability{{Target: pluginTarget("fs"), Tools: []string{"parallel"}}}}, nil
+	return wire.ListCapabilitiesResp{Op: wire.OpListCapabilitiesResp, Targets: []wire.Capability{{Target: pluginTarget("fs"), Tools: []wire.ToolSpec{{Name: "parallel"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}}}, nil
 }
 
 func (testHandler) Reload(context.Context, wire.Reload) (wire.ReloadAck, error) {
 	return wire.ReloadAck{Op: wire.OpReloadAck}, nil
 }
+
+func (testHandler) HookEvent(_ context.Context, in wire.HookEvent) (wire.HookEventReply, error) {
+	return wire.HookEventReply{Op: wire.OpHookEventReply, CallID: in.CallID, Action: wire.HookActionOK}, nil
+}
+
+type recordingAsyncSink struct {
+	mu              sync.Mutex
+	catalogRevision int64
+	hookReply       wire.HookEventReply
+	send            wire.PluginSend
+	log             wire.PluginLog
+	notice          wire.LifecycleNotice
+}
+
+func (s *recordingAsyncSink) CatalogUpdated(_ string, update wire.CatalogUpdate) error {
+	s.mu.Lock()
+	s.catalogRevision = update.Revision
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *recordingAsyncSink) HookEventReplied(_ string, reply wire.HookEventReply) error {
+	s.mu.Lock()
+	s.hookReply = reply
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *recordingAsyncSink) PluginSent(_ string, send wire.PluginSend) error {
+	s.mu.Lock()
+	s.send = send
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *recordingAsyncSink) PluginLogged(_ string, log wire.PluginLog) {
+	s.mu.Lock()
+	s.log = log
+	s.mu.Unlock()
+}
+
+func (s *recordingAsyncSink) LifecycleNoticed(_ string, notice wire.LifecycleNotice) error {
+	s.mu.Lock()
+	s.notice = notice
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *recordingAsyncSink) RuntimeProtocolError(string, error) {}
 
 func websocketNetPipe(t *testing.T) (*websocket.Conn, *websocket.Conn) {
 	t.Helper()
@@ -304,6 +484,18 @@ func deref(v any) any {
 	case *wire.Reload:
 		return *f
 	case *wire.ReloadAck:
+		return *f
+	case *wire.HookEvent:
+		return *f
+	case *wire.HookEventReply:
+		return *f
+	case *wire.CatalogUpdate:
+		return *f
+	case *wire.PluginSend:
+		return *f
+	case *wire.PluginLog:
+		return *f
+	case *wire.LifecycleNotice:
 		return *f
 	default:
 		return v

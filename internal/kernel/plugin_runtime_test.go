@@ -58,6 +58,13 @@ func TestRegisterPluginSpawnsAndRegistersHandle(t *testing.T) {
 	}
 }
 
+func TestNewHubDoesNotEagerlyCreateLegacyPluginRuntime(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	if hub.pluginRuntime != nil {
+		t.Fatal("expected legacy plugin runtime to remain nil until explicitly used")
+	}
+}
+
 func TestRegisterPluginFailureDoesNotMutateRegistry(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
 	hub.pluginRuntime = &fakePluginRuntime{err: plugin.NonRestartable(errors.New("register timeout"))}

@@ -12,12 +12,15 @@ LDFLAGS  := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(D
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/tabula ./cmd/tabula/
+	go build -ldflags "$(LDFLAGS)" -o bin/tabula-runtime ./cmd/tabula-runtime/
 
 build-windows:
 	GOOS=windows go build -ldflags "$(LDFLAGS)" -o bin/tabula.exe ./cmd/tabula/
+	GOOS=windows go build -ldflags "$(LDFLAGS)" -o bin/tabula-runtime.exe ./cmd/tabula-runtime/
 
 build-linux:
 	GOOS=linux go build -ldflags "$(LDFLAGS)" -o bin/tabula-linux ./cmd/tabula/
+	GOOS=linux go build -ldflags "$(LDFLAGS)" -o bin/tabula-runtime-linux ./cmd/tabula-runtime/
 
 build-all: build build-windows build-linux
 
@@ -76,4 +79,4 @@ install:
 # Clean
 
 clean:
-	rm -f bin/tabula bin/tabula.exe bin/tabula-linux
+	rm -f bin/tabula bin/tabula-runtime bin/tabula.exe bin/tabula-runtime.exe bin/tabula-linux bin/tabula-runtime-linux

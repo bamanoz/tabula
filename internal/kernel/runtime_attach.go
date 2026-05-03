@@ -13,9 +13,10 @@ import (
 
 // RuntimeAttachOptions configures the authenticated Runtime API listener path.
 type RuntimeAttachOptions struct {
-	Auth       runtimeauth.Authenticator
-	Logger     *slog.Logger
-	RuntimePID int
+	Auth           runtimeauth.Authenticator
+	Logger         *slog.Logger
+	RuntimePID     int
+	RuntimePIDFunc func(runtimeID string) int
 }
 
 // ServeAuthenticatedRuntime validates the first Hello frame, writes HelloAck,
@@ -53,9 +54,13 @@ func (h *Hub) ServeAuthenticatedRuntime(ctx context.Context, c *codec.Conn, opts
 	if h.runtimes == nil {
 		h.runtimes = NewRuntimeRegistry()
 	}
-	attachedConn := runtimeconn.New(c)
+	attachedConn := runtimeconn.NewWithSink(c, hello.RuntimeID, h.runtimeAsyncSink())
 	defer attachedConn.Close()
-	if err := h.runtimes.RegisterHello(hello.RuntimeID, hello.Capabilities, opts.RuntimePID); err != nil {
+	runtimePID := opts.RuntimePID
+	if opts.RuntimePIDFunc != nil {
+		runtimePID = opts.RuntimePIDFunc(hello.RuntimeID)
+	}
+	if err := h.runtimes.RegisterHello(hello.RuntimeID, attachedConn, hello.Capabilities, runtimePID); err != nil {
 		return err
 	}
 	if opts.Logger != nil {
@@ -68,6 +73,8 @@ func (h *Hub) ServeAuthenticatedRuntime(ctx context.Context, c *codec.Conn, opts
 		err = ctx.Err()
 	}
 	h.runtimes.MarkDetached(hello.RuntimeID, err)
+	h.removeRuntimeTools(hello.RuntimeID)
+	h.rebuildHookIndex()
 	if opts.Logger != nil {
 		opts.Logger.Info("runtime detached", "runtime_id", hello.RuntimeID)
 	}
@@ -77,4 +84,20 @@ func (h *Hub) ServeAuthenticatedRuntime(ctx context.Context, c *codec.Conn, opts
 // SnapshotRuntimes returns a JSON snapshot of Runtime API attachments.
 func (h *Hub) SnapshotRuntimes() []byte {
 	return snapshotRuntimes(h)
+}
+
+// RuntimeAttached reports whether one runtime is currently attached.
+func (h *Hub) RuntimeAttached(runtimeID string) bool {
+	if h == nil || h.runtimes == nil {
+		return false
+	}
+	return h.runtimes.Attached(runtimeID)
+}
+
+// SetAttachedRuntimePID updates the read-model pid for one attached runtime.
+func (h *Hub) SetAttachedRuntimePID(runtimeID string, pid int) {
+	if h == nil || h.runtimes == nil {
+		return
+	}
+	h.runtimes.SetPID(runtimeID, pid)
 }

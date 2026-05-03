@@ -379,12 +379,29 @@ func (p Plugin) RawJSON() json.RawMessage {
 
 // Capability returns the Runtime API capability view for this plugin.
 func (p Plugin) Capability() wire.Capability {
-	tools := make([]string, 0, len(p.Tools))
+	tools := make([]wire.ToolSpec, 0, len(p.Tools))
 	for _, tool := range p.Tools {
-		tools = append(tools, tool.Name)
+		tools = append(tools, wire.ToolSpec{Name: tool.Name, Description: tool.Description, DeadlineMS: int64(tool.DeadlineMS)})
 	}
-	sort.Strings(tools)
-	return wire.Capability{Target: wire.Target{Kind: wire.TargetKindPlugin, ID: p.ID}, Tools: tools}
+	sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
+	hooks := make([]wire.HookSpec, 0, len(p.Hooks))
+	for _, hook := range p.Hooks {
+		hooks = append(hooks, wire.HookSpec{Event: hook.Event, Priority: hook.Priority})
+	}
+	sort.Slice(hooks, func(i, j int) bool {
+		if hooks[i].Event == hooks[j].Event {
+			return hooks[i].Priority < hooks[j].Priority
+		}
+		return hooks[i].Event < hooks[j].Event
+	})
+	return wire.Capability{
+		Target:   wire.Target{Kind: wire.TargetKindPlugin, ID: p.ID},
+		Tools:    tools,
+		Hooks:    hooks,
+		Revision: 1,
+		State:    wire.CapabilityStateManifestLoaded,
+		Source:   wire.CapabilitySourceManifest,
+	}
 }
 
 // Get returns the plugin for target id.

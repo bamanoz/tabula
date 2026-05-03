@@ -1,8 +1,8 @@
 #!/bin/bash
-# Install Tabula kernel + runtime library from source.
+# Install Tabula kernel + runtime daemon from source.
 #
-# Installs only the kernel layer:
-#   * Go binary (built from this repo)
+# Installs the local runtime layer:
+#   * Go binaries (`tabula` + `tabula-runtime`, built from this repo)
 #   * launch scripts (tabula-server, tabula-cli, tabula-api, tabula-install-distro)
 #   * Python venv with runtime + dev dependencies
 #   * tabula-distro installer (editable, from tools/tabula-distro)
@@ -31,8 +31,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV="$TABULA_HOME/.venv"
 
-echo "==> Stopping any running tabula kernel"
+echo "==> Stopping any running tabula kernel/runtime"
 pkill -f "$TABULA_HOME/bin/tabula serve" 2>/dev/null || true
+pkill -f "$TABULA_HOME/bin/tabula-runtime start" 2>/dev/null || true
 sleep 0.3
 
 echo "==> Installing Tabula kernel to $TABULA_HOME"
@@ -59,13 +60,14 @@ fi
 "$VENV/bin/pip" install -q -e "$REPO_ROOT/tools/tabula-distro"
 echo "    Python dependencies installed"
 
-# Go binary
-echo "==> Building Go binary"
+# Go binaries
+echo "==> Building Go binaries"
 VERSION_STR="$(cat "$REPO_ROOT/VERSION")"
 COMMIT_STR="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 DATE_STR="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 LDFLAGS="-X main.version=$VERSION_STR -X main.commit=$COMMIT_STR -X main.date=$DATE_STR"
 ( cd "$REPO_ROOT" && go build -ldflags "$LDFLAGS" -o "$BIN_DIR/tabula" ./cmd/tabula/ )
+( cd "$REPO_ROOT" && go build -ldflags "$LDFLAGS" -o "$BIN_DIR/tabula-runtime" ./cmd/tabula-runtime/ )
 # Record installed kernel version for tabula-distro compatibility checks.
 echo "$VERSION_STR" > "$TABULA_HOME/VERSION"
 # Record kernel's supported plugin protocol version range so the distro tool
@@ -73,6 +75,7 @@ echo "$VERSION_STR" > "$TABULA_HOME/VERSION"
 "$BIN_DIR/tabula" --protocol > "$TABULA_HOME/PROTOCOL"
 if [ "$(uname)" = "Darwin" ]; then
   codesign --force --sign - "$BIN_DIR/tabula" 2>/dev/null || true
+  codesign --force --sign - "$BIN_DIR/tabula-runtime" 2>/dev/null || true
 fi
 
 # Launch scripts

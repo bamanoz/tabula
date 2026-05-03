@@ -205,25 +205,33 @@ func TestRuntimeContractNetPipeEndToEnd(t *testing.T) {
 
 	t.Run("worker frame symmetry", func(t *testing.T) {
 		var left, right bytes.Buffer
-		init := workerwire.WorkerInit{KernelID: "main", TenantID: "default", TargetID: "fs", Env: map[string]string{"TABULA_TENANT_ID": "default"}}
+		init := workerwire.WorkerInit{Op: workerwire.OpInit, KernelID: "main", TenantID: "default", TargetID: "fs", Env: map[string]string{"TABULA_TENANT_ID": "default"}}
 		if err := workerwire.WriteFrame(&left, &init); err != nil {
 			t.Fatalf("WriteFrame init: %v", err)
 		}
-		var gotInit workerwire.WorkerInit
-		if err := workerwire.ReadFrame(bufio.NewReader(&left), &gotInit); err != nil {
+		_, frame, err := workerwire.ReadFrame(bufio.NewReader(&left))
+		if err != nil {
 			t.Fatalf("ReadFrame init: %v", err)
+		}
+		gotInit, ok := frame.(*workerwire.WorkerInit)
+		if !ok {
+			t.Fatalf("expected WorkerInit, got %T", frame)
 		}
 		if gotInit.TenantID != init.TenantID || gotInit.TargetID != init.TargetID {
 			t.Fatalf("unexpected worker init: %#v", gotInit)
 		}
 
-		result := workerwire.WorkerResult{CallID: "call-worker", OK: false, Error: &workerwire.WorkerErrorBody{Code: "plugin_local", Message: "worker-local errors are not wire errors"}}
+		result := workerwire.WorkerResult{Op: workerwire.OpResult, CallID: "call-worker", OK: false, Error: &workerwire.WorkerErrorBody{Code: "plugin_local", Message: "worker-local errors are not wire errors"}}
 		if err := workerwire.WriteFrame(&right, &result); err != nil {
 			t.Fatalf("WriteFrame result: %v", err)
 		}
-		var gotResult workerwire.WorkerResult
-		if err := workerwire.ReadFrame(bufio.NewReader(&right), &gotResult); err != nil {
+		_, frame, err = workerwire.ReadFrame(bufio.NewReader(&right))
+		if err != nil {
 			t.Fatalf("ReadFrame result: %v", err)
+		}
+		gotResult, ok := frame.(*workerwire.WorkerResult)
+		if !ok {
+			t.Fatalf("expected WorkerResult, got %T", frame)
 		}
 		if gotResult.Error == nil || wire.IsErrorCode(wire.ErrorCode(gotResult.Error.Code)) {
 			t.Fatalf("worker-local error leaked into Runtime API wire namespace: %#v", gotResult)
@@ -378,6 +386,18 @@ func (c *runtimePipeClient) Reload(ctx context.Context, req ReloadReq) (ReloadRe
 	}
 }
 
+func (c *runtimePipeClient) SendHookEvent(ctx context.Context, req HookEventReq) error {
+	return c.writeFrame(wire.HookEvent{
+		Op:        wire.OpHookEvent,
+		CallID:    req.CallID,
+		Target:    req.Target,
+		Event:     req.Event,
+		ReplyMode: req.ReplyMode,
+		Data:      req.Data,
+		SessionID: req.SessionID,
+	})
+}
+
 func (c *runtimePipeClient) Close() error {
 	return c.conn.Close()
 }
@@ -526,7 +546,7 @@ func (s *fakeRuntimeServer) Serve() {
 		case *wire.Health:
 			_ = s.writeFrame(wire.HealthResp{Op: wire.OpHealthResp, OK: true, UptimeMS: 1, WorkerCount: 1})
 		case *wire.ListCapabilities:
-			_ = s.writeFrame(wire.ListCapabilitiesResp{Op: wire.OpListCapabilitiesResp, Targets: []wire.Capability{{Target: pluginTarget("fs"), Tools: []string{"echo", "missing", "long", "parallel"}}}})
+			_ = s.writeFrame(wire.ListCapabilitiesResp{Op: wire.OpListCapabilitiesResp, Targets: []wire.Capability{{Target: pluginTarget("fs"), Tools: []wire.ToolSpec{{Name: "echo"}, {Name: "missing"}, {Name: "long"}, {Name: "parallel"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}}})
 		case *wire.Reload:
 			var evicted []wire.Target
 			if f.Target != nil {

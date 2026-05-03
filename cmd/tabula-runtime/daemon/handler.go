@@ -28,6 +28,16 @@ type Handler struct {
 	cancels map[string]context.CancelFunc
 }
 
+// AsyncFrames exposes optional runtime-originated async plugin-control frames
+// synthesized by the worker pool.
+func (h *Handler) AsyncFrames() <-chan any {
+	if h == nil || h.pool == nil {
+		return nil
+	}
+	go h.pool.PrimeTargets(context.Background(), nil)
+	return h.pool.AsyncFrames()
+}
+
 // NewHandler creates an M2 daemon handler.
 func NewHandler(opts ...Options) *Handler {
 	h := &Handler{startedAt: time.Now(), cancels: map[string]context.CancelFunc{}}
@@ -86,7 +96,9 @@ func (h *Handler) Health(context.Context, wire.Health) (wire.HealthResp, error) 
 
 func (h *Handler) ListCapabilities(context.Context, wire.ListCapabilities) (wire.ListCapabilitiesResp, error) {
 	var targets []wire.Capability
-	if h.store != nil {
+	if h.pool != nil {
+		targets = h.pool.Capabilities()
+	} else if h.store != nil {
 		targets = h.store.Capabilities()
 	}
 	return wire.ListCapabilitiesResp{Op: wire.OpListCapabilitiesResp, Targets: targets}, nil
@@ -101,8 +113,23 @@ func (h *Handler) Reload(_ context.Context, in wire.Reload) (wire.ReloadAck, err
 	var evicted []wire.Target
 	if h.pool != nil {
 		evicted = h.pool.Reload(in.Target)
+		go h.pool.PrimeTargets(context.Background(), in.Target)
 	}
 	return wire.ReloadAck{Op: wire.OpReloadAck, EvictedTargets: evicted}, nil
+}
+
+func (h *Handler) HookEvent(ctx context.Context, in wire.HookEvent) (wire.HookEventReply, error) {
+	if h.pool == nil {
+		return wire.HookEventReply{Op: wire.OpHookEventReply, CallID: in.CallID, Action: wire.HookActionDeny, Reason: "worker pool not configured"}, nil
+	}
+	reply, err := h.pool.HookEvent(ctx, in)
+	if err != nil {
+		return wire.HookEventReply{}, err
+	}
+	if reply == nil {
+		return wire.HookEventReply{}, nil
+	}
+	return *reply, nil
 }
 
 func (h *Handler) registerCancel(callID string, cancel context.CancelFunc) {

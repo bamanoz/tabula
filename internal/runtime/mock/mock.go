@@ -18,6 +18,7 @@ type RuntimeConn struct {
 	recorded       []runtimeapi.InvokeReq
 	recordedNotify chan struct{}
 	cancels        []string
+	reloads        []runtimeapi.ReloadReq
 	pending        map[string]chan wire.Error
 }
 
@@ -154,19 +155,25 @@ func (m *RuntimeConn) ListCapabilities(context.Context) (runtimeapi.ListCapabili
 			continue
 		}
 		seen[key.target] = struct{}{}
-		targets = append(targets, wire.Capability{Target: key.target})
+		targets = append(targets, wire.Capability{Target: key.target, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker})
 	}
 	return runtimeapi.ListCapabilitiesResp{Op: wire.OpListCapabilitiesResp, Targets: targets}, nil
 }
 
 // Reload returns an acknowledgement for the requested target.
 func (m *RuntimeConn) Reload(_ context.Context, req runtimeapi.ReloadReq) (runtimeapi.ReloadResp, error) {
+	m.mu.Lock()
+	m.reloads = append(m.reloads, req)
+	m.mu.Unlock()
 	resp := runtimeapi.ReloadResp{Op: wire.OpReloadAck}
 	if req.Target != nil {
 		resp.EvictedTargets = []wire.Target{*req.Target}
 	}
 	return resp, nil
 }
+
+// SendHookEvent records no state in the in-memory mock yet.
+func (m *RuntimeConn) SendHookEvent(context.Context, runtimeapi.HookEventReq) error { return nil }
 
 // Close drains pending invokes with runtime_unavailable.
 func (m *RuntimeConn) Close() error {
@@ -191,6 +198,15 @@ func (m *RuntimeConn) RecordedInvokes() []runtimeapi.InvokeReq {
 	defer m.mu.Unlock()
 	out := make([]runtimeapi.InvokeReq, len(m.recorded))
 	copy(out, m.recorded)
+	return out
+}
+
+// RecordedReloads returns reload requests in chronological order.
+func (m *RuntimeConn) RecordedReloads() []runtimeapi.ReloadReq {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]runtimeapi.ReloadReq, len(m.reloads))
+	copy(out, m.reloads)
 	return out
 }
 

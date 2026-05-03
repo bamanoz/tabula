@@ -1,6 +1,7 @@
 package kernel
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bamanoz/tabula/internal/kernel/plugin"
+	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
 )
 
 const maxExecOutput = 16 * 1024 // 16KB
@@ -68,6 +70,8 @@ func (s *ToolService) handleDynamicTool(session, toolID, toolName string, input 
 		s.skill.Run(session, toolID, toolName, entry.Command, input)
 	case toolSourcePlugin:
 		s.handlePluginTool(session, toolID, toolName, entry, input)
+	case toolSourceRuntime:
+		s.handleRuntimeTool(session, toolID, toolName, entry, input)
 	default:
 		s.hub.sendToolResultForTool(session, toolID, toolName, fmt.Sprintf("ERROR: tool %s has unknown dispatch source", toolName))
 	}
@@ -115,6 +119,36 @@ func (s *ToolService) handlePluginTool(session, toolID, toolName string, entry t
 	}()
 }
 
+func (s *ToolService) handleRuntimeTool(session, toolID, toolName string, entry toolDispatch, input json.RawMessage) {
+	conn := s.hub.runtimeConn(entry.RuntimeID)
+	if conn == nil {
+		s.hub.sendToolResultForTool(session, toolID, toolName, fmt.Sprintf("ERROR: runtime tool %s is unavailable", toolName))
+		return
+	}
+	deadline := resolveToolDeadline(entry.DeadlineMs)
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+
+	resp, err := conn.Invoke(ctx, runtimeapi.InvokeReq{
+		CallID:    toolID,
+		TenantID:  "default",
+		Target:    entry.Target,
+		Tool:      toolName,
+		Args:      input,
+		TimeoutMS: int64(deadline / time.Millisecond),
+	})
+	if err != nil {
+		s.hub.Logger.Warn("runtime tool invoke failed", "tool", toolName, "runtime_id", entry.RuntimeID, "session", session, "err", err)
+		s.hub.sendToolResultForTool(session, toolID, toolName, fmt.Sprintf("ERROR: runtime tool %s failed: %v", toolName, err))
+		return
+	}
+	output := runtimeToolOutput(resp)
+	s.hub.sendToolResultForTool(session, toolID, toolName, output)
+	s.hub.emitAfterToolCall(session, toolID, map[string]string{
+		"tool": toolName, "id": toolID, "output": output,
+	})
+}
+
 func pluginToolOutput(msg *plugin.Message) string {
 	if msg == nil {
 		return "ERROR: plugin returned empty result"
@@ -134,6 +168,26 @@ func pluginToolOutput(msg *plugin.Message) string {
 		return text
 	}
 	return strings.TrimSpace(string(result.Result))
+}
+
+func runtimeToolOutput(resp runtimeapi.InvokeResp) string {
+	if resp.OK {
+		if len(resp.Data) == 0 {
+			return "OK"
+		}
+		var text string
+		if err := json.Unmarshal(resp.Data, &text); err == nil {
+			return text
+		}
+		return strings.TrimSpace(string(resp.Data))
+	}
+	if resp.Error == nil {
+		return "ERROR: runtime returned empty error"
+	}
+	if resp.Error.Message != "" {
+		return "ERROR: " + resp.Error.Message
+	}
+	return "ERROR: " + string(resp.Error.Code)
 }
 
 func resolveToolDeadline(deadlineMs int) time.Duration {

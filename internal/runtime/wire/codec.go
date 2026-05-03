@@ -47,6 +47,18 @@ func Decode(data []byte) (Envelope, any, error) {
 		frame = &Reload{}
 	case OpReloadAck:
 		frame = &ReloadAck{}
+	case OpHookEvent:
+		frame = &HookEvent{}
+	case OpCatalogUpdate:
+		frame = &CatalogUpdate{}
+	case OpHookEventReply:
+		frame = &HookEventReply{}
+	case OpPluginSend:
+		frame = &PluginSend{}
+	case OpPluginLog:
+		frame = &PluginLog{}
+	case OpLifecycleNotice:
+		frame = &LifecycleNotice{}
 	default:
 		return Envelope{}, nil, ProtocolErrorf("unknown op %q", head.Op)
 	}
@@ -65,6 +77,10 @@ func Decode(data []byte) (Envelope, any, error) {
 	case *Cancel:
 		head.CallID = f.CallID
 	case *CancelAck:
+		head.CallID = f.CallID
+	case *HookEvent:
+		head.CallID = f.CallID
+	case *HookEventReply:
 		head.CallID = f.CallID
 	}
 	return head, frame, nil
@@ -203,6 +219,101 @@ func validateFrame(frame any) error {
 			}
 		}
 		return nil
+	case HookEvent:
+		return validateFrame(&f)
+	case *HookEvent:
+		if f.Op != OpHookEvent {
+			return ProtocolErrorf("hook_event op must be %q", OpHookEvent)
+		}
+		if err := f.Target.Validate(); err != nil {
+			return err
+		}
+		if f.Event == "" {
+			return ProtocolErrorf("event is required")
+		}
+		switch f.ReplyMode {
+		case HookReplyModeNone:
+			return nil
+		case HookReplyModeModifying, HookReplyModeClaiming:
+			if f.CallID == "" {
+				return ProtocolErrorf("call_id is required when reply_mode expects a reply")
+			}
+			return nil
+		default:
+			return ProtocolErrorf("unknown hook reply_mode %q", f.ReplyMode)
+		}
+	case CatalogUpdate:
+		return validateFrame(&f)
+	case *CatalogUpdate:
+		if f.Op != OpCatalogUpdate {
+			return ProtocolErrorf("catalog_update op must be %q", OpCatalogUpdate)
+		}
+		if err := (Capability{Target: f.Target, Tools: f.Tools, Hooks: f.Hooks, Revision: f.Revision, State: f.State, Source: f.Source}).Validate(); err != nil {
+			return err
+		}
+		return nil
+	case HookEventReply:
+		return validateFrame(&f)
+	case *HookEventReply:
+		if f.Op != OpHookEventReply {
+			return ProtocolErrorf("hook_event_reply op must be %q", OpHookEventReply)
+		}
+		if f.CallID == "" {
+			return ProtocolErrorf("call_id is required")
+		}
+		switch f.Action {
+		case HookActionOK, HookActionRewrite, HookActionDeny, HookActionClaim:
+			return nil
+		default:
+			return ProtocolErrorf("unknown hook action %q", f.Action)
+		}
+	case PluginSend:
+		return validateFrame(&f)
+	case *PluginSend:
+		if f.Op != OpPluginSend {
+			return ProtocolErrorf("plugin_send op must be %q", OpPluginSend)
+		}
+		if err := f.Target.Validate(); err != nil {
+			return err
+		}
+		if f.Channel != "bus" {
+			return ProtocolErrorf("unknown plugin_send channel %q", f.Channel)
+		}
+		if f.Type == "" {
+			return ProtocolErrorf("type is required")
+		}
+		return nil
+	case PluginLog:
+		return validateFrame(&f)
+	case *PluginLog:
+		if f.Op != OpPluginLog {
+			return ProtocolErrorf("plugin_log op must be %q", OpPluginLog)
+		}
+		if err := f.Target.Validate(); err != nil {
+			return err
+		}
+		if f.Level == "" {
+			return ProtocolErrorf("level is required")
+		}
+		if f.Message == "" {
+			return ProtocolErrorf("message is required")
+		}
+		return nil
+	case LifecycleNotice:
+		return validateFrame(&f)
+	case *LifecycleNotice:
+		if f.Op != OpLifecycleNotice {
+			return ProtocolErrorf("lifecycle_notice op must be %q", OpLifecycleNotice)
+		}
+		if err := f.Target.Validate(); err != nil {
+			return err
+		}
+		switch f.State {
+		case LifecycleStateStarting, LifecycleStateReady, LifecycleStateStopping, LifecycleStateExited, LifecycleStateCrashed:
+			return nil
+		default:
+			return ProtocolErrorf("unknown lifecycle state %q", f.State)
+		}
 	default:
 		return ProtocolErrorf("unsupported frame type %T", frame)
 	}
@@ -210,7 +321,7 @@ func validateFrame(frame any) error {
 
 func validateCapabilities(capabilities []Capability) error {
 	for _, capability := range capabilities {
-		if err := capability.Target.Validate(); err != nil {
+		if err := capability.Validate(); err != nil {
 			return err
 		}
 	}

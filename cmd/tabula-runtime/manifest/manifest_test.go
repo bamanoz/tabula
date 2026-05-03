@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/bamanoz/tabula/internal/runtime/wire"
 )
 
 func TestLoadDirsDiscoversPluginManifestsAndCapabilities(t *testing.T) {
@@ -45,7 +47,7 @@ sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 		t.Fatalf("expected hooks and requires to survive normalized parse: %#v", plugin)
 	}
 	caps := idx.Capabilities()
-	if len(caps) != 1 || caps[0].Target.ID != "fs" || len(caps[0].Tools) != 2 || caps[0].Tools[0] != "fs_read" || caps[0].Tools[1] != "fs_write" {
+	if len(caps) != 1 || caps[0].Target.ID != "fs" || len(caps[0].Tools) != 2 || caps[0].Tools[0].Name != "fs_read" || caps[0].Tools[1].Name != "fs_write" || len(caps[0].Hooks) != 1 || caps[0].Hooks[0].Event != "before_tool_call" || caps[0].State != wire.CapabilityStateManifestLoaded || caps[0].Source != wire.CapabilitySourceManifest {
 		t.Fatalf("unexpected capabilities: %#v", caps)
 	}
 }

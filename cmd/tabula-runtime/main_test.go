@@ -35,6 +35,17 @@ func TestUnknownSubcommand(t *testing.T) {
 	}
 }
 
+func TestVersionFlagPrintsRuntimeVersion(t *testing.T) {
+	var stderr bytes.Buffer
+	code := run([]string{"--version"}, &stderr)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "tabula-runtime") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
 func TestStartSubprocessSIGTERMClosesConnection(t *testing.T) {
 	if os.Getenv("TABULA_RUNTIME_HELPER") == "1" {
 		return

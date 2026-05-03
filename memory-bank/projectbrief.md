@@ -4,7 +4,7 @@
 Tabula is implementing a remote runtime / multi-backend execution architecture across the kernel, runtime daemon, installer, testbed, docs, and companion repos. The current workstream executes the M1 → M6 program described in `docs/issues/TASK.md`.
 
 ## Current Task Context
-- Task: Execute the remote-runtime program (M1 → M6)
+- Task: Execute grouped M2-M6 runtime cutover backlog
 - Intent: implement
 - Category: deep
 - Level: 4

@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/bamanoz/tabula/internal/kernel"
@@ -24,6 +25,7 @@ import (
 	runtimeauth "github.com/bamanoz/tabula/internal/runtime/auth"
 	runtimecodec "github.com/bamanoz/tabula/internal/runtime/codec"
 	"github.com/bamanoz/tabula/internal/runtime/transport/unixsock"
+	"github.com/bamanoz/tabula/internal/runtime/wire"
 
 	"github.com/gorilla/websocket"
 )
@@ -290,6 +292,10 @@ func serveCmd() int {
 		return 1
 	}
 	slog.Info("runtime token issued", "runtime_id", runtimeauth.LocalRuntimeID)
+	if err := writeLocalRuntimeConfig(tabulaHome, bootConfig.Plugins); err != nil {
+		fmt.Fprintf(os.Stderr, "error: runtime config setup failed: %v\n", err)
+		return 1
+	}
 	if err := writeKernelStatusFiles(tabulaHome, wsEndpoint, time.Now().UTC()); err != nil {
 		fmt.Fprintf(os.Stderr, "error: kernel status setup failed: %v\n", err)
 		return 1
@@ -322,10 +328,20 @@ func serveCmd() int {
 	}
 	slog.Info("runtime listener ready", "path", runtimeListener.Path())
 	runtimeStop := make(chan struct{})
+	var managedRuntimePID atomic.Int64
 	go func() {
 		authenticator := runtimeauth.Authenticator{Store: runtimeStore, KernelID: runtimeauth.DefaultKernelID}
 		serveErr := runtimeListener.Serve(func(ctx context.Context, c *runtimecodec.Conn) {
-			if serveErr := hub.ServeAuthenticatedRuntime(ctx, c, kernel.RuntimeAttachOptions{Auth: authenticator, Logger: logger.Logger}); serveErr != nil {
+			if serveErr := hub.ServeAuthenticatedRuntime(ctx, c, kernel.RuntimeAttachOptions{
+				Auth:   authenticator,
+				Logger: logger.Logger,
+				RuntimePIDFunc: func(runtimeID string) int {
+					if runtimeID != runtimeauth.LocalRuntimeID {
+						return 0
+					}
+					return int(managedRuntimePID.Load())
+				},
+			}); serveErr != nil {
 				slog.Warn("runtime connection closed", "error", serveErr)
 			}
 		})
@@ -345,12 +361,19 @@ func serveCmd() int {
 			slog.Error("server error", "error", err)
 		}
 	}()
-
-	go func() {
-		if err := hub.LoadPlugins(bootConfig.Plugins); err != nil {
-			slog.Warn("one or more plugins failed to load", "error", err)
-		}
-	}()
+	runtimeProc, err := startAttachedLocalRuntime(hub, tabulaHome, os.Stderr, nil, func(pid int) {
+		managedRuntimePID.Store(int64(pid))
+	})
+	if err != nil {
+		close(runtimeStop)
+		runtimeListener.Close()
+		server.Close()
+		listener.Close()
+		hub.Shutdown()
+		fmt.Fprintf(os.Stderr, "error: local runtime startup failed: %v\n", err)
+		return 1
+	}
+	slog.Info("local runtime attached", "pid", runtimeProc.PID())
 
 	// Watch for distro reinstall reload triggers.
 	stopReload := make(chan struct{})
@@ -363,6 +386,9 @@ func serveCmd() int {
 
 	slog.Info("shutting down")
 	close(stopReload)
+	if err := runtimeProc.Shutdown(5 * time.Second); err != nil {
+		slog.Warn("local runtime shutdown failed", "error", err)
+	}
 	hub.Shutdown()
 	close(runtimeStop)
 	runtimeListener.Close()
@@ -370,7 +396,7 @@ func serveCmd() int {
 	return 0
 }
 
-// watchReloadTrigger polls TABULA_HOME/run/reload.touch and triggers a plugin
+// watchReloadTrigger polls TABULA_HOME/run/reload.touch and triggers a runtime
 // reload when its mtime changes. Distro install code touches that file after
 // switching the active generation so the live kernel picks up new plugin/skill
 // code without a manual restart. Polling is intentional: avoids a new
@@ -397,12 +423,37 @@ func watchReloadTrigger(tabulaHome, bootCmd string, hub *kernel.Hub, stop <-chan
 			slog.Error("reload boot failed", "error", err)
 			continue
 		}
-		if err := hub.ReloadPlugins(bootConfig.Plugins); err != nil {
-			slog.Warn("one or more plugins failed to reload", "error", err)
-		} else {
-			slog.Info("plugin reload complete", "count", len(bootConfig.Plugins))
+		if err := writeLocalRuntimeConfig(tabulaHome, bootConfig.Plugins); err != nil {
+			slog.Error("runtime config rewrite failed", "error", err)
+			continue
 		}
+		reloadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err = reloadLocalRuntime(reloadCtx, hub)
+		cancel()
+		if err != nil {
+			slog.Error("runtime reload failed", "error", err)
+			continue
+		}
+		slog.Info("runtime reload complete")
 	}
+}
+
+type runtimeReloader interface {
+	ReloadAttachedRuntime(context.Context, string, *wire.Target) (bool, error)
+}
+
+func reloadLocalRuntime(ctx context.Context, reloader runtimeReloader) error {
+	if reloader == nil {
+		return fmt.Errorf("runtime reloader is required")
+	}
+	attempted, err := reloader.ReloadAttachedRuntime(ctx, runtimeauth.LocalRuntimeID, nil)
+	if err != nil {
+		return err
+	}
+	if !attempted {
+		return fmt.Errorf("local runtime is not attached")
+	}
+	return nil
 }
 
 func triggerMTime(path string) time.Time {
@@ -510,6 +561,10 @@ func runCmd(args []string) int {
 		fmt.Fprintf(os.Stderr, "error: boot failed: %v\n", err)
 		return 1
 	}
+	if err := writeLocalRuntimeConfig(tabulaHome, bootConfig.Plugins); err != nil {
+		fmt.Fprintf(os.Stderr, "error: runtime config setup failed: %v\n", err)
+		return 1
+	}
 
 	// Load static skill tools from the boot contract.
 	allTools := make([]json.RawMessage, 0)
@@ -549,10 +604,46 @@ func runCmd(args []string) int {
 	hub := kernel.NewHub(toolsJSON, skillExec, maxSpawnDepth, maxChildren, logger.Logger)
 	hub.SetInitMeta(bootConfig.Meta)
 	hub.ProjectRoot = os.Getenv("TABULA_PROJECT_ROOT")
-	if err := hub.LoadPlugins(bootConfig.Plugins); err != nil {
-		slog.Warn("one or more plugins failed to load", "error", err)
-	}
 	hub.StartReaper()
+
+	runtimeStore := runtimeauth.NewMemoryStore()
+	if _, err := runtimeauth.IssueLocalTokenFile(runtimeStore, runtimeauth.RuntimeTokenPath(tabulaHome), runtimeauth.LocalRuntimeID, time.Now()); err != nil {
+		fmt.Fprintf(os.Stderr, "error: runtime token setup failed: %v\n", err)
+		return 1
+	}
+
+	runtimeListener, err := unixsock.Listen(filepath.Join(tabulaHome, "run", "runtime.sock"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: cannot listen for runtime connections: %v\n", err)
+		return 1
+	}
+	defer runtimeListener.Close()
+	runtimeStop := make(chan struct{})
+	var managedRuntimePID atomic.Int64
+	go func() {
+		authenticator := runtimeauth.Authenticator{Store: runtimeStore, KernelID: runtimeauth.DefaultKernelID}
+		serveErr := runtimeListener.Serve(func(ctx context.Context, c *runtimecodec.Conn) {
+			if serveErr := hub.ServeAuthenticatedRuntime(ctx, c, kernel.RuntimeAttachOptions{
+				Auth:   authenticator,
+				Logger: logger.Logger,
+				RuntimePIDFunc: func(runtimeID string) int {
+					if runtimeID != runtimeauth.LocalRuntimeID {
+						return 0
+					}
+					return int(managedRuntimePID.Load())
+				},
+			}); serveErr != nil {
+				slog.Warn("runtime connection closed", "error", serveErr)
+			}
+		})
+		select {
+		case <-runtimeStop:
+		default:
+			if serveErr != nil {
+				slog.Error("runtime listener error", "error", serveErr)
+			}
+		}
+	}()
 
 	// Start HTTP/WebSocket server (driver needs WebSocket).
 	mux := http.NewServeMux()
@@ -569,14 +660,32 @@ func runCmd(args []string) int {
 	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot listen on %s: %v\n", listenAddr, err)
+		close(runtimeStop)
 		return 1
 	}
 
 	server := &http.Server{Handler: mux}
+	defer server.Close()
 	go func() {
 		if err := server.Serve(listener); err != http.ErrServerClosed {
 			slog.Error("server error", "error", err)
 		}
+	}()
+	runtimeProc, err := startAttachedLocalRuntime(hub, tabulaHome, os.Stderr, nil, func(pid int) {
+		managedRuntimePID.Store(int64(pid))
+	})
+	if err != nil {
+		close(runtimeStop)
+		runtimeListener.Close()
+		listener.Close()
+		fmt.Fprintf(os.Stderr, "error: local runtime startup failed: %v\n", err)
+		return 1
+	}
+	defer func() {
+		if err := runtimeProc.Shutdown(5 * time.Second); err != nil {
+			slog.Warn("local runtime shutdown failed", "error", err)
+		}
+		close(runtimeStop)
 	}()
 
 	// Wait for any client to join the session.

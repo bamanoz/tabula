@@ -203,7 +203,7 @@ func (socketHandler) Health(context.Context, wire.Health) (wire.HealthResp, erro
 }
 
 func (socketHandler) ListCapabilities(context.Context, wire.ListCapabilities) (wire.ListCapabilitiesResp, error) {
-	return wire.ListCapabilitiesResp{Op: wire.OpListCapabilitiesResp, Targets: []wire.Capability{{Target: pluginTarget("fs"), Tools: []string{"echo", "parallel"}}}}, nil
+	return wire.ListCapabilitiesResp{Op: wire.OpListCapabilitiesResp, Targets: []wire.Capability{{Target: pluginTarget("fs"), Tools: []wire.ToolSpec{{Name: "echo"}, {Name: "parallel"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}}}, nil
 }
 
 func (socketHandler) Reload(_ context.Context, in wire.Reload) (wire.ReloadAck, error) {
@@ -211,6 +211,10 @@ func (socketHandler) Reload(_ context.Context, in wire.Reload) (wire.ReloadAck, 
 		return wire.ReloadAck{Op: wire.OpReloadAck}, nil
 	}
 	return wire.ReloadAck{Op: wire.OpReloadAck, EvictedTargets: []wire.Target{*in.Target}}, nil
+}
+
+func (socketHandler) HookEvent(_ context.Context, in wire.HookEvent) (wire.HookEventReply, error) {
+	return wire.HookEventReply{Op: wire.OpHookEventReply, CallID: in.CallID, Action: wire.HookActionOK}, nil
 }
 
 func fileMode(t *testing.T, path string) os.FileMode {

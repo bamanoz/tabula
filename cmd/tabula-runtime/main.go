@@ -19,9 +19,22 @@ import (
 	"github.com/bamanoz/tabula/cmd/tabula-runtime/pool"
 )
 
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
+
 func main() { os.Exit(run(os.Args[1:], os.Stderr)) }
 
 func run(args []string, stderr io.Writer) int {
+	if len(args) == 1 {
+		switch args[0] {
+		case "--version", "version":
+			fmt.Fprintf(stderr, "tabula-runtime %s (%s) built %s\n", version, commit, date)
+			return 0
+		}
+	}
 	subcommand := "start"
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		subcommand = args[0]
@@ -33,6 +46,9 @@ func run(args []string, stderr io.Writer) int {
 	case "stdio":
 		fmt.Fprintln(stderr, "tabula-runtime stdio is not implemented in M2")
 		return 1
+	case "version":
+		fmt.Fprintf(stderr, "tabula-runtime %s (%s) built %s\n", version, commit, date)
+		return 0
 	case "help", "--help", "-h":
 		printUsage(stderr)
 		return 0
@@ -91,4 +107,5 @@ func startCmd(args []string, stderr io.Writer) int {
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage: tabula-runtime [start] [--config PATH] [--runtime-id ID]")
 	fmt.Fprintln(w, "       tabula-runtime stdio")
+	fmt.Fprintln(w, "       tabula-runtime --version")
 }

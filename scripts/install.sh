@@ -290,8 +290,12 @@ for a in data.get('assets', []):
 
   tar -xzf "$tmp/$binary_archive" -C "$tmp"
   install -m 755 "$tmp/tabula" "$BIN_DIR/tabula"
+  if [ -f "$tmp/tabula-runtime" ]; then
+    install -m 755 "$tmp/tabula-runtime" "$BIN_DIR/tabula-runtime"
+  fi
   if [ "$PLATFORM_OS" = "darwin" ]; then
     xattr -d com.apple.quarantine "$BIN_DIR/tabula" 2>/dev/null || true
+    xattr -d com.apple.quarantine "$BIN_DIR/tabula-runtime" 2>/dev/null || true
   fi
   ok "Binary installed"
 

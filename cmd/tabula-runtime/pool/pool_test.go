@@ -38,6 +38,221 @@ func TestPoolInvokesWarmWorkerAndReusesByTenantTarget(t *testing.T) {
 	}
 }
 
+func TestPoolCapabilitiesUpgradeFromManifestToWorkerReady(t *testing.T) {
+	p, _ := testPool(t)
+
+	caps := p.Capabilities()
+	if len(caps) != 1 || caps[0].Target.ID != "fs" || caps[0].State != wire.CapabilityStateManifestLoaded || caps[0].Source != wire.CapabilitySourceManifest {
+		t.Fatalf("initial capabilities = %#v", caps)
+	}
+	if len(caps[0].Tools) != 2 || caps[0].Tools[0].Name != "echo" || caps[0].Tools[1].Name != "slow" {
+		t.Fatalf("initial tools = %#v", caps[0].Tools)
+	}
+
+	resp, err := p.Invoke(context.Background(), invoke("call-ready", "tenant-a", "echo"))
+	if err != nil || !resp.OK {
+		t.Fatalf("Invoke = %#v, %v", resp, err)
+	}
+
+	caps = p.Capabilities()
+	if len(caps) != 1 || caps[0].State != wire.CapabilityStateReady || caps[0].Source != wire.CapabilitySourceWorker || caps[0].Revision != 2 {
+		t.Fatalf("ready capabilities = %#v", caps)
+	}
+	if len(caps[0].Hooks) != 1 || caps[0].Hooks[0].Event != "before_tool_call" {
+		t.Fatalf("ready hooks = %#v", caps[0].Hooks)
+	}
+}
+
+func TestPoolCapabilitiesTrackWorkerToolsUpdated(t *testing.T) {
+	p, fake := testPool(t)
+	resp, err := p.Invoke(context.Background(), invoke("call-tools", "tenant-a", "echo"))
+	if err != nil || !resp.OK {
+		t.Fatalf("Invoke = %#v, %v", resp, err)
+	}
+	fake.lastWorker.emit(policy.WorkerAsyncEvent{Frame: &workerwire.WorkerToolsUpdated{Op: workerwire.OpToolsUpdated, Revision: 7, Tools: []wire.ToolSpec{{Name: "dynamic_extra"}, {Name: "echo"}}}})
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		caps := p.Capabilities()
+		if len(caps) == 1 && caps[0].Revision == 7 && len(caps[0].Tools) == 2 && caps[0].Tools[0].Name == "dynamic_extra" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("tools update not reflected: %#v", p.Capabilities())
+}
+
+func TestPoolAsyncFramesPublishCatalogAndLifecycle(t *testing.T) {
+	p, _ := testPool(t)
+	resp, err := p.Invoke(context.Background(), invoke("call-async", "tenant-a", "echo"))
+	if err != nil || !resp.OK {
+		t.Fatalf("Invoke = %#v, %v", resp, err)
+	}
+	var sawStarting, sawReady, sawCatalog bool
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && (!sawStarting || !sawReady || !sawCatalog) {
+		select {
+		case frame := <-p.AsyncFrames():
+			switch msg := frame.(type) {
+			case wire.LifecycleNotice:
+				sawStarting = sawStarting || msg.State == wire.LifecycleStateStarting
+				sawReady = sawReady || msg.State == wire.LifecycleStateReady
+			case wire.CatalogUpdate:
+				sawCatalog = msg.Revision == 2 && msg.State == wire.CapabilityStateReady && len(msg.Hooks) == 1
+			}
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if !sawStarting || !sawReady || !sawCatalog {
+		t.Fatalf("expected starting/ready/catalog frames, got starting=%v ready=%v catalog=%v", sawStarting, sawReady, sawCatalog)
+	}
+}
+
+func TestPoolAsyncFramesPublishWorkerReplySendAndLog(t *testing.T) {
+	p, fake := testPool(t)
+	resp, err := p.Invoke(context.Background(), invoke("call-events", "tenant-a", "echo"))
+	if err != nil || !resp.OK {
+		t.Fatalf("Invoke = %#v, %v", resp, err)
+	}
+	fake.lastWorker.emit(policy.WorkerAsyncEvent{Frame: &workerwire.WorkerEventReply{Op: workerwire.OpEventReply, CallID: "hook-1", Action: wire.HookActionRewrite, Data: json.RawMessage(`{"tool":"safe"}`)}})
+	fake.lastWorker.emit(policy.WorkerAsyncEvent{Frame: &workerwire.WorkerSend{Op: workerwire.OpSend, Channel: "bus", Type: "notify", Payload: json.RawMessage(`{"x":1}`), SessionID: "sess-1"}})
+	fake.lastWorker.emit(policy.WorkerAsyncEvent{Frame: &workerwire.WorkerLog{Op: workerwire.OpLog, Level: "info", Message: "ready", Fields: json.RawMessage(`{"worker":1}`)}})
+
+	var sawReply, sawSend, sawLog bool
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && (!sawReply || !sawSend || !sawLog) {
+		select {
+		case frame := <-p.AsyncFrames():
+			switch msg := frame.(type) {
+			case wire.HookEventReply:
+				sawReply = msg.CallID == "hook-1" && msg.Action == wire.HookActionRewrite
+			case wire.PluginSend:
+				sawSend = msg.Type == "notify" && msg.Target.ID == "fs"
+			case wire.PluginLog:
+				sawLog = msg.Message == "ready" && msg.Target.ID == "fs"
+			}
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if !sawReply || !sawSend || !sawLog {
+		t.Fatalf("expected reply/send/log frames, got reply=%v send=%v log=%v", sawReply, sawSend, sawLog)
+	}
+}
+
+func TestPoolHookEventRoutesToWorkerReply(t *testing.T) {
+	p, _ := testPool(t)
+	reply, err := p.HookEvent(context.Background(), wire.HookEvent{Op: wire.OpHookEvent, CallID: "hook-1", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Event: "before_tool_call", ReplyMode: wire.HookReplyModeModifying, Data: json.RawMessage(`{"tool":"echo"}`)})
+	if err != nil {
+		t.Fatalf("HookEvent: %v", err)
+	}
+	if reply == nil || reply.CallID != "hook-1" || reply.Action != wire.HookActionRewrite {
+		t.Fatalf("unexpected reply: %#v", reply)
+	}
+}
+
+func TestPoolPrimeTargetsInitializesWithoutInvoke(t *testing.T) {
+	p, fake := testPool(t)
+	p.PrimeTargets(context.Background(), nil)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		caps := p.Capabilities()
+		if len(caps) == 1 && caps[0].State == wire.CapabilityStateReady && caps[0].Source == wire.CapabilitySourceWorker {
+			if got := fake.spawnCount.Load(); got != 1 {
+				t.Fatalf("spawn count = %d, want 1", got)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("prime did not make target ready: %#v", p.Capabilities())
+}
+
+func TestPoolPrimeTargetsRepublishesReadyCatalogWithoutRespawn(t *testing.T) {
+	p, fake := testPool(t)
+	p.PrimeTargets(context.Background(), nil)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		caps := p.Capabilities()
+		if len(caps) == 1 && caps[0].State == wire.CapabilityStateReady {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	drainAsyncFrames(p)
+
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
+	p.PrimeTargets(context.Background(), &target)
+
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case frame := <-p.AsyncFrames():
+			if update, ok := frame.(wire.CatalogUpdate); ok && update.Target.ID == "fs" && update.State == wire.CapabilityStateReady && len(update.Hooks) == 1 {
+				if got := fake.spawnCount.Load(); got != 1 {
+					t.Fatalf("spawn count = %d, want 1", got)
+				}
+				return
+			}
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	t.Fatal("prime did not republish ready catalog update")
+}
+
+func TestPoolInitTimeAsyncFramesAreNotDropped(t *testing.T) {
+	p, fake := testPool(t)
+	fake.nextWorker = newFakeWorker()
+	fake.nextWorker.initEvents = []policy.WorkerAsyncEvent{
+		{Frame: &workerwire.WorkerLog{Op: workerwire.OpLog, Level: "info", Message: "init ready"}},
+		{Frame: &workerwire.WorkerToolsUpdated{Op: workerwire.OpToolsUpdated, Revision: 7, Tools: []wire.ToolSpec{{Name: "dynamic_extra"}, {Name: "echo"}}}},
+	}
+
+	resp, err := p.Invoke(context.Background(), invoke("call-init-async", "tenant-a", "echo"))
+	if err != nil || !resp.OK {
+		t.Fatalf("Invoke = %#v, %v", resp, err)
+	}
+
+	var sawInitLog, sawInitTools bool
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && (!sawInitLog || !sawInitTools) {
+		select {
+		case frame := <-p.AsyncFrames():
+			switch msg := frame.(type) {
+			case wire.PluginLog:
+				sawInitLog = msg.Message == "init ready"
+			case wire.CatalogUpdate:
+				sawInitTools = msg.Revision == 7 && len(msg.Tools) == 2 && msg.Tools[0].Name == "dynamic_extra"
+			}
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if !sawInitLog || !sawInitTools {
+		t.Fatalf("expected init-time async frames, got log=%v tools=%v", sawInitLog, sawInitTools)
+	}
+
+	caps := p.Capabilities()
+	if len(caps) != 1 || caps[0].Revision != 7 || len(caps[0].Tools) != 2 || caps[0].Tools[0].Name != "dynamic_extra" {
+		t.Fatalf("capabilities after init-time update = %#v", caps)
+	}
+}
+
+func TestPoolInitFailureMarksTargetFailed(t *testing.T) {
+	p, fake := testPool(t)
+	fake.nextWorker = newFakeWorker()
+	fake.nextWorker.initErr = errors.New("boom")
+
+	resp, err := p.Invoke(context.Background(), invoke("call-fail", "tenant-a", "echo"))
+	if err != nil || resp.Error == nil || resp.Error.Code != wire.ErrorInternal {
+		t.Fatalf("Invoke = %#v, %v", resp, err)
+	}
+
+	caps := p.Capabilities()
+	if len(caps) != 1 || caps[0].State != wire.CapabilityStateFailed {
+		t.Fatalf("failed capabilities = %#v", caps)
+	}
+}
+
 func TestPoolRejectsUnknownTargetAndTool(t *testing.T) {
 	p, _ := testPool(t)
 	resp, err := p.Invoke(context.Background(), wire.Invoke{Op: wire.OpInvoke, CallID: "missing", TenantID: "tenant-a", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "missing"}, Tool: "echo"})
@@ -71,7 +286,7 @@ func TestPoolCancelAbandonsCallWithoutKillingWorker(t *testing.T) {
 	if !w.IsAlive() {
 		t.Fatal("worker should remain alive after M2 cancel-abandon")
 	}
-	w.finish("slow", workerwire.WorkerResult{CallID: "slow", OK: true, Data: json.RawMessage(`{"late":true}`)})
+	w.finish("slow", workerwire.WorkerResult{Op: workerwire.OpResult, CallID: "slow", OK: true, Data: json.RawMessage(`{"late":true}`)})
 }
 
 func TestPoolCrashEvictsWorkerAndNextInvokeRespawns(t *testing.T) {
@@ -104,10 +319,31 @@ func TestPoolReloadEvictsTarget(t *testing.T) {
 	if !fake.lastWorker.shutdown.Load() {
 		t.Fatal("reload should shut down worker")
 	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case frame := <-p.AsyncFrames():
+			if notice, ok := frame.(wire.LifecycleNotice); ok && notice.Target.ID == "fs" && notice.State == wire.LifecycleStateStopping {
+				return
+			}
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	t.Fatal("reload did not publish stopping lifecycle notice")
 }
 
 func invoke(callID, tenantID, tool string) wire.Invoke {
 	return wire.Invoke{Op: wire.OpInvoke, CallID: callID, TenantID: tenantID, Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Tool: tool, Args: json.RawMessage(`{"x":1}`)}
+}
+
+func drainAsyncFrames(p *Pool) {
+	for {
+		select {
+		case <-p.AsyncFrames():
+		default:
+			return
+		}
+	}
 }
 
 func testPool(t *testing.T) (*Pool, *fakePolicy) {
@@ -182,21 +418,31 @@ func (f *fakePolicy) waitForWorker(t *testing.T) *fakeWorker {
 }
 
 type fakeWorker struct {
-	mu       sync.Mutex
-	alive    bool
-	init     bool
-	callErr  error
-	waiters  map[string]chan workerwire.WorkerResult
-	shutdown atomic.Bool
+	mu         sync.Mutex
+	alive      bool
+	init       bool
+	initErr    error
+	initEvents []policy.WorkerAsyncEvent
+	callErr    error
+	waiters    map[string]chan workerwire.WorkerResult
+	events     chan policy.WorkerAsyncEvent
+	shutdown   atomic.Bool
 }
 
 func newFakeWorker() *fakeWorker {
-	return &fakeWorker{alive: true, waiters: map[string]chan workerwire.WorkerResult{}}
+	return &fakeWorker{alive: true, waiters: map[string]chan workerwire.WorkerResult{}, events: make(chan policy.WorkerAsyncEvent, 16)}
 }
 
-func (w *fakeWorker) Init(context.Context, workerwire.WorkerInit) error {
+func (w *fakeWorker) Init(context.Context, workerwire.WorkerInit) (workerwire.WorkerInitAck, error) {
 	w.init = true
-	return nil
+	if w.initErr != nil {
+		w.alive = false
+		return workerwire.WorkerInitAck{}, w.initErr
+	}
+	for _, event := range w.initEvents {
+		w.emit(event)
+	}
+	return workerwire.WorkerInitAck{Op: workerwire.OpInitAck, Ready: true, Tools: []wire.ToolSpec{{Name: "echo"}, {Name: "slow"}}, Subscriptions: []wire.HookSpec{{Event: "before_tool_call", Priority: 100}}}, nil
 }
 
 func (w *fakeWorker) Call(_ context.Context, call workerwire.WorkerCall) (workerwire.WorkerResult, error) {
@@ -211,8 +457,17 @@ func (w *fakeWorker) Call(_ context.Context, call workerwire.WorkerCall) (worker
 		w.mu.Unlock()
 		return <-ch, nil
 	}
-	return workerwire.WorkerResult{CallID: call.CallID, OK: true, Data: json.RawMessage(`{"ok":true}`)}, nil
+	return workerwire.WorkerResult{Op: workerwire.OpResult, CallID: call.CallID, OK: true, Data: json.RawMessage(`{"ok":true}`)}, nil
 }
+
+func (w *fakeWorker) HookEvent(_ context.Context, event workerwire.WorkerEvent) (*workerwire.WorkerEventReply, error) {
+	if event.ReplyMode == workerwire.ReplyModeNone {
+		return nil, nil
+	}
+	return &workerwire.WorkerEventReply{Op: workerwire.OpEventReply, CallID: event.CallID, Action: wire.HookActionRewrite, Data: json.RawMessage(`{"tool":"safe_echo"}`), Reason: "rewritten"}, nil
+}
+
+func (w *fakeWorker) Events() <-chan policy.WorkerAsyncEvent { return w.events }
 
 func (w *fakeWorker) finish(callID string, result workerwire.WorkerResult) {
 	w.mu.Lock()
@@ -226,9 +481,17 @@ func (w *fakeWorker) finish(callID string, result workerwire.WorkerResult) {
 func (w *fakeWorker) Shutdown(context.Context) error {
 	w.shutdown.Store(true)
 	w.alive = false
+	if w.events != nil {
+		close(w.events)
+		w.events = nil
+	}
 	return nil
 }
 
 func (w *fakeWorker) Wait() (policy.ExitInfo, error) { return policy.ExitInfo{}, nil }
 
 func (w *fakeWorker) IsAlive() bool { return w.alive }
+
+func (w *fakeWorker) emit(event policy.WorkerAsyncEvent) {
+	w.events <- event
+}

@@ -29,11 +29,34 @@ builds:
     ignore:
       - goos: windows
         goarch: arm64
+  - id: tabula-runtime
+    main: ./cmd/tabula-runtime/
+    binary: tabula-runtime
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .ShortCommit }}
+      - -X main.date={{ .Date }}
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
 
 archives:
   - id: tabula-binary
     ids:
       - tabula
+      - tabula-runtime
     name_template: "tabula_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats:
       - tar.gz

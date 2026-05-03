@@ -125,6 +125,28 @@ func TestSingleKernelRejectsMultiKernelForM2(t *testing.T) {
 	}
 }
 
+func TestSaveRoundTripsRuntimeConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config", "runtime.toml")
+	cfg := Config{
+		Kernels:    []Kernel{{ID: "main", URL: "unix:///tmp/runtime.sock", TokenFile: "/tmp/runtime-token"}},
+		PluginDirs: []string{"/tmp/plugins", "/tmp/extra-plugins"},
+	}
+	if err := Save(path, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded.Kernels) != 1 || loaded.Kernels[0] != cfg.Kernels[0] {
+		t.Fatalf("kernels = %#v, want %#v", loaded.Kernels, cfg.Kernels)
+	}
+	if len(loaded.PluginDirs) != 2 || loaded.PluginDirs[0] != "/tmp/plugins" || loaded.PluginDirs[1] != "/tmp/extra-plugins" {
+		t.Fatalf("plugin dirs = %#v", loaded.PluginDirs)
+	}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

@@ -31,8 +31,20 @@ type RuntimeConn interface {
 	// Reload asks the runtime to refresh worker/config state, optionally scoped to
 	// a target.
 	Reload(ctx context.Context, req ReloadReq) (ReloadResp, error)
+	// SendHookEvent emits one kernel-originated hook event to the runtime.
+	SendHookEvent(ctx context.Context, req HookEventReq) error
 	// Close closes the connection and rejects later operations.
 	Close() error
+}
+
+// AsyncSink receives runtime-originated async plugin-control frames.
+type AsyncSink interface {
+	CatalogUpdated(runtimeID string, update wire.CatalogUpdate) error
+	HookEventReplied(runtimeID string, reply wire.HookEventReply) error
+	PluginSent(runtimeID string, send wire.PluginSend) error
+	PluginLogged(runtimeID string, log wire.PluginLog)
+	LifecycleNoticed(runtimeID string, notice wire.LifecycleNotice) error
+	RuntimeProtocolError(runtimeID string, err error)
 }
 
 // Backend produces RuntimeConn instances for a concrete transport/backend.
@@ -71,6 +83,9 @@ type Capability = wire.Capability
 // ListCapabilitiesResp is the kernel-facing target capability response.
 type ListCapabilitiesResp = wire.ListCapabilitiesResp
 
+// HookEventReq is the kernel-facing hook delivery request.
+type HookEventReq = wire.HookEvent
+
 // ReloadReq optionally scopes runtime reload to a target.
 type ReloadReq struct {
 	Target *Target
@@ -105,4 +120,20 @@ func (c *notImplementedConn) Reload(context.Context, ReloadReq) (ReloadResp, err
 	return ReloadResp{}, ErrNotImplemented
 }
 
+func (c *notImplementedConn) SendHookEvent(context.Context, HookEventReq) error {
+	return ErrNotImplemented
+}
+
 func (c *notImplementedConn) Close() error { return ErrNotImplemented }
+
+type nopAsyncSink struct{}
+
+// NopAsyncSink returns an AsyncSink that drops every event.
+func NopAsyncSink() AsyncSink { return nopAsyncSink{} }
+
+func (nopAsyncSink) CatalogUpdated(string, wire.CatalogUpdate) error     { return nil }
+func (nopAsyncSink) HookEventReplied(string, wire.HookEventReply) error  { return nil }
+func (nopAsyncSink) PluginSent(string, wire.PluginSend) error            { return nil }
+func (nopAsyncSink) PluginLogged(string, wire.PluginLog)                 {}
+func (nopAsyncSink) LifecycleNoticed(string, wire.LifecycleNotice) error { return nil }
+func (nopAsyncSink) RuntimeProtocolError(string, error)                  {}
