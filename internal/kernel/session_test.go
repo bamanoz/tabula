@@ -5,7 +5,7 @@ import (
 )
 
 func TestSessionLifecycle(t *testing.T) {
-	s := newSession("test-1")
+	s := newSession("test-1", "")
 
 	if s.State != SessionIdle {
 		t.Fatalf("new session should be idle, got %s", s.State)
@@ -39,7 +39,7 @@ func TestSessionLifecycle(t *testing.T) {
 }
 
 func TestSessionTurnLifecycle(t *testing.T) {
-	s := newSession("turn-1")
+	s := newSession("turn-1", "")
 	s.AddClient("gateway")
 
 	if !s.BeginTurn() {

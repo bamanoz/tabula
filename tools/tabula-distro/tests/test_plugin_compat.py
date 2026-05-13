@@ -116,7 +116,7 @@ class PluginInstallCompatTests(unittest.TestCase):
         _seed_sdk_in_bundle(bundle, sdk_version)
 
         distro = _make_distro(root, body=(
-            '[distro]\nname="demo"\n'
+            '[distro]\nid="tabula.demo"\nname="demo"\n'
             '[[bundles]]\nname="kit"\nsource="local:../ext/kit"\n'
         ))
         return home, distro
@@ -169,7 +169,7 @@ class PluginInstallCompatTests(unittest.TestCase):
             _touch(bundle / "bundle.toml", '[bundle]\nname="kit"\n[requires]\nkernel=">=0.9.0,<1.0.0"\n')
             _seed_sdk_in_bundle(bundle)
             distro = _make_distro(root, body=(
-                '[distro]\nname="demo"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[bundles]]\nname="kit"\nsource="local:../ext/kit"\n'
             ))
             with self.assertRaises(installmod.InstallError) as cm:

@@ -2,13 +2,17 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -34,9 +38,20 @@ var (
 // can replace this store with hashed persistent entries without changing the
 // Hello validation call sites.
 type TokenRecord struct {
-	Token     string
-	RuntimeID string
-	CreatedAt time.Time
+	Token      string
+	RuntimeID  string
+	CreatedAt  time.Time
+	ExpiresAt  time.Time
+	LastSeenAt time.Time
+	RevokedAt  time.Time
+}
+
+type TokenMetadata struct {
+	RuntimeID  string    `json:"runtime_id"`
+	CreatedAt  time.Time `json:"created_at"`
+	ExpiresAt  time.Time `json:"expires_at,omitempty"`
+	LastSeenAt time.Time `json:"last_seen_at,omitempty"`
+	RevokedAt  time.Time `json:"revoked_at,omitempty"`
 }
 
 // Store validates Runtime API Hello bearer tokens.
@@ -44,10 +59,210 @@ type Store interface {
 	Validate(runtimeID, token string) error
 }
 
+type ChainStore struct {
+	stores []Store
+}
+
+func NewChainStore(stores ...Store) ChainStore {
+	out := make([]Store, 0, len(stores))
+	for _, store := range stores {
+		if store != nil {
+			out = append(out, store)
+		}
+	}
+	return ChainStore{stores: out}
+}
+
+func (s ChainStore) Validate(runtimeID, token string) error {
+	for _, store := range s.stores {
+		if store.Validate(runtimeID, token) == nil {
+			return nil
+		}
+	}
+	return ErrUnauthorized
+}
+
 // MemoryStore is the M2 in-memory runtime-token store.
 type MemoryStore struct {
 	mu      sync.RWMutex
 	records map[string]TokenRecord
+}
+
+// FileStore persists runtime token hashes under TABULA_HOME/state.
+type FileStore struct {
+	mu      sync.Mutex
+	path    string
+	records map[string]fileTokenRecord
+}
+
+type fileTokenRecord struct {
+	RuntimeID  string    `json:"runtime_id"`
+	Hash       string    `json:"hash"`
+	Salt       string    `json:"salt"`
+	CreatedAt  time.Time `json:"created_at"`
+	ExpiresAt  time.Time `json:"expires_at,omitempty"`
+	LastSeenAt time.Time `json:"last_seen_at,omitempty"`
+	RevokedAt  time.Time `json:"revoked_at,omitempty"`
+}
+
+type fileTokenData struct {
+	Version int                        `json:"version"`
+	Tokens  map[string]fileTokenRecord `json:"tokens"`
+}
+
+func RuntimeTokenStorePath(tabulaHome string) string {
+	return filepath.Join(tabulaHome, "state", "runtime-tokens.json")
+}
+
+func NewFileStore(path string) (*FileStore, error) {
+	store := &FileStore{path: strings.TrimSpace(path), records: map[string]fileTokenRecord{}}
+	if store.path == "" {
+		return nil, fmt.Errorf("runtime token store path is required")
+	}
+	if err := store.loadLocked(); err != nil {
+		return nil, err
+	}
+	return store, nil
+}
+
+func (s *FileStore) Issue(runtimeID string, expiresAt time.Time, now time.Time) (TokenRecord, error) {
+	if s == nil {
+		return TokenRecord{}, fmt.Errorf("runtime auth store is nil")
+	}
+	runtimeID = strings.TrimSpace(runtimeID)
+	if err := wire.ValidateRuntimeID(runtimeID); err != nil {
+		return TokenRecord{}, err
+	}
+	token, err := GenerateToken()
+	if err != nil {
+		return TokenRecord{}, err
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	salt, err := randomSalt()
+	if err != nil {
+		return TokenRecord{}, err
+	}
+	record := fileTokenRecord{RuntimeID: runtimeID, Salt: salt, Hash: hashToken(salt, token), CreatedAt: now.UTC()}
+	if !expiresAt.IsZero() {
+		record.ExpiresAt = expiresAt.UTC()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.records[runtimeID] = record
+	if err := s.saveLocked(); err != nil {
+		return TokenRecord{}, err
+	}
+	return TokenRecord{RuntimeID: runtimeID, Token: token, CreatedAt: record.CreatedAt, ExpiresAt: record.ExpiresAt}, nil
+}
+
+func (s *FileStore) Validate(runtimeID, token string) error {
+	if s == nil {
+		return ErrUnauthorized
+	}
+	runtimeID = strings.TrimSpace(runtimeID)
+	token = strings.TrimSpace(token)
+	if runtimeID == "" || token == "" || wire.ValidateRuntimeID(runtimeID) != nil {
+		return ErrUnauthorized
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.loadLocked(); err != nil {
+		return ErrUnauthorized
+	}
+	record, ok := s.records[runtimeID]
+	if !ok || !record.RevokedAt.IsZero() || (!record.ExpiresAt.IsZero() && time.Now().After(record.ExpiresAt)) {
+		return ErrUnauthorized
+	}
+	if subtle.ConstantTimeCompare([]byte(record.Hash), []byte(hashToken(record.Salt, token))) != 1 {
+		return ErrUnauthorized
+	}
+	record.LastSeenAt = time.Now().UTC()
+	s.records[runtimeID] = record
+	_ = s.saveLocked()
+	return nil
+}
+
+func (s *FileStore) List() []TokenMetadata {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_ = s.loadLocked()
+	out := make([]TokenMetadata, 0, len(s.records))
+	for _, record := range s.records {
+		out = append(out, TokenMetadata{RuntimeID: record.RuntimeID, CreatedAt: record.CreatedAt, ExpiresAt: record.ExpiresAt, LastSeenAt: record.LastSeenAt, RevokedAt: record.RevokedAt})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].RuntimeID < out[j].RuntimeID })
+	return out
+}
+
+func (s *FileStore) Revoke(runtimeID string, now time.Time) error {
+	if s == nil {
+		return fmt.Errorf("runtime auth store is nil")
+	}
+	runtimeID = strings.TrimSpace(runtimeID)
+	if err := wire.ValidateRuntimeID(runtimeID); err != nil {
+		return err
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.records[runtimeID]
+	if !ok {
+		return ErrUnauthorized
+	}
+	record.RevokedAt = now.UTC()
+	s.records[runtimeID] = record
+	return s.saveLocked()
+}
+
+func (s *FileStore) loadLocked() error {
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read runtime token store: %w", err)
+	}
+	var file fileTokenData
+	if err := json.Unmarshal(data, &file); err != nil {
+		return fmt.Errorf("parse runtime token store: %w", err)
+	}
+	if file.Tokens == nil {
+		file.Tokens = map[string]fileTokenRecord{}
+	}
+	s.records = file.Tokens
+	return nil
+}
+
+func (s *FileStore) saveLocked() error {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+		return fmt.Errorf("create runtime token store dir: %w", err)
+	}
+	file := fileTokenData{Version: 1, Tokens: s.records}
+	data, err := json.MarshalIndent(file, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.path, append(data, '\n'), 0o600)
+}
+
+func randomSalt() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generate token salt: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
+}
+
+func hashToken(salt, token string) string {
+	sum := sha256.Sum256([]byte(salt + ":" + token))
+	return "sha256:" + base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 // NewMemoryStore creates an empty in-memory token store.
@@ -111,6 +326,22 @@ type Authenticator struct {
 // HelloAck validates hello and returns an accepted or unauthorized response. The
 // rejection message intentionally excludes token material.
 func (a Authenticator) HelloAck(hello wire.Hello) wire.HelloAck {
+	return a.HelloAckContext(context.Background(), hello)
+}
+
+// HelloAckContext validates hello and optionally binds it to transport identity.
+func (a Authenticator) HelloAckContext(ctx context.Context, hello wire.Hello) wire.HelloAck {
+	if peerCN := peerCertCN(ctx); peerCN != "" && peerCN != hello.RuntimeID {
+		return wire.HelloAck{
+			Op:       wire.OpHelloAck,
+			Accepted: false,
+			Error: &wire.Error{
+				Code:      wire.ErrorUnauthorized,
+				Retryable: false,
+				Message:   "runtime certificate identity does not match runtime_id",
+			},
+		}
+	}
 	if a.Store == nil || a.Store.Validate(hello.RuntimeID, hello.Token) != nil {
 		return wire.HelloAck{
 			Op:       wire.OpHelloAck,
@@ -127,6 +358,24 @@ func (a Authenticator) HelloAck(hello wire.Hello) wire.HelloAck {
 		kernelID = DefaultKernelID
 	}
 	return wire.HelloAck{Op: wire.OpHelloAck, Accepted: true, KernelID: kernelID}
+}
+
+type peerCertCNKey struct{}
+
+// ContextWithPeerCertCN annotates one auth context with the peer cert CN.
+func ContextWithPeerCertCN(ctx context.Context, cn string) context.Context {
+	if strings.TrimSpace(cn) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, peerCertCNKey{}, strings.TrimSpace(cn))
+}
+
+func peerCertCN(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	value, _ := ctx.Value(peerCertCNKey{}).(string)
+	return strings.TrimSpace(value)
 }
 
 // RuntimeTokenPath returns the local runtime token path under TABULA_HOME.

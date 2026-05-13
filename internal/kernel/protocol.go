@@ -31,12 +31,10 @@ const (
 	MsgStatus       MsgType = "status"
 )
 
-// MinPluginProtocolVersion and MaxPluginProtocolVersion bound the inclusive
-// range of stdio JSON-RPC protocol versions the kernel can speak with
-// plugins. The kernel advertises this range in register_request; the plugin
-// SDK picks the maximum version present in the intersection of its
-// SUPPORTED_PROTOCOL_VERSIONS and our [Min, Max] range. See
-// docs/PROTOCOL.md §2.
+// MinPluginProtocolVersion and MaxPluginProtocolVersion remain as exported
+// compatibility metadata for health/status surfaces. M2 runtime-owned workers
+// use the Runtime API + worker wire protocol instead of the removed kernel
+// register_request/register stdio path.
 const (
 	MinPluginProtocolVersion = 1
 	MaxPluginProtocolVersion = 1

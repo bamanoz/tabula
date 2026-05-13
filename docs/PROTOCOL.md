@@ -67,44 +67,14 @@ non-restartable error.
 
 There is no JSON-RPC `id` field. Request/reply correlation uses `callId`
 inside the params payload. See `Message` and methods in
-`internal/kernel/plugin/protocol.go`.
+`internal/runtime/worker/wire`.
 
 ### Versioning
 
-The plugin stdio surface is wider than WS, plugin authors live outside this
-repo, and SDK upgrades happen out-of-band. Therefore we **negotiate** the
-version per handshake.
-
-Each side declares what it supports:
-
-- **Kernel** declares an inclusive range `[MinPluginProtocolVersion,
-  MaxPluginProtocolVersion]` (constants in `internal/kernel/protocol.go`).
-- **Plugin SDK** declares a tuple `SUPPORTED_PROTOCOL_VERSIONS` (e.g.
-  `(1,)` in `tabula-plugin-sdk`).
-
-The handshake works as follows:
-
-1. Kernel spawns the plugin and sends `register_request` with all three
-   integers: `min_protocol_version`, `max_protocol_version`, and (for
-   backward compatibility with v1-only SDKs) `protocol_version` set equal
-   to `max_protocol_version`.
-2. Plugin computes the intersection of `SUPPORTED_PROTOCOL_VERSIONS` and
-   `[min, max]`. Picks the **maximum** value in the intersection.
-3. Plugin replies with `register` carrying the chosen `protocol_version`.
-4. Kernel verifies the chosen value is within its own range. Out of range
-   → non-restartable error, plugin terminated.
-5. Empty intersection on the plugin side → plugin writes a structured
-   error log and exits with non-zero status. Kernel observes EOF before
-   `register` and reports a register failure.
-
-This is an integer-only negotiation. There is no per-feature capability
-flag. If we need finer granularity later, add capability bits inside the
-chosen version, do not extend the negotiation.
-
-Current versions:
-
-- `MinPluginProtocolVersion = 1`
-- `MaxPluginProtocolVersion = 1`
+The runtime worker surface is versioned as part of the M2 Runtime API rollout.
+There is currently one supported worker protocol generation: NDJSON frames with
+`op` names such as `init`, `init_ack`, `call`, `result`, `event`,
+`event_reply`, `send`, `log`, `tools_updated`, and `shutdown`.
 
 ### Bump rules
 
@@ -121,36 +91,28 @@ Move all SDKs forward in lockstep with the kernel bump. Until both kernel
 and SDK declare support for the new version, the new version is not
 negotiated.
 
-### Methods
+### Operations
 
-See the `Method*` constants in `internal/kernel/plugin/protocol.go`. The
-authoritative param types are the Go structs in the same file.
+See `internal/runtime/worker/wire/types.go` for the authoritative Go structs.
 
 Direction reference:
 
-| Method            | Direction        | Reply              |
-|-------------------|------------------|--------------------|
-| `register_request`| kernel → plugin  | `register`         |
-| `tool_call`       | kernel → plugin  | `tool_result`      |
-| `event`           | kernel → plugin  | `event_reply`      |
-| `shutdown`        | kernel → plugin  | none (process exits) |
-| `send`            | plugin → kernel  | none               |
-| `log`             | plugin → kernel  | none               |
-| `update_tools`    | plugin → kernel  | none               |
+| Operation       | Direction        | Reply                |
+|-----------------|------------------|----------------------|
+| `init`          | runtime → worker | `init_ack`           |
+| `call`          | runtime → worker | `result`             |
+| `event`         | runtime → worker | `event_reply`        |
+| `shutdown`      | runtime → worker | none (process exits) |
+| `send`          | worker → runtime | none                 |
+| `log`           | worker → runtime | none                 |
+| `tools_updated` | worker → runtime | none                 |
 
 ### Restart contract
 
-A plugin process that exits (cleanly or otherwise) is restarted by the
-kernel unless the failure is marked **non-restartable**. Non-restartable
-failures include:
-
-- Manifest parse/validation errors.
-- Protocol version negotiation failure (out of range).
-- Malformed `register` reply.
-- Malformed-line threshold exceeded post-register.
-
-Non-restartable errors are logged and the plugin is left dead until the
-operator intervenes (reload, restart kernel, or fix the plugin).
+A worker process that exits (cleanly or otherwise) is restarted by
+`tabula-runtime` according to runtime policy. Malformed worker frames or failed
+worker initialization surface as runtime diagnostics and target lifecycle
+changes rather than kernel-managed plugin restarts.
 
 ---
 
@@ -163,47 +125,37 @@ malformed → manifest parse error, plugin refused.
 [requires]
 kernel           = ">=0.9.0,<1.0.0"
 protocol_version = 1                                  # int or [1, 2]
-sdk              = "tabula-plugin-sdk>=0.1.0,<0.2.0"
+sdk              = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 ```
 
 Fields:
 
 - **`kernel`** — semver range. The kernel version (`$TABULA_HOME/VERSION`
   or the running binary's `VERSION`) must satisfy this range.
-- **`protocol_version`** — integer or array of integers. The plugin
-  declares which stdio protocol versions it can speak. The kernel's
-  `[Min, Max]` range must intersect with this set.
+- **`protocol_version`** — current worker protocol generation understood by the
+  runtime and SDK. M2 currently uses `1`.
 - **`sdk`** — `<name><range>`. The installed SDK package version (read
   from `_lib/<runtime>/`) must satisfy this range. `name` is one of
   `tabula-plugin-sdk` (Python) or `@tabula/skill-sdk` (TypeScript).
 
-The distro installer enforces all three at install time and fails hard
-on mismatch. The kernel re-validates `kernel` and `protocol_version`
-at spawn time as a defense in depth (in case manifest was modified
-post-install).
+The distro installer and `tabula-runtime` manifest loader enforce this block at
+install/load time. Runtime worker initialization remains authoritative for the
+live tool catalog.
 
 ---
 
 ## 4. SDK ↔ protocol mapping
 
-The SDK package version is independent of the protocol version, but each
-SDK release declares which protocol versions it can speak via
-`SUPPORTED_PROTOCOL_VERSIONS`.
+The SDK package version is independent of the worker protocol generation, but
+the installed SDK must implement the current `op`-based worker frames.
 
 | SDK package                 | Version | Supports protocol |
 |-----------------------------|---------|-------------------|
-| `tabula-plugin-sdk` (Python)| `0.1.x` | `1`               |
-| `@tabula/skill-sdk` (TS)    | `0.1.x` | `1`               |
+| `tabula-plugin-sdk` (Python)| `1.x`   | `1`               |
 
-Both constants live in the SDK source:
-
-- Python: `tabula_plugin_sdk.protocol.SUPPORTED_PROTOCOL_VERSIONS`
-- TypeScript: `@tabula/skill-sdk` exports `SUPPORTED_PROTOCOL_VERSIONS`
-
-Bumping `MaxPluginProtocolVersion` requires shipping an SDK release that
-adds the new version to `SUPPORTED_PROTOCOL_VERSIONS`. Until that
-release is the one installed in `_lib/`, the kernel will negotiate down
-to the older version.
+The Python SDK surface lives in `tabula-bundles/_lib/python/src/tabula_plugin_sdk`.
+Bumping the worker protocol requires updating both `tabula-runtime` and the SDK
+in lockstep.
 
 ---
 
@@ -227,5 +179,5 @@ staging.
 
 ## 6. Changelog
 
-- **2026-05-02**: Document created. Codifies WS v1, plugin stdio v1,
-  negotiation contract, `[requires]` block, SDK mapping, lock schema v3.
+- **2026-05-05**: Updated for M2 runtime-owned worker protocol and removal of
+  kernel-managed plugin stdio lifecycle.

@@ -1,24 +1,40 @@
 package kernel
 
-import "encoding/json"
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"time"
+
+	runtimeconn "github.com/bamanoz/tabula/internal/runtime/conn"
+	"github.com/bamanoz/tabula/internal/runtime/wire"
+	"github.com/bamanoz/tabula/internal/tenant"
+)
 
 // joinPlan holds the complete result of a join computation.
 // Built in the build phase, applied in the side-effect phase.
 type joinPlan struct {
 	session       string
+	tenantID      string
+	context       string
 	joined        *Message
 	memberJoined  *Message
-	init          *Message
 	blockedReason string
 }
 
 // buildJoinPlan resolves session_start policy and prepares protocol-visible join messages.
-func (h *Hub) buildJoinPlan(c *Client, session string) joinPlan {
+func (h *Hub) buildJoinPlan(c *Client, session, tenantID string) joinPlan {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		tenantID = tenant.DefaultID
+	}
 	plan := joinPlan{
-		session: session,
+		session:  session,
+		tenantID: tenantID,
 		joined: &Message{
-			Type:    string(MsgJoined),
-			Session: session,
+			Type:     string(MsgJoined),
+			Session:  session,
+			TenantID: tenantID,
 		},
 		memberJoined: &Message{
 			Type:    string(MsgMemberJoined),
@@ -40,8 +56,7 @@ func (h *Hub) applyJoinPlan(c *Client, plan joinPlan) {
 		return
 	}
 
-	sess := h.sessions.GetOrCreate(plan.session)
-	sess.AddClient(c.name)
+	h.persistSessionState(plan.session)
 	h.assignClientSession(c, plan.session)
 	c.MarkJoined()
 
@@ -50,53 +65,102 @@ func (h *Hub) applyJoinPlan(c *Client, plan joinPlan) {
 
 	h.broadcastToSession(plan.session, string(MsgMemberJoined), plan.memberJoined, c)
 
-	if plan.init != nil {
-		c.SendMsg(plan.init)
+	if init := h.buildInitAfterJoin(c, plan); init != nil {
+		c.SendMsg(init)
 		h.Logger.Debug("sent init", "client", c.name)
 	}
+
+	h.policy.SessionJoin(plan.session, plan.tenantID, c.name)
 }
 
 func (h *Hub) finalizeJoinPlan(c *Client, plan *joinPlan) {
-	context, blocked := h.policy.CanJoin(plan.session, c.name)
-	if blocked {
-		plan.blockedReason = "session blocked by hook"
-		return
+	if h.tenants != nil {
+		_, ok, err := h.tenants.Get(plan.tenantID)
+		if err != nil {
+			plan.blockedReason = err.Error()
+			return
+		}
+		if !ok {
+			plan.blockedReason = "tenant_unknown"
+			return
+		}
+	}
+	if h.sessions != nil {
+		sess, created := h.sessions.GetOrCreateTenantStatus(plan.session, plan.tenantID)
+		sess.AddClient(c.name)
+		if created {
+			context, blocked := h.policy.StartSession(plan.session, plan.tenantID, c.name)
+			if blocked {
+				sess.RemoveClient(c.name)
+				h.sessions.Remove(plan.session)
+				plan.blockedReason = "session blocked by hook"
+				return
+			}
+			sess.SetInitContext(context)
+			plan.context = context
+		} else {
+			plan.context = sess.GetInitContext()
+		}
+	} else {
+		context, blocked := h.policy.StartSession(plan.session, plan.tenantID, c.name)
+		if blocked {
+			plan.blockedReason = "session blocked by hook"
+			return
+		}
+		plan.context = context
 	}
 
-	if c.canReceive(string(MsgInit)) {
-		plan.init = h.initMessage(context)
-	}
 }
 
-func (h *Hub) initMessage(context string) *Message {
+func (h *Hub) buildInitAfterJoin(c *Client, plan joinPlan) *Message {
+	if !c.canReceive(string(MsgInit)) {
+		return nil
+	}
+	tools := h.initToolsJSON(plan.tenantID)
+	meta := h.initMetaJSON(plan.tenantID)
+	context := h.policy.BeforePromptBuild(plan.session, plan.tenantID, c.name, plan.context, tools, meta)
+	return h.initMessage(context, tools, meta)
+}
+
+func (h *Hub) initMessage(context string, tools json.RawMessage, meta json.RawMessage) *Message {
 	msg := &Message{
 		Type:    string(MsgInit),
 		Context: context,
-		Tools:   h.initToolsJSON(),
-	}
-	meta := map[string]any{}
-	if len(h.initMeta) > 0 {
-		_ = json.Unmarshal(h.initMeta, &meta)
-	}
-	if h.ProjectRoot != "" {
-		meta["project_root"] = h.ProjectRoot
+		Tools:   tools,
 	}
 	if len(meta) > 0 {
-		if raw, err := json.Marshal(meta); err == nil {
-			msg.Meta = raw
-		}
+		msg.Meta = meta
 	}
 	return msg
 }
 
-func (h *Hub) initToolsJSON() json.RawMessage {
-	type initTool struct {
-		Name        string          `json:"name"`
-		Description string          `json:"description,omitempty"`
-		Params      json.RawMessage `json:"params,omitempty"`
-		Required    []string        `json:"required,omitempty"`
+func (h *Hub) initMetaJSON(tenantID string) json.RawMessage {
+	meta := map[string]any{}
+	if len(h.initMeta) > 0 {
+		_ = json.Unmarshal(h.initMeta, &meta)
 	}
+	if raw := h.tenantInitMeta[tenantID]; len(raw) > 0 {
+		tenantMeta := map[string]any{}
+		if err := json.Unmarshal(raw, &tenantMeta); err == nil {
+			for key, value := range tenantMeta {
+				meta[key] = value
+			}
+		}
+	}
+	if len(meta) > 0 {
+		if raw, err := json.Marshal(meta); err == nil {
+			return raw
+		}
+	}
+	return nil
+}
 
+func (h *Hub) initToolsJSON(tenantID ...string) json.RawMessage {
+	resolvedTenantID := ""
+	if len(tenantID) > 0 {
+		resolvedTenantID = tenantID[0]
+	}
+	h.syncAttachedRuntimeCapabilities()
 	var tools []map[string]any
 	if len(h.toolsJSON) > 0 {
 		_ = json.Unmarshal(h.toolsJSON, &tools)
@@ -107,39 +171,45 @@ func (h *Hub) initToolsJSON() json.RawMessage {
 			seen[name] = true
 		}
 	}
-	if h.plugins != nil {
-		for _, handle := range h.plugins.All() {
-			for _, tool := range handle.Tools() {
-				if tool.Name == "" || seen[tool.Name] {
+	h.toolExecMu.RLock()
+	for name, entry := range h.toolExec {
+		if entry.Source != toolSourceRuntime || name == "" || !toolExecVisible(entry, resolvedTenantID) || !h.runtimeToolVisibleToTenant(entry, resolvedTenantID) {
+			continue
+		}
+		toolName := name
+		if idx := strings.LastIndex(name, "\x00"); idx >= 0 {
+			toolName = name[idx+1:]
+		}
+		if toolName == "" || seen[toolName] {
+			continue
+		}
+		tools = appendInitTool(tools, seen, toolName, entry.Schema)
+	}
+	h.toolExecMu.RUnlock()
+	if h.runtimes != nil {
+		for _, attachment := range h.runtimes.Snapshot() {
+			if !attachment.Attached {
+				continue
+			}
+			if resolvedTenantID != "" && !runtimeServesTenant(attachment.TenantsServed, resolvedTenantID) {
+				continue
+			}
+			if resolvedTenantID != "" && !h.runtimeAllowedForTenant(resolvedTenantID, attachment.ID) {
+				continue
+			}
+			for _, capability := range attachment.Capabilities {
+				if capability.Target.Kind != wire.TargetKindPlugin {
 					continue
 				}
-				entry := map[string]any{
-					"name":        tool.Name,
-					"description": tool.Description,
-					"required":    []string{},
+				if resolvedTenantID != "" && len(capability.Tenants) > 0 && !runtimeServesTenant(capability.Tenants, resolvedTenantID) {
+					continue
 				}
-				if len(tool.Schema) > 0 {
-					var schema map[string]any
-					if json.Unmarshal(tool.Schema, &schema) == nil {
-						if props, ok := schema["properties"].(map[string]any); ok {
-							entry["params"] = props
-						}
-						if required, ok := schema["required"].([]any); ok {
-							items := make([]string, 0, len(required))
-							for _, item := range required {
-								if s, ok := item.(string); ok {
-									items = append(items, s)
-								}
-							}
-							entry["required"] = items
-						}
-					}
+				if capability.State != wire.CapabilityStateReady && capability.State != wire.CapabilityStateManifestLoaded && capability.State != wire.CapabilityStateInitializing {
+					continue
 				}
-				if _, ok := entry["params"]; !ok {
-					entry["params"] = map[string]any{}
+				for _, tool := range capability.Tools {
+					tools = appendInitTool(tools, seen, tool.Name, tool.Schema)
 				}
-				tools = append(tools, entry)
-				seen[tool.Name] = true
 			}
 		}
 	}
@@ -148,4 +218,110 @@ func (h *Hub) initToolsJSON() json.RawMessage {
 		return h.toolsJSON
 	}
 	return raw
+}
+
+func (h *Hub) runtimeToolVisibleToTenant(entry toolDispatch, tenantID string) bool {
+	if tenantID == "" || entry.RuntimeID == "" || h == nil || h.runtimes == nil {
+		return true
+	}
+	return h.runtimes.RuntimeAllowedForTenant(tenantID, entry.RuntimeID)
+}
+
+func (h *Hub) runtimeAllowedForTenant(tenantID, runtimeID string) bool {
+	if h == nil || h.runtimes == nil {
+		return true
+	}
+	return h.runtimes.RuntimeAllowedForTenant(tenantID, runtimeID)
+}
+
+func runtimeServesTenant(tenants []string, tenantID string) bool {
+	if len(tenants) == 0 {
+		return true
+	}
+	for _, item := range tenants {
+		if item == "*" || item == tenantID {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Hub) syncAttachedRuntimeCapabilities() {
+	if h == nil || h.runtimes == nil {
+		return
+	}
+	for _, attachment := range h.runtimes.Snapshot() {
+		if !attachment.Attached || attachment.ID == "" {
+			continue
+		}
+		conn := h.runtimes.RuntimeConn(attachment.ID)
+		if conn == nil {
+			continue
+		}
+		if _, ok := conn.(*runtimeconn.Conn); ok {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		resp, err := conn.ListCapabilities(ctx)
+		cancel()
+		if err != nil {
+			h.Logger.Warn("runtime capability sync failed", "runtime_id", attachment.ID, "err", err)
+			continue
+		}
+		for _, capability := range resp.Targets {
+			revision := capability.Revision
+			if revision <= 0 {
+				revision = 1
+			}
+			tenants := append([]string(nil), capability.Tenants...)
+			if len(tenants) == 0 {
+				tenants = append([]string(nil), attachment.TenantsServed...)
+			}
+			if _, ok, err := h.runtimes.ApplyCatalogUpdate(attachment.ID, wire.CatalogUpdate{
+				Op:       wire.OpCatalogUpdate,
+				Target:   capability.Target,
+				Tenants:  tenants,
+				Tools:    capability.Tools,
+				Hooks:    capability.Hooks,
+				Revision: revision,
+				State:    capability.State,
+				Source:   capability.Source,
+			}); err != nil {
+				h.Logger.Warn("runtime capability apply failed", "runtime_id", attachment.ID, "target", capability.Target.ID, "err", err)
+			} else if ok {
+				h.syncRuntimeCapability(attachment.ID, capability)
+			}
+		}
+	}
+}
+
+func appendInitTool(tools []map[string]any, seen map[string]bool, name string, schema json.RawMessage) []map[string]any {
+	if name == "" || seen[name] {
+		return tools
+	}
+	item := map[string]any{
+		"name":     name,
+		"required": []string{},
+		"params":   map[string]any{},
+	}
+	if len(schema) > 0 {
+		var decoded map[string]any
+		if json.Unmarshal(schema, &decoded) == nil {
+			if props, ok := decoded["properties"].(map[string]any); ok {
+				item["params"] = props
+			}
+			if required, ok := decoded["required"].([]any); ok {
+				items := make([]string, 0, len(required))
+				for _, raw := range required {
+					if s, ok := raw.(string); ok {
+						items = append(items, s)
+					}
+				}
+				item["required"] = items
+			}
+		}
+	}
+	tools = append(tools, item)
+	seen[name] = true
+	return tools
 }

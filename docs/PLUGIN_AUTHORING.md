@@ -5,8 +5,8 @@ needs to keep state, subscribe to kernel events, own child processes, or update
 its tool catalog after startup. Per-call, stateless tool providers should stay
 as skills; see [SKILL_AUTHORING.md](SKILL_AUTHORING.md).
 
-This document describes the in-tree PluginRuntime contract implemented by the
-kernel and demonstrated by `examples/plugin-hello/`.
+This document describes the runtime-owned plugin worker contract implemented by
+`tabula-runtime` and demonstrated by the migrated bundle plugins.
 
 ## Plugin directory layout
 
@@ -17,10 +17,10 @@ my-plugin/
 └── README.md       # optional human documentation
 ```
 
-`plugin.toml` is the install/discovery manifest. The runtime process is the
+`plugin.toml` is the install/discovery manifest. The runtime worker is the
 authoritative source for its active tools and hook subscriptions: after launch,
-the plugin replies to `register_request` with `register`, and it may later send
-`update_tools` to replace its catalog.
+the worker replies to `init` with `init_ack`, and it may later send
+`tools_updated` to replace its catalog.
 
 ## `plugin.toml`
 
@@ -44,7 +44,7 @@ event = "before_tool_call"
 priority = 50
 ```
 
-Validation rules enforced by `internal/kernel/plugin/manifest.go`:
+Validation rules enforced by `internal/runtime/host/manifest/manifest.go`:
 
 - `id`, `name`, `version`, `runtime`, and `entry` are required.
 - `id` must match `^[a-z0-9_-]+$`.
@@ -102,61 +102,50 @@ greeting = "hello from global config"
 
 ## Lifecycle
 
-1. Kernel loads `plugin.toml` and starts the configured runtime as a process
-   group leader.
-2. Kernel writes one NDJSON `register_request` message to plugin stdin.
-3. Plugin replies with `register`, including `protocol_version`, `plugin_id`,
-   tools, and subscriptions.
-4. Kernel installs the plugin's tools/subscriptions into the unified dispatch
-   and hook tables.
-5. Kernel sends `tool_call`, `event`, and `shutdown` messages as needed.
-6. Plugin replies with `tool_result` and `event_reply`, and may emit `send`,
-   `log`, and `update_tools` messages.
+1. `tabula-runtime` loads `plugin.toml` and starts the configured worker as a
+   child process.
+2. Runtime writes one NDJSON `init` frame to worker stdin. The frame carries
+   `kernel_id`, `tenant_id`, `target_id`, and the normalized manifest.
+3. Worker replies with `init_ack`, including its active tools and hook
+   subscriptions.
+4. Runtime publishes those capabilities to the kernel over the Runtime API.
+5. Runtime sends `call`, `event`, and `shutdown` frames as needed.
+6. Worker replies with `result` and `event_reply`, and may emit `send`, `log`,
+   and `tools_updated` frames.
 
-If a plugin crashes, the kernel supervisor restarts it with exponential backoff
-(default 1s → 30s, at most 5 restarts per 60s window). Manifest/schema/protocol
-handshake failures are non-restartable.
-
-Plugin diagnostics are available from `GET /internal/snapshot/plugins` only for
-local loopback callers. The endpoint returns operational metadata including
-plugin ids, status, PID, restart count, last error, registered tool names,
-subscriptions, and registration time. Do not expose it through public ingress or
-unauthenticated reverse proxies; deployments that need remote diagnostics should
-bind the kernel to loopback and place any remote access behind a separate
-authenticated private channel.
+Runtime diagnostics are available from `tabula status --json` and the local
+`GET /internal/snapshot/runtimes` diagnostics endpoint. The runtime snapshot is
+loopback-only and should not be exposed through public ingress.
 
 ## Protocol framing and methods
 
-The kernel↔plugin channel is NDJSON over stdio: one UTF-8 JSON object per line,
-maximum 10 MiB per line. Stdout is reserved for protocol messages; stderr is
-forwarded to the kernel log.
+The runtime↔worker channel is NDJSON over stdio: one UTF-8 JSON object per
+line, maximum 10 MiB per line. Stdout is reserved for protocol messages; stderr
+is captured and redacted into runtime diagnostics.
 
 Every message has this shape:
 
 ```json
-{"method":"tool_result","params":{"callId":"tc-123","result":{"ok":true}}}
+{"op":"result","call_id":"tc-123","ok":true,"data":{"ok":true}}
 ```
 
-Supported methods:
+Supported worker operations:
 
-| Direction | Method | Purpose |
-|-----------|--------|---------|
-| kernel → plugin | `register_request` | initial config + plugin protocol version |
-| plugin → kernel | `register` | active tool catalog and hook subscriptions |
-| kernel → plugin | `tool_call` | invoke a plugin-registered tool |
-| plugin → kernel | `tool_result` | reply to a `tool_call` |
-| kernel → plugin | `event` | deliver subscribed bus/hook event |
-| plugin → kernel | `event_reply` | reply to modifying/claiming events |
-| plugin → kernel | `send` | emit a bus message (`channel = "bus"`) |
-| plugin → kernel | `log` | structured log and metric convention |
-| plugin → kernel | `update_tools` | atomically replace this plugin's tool catalog |
-| kernel → plugin | `shutdown` | request graceful exit |
+| Direction | Operation | Purpose |
+|-----------|-----------|---------|
+| runtime → worker | `init` | initial target identity + manifest |
+| worker → runtime | `init_ack` | active tool catalog and hook subscriptions |
+| runtime → worker | `call` | invoke a worker-registered tool |
+| worker → runtime | `result` | reply to a `call` |
+| runtime → worker | `event` | deliver subscribed bus/hook event |
+| worker → runtime | `event_reply` | reply to modifying/claiming events |
+| worker → runtime | `send` | emit a bus message (`channel = "bus"`) |
+| worker → runtime | `log` | structured log event |
+| worker → runtime | `tools_updated` | atomically replace this worker's tool catalog |
+| runtime → worker | `shutdown` | request graceful exit |
 
-The plugin protocol version is separate from the WebSocket client protocol version.
-The kernel advertises its supported range `[MinPluginProtocolVersion,
-MaxPluginProtocolVersion]` in `register_request`; the plugin must echo a
-compatible version in `register`. See `docs/PROTOCOL.md` for the negotiation
-details and bump rules.
+The worker protocol is versioned by the Runtime API / SDK release pair. See
+`docs/PROTOCOL.md` for the current wire shapes.
 
 ## Python SDK example
 

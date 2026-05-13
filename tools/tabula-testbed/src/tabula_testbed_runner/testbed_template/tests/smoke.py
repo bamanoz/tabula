@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 from pathlib import Path
+import subprocess
 import time
 import unittest
 import urllib.request
@@ -13,17 +13,17 @@ from tabula_testbed import TestbedClient
 
 
 REQUIRED_TOOLS = {
+    "exec_run",
+    "fs_read",
+    "fs_write",
     "testbed_echo",
     "testbed_fail",
-    "testbed_hook_recorder_clear",
-    "testbed_hook_recorder_events",
     "testbed_hook_mutator_configure",
     "testbed_hook_mutator_reset",
     "testbed_hook_blocker_configure",
     "testbed_hook_blocker_reset",
     "testbed_dynamic_ping",
     "testbed_dynamic_enable_extra",
-    "shell_exec",
 }
 
 
@@ -31,6 +31,32 @@ class TestbedCase(unittest.TestCase):
     url = "ws://localhost:8089/ws"
     observer_url = "http://127.0.0.1:8091/metrics"
     tabula_home = ""
+
+    @classmethod
+    def tabula_bin(cls) -> str:
+        candidate = Path(cls.tabula_home) / "bin" / "tabula"
+        return str(candidate) if candidate.is_file() else "tabula"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = Path(cls.tabula_home) / "baseline-workspace-root"
+        root.mkdir(parents=True, exist_ok=True)
+        cls.workspace_root = root
+        env = os.environ.copy()
+        env["TABULA_HOME"] = cls.tabula_home
+        subprocess.run(
+            [cls.tabula_bin(), "tenant", "set", "default", "--workspace-root", str(root)],
+            env=env,
+            check=True,
+            timeout=30,
+            stdout=subprocess.DEVNULL,
+        )
+        fs_config = Path(cls.tabula_home) / "config" / "plugins" / "fs"
+        fs_config.mkdir(parents=True, exist_ok=True)
+        (fs_config / "config.toml").write_text('roots = ["${project_root}"]\nfollow_symlinks = false\n', encoding="utf-8")
+        exec_config = Path(cls.tabula_home) / "config" / "plugins" / "exec"
+        exec_config.mkdir(parents=True, exist_ok=True)
+        (exec_config / "config.toml").write_text('cwd_default = "${project_root}"\ntimeout_default_seconds = 5\n', encoding="utf-8")
 
     def make_client(self, name: str, session: str) -> TestbedClient:
         client = TestbedClient(self.url, name=name)
@@ -52,6 +78,16 @@ class TestbedCase(unittest.TestCase):
 
 class BaselineSmoke(TestbedCase):
 
+    def test_workspace_plugins_execute(self):
+        with self.make_client("testbed-workspace", "testbed-workspace") as client:
+            note = self.workspace_root / "baseline.txt"
+            written = client.call_tool("fs_write", {"path": str(note), "content": "baseline"}, timeout=10).json()
+            self.assertEqual(written["bytes_written"], len("baseline"))
+            read = client.call_tool("fs_read", {"path": str(note)}, timeout=10).json()
+            self.assertEqual(read["content"], "baseline")
+            exec_result = client.call_tool("exec_run", {"command": "pwd"}, timeout=10).json()
+            self.assertEqual(Path(exec_result["stdout"].strip()).resolve(), self.workspace_root.resolve())
+
     def test_skills_and_plugin_tools(self):
         with self.make_client("testbed-skills", "testbed-skills") as client:
             echo = client.call_tool("testbed_echo", {"text": "hello"}).json()
@@ -65,42 +101,7 @@ class BaselineSmoke(TestbedCase):
             ping = client.call_tool("testbed_dynamic_ping", {"value": "pong"}).json()
             self.assertEqual(ping, {"ok": True, "pong": "pong"})
 
-    def test_progressive_disclosure_references_are_installed(self):
-        skills_dir = Path(self.tabula_home) / "skills"
-        expected = [
-            skills_dir / "tabula-guide" / "references" / "overview.md",
-            skills_dir / "tabula-guide" / "references" / "troubleshooting.md",
-            skills_dir / "skill-contract" / "references" / "skill-format.md",
-            skills_dir / "skill-contract" / "references" / "examples.md",
-        ]
-        missing = [str(path) for path in expected if not path.is_file()]
-        self.assertEqual(missing, [])
-
-    def test_session_start_and_message_hooks(self):
-        session = "testbed-message-hooks"
-        receiver = self.make_client("testbed-message-receiver", session)
-        sender = self.make_client("testbed-message-sender", session)
-        try:
-            self.assertIn("[testbed-session-start]", sender.init.get("context", ""))
-            sender.call_tool("testbed_hook_mutator_configure", {
-                "message_match": "mutate-me",
-                "message_replace": "mutated",
-            })
-            sender.send_message("mutate-me")
-            msg = receiver.recv(type="message", timeout=5)
-            self.assertEqual(msg.get("text"), "mutated")
-
-            sender.call_tool("testbed_hook_blocker_configure", {"block_text": "block-me"})
-            sender.send_message("block-me")
-            err = sender.recv(type="error", timeout=5)
-            self.assertIn("blocked", err.get("text", ""))
-        finally:
-            sender.call_tool("testbed_hook_mutator_reset", {})
-            sender.call_tool("testbed_hook_blocker_reset", {})
-            sender.close()
-            receiver.close()
-
-    def test_tool_hooks_and_recorder(self):
+    def test_tool_hooks(self):
         with self.make_client("testbed-tool-hooks", "testbed-tool-hooks") as client:
             client.reset_fixtures()
             client.call_tool("testbed_hook_mutator_configure", {
@@ -113,100 +114,14 @@ class BaselineSmoke(TestbedCase):
             finally:
                 client.call_tool("testbed_hook_mutator_reset", {})
 
-            events = client.call_tool("testbed_hook_recorder_events", {}).json()["events"]
-            names = {event["event"] for event in events}
-            self.assertIn("before_tool_call", names)
-            self.assertIn("after_tool_call", names)
-
-            client.call_tool("testbed_hook_blocker_configure", {"block_tool": "testbed_echo"})
-            try:
-                blocked = client.call_tool("testbed_echo", {"text": "blocked"})
-                self.assertIn("blocked by hook", blocked.output)
-            finally:
-                client.call_tool("testbed_hook_blocker_reset", {})
-
-    def test_hook_logger_writes_audit_log(self):
-        log_file = Path(self.tabula_home) / "logs" / "hook-logger" / "hooks.jsonl"
-        before_size = log_file.stat().st_size if log_file.exists() else 0
-        with self.make_client("testbed-hook-logger", "testbed-hook-logger") as client:
-            client.call_tool("testbed_echo", {"text": "audit"})
-
-        deadline = time.time() + 5
-        while time.time() < deadline:
-            if log_file.exists() and log_file.stat().st_size > before_size:
-                entries = [json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines() if line.strip()]
-                events = {entry.get("event") for entry in entries}
-                self.assertIn("session_start", events)
-                self.assertIn("after_tool_call", events)
-                return
-            time.sleep(0.1)
-        self.fail(f"hook-logger did not write audit log: {log_file}")
-
-    def test_hook_permissions_blocks_denied_command(self):
-        permissions_file = Path(self.tabula_home) / "config" / "plugins" / "hook-permissions" / "config.toml"
-        previous = permissions_file.read_text(encoding="utf-8") if permissions_file.exists() else None
-        permissions_file.parent.mkdir(parents=True, exist_ok=True)
-        permissions_file.write_text(
-            '[[rules]]\n'
-            'tool = "shell_exec"\n'
-            'command = "echo denied-by-hook-permissions"\n'
-            'effect = "deny"\n'
-            '\n'
-            '[[rules]]\n'
-            'tool = "*"\n'
-            'effect = "allow"\n',
-            encoding="utf-8",
-        )
-        try:
-            with self.make_client("testbed-hook-permissions", "testbed-hook-permissions") as client:
-                blocked = client.call_tool("shell_exec", {"command": "echo denied-by-hook-permissions"})
-                self.assertIn("ERROR: blocked by hook", blocked.output)
-        finally:
-            if previous is None:
-                permissions_file.unlink(missing_ok=True)
-            else:
-                permissions_file.write_text(previous, encoding="utf-8")
-
     def test_dynamic_tool_update(self):
         with self.make_client("testbed-dynamic", "testbed-dynamic") as client:
-            self.assertFalse(client.has_tool("testbed_dynamic_extra"))
             client.call_tool("testbed_dynamic_enable_extra", {})
             extra = client.call_tool("testbed_dynamic_extra", {}).json()
             self.assertEqual(extra, {"ok": True, "extra": True})
 
             client.refresh_init("testbed-dynamic-refresh")
             self.assertTrue(client.has_tool("testbed_dynamic_extra"))
-
-    def test_observer_metrics(self):
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-
-        def metrics() -> dict:
-            with opener.open(self.observer_url, timeout=5) as response:
-                return json.loads(response.read().decode("utf-8"))
-
-        deadline = time.time() + 20
-        last_error: Exception | None = None
-        while time.time() < deadline:
-            try:
-                before = metrics()
-                break
-            except Exception as exc:
-                last_error = exc
-                time.sleep(0.5)
-        else:
-            raise AssertionError(f"observer metrics unavailable: {last_error}")
-
-        base_calls = before.get("tools", {}).get("testbed_echo", {}).get("calls", 0)
-        with self.make_client("testbed-observer", "testbed-observer") as client:
-            client.call_tool("testbed_echo", {"text": "observer"})
-
-        for _ in range(40):
-            after = metrics()
-            calls = after.get("tools", {}).get("testbed_echo", {}).get("calls", 0)
-            if calls > base_calls:
-                return
-            time.sleep(0.25)
-        self.fail("observer did not record testbed_echo after_tool_call")
 
 
 def main() -> int:

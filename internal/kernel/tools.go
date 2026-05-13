@@ -5,6 +5,14 @@ import (
 	"sync"
 )
 
+// ProcessHandle abstracts process signaling/waiting for non-local launchers.
+type ProcessHandle interface {
+	PID() int
+	Signal() error
+	Kill() error
+	Wait() error
+}
+
 // SpawnedProcess tracks a background process started via SPAWN.
 type SpawnedProcess struct {
 	PID     int

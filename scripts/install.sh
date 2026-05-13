@@ -1,7 +1,7 @@
 #!/bin/bash
-# Tabula installer — downloads pre-built kernel from GitHub Releases.
+# Tabula installer — downloads pre-built kernel/runtime binaries from GitHub Releases.
 #
-# This installs only the kernel layer (binary, launchers, venv, tabula-distro).
+# This installs the local runtime layer (tabula, tabula-runtime, launchers, venv, tabula-distro).
 # After it finishes, install a distro separately:
 #
 #   tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw'
@@ -9,6 +9,7 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- app run ./tabula.app.toml
 #   VERSION=v1.0.0 curl -fsSL ... | bash
 set -euo pipefail
 
@@ -16,6 +17,7 @@ REPO="bamanoz/tabula"
 TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
 BIN_DIR="$TABULA_HOME/bin"
 VENV="$TABULA_HOME/.venv"
+POST_INSTALL_ARGS=("$@")
 
 # Auth header for private repos (optional)
 AUTH_HEADER=()
@@ -289,29 +291,23 @@ for a in data.get('assets', []):
     "$TABULA_HOME/testing"
 
   tar -xzf "$tmp/$binary_archive" -C "$tmp"
+  [ -x "$tmp/tabula-runtime" ] || die "release archive is missing executable tabula-runtime sidecar"
   install -m 755 "$tmp/tabula" "$BIN_DIR/tabula"
-  if [ -f "$tmp/tabula-runtime" ]; then
-    install -m 755 "$tmp/tabula-runtime" "$BIN_DIR/tabula-runtime"
-  fi
+  install -m 755 "$tmp/tabula-runtime" "$BIN_DIR/tabula-runtime"
   if [ "$PLATFORM_OS" = "darwin" ]; then
     xattr -d com.apple.quarantine "$BIN_DIR/tabula" 2>/dev/null || true
     xattr -d com.apple.quarantine "$BIN_DIR/tabula-runtime" 2>/dev/null || true
   fi
-  ok "Binary installed"
+  ok "Binaries installed"
 
   tar -xzf "$tmp/$skills_archive" -C "$TABULA_HOME"
-  if [ -f "$TABULA_HOME/examples/boot-cicd.py" ]; then
-    cp "$TABULA_HOME/examples/boot-cicd.py" "$TABULA_HOME/boot-cicd.py"
-  fi
-  # Record installed kernel version for tabula-distro compatibility checks.
+  # Record installed Tabula version for tabula-distro compatibility checks.
   printf '%s\n' "${VERSION#v}" > "$TABULA_HOME/VERSION"
-  # Record kernel's supported plugin protocol version range so the distro
-  # tool can enforce `requires.protocol_version` offline.
+  # Record the supported runtime plugin compatibility range so the distro tool
+  # can enforce `requires.protocol_version` offline.
   "$BIN_DIR/tabula" --protocol > "$TABULA_HOME/PROTOCOL" 2>/dev/null || \
     printf '{"plugin_protocol_min": 1, "plugin_protocol_max": 1}\n' > "$TABULA_HOME/PROTOCOL"
-  install -m 755 "$TABULA_HOME/bin/tabula-install-distro" "$BIN_DIR/tabula-install-distro"
-  install -m 755 "$TABULA_HOME/scripts/install-distro.py" "$BIN_DIR/install-distro.py"
-  chmod +x "$BIN_DIR/tabula-server" "$BIN_DIR/tabula-cli" "$BIN_DIR/tabula-api" "$BIN_DIR/tabula-coder" "$BIN_DIR/tabula-claw" "$BIN_DIR/tabula-install-distro" 2>/dev/null || true
+  chmod +x "$BIN_DIR/tabula-runner" "$BIN_DIR/tabula-cli" 2>/dev/null || true
   ok "Skills and config installed"
 
   # Python
@@ -326,14 +322,19 @@ for a in data.get('assets', []):
   if [ -d "$TABULA_HOME/tools/tabula-distro" ]; then
     "$VENV/bin/pip" install -q -e "$TABULA_HOME/tools/tabula-distro"
   fi
-  # Expose tabula-distro on PATH alongside the rest of the launchers.
+  # Expose installer entrypoints on PATH alongside the rest of the launchers.
+  ln -sf "$VENV/bin/tabula-install" "$BIN_DIR/tabula-install" 2>/dev/null || true
   ln -sf "$VENV/bin/tabula-distro" "$BIN_DIR/tabula-distro" 2>/dev/null || true
 
   # Shell
   configure_shell
 
-  # Service
-  install_service
+  if [ ${#POST_INSTALL_ARGS[@]} -ge 2 ] && [ "${POST_INSTALL_ARGS[0]}" = "app" ] && [ "${POST_INSTALL_ARGS[1]}" = "run" ]; then
+    info "Skipping default kernel service; app run will start/reuse its configured kernel"
+  else
+    # Service
+    install_service
+  fi
 
   # Save full login shell PATH for the kernel service
   # (launchd/systemd start with minimal PATH like /usr/bin:/bin)
@@ -346,12 +347,20 @@ for a in data.get('assets', []):
     chmod 600 "$env_file"
   fi
 
-  printf '\n\033[1;32mTabula %s kernel installed!\033[0m\n\n' "$VERSION"
+  printf '\n\033[1;32mTabula %s kernel/runtime installed!\033[0m\n\n' "$VERSION"
+
+  if [ ${#POST_INSTALL_ARGS[@]} -gt 0 ]; then
+    info "Running: tabula-install ${POST_INSTALL_ARGS[*]}"
+    exec "$BIN_DIR/tabula-install" --home "$TABULA_HOME" "${POST_INSTALL_ARGS[@]}"
+  fi
+
   printf 'Add your API key:\n'
   printf '  echo "ANTHROPIC_API_KEY=sk-..." >> %s\n\n' "$env_file"
   printf 'Install a distro (this is required before the kernel can do anything useful):\n'
-  printf '  tabula-distro install '\''git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw'\''\n'
-  printf '  tabula-distro install /path/to/local/distro\n\n'
+  printf '  tabula-install distro install '\''git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw'\''\n'
+  printf '  tabula-install distro install /path/to/local/distro\n\n'
+  printf 'Or install and run an app manifest in one command:\n'
+  printf '  curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- app run ./tabula.app.toml\n\n'
   printf 'Then connect:\n'
   printf '  tabula-cli\n\n'
 }

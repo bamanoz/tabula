@@ -1,15 +1,19 @@
 [sources.tabula-bundles]
 source = "git+https://github.com/bamanoz/tabula-bundles.git@main"
 
+[sources.tabula-distrib]
+source = "git+https://github.com/bamanoz/tabula-distrib.git@main"
+
 [sets]
 empty = []
-baseline = ["base", "drivers", "files", "memory", "test-fixtures"]
+baseline = ["base", "drivers", "workspace", "memory", "test-fixtures"]
 base = ["base", "test-fixtures"]
+workspace = ["base", "workspace", "test-fixtures"]
 caveman = ["base", "caveman", "test-fixtures"]
 all = [
   "base",
   "drivers",
-  "files",
+  "workspace",
   "memory",
   "caveman",
   "subagents",
@@ -23,8 +27,8 @@ source = "source:tabula-bundles#path=base"
 [bundles.drivers]
 source = "source:tabula-bundles#path=drivers"
 
-[bundles.files]
-source = "source:tabula-bundles#path=files"
+[bundles.workspace]
+source = "source:tabula-bundles#path=workspace"
 
 [bundles.memory]
 source = "source:tabula-bundles#path=memory"
@@ -44,6 +48,81 @@ source = "source:tabula-bundles#path=test-fixtures"
 [suites.baseline]
 set = "baseline"
 tests = ["tests/smoke.py"]
+runtime_tenants = ["*"]
+
+[suites.plugin-fixture-execution]
+set = "base"
+components = ["test-fixtures:testbed-cold-python", "test-fixtures:testbed-cold-bash", "test-fixtures:testbed-cold-node"]
+tests = ["tests/test_plugin_fixture_execution.py"]
+
+[suites.plugin-failure-modes]
+set = "base"
+components = ["test-fixtures:testbed-cold-python", "test-fixtures:testbed-fail"]
+tests = ["tests/test_skill_failure_modes.py"]
+
+[suites.plugin-concurrency]
+set = "base"
+components = ["test-fixtures:testbed-cold-python"]
+tests = ["tests/test_skill_concurrency.py"]
+
+[suites.tenant-isolation]
+set = "base"
+components = ["test-fixtures:testbed-cold-python"]
+tests = ["tests/test_tenant_isolation.py"]
+runtime_tenants = ["*"]
+
+[suites.tenant-installer-fanout]
+set = "base"
+components = ["test-fixtures:testbed-cold-python"]
+tests = ["tests/test_tenant_installer_fanout.py"]
+runtime_tenants = ["*"]
+
+[suites.tenant-runtime-whitelist]
+set = "base"
+components = ["test-fixtures:testbed-cold-python"]
+tests = ["tests/test_tenant_runtime_whitelist.py"]
+runtime_tenants = ["alpha"]
+
+[suites.tenant-config-overlay]
+set = "base"
+components = ["test-fixtures:testbed-tenant-config"]
+tests = ["tests/test_tenant_config_overlay.py"]
+runtime_tenants = ["*"]
+
+[suites.fs-plugin]
+set = "workspace"
+components = ["workspace:fs"]
+tests = ["tests/test_fs_plugin.py"]
+runtime_tenants = ["*"]
+
+[suites.workspace-fs-tenant-divergence]
+set = "workspace"
+components = ["workspace:fs"]
+tests = ["tests/test_workspace_fs_tenant_divergence.py"]
+runtime_tenants = ["*"]
+
+[suites.workspace-no-project-root]
+set = "workspace"
+components = ["workspace:fs", "workspace:exec"]
+tests = ["tests/test_workspace_no_project_root.py"]
+runtime_tenants = ["*"]
+
+[suites.exec-plugin]
+set = "workspace"
+components = ["workspace:exec"]
+tests = ["tests/test_exec_plugin.py"]
+runtime_tenants = ["*"]
+
+[suites.app-manifest]
+set = "empty"
+components = ["workspace:fs", "workspace:exec"]
+tests = ["tests/test_app_manifest.py"]
+runtime_tenants = ["testbed-app"]
+
+[suites.claw-app-manifest]
+set = "empty"
+tests = ["claw/tests/test_claw_app_manifest.py"]
+runtime_tenants = ["claw-testbed"]
 
 [suites.mcp]
 set = "empty"
@@ -60,15 +139,25 @@ set = "empty"
 components = ["base:timer"]
 tests = ["tests/test_timer.py"]
 
-[suites.shell]
-set = "empty"
-components = ["base:shell"]
-tests = ["tests/test_shell.py"]
-
 [suites.code]
 set = "empty"
-components = ["code:ask-user", "code:git", "code:hook-approvals", "code:hook-workspace-boundary", "code:review", "code:todo", "code:workspace"]
+components = ["base:hook-approvals", "code:git", "code:review"]
 tests = ["tests/test_code.py"]
+
+[suites.ask-user]
+set = "empty"
+components = ["base:ask-user"]
+tests = ["tests/test_ask_user.py"]
+
+[suites.todo]
+set = "empty"
+components = ["base:todo"]
+tests = ["tests/test_todo.py"]
+
+[suites.approvals]
+set = "empty"
+components = ["base:hook-approvals", "base:hook-permissions", "drivers:driver", "workspace:exec"]
+tests = ["tests/test_approvals.py"]
 
 [suites.sessions]
 set = "empty"
@@ -80,12 +169,32 @@ set = "empty"
 components = ["memory:memory-save", "memory:memory-search", "memory:memory-admin"]
 tests = ["tests/test_memory.py"]
 
-[suites.files]
-set = "empty"
-components = ["files:files"]
-tests = ["tests/test_files.py"]
-
 [suites.subagents]
 set = "empty"
-components = ["base:sessions", "drivers:subagent", "subagents:subagents"]
+components = ["base:sessions", "drivers:driver", "subagents:subagent", "subagents:subagents"]
 tests = ["tests/test_subagents.py"]
+
+[suites.compaction]
+set = "empty"
+components = ["drivers:driver"]
+tests = ["tests/test_compaction.py"]
+
+[suites.runtime-wss-loopback]
+set = "empty"
+tests = ["tests/test_runtime_remote_backends.py"]
+
+[suites.runtime-mtls-loopback]
+set = "empty"
+tests = ["tests/test_runtime_remote_backends.py"]
+
+[suites.runtime-ssh-loopback]
+set = "empty"
+tests = ["tests/test_runtime_remote_backends.py"]
+
+[suites.runtime-token-revoke]
+set = "empty"
+tests = ["tests/test_runtime_remote_backends.py"]
+
+[suites.runtime-multi-backend]
+set = "empty"
+tests = ["tests/test_runtime_remote_backends.py"]

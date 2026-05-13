@@ -44,8 +44,6 @@ foreach ($legacy in @("boot.py", "templates", "skills", "testing", "distrib")) {
     if (Test-Path $legacyPath) { Remove-Item -Recurse -Force $legacyPath }
 }
 
-Copy-Item (Join-Path $RepoRoot "examples" "boot-cicd.py") -Destination (Join-Path $TabulaHome "boot-cicd.py") -Force
-
 # Shared Python/TypeScript skill libraries
 $SkillsDest = Join-Path $TabulaHome "skills"
 if (Test-Path $SkillsDest) { Remove-Item -Recurse -Force $SkillsDest }
@@ -94,13 +92,9 @@ Pop-Location
 Set-Content -Path (Join-Path $TabulaHome "VERSION") -Value $VersionStr -NoNewline
 
 # Launch scripts
-foreach ($script in @("tabula-server.ps1", "tabula-cli.ps1", "tabula-api.ps1", "tabula-install-distro.ps1")) {
+foreach ($script in @("tabula-runner.ps1", "tabula-cli.ps1")) {
     Copy-Item (Join-Path $RepoRoot "bin" $script) -Destination (Join-Path $BinDir $script) -Force
 }
-if (Test-Path (Join-Path $RepoRoot "bin" "tabula-coder")) {
-    Copy-Item (Join-Path $RepoRoot "bin" "tabula-coder") -Destination (Join-Path $BinDir "tabula-coder") -Force
-}
-Copy-Item (Join-Path $RepoRoot "scripts" "install-distro.py") -Destination (Join-Path $BinDir "install-distro.py") -Force
 
 # Install a distro separately with tabula-distro, e.g. ../tabula-distrib/claw.
 

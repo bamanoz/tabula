@@ -51,7 +51,7 @@ func (h *Hub) RunOneShot(cfg OneShotConfig) (string, error) {
 	}
 
 	// Join session.
-	joinPlan := h.buildJoinPlan(c, cfg.Session)
+	joinPlan := h.buildJoinPlan(c, cfg.Session, "")
 	h.applyJoinPlan(c, joinPlan)
 	if joinPlan.blockedReason != "" {
 		return "", fmt.Errorf("join blocked: %s", joinPlan.blockedReason)
@@ -82,13 +82,15 @@ func (h *Hub) collectResponse(recvCh chan *Message, first *Message, sb *strings.
 			if remaining <= 0 {
 				return sb.String(), fmt.Errorf("timeout waiting for response")
 			}
+			timer := time.NewTimer(remaining)
 			select {
 			case m := <-recvCh:
+				timer.Stop()
 				if m == nil {
 					return sb.String(), fmt.Errorf("internal client disconnected")
 				}
 				msg = m
-			case <-time.After(remaining):
+			case <-timer.C:
 				return sb.String(), fmt.Errorf("timeout waiting for response")
 			}
 		}

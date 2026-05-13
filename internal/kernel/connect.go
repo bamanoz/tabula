@@ -87,7 +87,7 @@ func (h *Hub) handleConnect(c *Client, msg *Message) {
 }
 
 func (h *Hub) handleJoin(c *Client, msg *Message) {
-	plan := h.buildJoinPlan(c, msg.Session)
+	plan := h.buildJoinPlan(c, msg.Session, msg.TenantID)
 	h.applyJoinPlan(c, plan)
 }
 
@@ -99,6 +99,7 @@ func (h *Hub) handleCancel(session string) {
 	if !ok || !sess.RequestCancel() {
 		return
 	}
+	h.persistSessionState(session)
 	payload, _ := json.Marshal(map[string]string{"session": session})
 	h.dispatchHook("cancel", payload, session)
 	h.broadcastToSession(session, string(MsgCancel), &Message{Type: string(MsgCancel)}, nil)

@@ -43,7 +43,7 @@ class DistroKernelCompatTests(unittest.TestCase):
             home = root / "home"
             _write_kernel_version(home, "0.8.0")
             distro = _make_distro(root, body=(
-                '[distro]\nname="demo"\nversion="0.1.0"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\nversion="0.1.0"\n'
                 '[requires]\nkernel=">=0.8.0,<1.0.0"\n'
             ))
             gen, lock = installmod.install(distro, home)
@@ -56,7 +56,7 @@ class DistroKernelCompatTests(unittest.TestCase):
             home = root / "home"
             _write_kernel_version(home, "0.7.5")
             distro = _make_distro(root, body=(
-                '[distro]\nname="demo"\n[requires]\nkernel=">=0.8.0"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n[requires]\nkernel=">=0.8.0"\n'
             ))
             with self.assertRaises(installmod.InstallError) as cm:
                 installmod.install(distro, home)
@@ -68,7 +68,7 @@ class DistroKernelCompatTests(unittest.TestCase):
             home = root / "home"
             home.mkdir()  # no VERSION file
             distro = _make_distro(root, body=(
-                '[distro]\nname="demo"\n[requires]\nkernel=">=0.8.0"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n[requires]\nkernel=">=0.8.0"\n'
             ))
             with self.assertRaises(installmod.InstallError):
                 installmod.install(distro, home)
@@ -78,7 +78,7 @@ class DistroKernelCompatTests(unittest.TestCase):
             root = Path(tmp)
             home = root / "home"
             home.mkdir()
-            distro = _make_distro(root, body='[distro]\nname="demo"\n')
+            distro = _make_distro(root, body='[distro]\nid="tabula.demo"\nname="demo"\n')
             installmod.install(distro, home)  # no kernel VERSION file, no [requires] -> ok
 
 
@@ -97,7 +97,7 @@ class BundleKernelCompatTests(unittest.TestCase):
             ))
 
             distro = _make_distro(root, body=(
-                '[distro]\nname="demo"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[bundles]]\nname="drivers"\nsource="local:../ext/drivers"\n'
             ))
             _, lock = installmod.install(distro, home)
@@ -117,7 +117,7 @@ class BundleKernelCompatTests(unittest.TestCase):
             ))
 
             distro = _make_distro(root, body=(
-                '[distro]\nname="demo"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[bundles]]\nname="drivers"\nsource="local:../ext/drivers"\n'
             ))
             with self.assertRaises(installmod.InstallError) as cm:
@@ -134,7 +134,7 @@ class BundleKernelCompatTests(unittest.TestCase):
             _make_skill(bundle, "skill-a")  # no bundle.toml
 
             distro = _make_distro(root, body=(
-                '[distro]\nname="demo"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[bundles]]\nname="legacy"\nsource="local:../ext/legacy"\n'
             ))
             _, lock = installmod.install(distro, home)

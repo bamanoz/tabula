@@ -17,22 +17,25 @@ import (
 // local runtime attachment; later M4/M6 registry and backend work can reuse this
 // read model without coupling the kernel to a concrete local/remote backend.
 type RuntimeRegistry struct {
-	mu       sync.RWMutex
-	runtimes map[string]*RuntimeAttachment
+	mu             sync.RWMutex
+	runtimes       map[string]*RuntimeAttachment
+	defined        map[string]RuntimeDefinition
+	tenantBindings map[string]TenantRuntimeBinding
 }
 
 // RuntimeAttachment is the read-model record for one runtime.
 type RuntimeAttachment struct {
-	ID           string
-	Attached     bool
-	PID          int
-	Capabilities []runtimeapi.Capability
-	Health       runtimeapi.HealthResp
-	LastError    string
-	ConnectedAt  time.Time
-	conn         runtimeapi.RuntimeConn
-	done         <-chan struct{}
-	targetStatus map[string]runtimeTargetStatus
+	ID            string
+	Attached      bool
+	PID           int
+	TenantsServed []string
+	Capabilities  []runtimeapi.Capability
+	Health        runtimeapi.HealthResp
+	LastError     string
+	ConnectedAt   time.Time
+	conn          runtimeapi.RuntimeConn
+	done          <-chan struct{}
+	targetStatus  map[string]runtimeTargetStatus
 }
 
 type runtimeTargetStatus struct {
@@ -51,20 +54,52 @@ type runtimeHookTarget struct {
 
 // NewRuntimeRegistry creates an empty runtime attachment registry.
 func NewRuntimeRegistry() *RuntimeRegistry {
-	return &RuntimeRegistry{runtimes: make(map[string]*RuntimeAttachment)}
+	return &RuntimeRegistry{runtimes: make(map[string]*RuntimeAttachment), defined: map[string]RuntimeDefinition{defaultRuntimeID: {ID: defaultRuntimeID, Backend: "local"}}, tenantBindings: map[string]TenantRuntimeBinding{}}
+}
+
+func (r *RuntimeRegistry) Configure(definitions []RuntimeDefinition, bindings map[string]TenantRuntimeBinding) error {
+	if r == nil {
+		return fmt.Errorf("runtime registry is nil")
+	}
+	if len(definitions) == 0 {
+		definitions = []RuntimeDefinition{{ID: defaultRuntimeID, Backend: "local"}}
+	}
+	defined := make(map[string]RuntimeDefinition, len(definitions))
+	for _, definition := range definitions {
+		if err := wire.ValidateRuntimeID(definition.ID); err != nil {
+			return err
+		}
+		if _, ok := defined[definition.ID]; ok {
+			return fmt.Errorf("duplicate runtime id %q", definition.ID)
+		}
+		defined[definition.ID] = definition
+	}
+	copyBindings := make(map[string]TenantRuntimeBinding, len(bindings))
+	for tenantID, binding := range bindings {
+		copyBindings[tenantID] = TenantRuntimeBinding{AllowedRuntimes: append([]string(nil), binding.AllowedRuntimes...), DefaultRuntime: binding.DefaultRuntime}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.defined = defined
+	r.tenantBindings = copyBindings
+	return nil
 }
 
 // RegisterHello records one accepted Hello as an attached runtime. M2 does not
 // yet route kernel dispatch through this record; M2-07 replaces the empty local
 // read model with the real RuntimeConn cutover.
-func (r *RuntimeRegistry) RegisterHello(runtimeID string, conn runtimeapi.RuntimeConn, capabilities []runtimeapi.Capability, pid int) error {
+func (r *RuntimeRegistry) RegisterHello(runtimeID string, conn runtimeapi.RuntimeConn, capabilities []runtimeapi.Capability, pid int, tenantsServed ...[]string) error {
 	if r == nil {
 		return fmt.Errorf("runtime registry is nil")
 	}
 	if err := wire.ValidateRuntimeID(runtimeID); err != nil {
 		return err
 	}
-	attachment := &RuntimeAttachment{ID: runtimeID, Attached: true, PID: pid, ConnectedAt: time.Now().UTC(), Capabilities: append([]runtimeapi.Capability(nil), capabilities...), conn: conn, targetStatus: make(map[string]runtimeTargetStatus)}
+	tenants := []string{"*"}
+	if len(tenantsServed) > 0 && len(tenantsServed[0]) > 0 {
+		tenants = append([]string(nil), tenantsServed[0]...)
+	}
+	attachment := &RuntimeAttachment{ID: runtimeID, Attached: true, PID: pid, ConnectedAt: time.Now().UTC(), TenantsServed: tenants, Capabilities: append([]runtimeapi.Capability(nil), capabilities...), conn: conn, targetStatus: make(map[string]runtimeTargetStatus)}
 	if closer, ok := conn.(interface{ Done() <-chan struct{} }); ok {
 		attachment.done = closer.Done()
 	}
@@ -105,6 +140,101 @@ func (r *RuntimeRegistry) RuntimeConn(runtimeID string) runtimeapi.RuntimeConn {
 	return attachment.conn
 }
 
+func (r *RuntimeRegistry) TenantsServed(runtimeID string) []string {
+	if r == nil || strings.TrimSpace(runtimeID) == "" {
+		return []string{"*"}
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	attachment := r.runtimes[runtimeID]
+	if attachment == nil || len(attachment.TenantsServed) == 0 {
+		return []string{"*"}
+	}
+	return append([]string(nil), attachment.TenantsServed...)
+}
+
+func (r *RuntimeRegistry) Pick(tenantID string) (runtimeapi.RuntimeConn, string, wire.ErrorCode, error) {
+	if r == nil {
+		return nil, "", wire.ErrorRuntimeUnavailable, fmt.Errorf("runtime registry is nil")
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	binding := r.bindingForTenantLocked(tenantID)
+	runtimeID := strings.TrimSpace(binding.DefaultRuntime)
+	if runtimeID == "" {
+		runtimeID = defaultRuntimeID
+	}
+	conn, code, err := r.runtimeForTenantLocked(tenantID, binding, runtimeID)
+	return conn, runtimeID, code, err
+}
+
+func (r *RuntimeRegistry) RuntimeForTenant(tenantID, runtimeID string) (runtimeapi.RuntimeConn, wire.ErrorCode, error) {
+	if r == nil {
+		return nil, wire.ErrorRuntimeUnavailable, fmt.Errorf("runtime registry is nil")
+	}
+	runtimeID = strings.TrimSpace(runtimeID)
+	if runtimeID == "" {
+		return nil, wire.ErrorRuntimeUnavailable, fmt.Errorf("runtime id is required")
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.runtimeForTenantLocked(tenantID, r.bindingForTenantLocked(tenantID), runtimeID)
+}
+
+func (r *RuntimeRegistry) RuntimeAllowedForTenant(tenantID, runtimeID string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	binding := r.bindingForTenantLocked(tenantID)
+	attachment := r.runtimes[runtimeID]
+	return runtimeAllowed(binding.AllowedRuntimes, runtimeID) && attachment != nil && runtimeServesTenant(attachment.TenantsServed, tenantID)
+}
+
+func (r *RuntimeRegistry) bindingForTenantLocked(tenantID string) TenantRuntimeBinding {
+	binding, ok := r.tenantBindings[tenantID]
+	if ok {
+		return binding
+	}
+	binding = TenantRuntimeBinding{AllowedRuntimes: []string{"*"}, DefaultRuntime: defaultRuntimeID}
+	if len(r.defined) == 1 {
+		for runtimeID := range r.defined {
+			binding.DefaultRuntime = runtimeID
+		}
+	}
+	return binding
+}
+
+func (r *RuntimeRegistry) runtimeForTenantLocked(tenantID string, binding TenantRuntimeBinding, runtimeID string) (runtimeapi.RuntimeConn, wire.ErrorCode, error) {
+	if !runtimeAllowed(binding.AllowedRuntimes, runtimeID) {
+		return nil, wire.ErrorTenantForbidden, fmt.Errorf("tenant %q cannot use runtime %q", tenantID, runtimeID)
+	}
+	if _, ok := r.defined[runtimeID]; !ok {
+		return nil, wire.ErrorRuntimeUnavailable, fmt.Errorf("runtime %q is not configured", runtimeID)
+	}
+	attachment := r.runtimes[runtimeID]
+	if attachment == nil || !attachment.Attached || attachment.conn == nil {
+		return nil, wire.ErrorRuntimeUnavailable, fmt.Errorf("runtime %q is unavailable", runtimeID)
+	}
+	if !runtimeServesTenant(attachment.TenantsServed, tenantID) {
+		return nil, wire.ErrorTenantForbidden, fmt.Errorf("runtime %q does not serve tenant %q", runtimeID, tenantID)
+	}
+	return attachment.conn, "", nil
+}
+
+func runtimeAllowed(allowed []string, runtimeID string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	for _, item := range allowed {
+		if item == "*" || item == runtimeID {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *RuntimeRegistry) Attached(runtimeID string) bool {
 	if r == nil || strings.TrimSpace(runtimeID) == "" {
 		return false
@@ -113,6 +243,16 @@ func (r *RuntimeRegistry) Attached(runtimeID string) bool {
 	defer r.mu.RUnlock()
 	attachment := r.runtimes[runtimeID]
 	return attachment != nil && attachment.Attached
+}
+
+func (r *RuntimeRegistry) Defined(runtimeID string) bool {
+	if r == nil || strings.TrimSpace(runtimeID) == "" {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.defined[runtimeID]
+	return ok
 }
 
 func (r *RuntimeRegistry) SetPID(runtimeID string, pid int) {
@@ -141,8 +281,10 @@ func (r *RuntimeRegistry) ApplyCatalogUpdate(runtimeID string, update wire.Catal
 	if attachment == nil || !attachment.Attached {
 		return runtimeapi.Capability{}, false, fmt.Errorf("runtime %q is not attached", runtimeID)
 	}
+	attachment.TenantsServed = mergeRuntimeTenants(attachment.TenantsServed, update.Tenants)
 	capability := runtimeapi.Capability{
 		Target:   update.Target,
+		Tenants:  append([]string(nil), update.Tenants...),
 		Tools:    append([]wire.ToolSpec(nil), update.Tools...),
 		Hooks:    append([]wire.HookSpec(nil), update.Hooks...),
 		Revision: update.Revision,
@@ -154,7 +296,7 @@ func (r *RuntimeRegistry) ApplyCatalogUpdate(runtimeID string, update wire.Catal
 	}
 	replaced := false
 	for i := range attachment.Capabilities {
-		if sameRuntimeTarget(attachment.Capabilities[i].Target, update.Target) {
+		if sameRuntimeCapability(attachment.Capabilities[i], update.Target, update.Tenants) {
 			attachment.Capabilities[i] = capability
 			replaced = true
 			break
@@ -245,6 +387,7 @@ func (r *RuntimeRegistry) Snapshot() []RuntimeAttachment {
 			continue
 		}
 		copyAttachment := *attachment
+		copyAttachment.TenantsServed = append([]string(nil), attachment.TenantsServed...)
 		copyAttachment.Capabilities = append([]runtimeapi.Capability(nil), attachment.Capabilities...)
 		if attachment.targetStatus != nil {
 			copyAttachment.targetStatus = make(map[string]runtimeTargetStatus, len(attachment.targetStatus))
@@ -285,6 +428,59 @@ func sameRuntimeTarget(left, right wire.Target) bool {
 	return left.Kind == right.Kind && left.ID == right.ID
 }
 
+func sameRuntimeCapability(left runtimeapi.Capability, target wire.Target, tenants []string) bool {
+	return sameRuntimeTarget(left.Target, target) && sameTenantSet(left.Tenants, tenants)
+}
+
+func sameTenantSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	seen := make(map[string]int, len(left))
+	for _, item := range left {
+		seen[item]++
+	}
+	for _, item := range right {
+		seen[item]--
+		if seen[item] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func mergeRuntimeTenants(existing, added []string) []string {
+	if len(added) == 0 || servesAllTenants(existing) {
+		return append([]string(nil), existing...)
+	}
+	if servesAllTenants(added) {
+		return []string{"*"}
+	}
+	merged := append([]string(nil), existing...)
+	seen := make(map[string]bool, len(merged)+len(added))
+	for _, tenantID := range merged {
+		seen[tenantID] = true
+	}
+	for _, tenantID := range added {
+		tenantID = strings.TrimSpace(tenantID)
+		if tenantID == "" || seen[tenantID] {
+			continue
+		}
+		merged = append(merged, tenantID)
+		seen[tenantID] = true
+	}
+	return merged
+}
+
+func servesAllTenants(tenants []string) bool {
+	for _, tenantID := range tenants {
+		if tenantID == "*" {
+			return true
+		}
+	}
+	return false
+}
+
 func validateCatalogUpdate(update wire.CatalogUpdate) error {
 	if err := update.Target.Validate(); err != nil {
 		return err
@@ -292,7 +488,7 @@ func validateCatalogUpdate(update wire.CatalogUpdate) error {
 	if update.Revision <= 0 {
 		return fmt.Errorf("catalog_update revision must be positive")
 	}
-	capability := runtimeapi.Capability{Target: update.Target, Tools: update.Tools, Hooks: update.Hooks, Revision: update.Revision, State: update.State, Source: update.Source}
+	capability := runtimeapi.Capability{Target: update.Target, Tenants: update.Tenants, Tools: update.Tools, Hooks: update.Hooks, Revision: update.Revision, State: update.State, Source: update.Source}
 	return capability.Validate()
 }
 

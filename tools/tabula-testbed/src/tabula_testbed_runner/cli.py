@@ -89,6 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "run":
             cmd.add_argument("--keep", action="store_true", help="Keep temporary TABULA_HOME after run.")
             cmd.add_argument("--home", default="", help="Use this TABULA_HOME and keep it.")
+            cmd.add_argument("--bootstrap-check", action="store_true", help="Run scripts/bootstrap.sh after distro install and before suite execution.")
     return parser
 
 
@@ -117,6 +118,8 @@ def to_runner_args(args: argparse.Namespace) -> list[str]:
             out.append("--keep")
         if getattr(args, "home", ""):
             out.extend(["--home", args.home])
+        if getattr(args, "bootstrap_check", False):
+            out.append("--bootstrap-check")
     return out
 
 

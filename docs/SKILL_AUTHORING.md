@@ -54,10 +54,9 @@ Claw discovers those roots as instruction-only skills.
 
 # Authoring a skill
 
-A skill is a directory with a `SKILL.md` manifest and one or more executable
-entry points referenced by `tools[].exec`. The kernel runs the `exec`
-command per tool call, pipes JSON params on stdin, and reads the result
-from stdout.
+A skill is a directory with a `SKILL.md` manifest plus optional references,
+assets, and helper scripts. Skills are prompt/instruction artifacts. They do
+not publish executable tools.
 
 ## Minimum viable skill
 
@@ -67,13 +66,6 @@ from stdout.
 ---
 name: my-skill
 description: "Short one-line description"
-tools:
-  - name: my_tool
-    description: "What this tool does"
-    params:
-      text: { type: string, description: "Input text" }
-    required: [text]
-    exec: "<venv_python> skills/my-skill/scripts/run.py tool my_tool"
 ---
 
 # my-skill
@@ -81,44 +73,12 @@ tools:
 Explain what the skill does and how to use it.
 ```
 
-`my-skill/run.py`:
-
-```python
-#!/usr/bin/env python3
-from __future__ import annotations
-import json, sys
-
-
-def tool_my_tool(params: dict) -> str:
-    return params.get("text", "").upper()
-
-
-TOOLS = {"my_tool": tool_my_tool}
-
-
-def main() -> None:
-    if len(sys.argv) >= 3 and sys.argv[1] == "tool":
-        handler = TOOLS[sys.argv[2]]
-        params = json.load(sys.stdin)
-        print(handler(params))
-        return
-    raise SystemExit("usage: run.py tool <tool_name>")
-
-
-if __name__ == "__main__":
-    main()
-```
-
-That's the whole skill. The script name is arbitrary; only the `exec`
-command matters.
-
 ## `SKILL.md` frontmatter
 
 Required fields:
 
 - `name` — skill identifier, defaults to the directory name.
 - `description` — one-line summary; injected into the system prompt.
-- `tools` — array of `{name, description, params, required, exec}`.
 
 Optional:
 
@@ -130,13 +90,6 @@ Optional:
 name: weather
 description: "Get weather for a city"
 user-invocable: true
-tools:
-  - name: get_weather
-    description: "Get weather for a location"
-    params:
-      location: { type: string, description: "City or place" }
-    required: [location]
-    exec: "<venv_python> skills/weather/scripts/run.py tool get_weather"
 ---
 
 # weather
@@ -144,17 +97,11 @@ tools:
 Full documentation body.
 ```
 
-## Tool execution model
+## Executable capabilities
 
-- Driver emits `tool_use`.
-- Kernel resolves the tool name to its `exec` command.
-- Kernel spawns the command, pipes JSON params on stdin.
-- Stdout becomes the tool result.
-- Each call is fully process-isolated.
-
-This means skills can be written in any language. The `exec` command can
-target a Python script, a Node script, a shell script, or a compiled
-binary.
+Executable tools belong to plugins, not skills. If your workflow needs a real
+tool, add a plugin with `plugin.toml` and register the tool there. The skill can
+then explain when to use that plugin tool.
 
 ## Slash commands
 
@@ -261,8 +208,8 @@ public surface today.
 # Stability
 
 The `SKILL.md` frontmatter contract is the reusable skill authoring surface:
-Anthropic-compatible `name`, `description`, `tools`, and `user-invocable`, plus
-Tabula-specific `tools[].exec`. Plugin contracts are documented separately in
+Anthropic-compatible `name`, `description`, and optional `user-invocable`.
+Executable tool contracts are plugin-owned and documented separately in
 [PLUGIN_AUTHORING.md](PLUGIN_AUTHORING.md).
 
 # Recommended workflow
@@ -274,10 +221,11 @@ Tabula-specific `tools[].exec`. Plugin contracts are documented separately in
 5. Test it as a subprocess.
 6. Only then add config complexity or helper abstractions.
 
-For most new capabilities, start with a skill.
+For most new user-facing guidance or workflow presets, start with a skill. For
+most new executable capabilities, start with a plugin.
 
 # Examples in the repo
 
-- skill: `files/files/` and `code/git/` in
+- skill: `tabula-guide/` and plugin: `workspace/fs/` in
   [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles);
 - minimal fixed distro boot: `guardian/boot.py` in `tabula-distrib`.

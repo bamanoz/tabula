@@ -1,6 +1,8 @@
 """End-to-end tests for tabula_distro.install using local: sources only."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -83,6 +85,7 @@ def _make_client(root: Path, name: str, marker: str = "v1") -> Path:
 
 def _make_minimal_distro(root: Path, name: str = "demo") -> Path:
     dist = root / name
+    _touch(dist / "distro.toml", f'[distro]\nid = "tabula.{name}"\nname = "{name}"\n')
     _touch(dist / "boot.py", "# boot\n")
     (dist / "templates").mkdir(parents=True, exist_ok=True)
     (dist / "skills").mkdir(parents=True, exist_ok=True)
@@ -136,7 +139,7 @@ class ConfigTests(unittest.TestCase):
             root = Path(tmp) / "d"
             root.mkdir()
             (root / "distro.toml").write_text(
-                "[distro]\nname=\"x\"\n"
+                "[distro]\nid=\"tabula.x\"\nname=\"x\"\n"
                 "[[bundles]]\nname=\"m\"\nsource=\"local:./a\"\n",
                 encoding="utf-8",
             )
@@ -153,6 +156,7 @@ class ConfigTests(unittest.TestCase):
             root = Path(tmp) / "d"
             root.mkdir()
             (root / "distro.toml").write_text(
+                "[distro]\nid=\"tabula.demo\"\nname=\"demo\"\n"
                 "[[bundles]]\nname=\"m\"\nsource=\"local:./a\"\ncomponents=[\"plugin-a\"]\n",
                 encoding="utf-8",
             )
@@ -165,6 +169,7 @@ class ConfigTests(unittest.TestCase):
             root = Path(tmp) / "d"
             root.mkdir()
             (root / "distro.toml").write_text(
+                "[distro]\nid=\"tabula.demo\"\nname=\"demo\"\n"
                 "[[plugins]]\nname=\"hello\"\nsource=\"local:./plugins/hello\"\n",
                 encoding="utf-8",
             )
@@ -177,15 +182,36 @@ class ConfigTests(unittest.TestCase):
             root = Path(tmp) / "d"
             root.mkdir()
             (root / "distro.toml").write_text(
-                '[sources.tabula-bundles]\nsource="git+https://example.invalid/bundles.git@main"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n[sources.tabula-bundles]\nsource="git+https://example.invalid/bundles.git@main"\n'
                 '[[bundles]]\nname="base"\nsource="source:tabula-bundles#path=base"\n',
                 encoding="utf-8",
             )
             (root / "distro.override.toml").write_text(
-                '[sources.tabula-bundles]\nsource="local:/tmp/tabula-bundles"\n',
+                '[distro]\nid="tabula.demo"\nname="demo"\n[sources.tabula-bundles]\nsource="local:/tmp/tabula-bundles"\n',
                 encoding="utf-8",
             )
             c = cfg.load(root)
+            self.assertEqual(c.sources["tabula-bundles"].source, "local:/tmp/tabula-bundles")
+            self.assertEqual(c.bundles[0].source, "source:tabula-bundles#path=base")
+
+    def test_source_alias_can_be_overridden_by_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "d"
+            root.mkdir()
+            (root / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n[sources.tabula-bundles]\nsource="git+https://example.invalid/bundles.git@main"\n'
+                '[[bundles]]\nname="base"\nsource="source:tabula-bundles#path=base"\n',
+                encoding="utf-8",
+            )
+            old = os.environ.get("TABULA_SOURCE_ALIAS_TABULA_BUNDLES")
+            os.environ["TABULA_SOURCE_ALIAS_TABULA_BUNDLES"] = "local:/tmp/tabula-bundles"
+            try:
+                c = cfg.load(root)
+            finally:
+                if old is None:
+                    os.environ.pop("TABULA_SOURCE_ALIAS_TABULA_BUNDLES", None)
+                else:
+                    os.environ["TABULA_SOURCE_ALIAS_TABULA_BUNDLES"] = old
             self.assertEqual(c.sources["tabula-bundles"].source, "local:/tmp/tabula-bundles")
             self.assertEqual(c.bundles[0].source, "source:tabula-bundles#path=base")
 
@@ -232,7 +258,7 @@ class InstallTests(unittest.TestCase):
             _make_skill(ext_skill.parent, "weather", "weather-v1")
 
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n\n'
                 '[[bundles]]\nname="memory"\nsource="local:../ext/bundles/memory"\n\n'
                 '[[skills]]\nname="weather"\nsource="local:../ext/skills/weather"\n',
                 encoding="utf-8",
@@ -261,6 +287,149 @@ class InstallTests(unittest.TestCase):
             self.assertIn("memory", lock.bundles)
             self.assertIn("weather", lock.skills)
 
+    def test_install_refreshes_runtime_surface_for_existing_tenants(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            bundle = root / "ext" / "bundles" / "memory"
+            _make_skill(bundle, "memory-save", "save-v1")
+            _make_plugin(bundle, "sessions", "sessions-v1")
+            _touch(bundle / "client-probe" / "client.toml", 'id = "client-probe"\nname = "client-probe"\nversion = "0.1.0"\nruntime = "python"\nentry = "run.py"\n')
+            _touch(bundle / "client-probe" / "run.py", "# client\n")
+            _touch(bundle / "templates" / "SYSTEM.md", "system\n")
+            _touch(bundle / "_lib" / "python" / "src" / "pkg" / "__init__.py", "X=1\n")
+
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n\n'
+                '[[bundles]]\nname="memory"\nsource="local:../ext/bundles/memory"\n',
+                encoding="utf-8",
+            )
+
+            for tenant_name in ("alpha", "beta"):
+                (home / "tenants" / tenant_name).mkdir(parents=True, exist_ok=True)
+
+            installmod.install(distro, home)
+
+            for tenant_name in ("alpha", "beta"):
+                tenant_root = home / "tenants" / tenant_name
+                self.assertTrue((tenant_root / "skills" / "memory-save" / "marker.txt").exists())
+                self.assertTrue((tenant_root / "plugins" / "sessions" / "marker.txt").exists())
+                self.assertTrue((tenant_root / "clients" / "client-probe" / "run.py").exists())
+                self.assertTrue((tenant_root / "_lib" / "python" / "src" / "pkg" / "__init__.py").exists())
+            self.assertTrue(os.path.samefile(home / "tenants" / "alpha" / "skills" / "memory-save" / "marker.txt", home / "tenants" / "beta" / "skills" / "memory-save" / "marker.txt"))
+
+    def test_install_tenant_filter_refreshes_only_requested_tenant(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            bundle = root / "ext" / "bundles" / "memory"
+            _make_skill(bundle, "memory-save", "save-v1")
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n\n'
+                '[[bundles]]\nname="memory"\nsource="local:../ext/bundles/memory"\n',
+                encoding="utf-8",
+            )
+
+            for tenant_name in ("alpha", "beta"):
+                (home / "tenants" / tenant_name).mkdir(parents=True, exist_ok=True)
+
+            installmod.install(distro, home, tenant="alpha")
+
+            self.assertTrue((home / "tenants" / "alpha" / "skills" / "memory-save" / "marker.txt").exists())
+            self.assertFalse((home / "tenants" / "beta" / "skills" / "memory-save" / "marker.txt").exists())
+
+    def test_install_replaces_tenant_lib_symlink_before_refreshing_surface(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            bundle = root / "ext" / "bundles" / "memory"
+            _make_skill(bundle, "memory-save", "save-v1")
+            _touch(bundle / "_lib" / "python" / "src" / "pkg" / "__init__.py", "X=1\n")
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n\n'
+                '[[bundles]]\nname="memory"\nsource="local:../ext/bundles/memory"\n',
+                encoding="utf-8",
+            )
+
+            installmod.install(distro, home)
+            tenant_root = home / "tenants" / "gamma"
+            tenant_root.mkdir(parents=True)
+            (tenant_root / "_lib").symlink_to(Path("../../_lib"))
+
+            installmod.install(distro, home, update=True)
+
+            self.assertFalse((tenant_root / "_lib").is_symlink())
+            self.assertTrue((home / "_lib" / "python" / "src" / "pkg" / "__init__.py").exists())
+            self.assertTrue((tenant_root / "_lib" / "python" / "src" / "pkg" / "__init__.py").exists())
+
+    def test_install_update_keeps_existing_tenants_on_active_surface(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            bundle = root / "ext" / "bundles" / "memory"
+            _make_skill(bundle, "memory-save", "save-v1")
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n\n'
+                '[[bundles]]\nname="memory"\nsource="local:../ext/bundles/memory"\n',
+                encoding="utf-8",
+            )
+
+            for tenant_name in ("alpha", "beta"):
+                (home / "tenants" / tenant_name).mkdir(parents=True, exist_ok=True)
+
+            installmod.install(distro, home)
+            _touch(bundle / "memory-save" / "marker.txt", "save-v2\n")
+
+            installmod.install(distro, home, update=True)
+
+            for tenant_name in ("alpha", "beta"):
+                self.assertEqual(
+                    (home / "tenants" / tenant_name / "skills" / "memory-save" / "marker.txt").read_text(encoding="utf-8"),
+                    "save-v2\n",
+                )
+
+    def test_parallel_tenant_runtime_refresh_does_not_corrupt_surfaces(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            bundle = root / "ext" / "bundles" / "memory"
+            _make_skill(bundle, "memory-save", "save-v1")
+            _make_plugin(bundle, "sessions", "sessions-v1")
+            _touch(bundle / "_lib" / "python" / "src" / "pkg" / "__init__.py", "X=1\n")
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n\n'
+                '[[bundles]]\nname="memory"\nsource="local:../ext/bundles/memory"\n',
+                encoding="utf-8",
+            )
+
+            installmod.install(distro, home)
+            tenant_roots = []
+            for tenant_name in ("alpha", "beta"):
+                tenant_root = home / "tenants" / tenant_name
+                tenant_root.mkdir(parents=True, exist_ok=True)
+                tenant_roots.append(tenant_root)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [pool.submit(installmod._refresh_tenant_runtime_surface, home, tenant_root) for tenant_root in tenant_roots]
+                for future in futures:
+                    future.result()
+
+            for tenant_name in ("alpha", "beta"):
+                tenant_root = home / "tenants" / tenant_name
+                self.assertTrue((tenant_root / "skills" / "memory-save" / "marker.txt").exists())
+                self.assertTrue((tenant_root / "plugins" / "sessions" / "marker.txt").exists())
+                self.assertTrue((tenant_root / "_lib" / "python" / "src" / "pkg" / "__init__.py").exists())
+
     def test_source_alias_installs_multiple_bundles_with_shared_lib_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -275,8 +444,7 @@ class InstallTests(unittest.TestCase):
             _touch(repo / "caveman" / "bundle.toml", '[bundle]\nname="caveman"\n')
 
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n'
-                '[sources.tabula-bundles]\nsource="local:../tabula-bundles"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n[sources.tabula-bundles]\nsource="local:../tabula-bundles"\n'
                 '[[bundles]]\nname="base"\nsource="source:tabula-bundles#path=base"\n'
                 '[[bundles]]\nname="caveman"\nsource="source:tabula-bundles#path=caveman"\n',
                 encoding="utf-8",
@@ -304,7 +472,7 @@ class InstallTests(unittest.TestCase):
             _touch(git_repo / "_lib" / "python" / "src" / "shared" / "__init__.py", "X=1\n")
 
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[bundles]]\nname="base"\nsource="local:../local-repo/base"\n'
                 '[[bundles]]\nname="caveman"\nsource="local:../git-repo/caveman"\n',
                 encoding="utf-8",
@@ -332,7 +500,7 @@ class InstallTests(unittest.TestCase):
             _touch(git_repo / "_lib" / "python" / "src" / "shared" / "__init__.py", "X=2\n")
 
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[bundles]]\nname="base"\nsource="local:../local-repo/base"\n'
                 '[[bundles]]\nname="caveman"\nsource="local:../git-repo/caveman"\n'
                 'override=true\n',
@@ -359,7 +527,7 @@ class InstallTests(unittest.TestCase):
             _make_plugin(bundle, "hook-permissions", "hook-v1")
 
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n\n'
                 '[[bundles]]\nname="mixed"\nsource="local:../ext/bundles/mixed"\n',
                 encoding="utf-8",
             )
@@ -382,7 +550,7 @@ class InstallTests(unittest.TestCase):
             _make_client(bundle, "subagent", "subagent-v1")
 
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n\n'
                 '[[bundles]]\nname="clients"\nsource="local:../ext/bundles/clients"\n',
                 encoding="utf-8",
             )
@@ -405,7 +573,7 @@ class InstallTests(unittest.TestCase):
             _touch(bad / "client.toml", 'id="wrong"\nruntime="python"\nentry="run.py"\n')
             _touch(bad / "run.py", "# client\n")
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n\n'
                 '[[bundles]]\nname="clients"\nsource="local:../ext/bundles/clients"\n',
                 encoding="utf-8",
             )
@@ -424,7 +592,7 @@ class InstallTests(unittest.TestCase):
             _touch(bad / "client.toml", 'id="driver"\nruntime="python"\nentry="../run.py"\n')
             _touch(bundle / "run.py", "# outside\n")
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n\n'
                 '[[bundles]]\nname="clients"\nsource="local:../ext/bundles/clients"\n',
                 encoding="utf-8",
             )
@@ -439,7 +607,7 @@ class InstallTests(unittest.TestCase):
             distro = _make_minimal_distro(root, "demo")
             _make_plugin(root / "ext" / "plugins", "hello", "hello-v1")
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[plugins]]\nname="hello"\nsource="local:../ext/plugins/hello"\n',
                 encoding="utf-8",
             )
@@ -464,7 +632,7 @@ class InstallTests(unittest.TestCase):
                 'components=["plugin-a", "skill-b"]\n'
             ))
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[bundles]]\nname="explicit"\nsource="local:../ext/bundles/explicit"\n',
                 encoding="utf-8",
             )
@@ -489,7 +657,7 @@ class InstallTests(unittest.TestCase):
             _make_plugin(bundle, "plugin-a")
             _touch(bundle / "bundle.toml", '[bundle]\nname="legacy"\nversion="0.1.0"\n')
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[bundles]]\nname="legacy"\nsource="local:../ext/bundles/legacy"\n',
                 encoding="utf-8",
             )
@@ -511,7 +679,7 @@ class InstallTests(unittest.TestCase):
             plugin_v1 = _make_plugin(root / "git-v1", "hello", "hello-v1")
             plugin_v2 = _make_plugin(root / "git-v2", "hello", "hello-v2")
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[plugins]]\nname="hello"\nsource="git+https://example.invalid/hello.git@main"\n',
                 encoding="utf-8",
             )
@@ -550,7 +718,7 @@ class InstallTests(unittest.TestCase):
             _make_skill(bundle_v2, "base-shell", "shell-v2")
             _make_plugin(bundle_v2, "hook-permissions", "hook-v2")
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[bundles]]\nname="mixed"\nsource="git+https://example.invalid/mixed.git@main"\n',
                 encoding="utf-8",
             )
@@ -588,7 +756,7 @@ class InstallTests(unittest.TestCase):
             bundle.mkdir(parents=True)
             _touch(bundle / "bundle.toml", '[bundle]\nname="bad"\ncomponents=["missing"]\n')
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[bundles]]\nname="bad"\nsource="local:../ext/bundles/bad"\n',
                 encoding="utf-8",
             )
@@ -597,7 +765,7 @@ class InstallTests(unittest.TestCase):
                 installmod.install(distro, home)
             self.assertIn("component not found: missing", str(cm.exception))
 
-    def test_skill_manifest_tools_missing_exec_fails(self):
+    def test_skill_manifest_tools_missing_exec_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
@@ -608,17 +776,15 @@ class InstallTests(unittest.TestCase):
                 "---\nname: bad-skill\ntools:\n  - name: bad_tool\n---\n# bad\n",
             )
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[skills]]\nname="bad-skill"\nsource="local:../ext/skills/bad-skill"\n',
                 encoding="utf-8",
             )
 
-            with self.assertRaises(installmod.InstallError) as cm:
-                installmod.install(distro, home)
-            self.assertIn("skill bad-skill: tools[0].exec is required", str(cm.exception))
-            self.assertFalse((home / "distrib" / "demo" / "current").exists())
+            installmod.install(distro, home)
+            self.assertTrue((home / "distrib" / "demo" / "current").exists())
 
-    def test_skill_manifest_tools_blank_exec_fails(self):
+    def test_skill_manifest_tools_blank_exec_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
@@ -629,16 +795,15 @@ class InstallTests(unittest.TestCase):
                 "---\nname: bad-skill\ntools:\n  - name: bad_tool\n    exec: '  '\n---\n# bad\n",
             )
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[skills]]\nname="bad-skill"\nsource="local:../ext/skills/bad-skill"\n',
                 encoding="utf-8",
             )
 
-            with self.assertRaises(installmod.InstallError) as cm:
-                installmod.install(distro, home)
-            self.assertIn("skill bad-skill: tools[0].exec is required", str(cm.exception))
+            installmod.install(distro, home)
+            self.assertTrue((home / "distrib" / "demo" / "current").exists())
 
-    def test_skill_manifest_tools_missing_name_fails(self):
+    def test_skill_manifest_tools_missing_name_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
@@ -649,16 +814,15 @@ class InstallTests(unittest.TestCase):
                 "---\nname: bad-skill\ntools:\n  - exec: python run.py\n---\n# bad\n",
             )
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[skills]]\nname="bad-skill"\nsource="local:../ext/skills/bad-skill"\n',
                 encoding="utf-8",
             )
 
-            with self.assertRaises(installmod.InstallError) as cm:
-                installmod.install(distro, home)
-            self.assertIn("skill bad-skill: tools[0].name is required", str(cm.exception))
+            installmod.install(distro, home)
+            self.assertTrue((home / "distrib" / "demo" / "current").exists())
 
-    def test_skill_manifest_tools_blank_name_fails(self):
+    def test_skill_manifest_tools_blank_name_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
@@ -669,16 +833,15 @@ class InstallTests(unittest.TestCase):
                 "---\nname: bad-skill\ntools:\n  - name: '  '\n    exec: python run.py\n---\n# bad\n",
             )
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[skills]]\nname="bad-skill"\nsource="local:../ext/skills/bad-skill"\n',
                 encoding="utf-8",
             )
 
-            with self.assertRaises(installmod.InstallError) as cm:
-                installmod.install(distro, home)
-            self.assertIn("skill bad-skill: tools[0].name is required", str(cm.exception))
+            installmod.install(distro, home)
+            self.assertTrue((home / "distrib" / "demo" / "current").exists())
 
-    def test_skill_manifest_tools_invalid_shape_fails(self):
+    def test_skill_manifest_tools_invalid_shape_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
@@ -689,16 +852,15 @@ class InstallTests(unittest.TestCase):
                 "---\nname: bad-skill\ntools: invalid\n---\n# bad\n",
             )
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[skills]]\nname="bad-skill"\nsource="local:../ext/skills/bad-skill"\n',
                 encoding="utf-8",
             )
 
-            with self.assertRaises(installmod.InstallError) as cm:
-                installmod.install(distro, home)
-            self.assertIn("skill bad-skill: tools must be a YAML list", str(cm.exception))
+            installmod.install(distro, home)
+            self.assertTrue((home / "distrib" / "demo" / "current").exists())
 
-    def test_bundle_invalid_skill_manifest_failure_is_atomic(self):
+    def test_bundle_skill_manifest_tool_shape_no_longer_blocks_install(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
@@ -708,7 +870,7 @@ class InstallTests(unittest.TestCase):
             _make_skill(bundle_v1, "valid-skill", "skill-v1")
             _make_plugin(bundle_v1, "valid-plugin", "plugin-v1")
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[bundles]]\nname="mixed"\nsource="local:../ext/bundles/mixed"\n',
                 encoding="utf-8",
             )
@@ -721,14 +883,33 @@ class InstallTests(unittest.TestCase):
                 "bad-skill",
                 "---\nname: bad-skill\ntools:\n  - name: broken\n---\n# bad\n",
             )
+            installmod.install(distro, home)
+
+            self.assertNotEqual((home / "distrib" / "demo" / "current").resolve(), current_before)
+            self.assertNotEqual((home / "distrib" / "demo" / "distro.lock.json").read_text(encoding="utf-8"), lock_before)
+            self.assertTrue((home / "distrib" / "demo" / "skills" / "bad-skill").exists())
+            self.assertTrue((home / "skills" / "bad-skill").exists())
+
+    def test_bundle_component_with_multiple_manifests_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            bundle = root / "ext" / "bundles" / "mixed"
+            component = _make_skill(bundle, "dual", "skill-v1")
+            _touch(component / "plugin.toml", 'id = "dual"\nname = "dual"\nversion = "0.1.0"\nruntime = "python"\nentry = "run.py"\n')
+            _touch(component / "run.py", "#!/usr/bin/env python3\n")
+            _touch(bundle / "bundle.toml", '[bundle]\nname="mixed"\ncomponents=["dual"]\n')
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
+                '[[bundles]]\nname="mixed"\nsource="local:../ext/bundles/mixed"\n',
+                encoding="utf-8",
+            )
+
             with self.assertRaises(installmod.InstallError) as cm:
                 installmod.install(distro, home)
-
-            self.assertIn("bundle mixed -> skill bad-skill: tools[0].exec is required", str(cm.exception))
-            self.assertEqual((home / "distrib" / "demo" / "current").resolve(), current_before)
-            self.assertEqual((home / "distrib" / "demo" / "distro.lock.json").read_text(encoding="utf-8"), lock_before)
-            self.assertFalse((home / "distrib" / "demo" / "skills" / "bad-skill").exists())
-            self.assertFalse((home / "skills" / "bad-skill").exists())
+            self.assertIn("bundle mixed: component 'dual' has multiple component manifests", str(cm.exception))
 
     def test_lock_v1_migrates_to_current_with_empty_plugins(self):
         data = {
@@ -774,7 +955,7 @@ class InstallTests(unittest.TestCase):
             _touch(bundle / "_drivers" / "lib.py", "X=1\n")
 
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n\n'
                 '[[bundles]]\nname="drivers"\nsource="local:../ext/bundles/drivers"\n',
                 encoding="utf-8",
             )
@@ -798,7 +979,7 @@ class InstallTests(unittest.TestCase):
             ext = root / "ext" / "skills" / "files"
             _make_skill(ext.parent, "files", "ext")
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[skills]]\nname="files"\nsource="local:../ext/skills/files"\n',
                 encoding="utf-8",
             )
@@ -814,7 +995,7 @@ class InstallTests(unittest.TestCase):
             ext = root / "ext" / "skills" / "files"
             _make_skill(ext.parent, "files", "ext")
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[skills]]\nname="files"\nsource="local:../ext/skills/files"\n'
                 'override=true\n',
                 encoding="utf-8",
@@ -895,7 +1076,7 @@ class InstallTests(unittest.TestCase):
             ext = root / "ext" / "skills" / "foo"
             _make_skill(ext.parent, "foo")
             (distro / "distro.toml").write_text(
-                '[distro]\nname="demo"\n'
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[skills]]\nname="foo"\nsource="local:../ext/skills/foo"\n',
                 encoding="utf-8",
             )
@@ -928,6 +1109,7 @@ class InstallTests(unittest.TestCase):
             installmod.install(distro, home)
             trigger = home / "run" / "reload.touch"
             self.assertTrue(trigger.exists(), "reload.touch should be created on install")
+            self.assertIn("time=", trigger.read_text())
             first_mtime = trigger.stat().st_mtime
             # second install (no-op fingerprint match) must still bump the trigger
             # so a kernel that missed the first install picks up the no-op too.

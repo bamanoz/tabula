@@ -3,7 +3,16 @@ package kernel
 import (
 	"sync"
 	"time"
+
+	"github.com/bamanoz/tabula/internal/tenant"
 )
+
+const maxPendingInputs = 100
+
+type queuedInput struct {
+	message *Message
+	exclude *Client
+}
 
 // SessionState represents the lifecycle state of a session.
 type SessionState string
@@ -18,18 +27,38 @@ const (
 type Session struct {
 	mu              sync.RWMutex
 	ID              string
+	TenantID        string
+	InitContext     string
 	State           SessionState
 	CreatedAt       time.Time
 	LastActiveAt    time.Time
 	clients         map[string]bool // client name → true
 	inflightTurn    bool
 	cancelRequested bool
+	pendingInputs   []queuedInput
 }
 
-func newSession(id string) *Session {
+func (s *Session) SetInitContext(context string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.InitContext = context
+	s.touchLocked()
+}
+
+func (s *Session) GetInitContext() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.InitContext
+}
+
+func newSession(id, tenantID string) *Session {
 	now := time.Now()
+	if tenantID == "" {
+		tenantID = tenant.DefaultID
+	}
 	return &Session{
 		ID:           id,
+		TenantID:     tenantID,
 		State:        SessionIdle,
 		CreatedAt:    now,
 		LastActiveAt: now,
@@ -95,6 +124,45 @@ func (s *Session) EndTurn() {
 	s.touchLocked()
 }
 
+func (s *Session) CompleteTurn() (queuedInput, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cancelRequested = false
+	if len(s.pendingInputs) > 0 {
+		input := s.pendingInputs[0]
+		copy(s.pendingInputs, s.pendingInputs[1:])
+		s.pendingInputs = s.pendingInputs[:len(s.pendingInputs)-1]
+		s.inflightTurn = true
+		s.State = SessionActive
+		s.touchLocked()
+		return input, true
+	}
+	s.inflightTurn = false
+	if s.State != SessionClosing && len(s.clients) == 0 {
+		s.State = SessionIdle
+	}
+	s.touchLocked()
+	return queuedInput{}, false
+}
+
+func (s *Session) EnqueueInput(msg *Message, exclude *Client) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.State == SessionClosing || len(s.pendingInputs) >= maxPendingInputs {
+		return false
+	}
+	s.pendingInputs = append(s.pendingInputs, queuedInput{message: cloneMessage(msg), exclude: exclude})
+	s.State = SessionActive
+	s.touchLocked()
+	return true
+}
+
+func (s *Session) PendingInputCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.pendingInputs)
+}
+
 func (s *Session) RequestCancel() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -132,14 +200,26 @@ func NewSessionRegistry() *SessionRegistry {
 
 // GetOrCreate returns an existing session or creates a new one.
 func (r *SessionRegistry) GetOrCreate(id string) *Session {
+	return r.GetOrCreateTenant(id, tenant.DefaultID)
+}
+
+// GetOrCreateTenant returns an existing session or creates one bound to tenantID.
+func (r *SessionRegistry) GetOrCreateTenant(id, tenantID string) *Session {
+	s, _ := r.GetOrCreateTenantStatus(id, tenantID)
+	return s
+}
+
+// GetOrCreateTenantStatus returns an existing session or creates one bound to
+// tenantID, along with a flag reporting whether it was newly created.
+func (r *SessionRegistry) GetOrCreateTenantStatus(id, tenantID string) (*Session, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if s, ok := r.sessions[id]; ok {
-		return s
+		return s, false
 	}
-	s := newSession(id)
+	s := newSession(id, tenantID)
 	r.sessions[id] = s
-	return s
+	return s, true
 }
 
 // Get returns a session by ID, or nil if not found.
@@ -180,4 +260,13 @@ func (r *SessionRegistry) All() []*Session {
 		out = append(out, s)
 	}
 	return out
+}
+
+func (r *SessionRegistry) TenantID(id string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if s, ok := r.sessions[id]; ok && s.TenantID != "" {
+		return s.TenantID
+	}
+	return tenant.DefaultID
 }

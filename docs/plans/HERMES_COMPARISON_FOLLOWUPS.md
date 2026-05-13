@@ -258,7 +258,7 @@ kernel. До завершения миграции «маленький kernel»
 
 **Как.**
 
-1. Перенести оставшуюся kernel-bridge логику в `drivers/subagent` plugin
+1. Перенести оставшуюся kernel-bridge логику в `subagents/subagent` client/runtime layer
    (`tabula-bundles`).
 2. Добавить тесты depth/child-count/lifecycle/cleanup внешним плагином.
 3. Удалить kernel-side enforcement.

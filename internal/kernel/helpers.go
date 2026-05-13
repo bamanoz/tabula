@@ -2,8 +2,6 @@ package kernel
 
 import (
 	"encoding/json"
-
-	"github.com/bamanoz/tabula/internal/kernel/plugin"
 )
 
 func (h *Hub) targetSession(sender *Client, msg *Message) string {
@@ -22,31 +20,19 @@ func (h *Hub) allClients() []*Client {
 }
 
 // allHookSubscribers returns the union of all WebSocket clients and any
-// registered plugins that implement HookSubscriber. Used by the hook
-// engine to rebuild its dispatch index whenever the subscriber set
-// changes (per creative `creative-plugin-runtime.md` §2).
+// runtime-owned hook targets. Used by the hook engine to rebuild its dispatch
+// index whenever the subscriber set changes.
 func (h *Hub) allHookSubscribers() []HookSubscriber {
 	clients := h.clients.All()
-	pluginHandles := h.pluginHandles()
 	runtimeTargets := h.runtimeHookTargets()
-	subs := make([]HookSubscriber, 0, len(clients)+len(pluginHandles)+len(runtimeTargets))
+	subs := make([]HookSubscriber, 0, len(clients)+len(runtimeTargets))
 	for _, c := range clients {
 		subs = append(subs, c)
 	}
-	for _, p := range pluginHandles {
-		subs = append(subs, newPluginHookSubscriber(p))
-	}
 	for _, target := range runtimeTargets {
-		subs = append(subs, newRuntimeHookSubscriber(target))
+		subs = append(subs, newRuntimeHookSubscriber(target, h.isRuntimeTargetBusy))
 	}
 	return subs
-}
-
-func (h *Hub) pluginHandles() []*plugin.Handle {
-	if h.plugins == nil {
-		return nil
-	}
-	return h.plugins.All()
 }
 
 func (h *Hub) runtimeHookTargets() []runtimeHookTarget {

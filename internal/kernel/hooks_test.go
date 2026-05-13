@@ -96,7 +96,9 @@ func TestHookVoid_SessionStart(t *testing.T) {
 
 	// Payload should contain session and client name
 	var payload map[string]string
-	json.Unmarshal(hookMsg.Payload, &payload)
+	if err := json.Unmarshal(hookMsg.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal hook payload: %v", err)
+	}
 	if payload["session"] != "s1" {
 		t.Fatalf("expected session s1, got %s", payload["session"])
 	}
@@ -111,6 +113,40 @@ func TestHookVoid_SessionStart(t *testing.T) {
 	joined := readMsg(t, conn)
 	if joined.Type != "joined" {
 		t.Fatalf("expected joined, got %s", joined.Type)
+	}
+}
+
+func TestHookVoid_SessionJoinFiresOnEveryJoin(t *testing.T) {
+	env := newTestEnv(t)
+
+	hook := env.connectHook("logger", []HookSubscription{{Event: "session_join", Priority: 0}})
+
+	first := env.connect("cli-1", []string{"message"}, []string{})
+	go func() {
+		writeJSON(t, first, Message{Type: "join", Session: "s1"})
+	}()
+
+	joinOne := readMsg(t, first)
+	if joinOne.Type != "joined" {
+		t.Fatalf("expected joined, got %s", joinOne.Type)
+	}
+	joinHookOne := readMsg(t, hook)
+	if joinHookOne.Type != "hook" || joinHookOne.Name != "session_join" {
+		t.Fatalf("expected hook/session_join, got %s/%s", joinHookOne.Type, joinHookOne.Name)
+	}
+
+	second := env.connect("cli-2", []string{"message"}, []string{})
+	go func() {
+		writeJSON(t, second, Message{Type: "join", Session: "s1"})
+	}()
+
+	joinTwo := readMsg(t, second)
+	if joinTwo.Type != "joined" {
+		t.Fatalf("expected joined, got %s", joinTwo.Type)
+	}
+	joinHookTwo := readMsg(t, hook)
+	if joinHookTwo.Type != "hook" || joinHookTwo.Name != "session_join" {
+		t.Fatalf("expected hook/session_join, got %s/%s", joinHookTwo.Type, joinHookTwo.Name)
 	}
 }
 
@@ -191,6 +227,26 @@ func TestHookSessionStartCanInjectInitContext(t *testing.T) {
 	if init.Context != "extra join context" {
 		t.Fatalf("expected init context, got %q", init.Context)
 	}
+
+	second := env.connect("cli-2", []string{"message"}, []string{"init"})
+	go func() {
+		writeJSON(t, second, Message{Type: "join", Session: "s1"})
+	}()
+
+	joinedSecond := readMsg(t, second)
+	if joinedSecond.Type != "joined" {
+		t.Fatalf("expected joined, got %s", joinedSecond.Type)
+	}
+	initSecond := readMsg(t, second)
+	if initSecond.Type != "init" {
+		t.Fatalf("expected init, got %s", initSecond.Type)
+	}
+	if initSecond.Context != "extra join context" {
+		t.Fatalf("expected persisted init context, got %q", initSecond.Context)
+	}
+	if msg := readMsgTimeout(t, hook, 300*time.Millisecond); msg != nil {
+		t.Fatalf("expected no second session_start dispatch, got %s/%s", msg.Type, msg.Name)
+	}
 }
 
 // --- Modifying hook tests ---
@@ -238,6 +294,67 @@ func TestHookSessionStart_ConcatenatesContextAcrossHooks(t *testing.T) {
 	}
 	if !strings.Contains(init.Context, "FIRST") || !strings.Contains(init.Context, "SECOND") {
 		t.Fatalf("expected concatenated context with FIRST and SECOND, got %q", init.Context)
+	}
+}
+
+func TestHookBeforePromptBuild_AppendsContextPerJoin(t *testing.T) {
+	env := newTestEnv(t)
+
+	startHook := env.connectHook("start", []HookSubscription{{Event: "session_start", Priority: 100}})
+	promptHook := env.connectHook("prompt", []HookSubscription{{Event: "before_prompt_build", Priority: 100}})
+
+	conn := env.connect("cli", []string{"message"}, []string{"init"})
+	go func() {
+		writeJSON(t, conn, Message{Type: "join", Session: "s1"})
+	}()
+
+	startMsg := readMsg(t, startHook)
+	writeJSON(t, startHook, Message{
+		Type:    "hook_result",
+		ID:      startMsg.ID,
+		Action:  "modify",
+		Payload: json.RawMessage(`{"context":"BASE"}`),
+	})
+	promptMsg := readMsg(t, promptHook)
+	writeJSON(t, promptHook, Message{
+		Type:    "hook_result",
+		ID:      promptMsg.ID,
+		Action:  "modify",
+		Payload: json.RawMessage(`{"context":"PROMPT"}`),
+	})
+
+	_ = readMsg(t, conn) // joined
+	init := readMsg(t, conn)
+	if init.Type != "init" {
+		t.Fatalf("expected init, got %s", init.Type)
+	}
+	if init.Context != "BASE\n\nPROMPT" {
+		t.Fatalf("expected base + prompt context, got %q", init.Context)
+	}
+
+	second := env.connect("cli-2", []string{"message"}, []string{"init"})
+	go func() {
+		writeJSON(t, second, Message{Type: "join", Session: "s1"})
+	}()
+
+	secondPromptMsg := readMsg(t, promptHook)
+	writeJSON(t, promptHook, Message{
+		Type:    "hook_result",
+		ID:      secondPromptMsg.ID,
+		Action:  "modify",
+		Payload: json.RawMessage(`{"context":"PROMPT"}`),
+	})
+
+	_ = readMsg(t, second) // joined
+	initSecond := readMsg(t, second)
+	if initSecond.Type != "init" {
+		t.Fatalf("expected init, got %s", initSecond.Type)
+	}
+	if initSecond.Context != "BASE\n\nPROMPT" {
+		t.Fatalf("expected base + prompt context on second join, got %q", initSecond.Context)
+	}
+	if msg := readMsgTimeout(t, startHook, 300*time.Millisecond); msg != nil {
+		t.Fatalf("expected no second session_start dispatch, got %s/%s", msg.Type, msg.Name)
 	}
 }
 
@@ -401,7 +518,9 @@ func TestHookModifying_PriorityOrder(t *testing.T) {
 	// Low priority hook fires second, receives modified text
 	h2 := readMsg(t, hookLow)
 	var payload map[string]string
-	json.Unmarshal(h2.Payload, &payload)
+	if err := json.Unmarshal(h2.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal hook payload: %v", err)
+	}
 	if payload["text"] != "msg+high" {
 		t.Fatalf("low hook expected text 'msg+high', got '%s'", payload["text"])
 	}
@@ -438,16 +557,12 @@ func TestHookNone_MessagePassesThrough(t *testing.T) {
 
 // --- Universal before_tool_call tests ---
 
-// newTestEnvWithSkillTool creates a test env with a synthetic skill tool
-// "echo_tool" whose exec command echoes the JSON input it receives on stdin.
-// This is the replacement coverage for the removed kernel-builtin shell_exec
-// path: before_tool_call hooks still gate and rewrite real dynamic skill exec
-// dispatch without depending on any kernel builtin tool.
+// newTestEnvWithSkillTool creates a test env with one runtime-hosted plugin tool.
 func newTestEnvWithSkillTool(t *testing.T) *testEnv {
 	t.Helper()
 	toolsJSON := json.RawMessage(`[{"name":"echo_tool","description":"echo","params":{"text":{"type":"string","description":"text"},"command":{"type":"string","description":"command text"}},"required":[]}]`)
-	skillExec := map[string]string{"echo_tool": "cat"}
-	hub := NewHub(toolsJSON, skillExec, 3, 5, nil)
+	hub := NewHub(toolsJSON, 3, 5, nil)
+	attachTestRuntime(t, hub, runtimePluginCapability("echo", "echo_tool"))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
@@ -481,7 +596,7 @@ func TestBeforeToolCallHookFiresForDynamicSkillTool(t *testing.T) {
 		[]string{"tool_result"},
 	)
 
-	// Send dynamic skill tool_use
+	// Send dynamic plugin tool_use
 	go func() {
 		writeJSON(t, drv, Message{
 			Type:  "tool_use",
@@ -497,9 +612,13 @@ func TestBeforeToolCallHookFiresForDynamicSkillTool(t *testing.T) {
 		t.Fatalf("expected hook/before_tool_call, got %s/%s", hookMsg.Type, hookMsg.Name)
 	}
 	var payload map[string]json.RawMessage
-	json.Unmarshal(hookMsg.Payload, &payload)
+	if err := json.Unmarshal(hookMsg.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal hook payload: %v", err)
+	}
 	var tool string
-	json.Unmarshal(payload["tool"], &tool)
+	if err := json.Unmarshal(payload["tool"], &tool); err != nil {
+		t.Fatalf("unmarshal hook tool: %v", err)
+	}
 	if tool != "echo_tool" {
 		t.Fatalf("expected tool echo_tool, got %s", tool)
 	}
@@ -526,7 +645,7 @@ func TestBeforeToolCallHookFiresForSkillTool(t *testing.T) {
 		[]string{"tool_result"},
 	)
 
-	// Send skill tool_use
+	// Send plugin tool_use
 	go func() {
 		writeJSON(t, drv, Message{
 			Type:  "tool_use",
@@ -536,15 +655,19 @@ func TestBeforeToolCallHookFiresForSkillTool(t *testing.T) {
 		})
 	}()
 
-	// Hook should receive before_tool_call for skill tool
+	// Hook should receive before_tool_call for plugin tool
 	hookMsg := readMsg(t, hook)
 	if hookMsg.Type != "hook" || hookMsg.Name != "before_tool_call" {
 		t.Fatalf("expected hook/before_tool_call, got %s/%s", hookMsg.Type, hookMsg.Name)
 	}
 	var payload map[string]json.RawMessage
-	json.Unmarshal(hookMsg.Payload, &payload)
+	if err := json.Unmarshal(hookMsg.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal hook payload: %v", err)
+	}
 	var tool string
-	json.Unmarshal(payload["tool"], &tool)
+	if err := json.Unmarshal(payload["tool"], &tool); err != nil {
+		t.Fatalf("unmarshal hook tool: %v", err)
+	}
 	if tool != "echo_tool" {
 		t.Fatalf("expected tool echo_tool, got %s", tool)
 	}

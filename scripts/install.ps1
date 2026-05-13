@@ -104,7 +104,7 @@ function Install-Service {
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
     }
 
-    $HeadlessScript = Join-Path $BinDir "tabula-server.ps1"
+    $HeadlessScript = Join-Path $BinDir "tabula-runner.ps1"
     $OutLog = Join-Path $LogDir "kernel.out.log"
     $ErrLog = Join-Path $LogDir "kernel.err.log"
 
@@ -182,15 +182,9 @@ try {
 
     # Extract skills tarball
     tar -xzf (Join-Path $TmpDir $SkillsArchive) -C $TabulaHome
-    $BootCicd = Join-Path $TabulaHome "examples" "boot-cicd.py"
-    if (Test-Path $BootCicd) {
-        Copy-Item $BootCicd -Destination (Join-Path $TabulaHome "boot-cicd.py") -Force
-    }
     # Record installed kernel version for tabula-distro compatibility checks.
     Set-Content -Path (Join-Path $TabulaHome "VERSION") -Value $VerBare -NoNewline
     $InstalledBinDir = Join-Path $TabulaHome "bin"
-    Copy-Item (Join-Path $InstalledBinDir "tabula-install-distro.ps1") -Destination (Join-Path $BinDir "tabula-install-distro.ps1") -Force -ErrorAction SilentlyContinue
-    Copy-Item (Join-Path $TabulaHome "scripts" "install-distro.py") -Destination (Join-Path $BinDir "install-distro.py") -Force
     Ok "Skills and config installed"
 
     # Restore user config if it existed
@@ -214,14 +208,18 @@ try {
         $Pip = Join-Path $Venv "Scripts" "pip.exe"
         & $Pip install -q -e $DistroToolDir
     }
-    # Expose tabula-distro on PATH alongside the rest of the launchers.
+    # Expose installer entrypoints on PATH alongside the rest of the launchers.
+    $TabulaInstallSrc = Join-Path $Venv "Scripts" "tabula-install.exe"
+    if (Test-Path $TabulaInstallSrc) {
+        Copy-Item $TabulaInstallSrc -Destination (Join-Path $BinDir "tabula-install.exe") -Force
+    }
     $TabulaDistroSrc = Join-Path $Venv "Scripts" "tabula-distro.exe"
     if (Test-Path $TabulaDistroSrc) {
         Copy-Item $TabulaDistroSrc -Destination (Join-Path $BinDir "tabula-distro.exe") -Force
     }
 
     # Copy PowerShell launch scripts
-    foreach ($script in @("tabula-server.ps1", "tabula-cli.ps1", "tabula-api.ps1", "tabula-install-distro.ps1")) {
+    foreach ($script in @("tabula-runner.ps1", "tabula-cli.ps1")) {
         $src = Join-Path $TabulaHome "bin" $script
         if (Test-Path $src) {
             Copy-Item $src -Destination (Join-Path $BinDir $script) -Force
@@ -263,8 +261,8 @@ try {
     Write-Host "  echo ANTHROPIC_API_KEY=sk-... >> $EnvFile"
     Write-Host ""
     Write-Host "Install a distro (required before the kernel can do anything useful):"
-    Write-Host "  tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw'"
-    Write-Host "  tabula-distro install C:\path\to\local\distro"
+    Write-Host "  tabula-install distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw'"
+    Write-Host "  tabula-install distro install C:\path\to\local\distro"
     Write-Host ""
     Write-Host "Then connect:"
     Write-Host "  tabula-cli"

@@ -94,9 +94,10 @@ Wire compatibility is tracked separately:
 
 - kernel client protocol: `ProtocolVersion` in `internal/kernel/protocol.go`
   and `tabula_plugin_sdk.protocol` for WebSocket clients;
-- plugin protocol: `[MinPluginProtocolVersion, MaxPluginProtocolVersion]`
-  in `internal/kernel/protocol.go`, negotiated during the stdio
-  `register_request` / `register` handshake;
+- runtime worker protocol: `internal/runtime/worker/wire` on the Go side and
+  `tabula_plugin_sdk.protocol` on the Python side, exchanged as NDJSON `init`,
+  `init_ack`, `call`, `result`, `event`, `event_reply`, `send`,
+  `tools_updated`, and `shutdown` frames;
 - Python/TypeScript SDK packages: independent SemVer artifacts, pinned by the
   bundle/distro release that ships them.
 
@@ -138,7 +139,7 @@ command and expects a JSON object on stdout.
 
 The boot command comes from `TABULA_BOOT`.
 
-In a normal install, `tabula-server` sets this to something like:
+In a normal install, `tabula-runner` sets this to something like:
 
 ```text
 "$TABULA_HOME/.venv/bin/python3" "$TABULA_HOME/boot.py"
@@ -147,13 +148,17 @@ In a normal install, `tabula-server` sets this to something like:
 The active `boot.py` is copied (or symlinked) from the installed distro under
 `$TABULA_HOME/distrib/<distro>/current/boot.py` by `tabula-distro`.
 
+`tabula serve` itself is kernel-only: it reads `TABULA_BOOT`, serves the kernel
+endpoints, and accepts runtime attachments. The local product wrapper
+`tabula-runner` is what launches `tabula serve` plus a sibling `tabula-runtime`
+process for the default local stack.
+
 ### Boot output
 
 The boot script emits one JSON object with fields like:
 
 - `url` — kernel WebSocket URL
-- `skills` — static per-call skill tool descriptors; each entry includes an
-  `exec` command used by the kernel for dispatch
+- `skills` — reserved legacy field; current distros leave it empty
 - `plugins` — plugin manifest paths for long-lived runtime components
 - `meta` — opaque client-facing metadata forwarded on `init.meta`
 
@@ -169,10 +174,9 @@ It does the following:
 - loads `.env`
 - scans the flat `skills/` and `plugins/` runtime surfaces recursively
 - reads `SKILL.md` frontmatter for skills and `plugin.toml` for plugins
-- discovers skill tools for `skills[]`
 - builds the system prompt from templates and project files
 - selects the active provider through the unified `drivers/driver` plugin
-- declares long-lived plugins for kernel-managed lifecycle
+- declares long-lived plugins for runtime-managed worker lifecycle
 - writes subagent prompt state under `$TABULA_HOME/state/subagent/`
 
 This is where most of the claw distro behavior is assembled.
@@ -181,10 +185,7 @@ This is where most of the claw distro behavior is assembled.
 
 `guardian/boot.py` (in `tabula-distrib`) is intentionally much simpler.
 
-It does not scan a flexible skill tree. It builds a fixed runtime:
-
-- one tool: `execute_code`
-- a system prompt composed from four fixed templates
+It builds a fixed runtime around distro-owned prompts plus installed plugins.
 
 Guardian is a good example of a distro with the same kernel contract but a
 completely different runtime philosophy.
@@ -235,14 +236,19 @@ $TABULA_HOME/boot.py                    -> distrib/active/current/boot.py
 $TABULA_HOME/templates/*                -> distrib/active/current/templates/*
 $TABULA_HOME/skills/*                   -> distrib/active/current/skills/* + bundle skills
 $TABULA_HOME/plugins/*                  -> distrib/active/current/plugins/* + bundle plugins
+$TABULA_HOME/tenants/<id>/templates/*   -> distrib/active/current/templates/*
+$TABULA_HOME/tenants/<id>/skills/*      -> distrib/active/current/skills/* + bundle skills
+$TABULA_HOME/tenants/<id>/plugins/*     -> distrib/active/current/plugins/* + bundle plugins
+$TABULA_HOME/tenants/<id>/_lib/*        -> distrib/active/current/_lib/*
 ```
 
 Shared SDK packages such as `tabula_plugin_sdk` are installed into
 `$TABULA_HOME/.venv` by the installer from bundled package artifacts. They are not
 materialized as special legacy support directories in the runtime surface.
 
-This flat runtime surface is important: the active agent sees one `skills/`
-tree and one `plugins/` tree, not a multi-distro layout.
+The root runtime surface remains flat for the active kernel/runtime, while each
+tenant gets its own fan-out of the same active generation surface. Bundle code
+is shared through symlinks; only tenant config/state/cache diverge.
 
 ## Skills and plugins
 
@@ -250,33 +256,20 @@ Tabula has two extension shapes, each identified by its manifest filename.
 
 ### Skill (`SKILL.md`)
 
-A **per-call** tool provider. Each tool invocation spawns a fresh subprocess.
-Skills are stateless. They do not subscribe to bus events.
+A prompt/instruction artifact. Skills describe when to use a workflow, may
+provide optional helper scripts/resources, and may expose slash-command docs via
+`user-invocable: true`. Skills do not publish executable tools.
 
-Manifest is Markdown with YAML frontmatter (Anthropic-compatible). Required
-fields: `name`, `description`, `tools`. Each entry in `tools[]` carries an
-`exec` command — that is what kernel runs to handle the call. Optional
-`user-invocable: true` exposes the skill as a `/name` slash command.
+Manifest is Markdown with YAML frontmatter (Anthropic-compatible). Common
+fields: `name`, `description`, and optional `user-invocable: true`.
 
 ```yaml
 ---
 name: git
-description: "Structured git operations for coding agents..."
-tools:
-  - name: git_status
-    description: "..."
-    params: { cwd: { type: string } }
-    required: []
-    exec: "<venv_python> skills/git/scripts/run.py tool git_status"
+description: "Guidance for using structured git plugin tools."
+user-invocable: true
 ---
-
-# Git skill
-
-(human-readable docs)
 ```
-
-Kernel runs the `exec` command per tool call, pipes JSON params on stdin,
-reads the result from stdout. Each call is process-isolated.
 
 ### Plugin (`plugin.toml`)
 
@@ -339,7 +332,7 @@ implemented authoring surface.
 | Hooks (`hook-permissions`, `hook-approvals`, `caveman`, ...)     | plugin |
 | MCP bridge                          | plugin |
 | LLM drivers (`drivers/driver`)     | plugin |
-| Subagent runtime (`drivers/subagent`) | plugin |
+| Subagent runtime (`subagents/subagent`) | client |
 | Gateways (TUI, CLI, API, Telegram) | plugin |
 
 The migration from the old uniform "everything is a skill" model is tracked
@@ -447,7 +440,7 @@ There are two main installation paths.
 
 `scripts/install.sh` / `scripts/install.ps1`:
 
-- download the Go binary from GitHub Releases
+- download the `tabula` and `tabula-runtime` binaries from GitHub Releases
 - download the runtime payload tarball (launchers, examples, service files,
   bundled SDK package artifacts, and the `tabula-distro` source)
 - create `$TABULA_HOME/.venv` and install Python runtime dependencies
@@ -464,7 +457,7 @@ tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#pa
 
 `scripts/install-dev.sh` / `scripts/install-dev.ps1`:
 
-- build the Go binary from source
+- build the `tabula` and `tabula-runtime` binaries from source
 - install shared SDK packages into `$TABULA_HOME/.venv`
 - copy service files
 - create a venv with dev dependencies
@@ -472,7 +465,7 @@ tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#pa
 
 Same follow-up: install a distro with `tabula-distro install <path-or-uri>`.
 
-Both paths intentionally stop at the kernel layer. Distro composition is
+Both paths intentionally stop at the local runtime layer. Distro composition is
 always done by `tabula-distro install`, which resolves a distro plus its
 declared bundles into the active runtime surface.
 
@@ -504,13 +497,12 @@ The running agent sees a flat tree under `$TABULA_HOME/`:
 
 ### Tool execution layout
 
-Skills are invoked as subprocesses using their `tools[].exec` command. The
-kernel does not import code from skills.
+Skills are prompt/instruction artifacts. The kernel does not import or invoke
+skill code as part of tool execution.
 
-Plugins run as long-lived subprocesses and communicate via stdio NDJSON
-JSON-RPC.
-Tool calls dispatched to a plugin are sent on the same channel, not by
-re-spawning a new process.
+Plugins run as long-lived subprocesses and communicate via stdio worker
+protocol messages. Tool calls dispatched to a plugin are sent on the same
+channel, not by re-spawning a new process.
 
 This keeps every execution boundary explicit and language-neutral.
 
@@ -589,4 +581,4 @@ Those are the places where contracts matter.
 - [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles) — reusable
   bundles
 - `internal/kernel/protocol.go` — Go-side protocol constants
-- `internal/kernel/plugin/protocol.go` — plugin stdio protocol messages
+- `internal/runtime/worker/wire` — runtime-owned worker protocol messages

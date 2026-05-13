@@ -60,6 +60,7 @@ type Target = wire.Target
 type InvokeReq struct {
 	CallID    string
 	TenantID  string
+	SessionID string
 	Target    Target
 	Tool      string
 	Args      json.RawMessage
@@ -88,7 +89,8 @@ type HookEventReq = wire.HookEvent
 
 // ReloadReq optionally scopes runtime reload to a target.
 type ReloadReq struct {
-	Target *Target
+	Target  *Target
+	Tenants []string
 }
 
 // ReloadResp returns targets affected by reload.

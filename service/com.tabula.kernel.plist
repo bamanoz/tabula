@@ -3,11 +3,12 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.tabula.kernel</string>
+    <string>ai.tabula.kernel</string>
     <key>ProgramArguments</key>
     <array>
         <string>__TABULA_HOME__/bin/tabula</string>
         <string>serve</string>
+        <string>--foreground</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
@@ -23,10 +24,13 @@
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
     <key>StandardOutPath</key>
-    <string>__TABULA_HOME__/logs/kernel.out.log</string>
+    <string>__TABULA_HOME__/logs/kernel.log</string>
     <key>StandardErrorPath</key>
-    <string>__TABULA_HOME__/logs/kernel.err.log</string>
+    <string>__TABULA_HOME__/logs/kernel.log</string>
 </dict>
 </plist>

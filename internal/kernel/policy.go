@@ -31,13 +31,19 @@ func (pe *PolicyEngine) CanConnect(token string) (int, error) {
 	return 0, nil
 }
 
-// CanJoin runs the session_start hook and returns (context, blocked).
-// Returns ("", true) if the hook blocks the join.
-func (pe *PolicyEngine) CanJoin(session string, clientName string) (string, bool) {
+func (pe *PolicyEngine) joinHookPayload(session string, tenantID string, clientName string) []byte {
 	hookPayload, _ := json.Marshal(map[string]string{
-		"session": session,
-		"client":  clientName,
+		"session":   session,
+		"tenant_id": tenantID,
+		"client":    clientName,
 	})
+	return hookPayload
+}
+
+// StartSession runs the session_start hook once for a newly-created session and
+// returns (context, blocked). Returns ("", true) if the hook blocks startup.
+func (pe *PolicyEngine) StartSession(session string, tenantID string, clientName string) (string, bool) {
+	hookPayload := pe.joinHookPayload(session, tenantID, clientName)
 	result, ok := pe.hub.dispatchHook("session_start", hookPayload, session)
 	if !ok {
 		return "", true
@@ -48,6 +54,35 @@ func (pe *PolicyEngine) CanJoin(session string, clientName string) (string, bool
 		return hookData.Context, false
 	}
 	return "", false
+}
+
+// SessionJoin emits a non-blocking observability event for every successful
+// join, including joins to existing sessions.
+func (pe *PolicyEngine) SessionJoin(session string, tenantID string, clientName string) {
+	pe.hub.dispatchHook("session_join", pe.joinHookPayload(session, tenantID, clientName), session)
+}
+
+// BeforePromptBuild lets plugins contribute prompt-build context for init-capable
+// clients without mutating the persisted session_start init context.
+func (pe *PolicyEngine) BeforePromptBuild(session string, tenantID string, clientName string, context string, tools json.RawMessage, meta json.RawMessage) string {
+	hookPayload, _ := json.Marshal(map[string]any{
+		"session":   session,
+		"tenant_id": tenantID,
+		"client":    clientName,
+		"context":   context,
+		"tools":     tools,
+		"meta":      meta,
+	})
+	result, ok := pe.hub.dispatchHook("before_prompt_build", hookPayload, session)
+	if !ok {
+		return context
+	}
+
+	var hookData struct{ Context string }
+	if json.Unmarshal(result, &hookData) == nil && hookData.Context != "" {
+		return hookData.Context
+	}
+	return context
 }
 
 // CanSend checks whether a client is allowed to send a message.

@@ -10,10 +10,18 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/coder/websocket"
 
 	"github.com/bamanoz/tabula/internal/runtime/codec"
+)
+
+const (
+	serverReadHeaderTimeout = 5 * time.Second
+	serverReadTimeout       = 30 * time.Second
+	serverWriteTimeout      = 60 * time.Second
+	serverIdleTimeout       = 120 * time.Second
 )
 
 // Listener owns a unix socket listener for runtime daemon connections.
@@ -66,7 +74,12 @@ func (l *Listener) Serve(handler Handler) error {
 		conn := codec.New(ws)
 		go handler(context.Background(), conn)
 	})
-	l.srv = &http.Server{Handler: mux}
+	l.srv = &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: serverReadHeaderTimeout,
+		WriteTimeout:      serverWriteTimeout,
+		IdleTimeout:       serverIdleTimeout,
+	}
 	err := l.srv.Serve(l.ln)
 	if err == http.ErrServerClosed {
 		return nil

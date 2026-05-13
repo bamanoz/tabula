@@ -86,7 +86,7 @@ func dialAndHandshake(t *testing.T, sock, token string) wire.HelloAck {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.CloseNow()
+	defer func() { _ = c.CloseNow() }()
 	ack, err := runtimeconn.Handshake(context.Background(), c, wire.Hello{Op: wire.OpHello, RuntimeID: runtimeauth.LocalRuntimeID, Token: token, ProtocolVersion: "1"})
 	if err != nil {
 		t.Fatalf("Handshake: %v", err)

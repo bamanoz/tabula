@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import time
 import os
 from pathlib import Path
 import json
 import unittest
+import websocket
 
 from tabula_testbed import TestbedClient
 
@@ -18,6 +20,42 @@ class SubagentsPluginSmoke(unittest.TestCase):
         client = TestbedClient(self.url, name=name)
         client.connect_join("testbed-subagents")
         return client
+
+    def test_before_prompt_build_hooks_do_not_block_join_ack(self):
+        hook = websocket.create_connection(self.url, timeout=5)
+        client = websocket.create_connection(self.url, timeout=5)
+        try:
+            hook.send(json.dumps({
+                "version": 1,
+                "type": "connect",
+                "name": "testbed-slow-before-prompt-build",
+                "sends": ["hook_result"],
+                "receives": ["hook"],
+                "hooks": [{"event": "before_prompt_build", "priority": 100, "timeout_ms": 2000}],
+            }))
+            self.assertEqual(json.loads(hook.recv()).get("type"), "connected")
+
+            client.send(json.dumps({
+                "version": 1,
+                "type": "connect",
+                "name": "testbed-subagent-join-ack",
+                "sends": ["message", "tool_use"],
+                "receives": ["init", "message", "tool_result", "error"],
+            }))
+            self.assertEqual(json.loads(client.recv()).get("type"), "connected")
+
+            started = time.monotonic()
+            client.send(json.dumps({"version": 1, "type": "join", "session": "subagent-testbed-join-ack", "tenant_id": "default"}))
+            joined = json.loads(client.recv())
+            elapsed = time.monotonic() - started
+            self.assertEqual(joined.get("type"), "joined")
+            self.assertLess(elapsed, 1.0, f"joined was blocked by before_prompt_build for {elapsed:.3f}s")
+
+            init = json.loads(client.recv())
+            self.assertEqual(init.get("type"), "init")
+        finally:
+            hook.close()
+            client.close()
 
     def test_subagents_plugin_and_client_are_installed(self):
         home = Path(self.tabula_home)
@@ -41,7 +79,7 @@ class SubagentsPluginSmoke(unittest.TestCase):
 
     def test_subagents_plugin_enforces_allowed_tools(self):
         home = Path(self.tabula_home)
-        entry = home / "state" / "plugins" / "subagents" / "sa-testbed.json"
+        entry = home / "tenants" / "default" / "state" / "plugins" / "subagents" / "sa-testbed.json"
         entry.parent.mkdir(parents=True, exist_ok=True)
         entry.write_text(json.dumps({
             "version": 1,
@@ -69,11 +107,34 @@ class SubagentsPluginSmoke(unittest.TestCase):
                 "id": "sa-layout",
             }, timeout=10).json()
             self.assertEqual(spawned.get("id"), "sa-layout")
-            self.assertTrue((home / "state" / "plugins" / "subagents" / "sa-layout.json").is_file())
+            self.assertTrue((home / "tenants" / "default" / "state" / "plugins" / "subagents" / "sa-layout.json").is_file())
             self.assertTrue((home / "logs" / "plugins" / "subagents" / "sa-layout.log").is_file())
             self.assertFalse((home / "state" / "subagents").exists())
             self.assertFalse((home / "logs" / "subagents").exists())
             client.call_tool("subagent_kill", {"id": "sa-layout"}, timeout=10)
+
+    def test_async_subagent_send_wait_returns_new_result(self):
+        self.skipTest("async subagent integration depends on live provider credentials; covered by subagent unit tests")
+        with self.make_client("testbed-subagents-async") as client:
+            client.wait_tools({"subagent_spawn", "subagent_send", "subagent_wait", "subagent_kill"}, session="testbed-subagents")
+            spawned = client.call_tool("subagent_spawn", {
+                "type": "general",
+                "task": "Reply exactly with FIRST.",
+                "id": "sa-async-history",
+                "timeout": 30,
+            }, timeout=20).json()
+            self.assertEqual(spawned.get("status"), "running")
+            delivered = client.call_tool("subagent_send", {"id": "sa-async-history", "message": "Reply exactly with SECOND."}, timeout=10).json()
+            self.assertTrue(delivered.get("delivered"), delivered)
+            waited = client.call_tool("subagent_wait", {"id": "sa-async-history", "timeout": 30}, timeout=35).json()
+            self.assertTrue(waited.get("ok"), waited)
+            self.assertIn("SECOND", str(waited.get("result", "")))
+            msg = client.recv(type="message", timeout=5)
+            self.assertEqual(msg.get("id"), "sa-async-history")
+            self.assertIn('<subagent_async_result id="sa-async-history"', msg.get("text", ""))
+            self.assertEqual(msg.get("meta", {}).get("source"), "subagent")
+            self.assertEqual(msg.get("meta", {}).get("subagent_id"), "sa-async-history")
+            client.call_tool("subagent_kill", {"id": "sa-async-history"}, timeout=10)
 
 
 def main() -> int:

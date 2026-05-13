@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"sort"
 	"sync"
@@ -32,10 +33,11 @@ type HookResult struct {
 }
 
 type HookEngine struct {
-	mu      sync.RWMutex
-	index   map[string][]hookEntry
-	pending map[string]chan *HookResult
-	logger  *slog.Logger
+	mu             sync.RWMutex
+	index          map[string][]hookEntry
+	pending        map[string]chan *HookResult
+	logger         *slog.Logger
+	sessionTenants func(string) string
 }
 
 func NewHookEngine(logger *slog.Logger) *HookEngine {
@@ -47,6 +49,13 @@ func NewHookEngine(logger *slog.Logger) *HookEngine {
 		pending: make(map[string]chan *HookResult),
 		logger:  logger,
 	}
+}
+
+func (e *HookEngine) SetSessionTenantResolver(resolve func(string) string) {
+	if e == nil {
+		return
+	}
+	e.sessionTenants = resolve
 }
 
 // RebuildIndex reconstructs the hook index from the given subscribers
@@ -90,6 +99,12 @@ func (e *HookEngine) DispatchExcept(event string, payload json.RawMessage, sessi
 		if exclude != nil && entry.sub == exclude {
 			continue
 		}
+		if !entry.sub.IsConnected() {
+			continue
+		}
+		if entry.sub.IsBusy() && e.eventType(event) != HookSecurity {
+			continue
+		}
 		if entry.sub.Session() == session || entry.sub.Session() == "" {
 			relevant = append(relevant, entry)
 		}
@@ -116,6 +131,13 @@ func (e *HookEngine) DispatchExcept(event string, payload json.RawMessage, sessi
 	}
 }
 
+func (e *HookEngine) eventType(event string) HookEventType {
+	if def, ok := HookEvents[event]; ok {
+		return def.Type
+	}
+	return HookSecurity
+}
+
 func (e *HookEngine) HandleResult(msg *Message) {
 	ch, ok := e.pendingHook(msg.ID)
 	if !ok {
@@ -133,14 +155,22 @@ func (e *HookEngine) HandleResult(msg *Message) {
 	}
 }
 
+func (e *HookEngine) sessionTenantID(session string) string {
+	if e != nil && e.sessionTenants != nil {
+		return e.sessionTenants(session)
+	}
+	return ""
+}
+
 func (e *HookEngine) dispatchVoid(event string, payload json.RawMessage, session string, entries []hookEntry) {
 	for _, entry := range entries {
 		entry.sub.SendMsg(&Message{
-			Type:    "hook",
-			ID:      generateHookID(),
-			Name:    event,
-			Session: session,
-			Payload: payload,
+			Type:     "hook",
+			ID:       generateHookID(),
+			Name:     event,
+			Session:  session,
+			TenantID: e.sessionTenantID(session),
+			Payload:  payload,
 		})
 	}
 }
@@ -170,11 +200,12 @@ func (e *HookEngine) dispatchModifying(event string, payload json.RawMessage, se
 }
 
 // mergePayload merges a hook's modify response with the running payload.
-// For session_start the `context` field is additive across hooks: each
-// subscriber contributes a system-prompt fragment, so we concatenate rather
-// than replace. All other fields are taken from the new payload.
+// For context-contributing hook events, the `context` field is additive across
+// hooks: each subscriber contributes a system-prompt fragment, so we
+// concatenate rather than replace. All other fields are taken from the new
+// payload.
 func (e *HookEngine) mergePayload(event string, prev, next json.RawMessage) json.RawMessage {
-	if event != "session_start" || len(prev) == 0 {
+	if !contextAdditiveHookEvent(event) || len(prev) == 0 {
 		return next
 	}
 	var prevMap, nextMap map[string]any
@@ -184,21 +215,36 @@ func (e *HookEngine) mergePayload(event string, prev, next json.RawMessage) json
 	if err := json.Unmarshal(next, &nextMap); err != nil {
 		return next
 	}
-	prevCtx, _ := prevMap["context"].(string)
-	nextCtx, _ := nextMap["context"].(string)
-	if prevCtx == "" || nextCtx == "" {
-		return next
+	merged := make(map[string]any, len(prevMap)+len(nextMap))
+	for k, v := range prevMap {
+		merged[k] = v
 	}
-	merged := make(map[string]any, len(nextMap))
 	for k, v := range nextMap {
 		merged[k] = v
 	}
-	merged["context"] = prevCtx + "\n\n" + nextCtx
+	prevCtx, _ := prevMap["context"].(string)
+	nextCtx, _ := nextMap["context"].(string)
+	if prevCtx != "" && nextCtx != "" {
+		merged["context"] = prevCtx + "\n\n" + nextCtx
+	} else if prevCtx != "" {
+		merged["context"] = prevCtx
+	} else if nextCtx != "" {
+		merged["context"] = nextCtx
+	}
 	out, err := json.Marshal(merged)
 	if err != nil {
 		return next
 	}
 	return out
+}
+
+func contextAdditiveHookEvent(event string) bool {
+	switch event {
+	case "session_start", "before_prompt_build":
+		return true
+	default:
+		return false
+	}
 }
 
 func (e *HookEngine) dispatchClaiming(event string, payload json.RawMessage, session string, entries []hookEntry) (json.RawMessage, bool) {
@@ -224,11 +270,12 @@ func (e *HookEngine) sendAndWait(entry hookEntry, event string, payload json.Raw
 	e.addPendingHook(id, ch)
 
 	s.SendMsg(&Message{
-		Type:    "hook",
-		ID:      id,
-		Name:    event,
-		Session: session,
-		Payload: payload,
+		Type:     "hook",
+		ID:       id,
+		Name:     event,
+		Session:  session,
+		TenantID: e.sessionTenantID(session),
+		Payload:  payload,
 	})
 
 	var result *HookResult
@@ -244,11 +291,14 @@ func (e *HookEngine) sendAndWait(entry hookEntry, event string, payload json.Raw
 		if entry.subscrip.TimeoutMs != nil && *entry.subscrip.TimeoutMs > 0 {
 			d = time.Duration(*entry.subscrip.TimeoutMs) * time.Millisecond
 		}
+		timer := time.NewTimer(d)
 		select {
 		case result = <-ch:
+			timer.Stop()
 		case <-s.Done():
+			timer.Stop()
 			e.logger.Info("hook subscriber disconnected", "event", event, "client", s.Name(), "id", id)
-		case <-time.After(d):
+		case <-timer.C:
 			e.logger.Warn("hook timeout", "event", event, "client", s.Name(), "id", id)
 		}
 	}
@@ -258,15 +308,26 @@ func (e *HookEngine) sendAndWait(entry hookEntry, event string, payload json.Raw
 }
 
 func (e *HookEngine) injectSession(payload json.RawMessage, session string) json.RawMessage {
-	if session == "" {
+	tenantID := e.sessionTenantID(session)
+	if session == "" && tenantID == "" {
 		return payload
 	}
 	var m map[string]interface{}
 	if json.Unmarshal(payload, &m) != nil {
 		return payload
 	}
+	changed := false
 	if _, ok := m["session"]; !ok {
 		m["session"] = session
+		changed = true
+	}
+	if tenantID != "" {
+		if _, ok := m["tenant_id"]; !ok {
+			m["tenant_id"] = tenantID
+			changed = true
+		}
+	}
+	if changed {
 		out, _ := json.Marshal(m)
 		return out
 	}
@@ -306,6 +367,8 @@ func (e *HookEngine) pendingHook(id string) (chan *HookResult, bool) {
 
 func generateHookID() string {
 	b := make([]byte, 8)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Errorf("generate hook id: %w", err))
+	}
 	return "h-" + hex.EncodeToString(b)
 }

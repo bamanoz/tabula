@@ -4,14 +4,13 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=__TABULA_HOME__/bin/tabula serve
+Type=simple
 WorkingDirectory=__TABULA_HOME__
-Restart=always
-RestartSec=5
 Environment=TABULA_HOME=__TABULA_HOME__
 Environment=TABULA_BOOT=python3 __TABULA_HOME__/boot.py
-StandardOutput=append:__TABULA_HOME__/logs/kernel.out.log
-StandardError=append:__TABULA_HOME__/logs/kernel.err.log
+ExecStart=__TABULA_HOME__/bin/tabula serve --foreground
+Restart=on-failure
+RestartSec=5s
 
 [Install]
 WantedBy=default.target

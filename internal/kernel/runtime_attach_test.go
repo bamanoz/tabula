@@ -7,20 +7,23 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 
+	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
 	runtimeauth "github.com/bamanoz/tabula/internal/runtime/auth"
 	"github.com/bamanoz/tabula/internal/runtime/codec"
 	runtimeconn "github.com/bamanoz/tabula/internal/runtime/conn"
 	runtimemock "github.com/bamanoz/tabula/internal/runtime/mock"
+	"github.com/bamanoz/tabula/internal/runtime/transport/wss"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
 )
 
 func TestServeAuthenticatedRuntimeRegistersAndDetachesRuntime(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	store := runtimeauth.NewMemoryStore()
 	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good"}); err != nil {
 		t.Fatalf("store token: %v", err)
@@ -28,7 +31,7 @@ func TestServeAuthenticatedRuntimeRegistersAndDetachesRuntime(t *testing.T) {
 	clientWS, serverWS := runtimeConnWebsocketNetPipe(t)
 	client := codec.New(clientWS)
 	server := codec.New(serverWS)
-	defer client.CloseNow()
+	defer func() { _ = client.CloseNow() }()
 
 	done := make(chan error, 1)
 	go func() {
@@ -58,7 +61,7 @@ func TestServeAuthenticatedRuntimeRegistersAndDetachesRuntime(t *testing.T) {
 }
 
 func TestServeAuthenticatedRuntimeRejectsWrongTokenWithoutRegistering(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	store := runtimeauth.NewMemoryStore()
 	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good"}); err != nil {
 		t.Fatalf("store token: %v", err)
@@ -66,7 +69,7 @@ func TestServeAuthenticatedRuntimeRejectsWrongTokenWithoutRegistering(t *testing
 	clientWS, serverWS := runtimeConnWebsocketNetPipe(t)
 	client := codec.New(clientWS)
 	server := codec.New(serverWS)
-	defer client.CloseNow()
+	defer func() { _ = client.CloseNow() }()
 
 	done := make(chan error, 1)
 	go func() {
@@ -122,7 +125,7 @@ func assertRuntimeSnapshot(t *testing.T, raw []byte, attached bool) {
 }
 
 func TestServeAuthenticatedRuntimeSnapshotsRuntimePIDWhenKnown(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	store := runtimeauth.NewMemoryStore()
 	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good"}); err != nil {
 		t.Fatalf("store token: %v", err)
@@ -130,7 +133,7 @@ func TestServeAuthenticatedRuntimeSnapshotsRuntimePIDWhenKnown(t *testing.T) {
 	clientWS, serverWS := runtimeConnWebsocketNetPipe(t)
 	client := codec.New(clientWS)
 	server := codec.New(serverWS)
-	defer client.CloseNow()
+	defer func() { _ = client.CloseNow() }()
 
 	done := make(chan error, 1)
 	go func() {
@@ -167,7 +170,7 @@ func TestServeAuthenticatedRuntimeSnapshotsRuntimePIDWhenKnown(t *testing.T) {
 }
 
 func TestServeAuthenticatedRuntimeCatalogUpdatePopulatesRuntimeDispatchAndSnapshot(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	store := runtimeauth.NewMemoryStore()
 	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good"}); err != nil {
 		t.Fatalf("store token: %v", err)
@@ -175,7 +178,7 @@ func TestServeAuthenticatedRuntimeCatalogUpdatePopulatesRuntimeDispatchAndSnapsh
 	clientWS, serverWS := runtimeConnWebsocketNetPipe(t)
 	client := codec.New(clientWS)
 	server := codec.New(serverWS)
-	defer client.CloseNow()
+	defer func() { _ = client.CloseNow() }()
 
 	done := make(chan error, 1)
 	go func() {
@@ -210,6 +213,9 @@ func TestServeAuthenticatedRuntimeCatalogUpdatePopulatesRuntimeDispatchAndSnapsh
 	}); err != nil {
 		t.Fatalf("catalog_update: %v", err)
 	}
+	waitForToolDispatch(t, hub, "seed", func(entry toolDispatch) bool {
+		return entry.Source == toolSourceRuntime && entry.RuntimeID == runtimeauth.LocalRuntimeID
+	})
 	if err := client.Write(context.Background(), wire.LifecycleNotice{
 		Op:      wire.OpLifecycleNotice,
 		Target:  wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"},
@@ -220,17 +226,11 @@ func TestServeAuthenticatedRuntimeCatalogUpdatePopulatesRuntimeDispatchAndSnapsh
 		t.Fatalf("lifecycle_notice: %v", err)
 	}
 
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		entry, ok := hub.toolExec["echo"]
-		if ok && entry.Source == toolSourceRuntime && entry.RuntimeID == runtimeauth.LocalRuntimeID {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	entry, ok := hub.toolExec["echo"]
-	if !ok || entry.Source != toolSourceRuntime || entry.RuntimeID != runtimeauth.LocalRuntimeID {
-		t.Fatalf("runtime dispatch not installed: ok=%v entry=%+v", ok, entry)
+	entry := waitForToolDispatch(t, hub, "echo", func(entry toolDispatch) bool {
+		return entry.Source == toolSourceRuntime && entry.RuntimeID == runtimeauth.LocalRuntimeID
+	})
+	if entry.Source != toolSourceRuntime || entry.RuntimeID != runtimeauth.LocalRuntimeID {
+		t.Fatalf("runtime dispatch not installed: entry=%+v", entry)
 	}
 	if entries := hub.hooks.entries("before_tool_call"); len(entries) != 1 || entries[0].sub.Name() != "runtime:local:plugin:fs" {
 		t.Fatalf("runtime hook subscriber not indexed: %+v", entries)
@@ -249,7 +249,7 @@ func TestServeAuthenticatedRuntimeCatalogUpdatePopulatesRuntimeDispatchAndSnapsh
 			} `json:"targets"`
 		} `json:"runtimes"`
 	}
-	deadline = time.Now().Add(time.Second)
+	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		if err := json.Unmarshal(hub.SnapshotRuntimes(), &body); err == nil && len(body.Runtimes) == 1 && len(body.Runtimes[0].Targets) == 1 {
 			target := body.Runtimes[0].Targets[0]
@@ -271,8 +271,8 @@ func TestServeAuthenticatedRuntimeCatalogUpdatePopulatesRuntimeDispatchAndSnapsh
 	<-done
 }
 
-func TestServeAuthenticatedRuntimeAsyncFramesRouteHookRepliesAndBusMessages(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+func TestServeAuthenticatedRuntimeInitialCapabilitiesReachInitTools(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	store := runtimeauth.NewMemoryStore()
 	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good"}); err != nil {
 		t.Fatalf("store token: %v", err)
@@ -280,7 +280,62 @@ func TestServeAuthenticatedRuntimeAsyncFramesRouteHookRepliesAndBusMessages(t *t
 	clientWS, serverWS := runtimeConnWebsocketNetPipe(t)
 	client := codec.New(clientWS)
 	server := codec.New(serverWS)
-	defer client.CloseNow()
+	defer func() { _ = client.CloseNow() }()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- hub.ServeAuthenticatedRuntime(context.Background(), server, RuntimeAttachOptions{
+			Auth: runtimeauth.Authenticator{Store: store, KernelID: "main"},
+		})
+	}()
+
+	if _, err := runtimeconn.Handshake(context.Background(), client, wire.Hello{
+		Op:              wire.OpHello,
+		RuntimeID:       runtimeauth.LocalRuntimeID,
+		Token:           "rtk_good",
+		ProtocolVersion: "1",
+		Capabilities: []wire.Capability{{
+			Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "recorder"},
+			Tools:  []wire.ToolSpec{{Name: "testbed_hook_recorder_clear"}, {Name: "testbed_hook_recorder_events"}},
+			State:  wire.CapabilityStateManifestLoaded,
+			Source: wire.CapabilitySourceManifest,
+		}, {
+			Target:      wire.Target{Kind: wire.TargetKindSkill, ID: "skill:timer"},
+			Tools:       []wire.ToolSpec{{Name: "timer_start"}},
+			State:       wire.CapabilityStateManifestLoaded,
+			Source:      wire.CapabilitySourceManifest,
+			WorkerMode:  wire.WorkerModeCold,
+			HarnessKind: wire.HarnessKindPython,
+		}},
+	}); err != nil {
+		t.Fatalf("Handshake: %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		raw := hub.initToolsJSON()
+		if strings.Contains(string(raw), `"testbed_hook_recorder_clear"`) && strings.Contains(string(raw), `"testbed_hook_recorder_events"`) && !strings.Contains(string(raw), `"timer_start"`) {
+			_ = client.CloseNow()
+			<-done
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = client.CloseNow()
+	<-done
+	t.Fatalf("initial runtime capabilities missing from init tools: %s", string(hub.initToolsJSON()))
+}
+
+func TestServeAuthenticatedRuntimeAsyncFramesRouteHookRepliesAndBusMessages(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	store := runtimeauth.NewMemoryStore()
+	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good"}); err != nil {
+		t.Fatalf("store token: %v", err)
+	}
+	clientWS, serverWS := runtimeConnWebsocketNetPipe(t)
+	client := codec.New(clientWS)
+	server := codec.New(serverWS)
+	defer func() { _ = client.CloseNow() }()
 
 	sessionRecv := addCaptureClient(t, hub, "session-recorder", "s1", []string{"plugin_event"}, nil)
 	globalRecv := addCaptureClient(t, hub, "global-recorder", "", nil, []string{"plugin_event"})
@@ -343,7 +398,7 @@ func TestServeAuthenticatedRuntimeAsyncFramesRouteHookRepliesAndBusMessages(t *t
 }
 
 func TestServeAuthenticatedRuntimeDetachRemovesRuntimeTools(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	store := runtimeauth.NewMemoryStore()
 	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good"}); err != nil {
 		t.Fatalf("store token: %v", err)
@@ -351,7 +406,7 @@ func TestServeAuthenticatedRuntimeDetachRemovesRuntimeTools(t *testing.T) {
 	clientWS, serverWS := runtimeConnWebsocketNetPipe(t)
 	client := codec.New(clientWS)
 	server := codec.New(serverWS)
-	defer client.CloseNow()
+	defer func() { _ = client.CloseNow() }()
 
 	done := make(chan error, 1)
 	go func() {
@@ -373,35 +428,28 @@ func TestServeAuthenticatedRuntimeDetachRemovesRuntimeTools(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("catalog_update: %v", err)
 	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if _, ok := hub.toolExec["echo"]; ok {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if _, ok := hub.toolExec["echo"]; !ok {
-		t.Fatal("runtime tool dispatch was never installed")
-	}
+	waitForToolDispatch(t, hub, "echo", func(entry toolDispatch) bool {
+		return entry.Source == toolSourceRuntime && entry.RuntimeID == runtimeauth.LocalRuntimeID
+	})
 
 	_ = client.Close(websocket.StatusNormalClosure, "test close")
 	if err := <-done; err != nil {
 		t.Fatalf("ServeAuthenticatedRuntime returned error: %v", err)
 	}
-	if _, ok := hub.toolExec["echo"]; ok {
-		t.Fatalf("runtime tool dispatch still present after detach: %+v", hub.toolExec["echo"])
+	if entry, ok := toolDispatchEntry(hub, "echo"); ok {
+		t.Fatalf("runtime tool dispatch still present after detach: %+v", entry)
 	}
 }
 
 func TestReloadAttachedRuntimeUsesAttachedConn(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.runtimes = NewRuntimeRegistry()
 	rc := runtimemock.New()
 	if err := hub.runtimes.RegisterHello(runtimeauth.LocalRuntimeID, rc, nil, 0); err != nil {
 		t.Fatalf("RegisterHello: %v", err)
 	}
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
-	attempted, err := hub.ReloadAttachedRuntime(context.Background(), runtimeauth.LocalRuntimeID, &target)
+	attempted, err := hub.ReloadAttachedRuntime(context.Background(), runtimeauth.LocalRuntimeID, &target, "alpha")
 	if err != nil {
 		t.Fatalf("ReloadAttachedRuntime: %v", err)
 	}
@@ -409,7 +457,7 @@ func TestReloadAttachedRuntimeUsesAttachedConn(t *testing.T) {
 		t.Fatal("expected attached runtime reload to be attempted")
 	}
 	reloads := rc.RecordedReloads()
-	if len(reloads) != 1 || reloads[0].Target == nil || reloads[0].Target.ID != "fs" {
+	if len(reloads) != 1 || reloads[0].Target == nil || reloads[0].Target.ID != "fs" || len(reloads[0].Tenants) != 1 || reloads[0].Tenants[0] != "alpha" {
 		t.Fatalf("recorded reloads = %#v", reloads)
 	}
 
@@ -423,7 +471,7 @@ func TestReloadAttachedRuntimeUsesAttachedConn(t *testing.T) {
 }
 
 func TestRuntimeAttachedTracksRegistryState(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	if hub.RuntimeAttached(runtimeauth.LocalRuntimeID) {
 		t.Fatal("expected runtime to start detached")
 	}
@@ -441,8 +489,96 @@ func TestRuntimeAttachedTracksRegistryState(t *testing.T) {
 	}
 }
 
+func TestServeAuthenticatedRuntimeUnixAndWSSCoexist(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	store := runtimeauth.NewMemoryStore()
+	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: "unix-runtime", Token: "rtk_unix"}); err != nil {
+		t.Fatalf("store unix token: %v", err)
+	}
+	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: "wss-runtime", Token: "rtk_wss"}); err != nil {
+		t.Fatalf("store wss token: %v", err)
+	}
+	auth := runtimeauth.Authenticator{Store: store, KernelID: "main"}
+
+	unixClientWS, unixServerWS := runtimeConnWebsocketNetPipe(t)
+	unixClient := codec.New(unixClientWS)
+	defer func() { _ = unixClient.CloseNow() }()
+	unixServer := codec.New(unixServerWS)
+	unixDone := make(chan error, 1)
+	go func() {
+		unixDone <- hub.ServeAuthenticatedRuntime(context.Background(), unixServer, RuntimeAttachOptions{Auth: auth})
+	}()
+	if _, err := runtimeconn.Handshake(context.Background(), unixClient, wire.Hello{
+		Op:              wire.OpHello,
+		RuntimeID:       "unix-runtime",
+		Token:           "rtk_unix",
+		ProtocolVersion: "1",
+		Capabilities:    []wire.Capability{{Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "unix-fs"}, Tools: []wire.ToolSpec{{Name: "unix_read"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}},
+	}); err != nil {
+		t.Fatalf("unix Handshake: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	wssAccepted := make(chan struct{})
+	wssDone := make(chan error, 1)
+	wss.Listener{}.Mount(mux, func(ctx context.Context, c *codec.Conn) {
+		close(wssAccepted)
+		wssDone <- hub.ServeAuthenticatedRuntime(ctx, c, RuntimeAttachOptions{Auth: auth})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	wssClient, err := wss.Dial(context.Background(), "ws"+strings.TrimPrefix(server.URL, "http")+wss.DefaultPath, wss.DialOptions{})
+	if err != nil {
+		t.Fatalf("wss Dial: %v", err)
+	}
+	defer func() { _ = wssClient.CloseNow() }()
+	waitForRuntimeTest(t, wssAccepted, "wss runtime accept")
+	if _, err := runtimeconn.Handshake(context.Background(), wssClient, wire.Hello{
+		Op:              wire.OpHello,
+		RuntimeID:       "wss-runtime",
+		Token:           "rtk_wss",
+		ProtocolVersion: "1",
+		Capabilities:    []wire.Capability{{Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "wss-fs"}, Tools: []wire.ToolSpec{{Name: "wss_read"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}},
+	}); err != nil {
+		t.Fatalf("wss Handshake: %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		var body struct {
+			Runtimes []struct {
+				ID       string `json:"id"`
+				Attached bool   `json:"attached"`
+			} `json:"runtimes"`
+		}
+		if err := json.Unmarshal(hub.SnapshotRuntimes(), &body); err == nil && len(body.Runtimes) == 2 {
+			seen := map[string]bool{}
+			for _, runtime := range body.Runtimes {
+				if runtime.Attached {
+					seen[runtime.ID] = true
+				}
+			}
+			if seen["unix-runtime"] && seen["wss-runtime"] {
+				if _, ok := toolDispatchEntry(hub, "unix_read"); !ok {
+					t.Fatalf("unix tool dispatch missing")
+				}
+				if _, ok := toolDispatchEntry(hub, "wss_read"); !ok {
+					t.Fatalf("wss tool dispatch missing")
+				}
+				_ = unixClient.Close(websocket.StatusNormalClosure, "test close")
+				_ = wssClient.Close(websocket.StatusNormalClosure, "test close")
+				<-unixDone
+				<-wssDone
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("expected unix and wss runtimes attached, got %s", string(hub.SnapshotRuntimes()))
+}
+
 func TestSetAttachedRuntimePIDUpdatesSnapshot(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.runtimes = NewRuntimeRegistry()
 	rc := runtimemock.New()
 	if err := hub.runtimes.RegisterHello(runtimeauth.LocalRuntimeID, rc, nil, 0); err != nil {
@@ -459,6 +595,30 @@ func TestSetAttachedRuntimePIDUpdatesSnapshot(t *testing.T) {
 	}
 	if len(body.Runtimes) != 1 || body.Runtimes[0].PID != 4567 {
 		t.Fatalf("expected runtime pid 4567 in snapshot, got %s", string(hub.SnapshotRuntimes()))
+	}
+}
+
+func TestDetachRuntimeForRevokeClosesRuntimeAndRemovesTools(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.runtimes = NewRuntimeRegistry()
+	rc := runtimemock.New()
+	if err := hub.runtimes.RegisterHello("remote", rc, []runtimeapi.Capability{{Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Tools: []wire.ToolSpec{{Name: "fs_read"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	hub.syncRuntimeCapability("remote", runtimeapi.Capability{Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Tools: []wire.ToolSpec{{Name: "fs_read"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker})
+	if _, ok := toolDispatchEntry(hub, "fs_read"); !ok {
+		t.Fatal("expected fs_read dispatch before revoke")
+	}
+	hub.DetachRuntimeForRevoke("remote")
+	if hub.RuntimeAttached("remote") {
+		t.Fatal("runtime still attached after revoke")
+	}
+	if _, ok := toolDispatchEntry(hub, "fs_read"); ok {
+		t.Fatal("runtime tool dispatch still present after revoke")
+	}
+	resp, err := rc.Invoke(context.Background(), runtimeapi.InvokeReq{CallID: "after-revoke"})
+	if err != nil || resp.Error == nil || resp.Error.Code != wire.ErrorRuntimeUnavailable {
+		t.Fatalf("expected closed runtime unavailable, got resp=%#v err=%v", resp, err)
 	}
 }
 
@@ -479,6 +639,15 @@ func waitForRuntimeSnapshot(t *testing.T, hub *Hub, attached bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	assertRuntimeSnapshot(t, hub.SnapshotRuntimes(), attached)
+}
+
+func waitForRuntimeTest(t *testing.T, ch <-chan struct{}, label string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", label)
+	}
 }
 
 func assertNoRuntimes(t *testing.T, raw []byte) {

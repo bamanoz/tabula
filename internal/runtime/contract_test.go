@@ -375,7 +375,7 @@ func (c *runtimePipeClient) ListCapabilities(ctx context.Context) (ListCapabilit
 }
 
 func (c *runtimePipeClient) Reload(ctx context.Context, req ReloadReq) (ReloadResp, error) {
-	if err := c.writeFrame(wire.Reload{Op: wire.OpReload, Target: req.Target}); err != nil {
+	if err := c.writeFrame(wire.Reload{Op: wire.OpReload, Target: req.Target, Tenants: req.Tenants}); err != nil {
 		return ReloadResp{}, err
 	}
 	select {

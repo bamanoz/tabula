@@ -193,11 +193,11 @@ These concepts are related but different.
 
 Smallest extension units.
 
-- **Skill** (`SKILL.md` + `tools[].exec`): per-call subprocess; stateless;
-  declarative tool provider. Examples: `files`, `code/git`, `memory-save`.
+- **Skill** (`SKILL.md`): prompt/instruction artifact;
+  prompt/instruction artifact. Examples: `tabula-guide`, `skill-contract`.
 - **Plugin** (`plugin.toml` + `register(api)`): long-lived process; subscribes
-  to events; registers tools dynamically; has state. Examples: `mcp`,
-  `hook-permissions`, `drivers/driver`, `gateway-tui`.
+  to events; owns executable tools; has state. Examples: `mcp`,
+  `hook-permissions`, `drivers/driver`, `timer`, `memory-save`, `code/git`.
 
 See [SKILL_AUTHORING.md](SKILL_AUTHORING.md) and
 [plans/SKILL_PLUGIN_ARCHITECTURE.md](plans/SKILL_PLUGIN_ARCHITECTURE.md).
@@ -248,8 +248,24 @@ What this does:
 6. rebuild the flat `boot.py`, `templates/`, `skills/`, and `plugins/` surface
 
 For development, clone `tabula-distrib` next to this repo and run
-`bash scripts/install-dev.sh` (kernel only), then
+`bash scripts/install-dev.sh` (installs `tabula` + `tabula-runtime`), then
 `tabula-distro install ../tabula-distrib/<name>`.
+
+For local development, keep `tabula.app.toml` in the repo root and use
+`make agent prepare`, `make agent run`, and `make agent connect`.
+
+`make agent run` starts the kernel in the foreground with `TABULA_LOG_LEVEL`
+defaulting to `info` for that command.
+
+Once a distro has been installed at least once, the installed CLI can reuse its
+saved source directly: `tabula-install distro reinstall <name>`.
+
+For a single entrypoint, use `tabula-install distro use <name>`. It prefers the
+saved source of an already-installed distro; otherwise it looks for a local
+checkout in a sibling `tabula-distrib/<name>` directory, or under an explicit
+`--source-root`.
+
+`tabula-install use <name>` is a top-level alias for the same flow.
 
 ## Designing a new distro
 

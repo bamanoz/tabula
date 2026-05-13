@@ -14,6 +14,7 @@ dependencies = []
 
 [project.scripts]
 tabula-distro = "tabula_distro.cli:main"
+tabula-install = "tabula_distro.install_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -21,3 +21,7 @@ node_modules/
 .opencode/state/
 .playwright-mcp/
 opencode.json
+
+# Tabula files
+.tabula
+tabula.app.lock

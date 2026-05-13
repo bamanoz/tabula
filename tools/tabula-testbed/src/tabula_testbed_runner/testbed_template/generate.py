@@ -8,7 +8,7 @@ import tomllib
 from pathlib import Path
 
 
-ASSET_NAMES = ["boot.py", "templates", "clients", "tests"]
+ASSET_NAMES = ["boot.py", "materialize_app.py", "templates", "clients", "tests"]
 
 
 def parse_component(value: str) -> tuple[str, str]:
@@ -91,14 +91,19 @@ def write_distro(output: Path, manifest: dict, selected: list[str], components: 
     sources = {name: dict(data) for name, data in manifest.get("sources", {}).items()}
     for alias, source in source_overrides.items():
         sources.setdefault(alias, {})["source"] = source
+    copy_local_sources(output, sources)
 
     lines = [
         "[distro]",
+        'id = "tabula.testbed"',
         'name = "testbed"',
         'version = "0.1.0"',
         "",
         "[requires]",
         'kernel = ">=0.9.0,<1.0.0"',
+        "",
+        "[application_contract]",
+        'materializer = "python3 materialize_app.py"',
         "",
     ]
     for alias in sorted(sources):
@@ -117,6 +122,40 @@ def write_distro(output: Path, manifest: dict, selected: list[str], components: 
             lines.append(f"components = {toml_array(components[name])}")
         lines.append("")
     (output / "distro.toml").write_text("\n".join(lines), encoding="utf-8")
+
+
+def copy_local_sources(output: Path, sources: dict[str, dict]) -> None:
+    target_root = output / "sources"
+    for alias, data in sorted(sources.items()):
+        source = str(data.get("source") or "")
+        if not source.startswith("local:"):
+            continue
+        raw = source[len("local:"):].split("#", 1)[0]
+        src = Path(raw).expanduser().resolve()
+        if not src.is_dir():
+            continue
+        dst = target_root / alias
+        if dst.exists():
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+    rewrite_copied_source_aliases(output)
+
+
+def rewrite_copied_source_aliases(output: Path) -> None:
+    target_root = output / "sources"
+    if not target_root.is_dir():
+        return
+    replacements = {
+        "git+https://github.com/bamanoz/tabula-bundles.git@main": f"local:{target_root / 'tabula-bundles'}",
+        "git+https://github.com/bamanoz/tabula-distrib.git@main": f"local:{target_root / 'tabula-distrib'}",
+    }
+    for path in target_root.glob("**/distro.toml"):
+        text = path.read_text(encoding="utf-8")
+        new_text = text
+        for old, new in replacements.items():
+            new_text = new_text.replace(old, new)
+        if new_text != text:
+            path.write_text(new_text, encoding="utf-8")
 
 
 def main(argv: list[str] | None = None) -> int:

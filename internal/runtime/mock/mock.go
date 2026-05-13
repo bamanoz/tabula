@@ -15,6 +15,7 @@ type RuntimeConn struct {
 	mu             sync.Mutex
 	closed         bool
 	programs       map[invokeKey]invokeProgram
+	capabilities   []wire.Capability
 	recorded       []runtimeapi.InvokeReq
 	recordedNotify chan struct{}
 	cancels        []string
@@ -22,11 +23,19 @@ type RuntimeConn struct {
 	pending        map[string]chan wire.Error
 }
 
+// WithCapabilities configures the ListCapabilities response directly.
+func (m *RuntimeConn) WithCapabilities(capabilities ...wire.Capability) *RuntimeConn {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.capabilities = append([]wire.Capability(nil), capabilities...)
+	return m
+}
+
 var _ runtimeapi.RuntimeConn = (*RuntimeConn)(nil)
 
 type invokeKey struct {
 	tenantID string
-	target   wire.Target
+	target   string
 	tool     string
 }
 
@@ -43,7 +52,7 @@ func New() *RuntimeConn {
 
 // OnInvoke starts configuring a response for a tenant/target/tool tuple.
 func (m *RuntimeConn) OnInvoke(tenantID string, target wire.Target, tool string) *InvokeBuilder {
-	return &InvokeBuilder{mock: m, key: invokeKey{tenantID: tenantID, target: target, tool: tool}}
+	return &InvokeBuilder{mock: m, key: invokeKey{tenantID: tenantID, target: mockTargetKey(target), tool: tool}}
 }
 
 // InvokeBuilder configures one programmed Invoke response.
@@ -94,7 +103,7 @@ func (m *RuntimeConn) Invoke(ctx context.Context, req runtimeapi.InvokeReq) (run
 	case m.recordedNotify <- struct{}{}:
 	default:
 	}
-	prog := m.programs[invokeKey{tenantID: req.TenantID, target: req.Target, tool: req.Tool}]
+	prog := m.programs[invokeKey{tenantID: req.TenantID, target: mockTargetKey(req.Target), tool: req.Tool}]
 	m.mu.Unlock()
 
 	defer func() {
@@ -148,16 +157,32 @@ func (m *RuntimeConn) Health(context.Context) (runtimeapi.HealthResp, error) {
 func (m *RuntimeConn) ListCapabilities(context.Context) (runtimeapi.ListCapabilitiesResp, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	seen := map[wire.Target]struct{}{}
+	if m.capabilities != nil {
+		return runtimeapi.ListCapabilitiesResp{Op: wire.OpListCapabilitiesResp, Targets: append([]wire.Capability(nil), m.capabilities...)}, nil
+	}
+	seen := map[string]struct{}{}
 	var targets []wire.Capability
 	for key := range m.programs {
 		if _, ok := seen[key.target]; ok {
 			continue
 		}
 		seen[key.target] = struct{}{}
-		targets = append(targets, wire.Capability{Target: key.target, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker})
+		targets = append(targets, wire.Capability{Target: parseMockTargetKey(key.target), State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker})
 	}
 	return runtimeapi.ListCapabilitiesResp{Op: wire.OpListCapabilitiesResp, Targets: targets}, nil
+}
+
+func mockTargetKey(target wire.Target) string {
+	return string(target.Kind) + "\x00" + target.ID
+}
+
+func parseMockTargetKey(key string) wire.Target {
+	for i := range key {
+		if key[i] == '\x00' {
+			return wire.Target{Kind: wire.TargetKind(key[:i]), ID: key[i+1:]}
+		}
+	}
+	return wire.Target{ID: key}
 }
 
 // Reload returns an acknowledgement for the requested target.

@@ -1,5 +1,17 @@
 # Remote Runtime / Multi-Backend Execution
 
+Operator-facing M6 documentation now lives under `docs/operating/`:
+
+- `docs/operating/remote-runtime-overview.md`
+- `docs/operating/wss-deployment.md`
+- `docs/operating/ssh-deployment.md`
+- `docs/operating/service-install.md`
+- `docs/operating/troubleshooting.md`
+- `docs/SECURITY.md`
+
+Use those documents for deployment and operations. This plan remains historical
+design context.
+
 Status: **design locked, ready for M1**.
 All §7 questions resolved. Next step is to slice M1 into issues.
 

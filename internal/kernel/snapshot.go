@@ -5,7 +5,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/bamanoz/tabula/internal/kernel/plugin"
 	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
 )
@@ -17,44 +16,34 @@ type snapshotProcessInfo struct {
 }
 
 type snapshotSessionInfo struct {
+	TenantID        string                `json:"tenant_id"`
 	State           SessionState          `json:"state"`
 	CreatedAt       string                `json:"created_at"`
 	LastActiveAt    string                `json:"last_active_at"`
 	Busy            bool                  `json:"busy"`
 	CancelRequested bool                  `json:"cancel_requested"`
+	PendingInputs   int                   `json:"pending_inputs"`
 	Clients         []string              `json:"clients"`
 	Processes       []snapshotProcessInfo `json:"processes"`
 }
 
-type snapshotPluginInfo struct {
-	ID              string   `json:"id"`
-	Status          string   `json:"status"`
-	PID             int      `json:"pid"`
-	RestartCount    int      `json:"restart_count"`
-	LastError       *string  `json:"last_error"`
-	RegisteredTools []string `json:"registered_tools"`
-	Subscriptions   []string `json:"subscriptions"`
-	RegisteredAt    string   `json:"registered_at,omitempty"`
-}
-
-type snapshotPluginsInfo struct {
-	Plugins []snapshotPluginInfo `json:"plugins"`
-}
-
 type snapshotRuntimeInfo struct {
-	ID           string               `json:"id"`
-	Attached     bool                 `json:"attached"`
-	PID          int                  `json:"pid"`
-	Capabilities []string             `json:"capabilities"`
-	WorkerCount  int                  `json:"worker_count,omitempty"`
-	LastError    *string              `json:"last_error,omitempty"`
-	ConnectedAt  string               `json:"connected_at,omitempty"`
-	Targets      []snapshotTargetInfo `json:"targets,omitempty"`
+	ID                   string               `json:"id"`
+	Attached             bool                 `json:"attached"`
+	PID                  int                  `json:"pid"`
+	Capabilities         []string             `json:"capabilities"`
+	TenantsServed        []string             `json:"tenants_served"`
+	CapabilitiesByTenant map[string][]string  `json:"capabilities_by_tenant"`
+	WorkerCount          int                  `json:"worker_count,omitempty"`
+	LastError            *string              `json:"last_error,omitempty"`
+	ConnectedAt          string               `json:"connected_at,omitempty"`
+	Targets              []snapshotTargetInfo `json:"targets,omitempty"`
 }
 
 type snapshotTargetInfo struct {
 	Kind           string   `json:"kind"`
 	ID             string   `json:"id"`
+	Tenants        []string `json:"tenants,omitempty"`
 	Tools          []string `json:"tools,omitempty"`
 	Hooks          []string `json:"hooks,omitempty"`
 	State          string   `json:"state,omitempty"`
@@ -76,11 +65,13 @@ func (h *Hub) SnapshotSessions() []byte {
 	for _, sess := range h.sessions.All() {
 		sess.mu.RLock()
 		info := &snapshotSessionInfo{
+			TenantID:        sess.TenantID,
 			State:           sess.State,
 			CreatedAt:       sess.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
 			LastActiveAt:    sess.LastActiveAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
 			Busy:            sess.inflightTurn,
 			CancelRequested: sess.cancelRequested,
+			PendingInputs:   len(sess.pendingInputs),
 			Clients:         []string{},
 			Processes:       []snapshotProcessInfo{},
 		}
@@ -102,79 +93,6 @@ func (h *Hub) SnapshotSessions() []byte {
 	return data
 }
 
-// SnapshotPlugins returns a JSON snapshot of kernel-level plugin singletons.
-// It is intentionally separate from SnapshotSessions because plugins are not
-// session-scoped. Failed terminal lifecycle states are retained even after the
-// live handle is removed from the plugin registry so diagnostics can explain why
-// a boot-configured plugin is absent.
-func (h *Hub) SnapshotPlugins() []byte {
-	if h == nil {
-		data, _ := json.Marshal(snapshotPluginsInfo{Plugins: []snapshotPluginInfo{}})
-		return data
-	}
-	byID := make(map[string]snapshotPluginInfo)
-	order := make([]string, 0)
-
-	for _, handle := range h.snapshotPluginHandles() {
-		if handle == nil {
-			continue
-		}
-		info := snapshotPluginInfo{
-			ID:              handle.ID(),
-			Status:          pluginHandleStatus(handle),
-			PID:             handle.PID(),
-			RegisteredTools: pluginToolNames(handle.Tools()),
-			Subscriptions:   pluginSubscriptionEvents(handle.Subscriptions()),
-		}
-		if started := handle.StartedAt(); !started.IsZero() {
-			info.RegisteredAt = formatSnapshotTime(started)
-		}
-		byID[handle.ID()] = info
-		order = append(order, handle.ID())
-	}
-
-	stateIDs := make([]string, 0)
-	for id, state := range h.snapshotPluginStates() {
-		if state == nil {
-			continue
-		}
-		info, ok := byID[id]
-		if !ok {
-			info = snapshotPluginInfo{ID: id, RegisteredTools: []string{}, Subscriptions: []string{}}
-			byID[id] = info
-			stateIDs = append(stateIDs, id)
-		}
-		if state.Status != "" {
-			info.Status = state.Status
-		}
-		info.RestartCount = state.RestartCount
-		if state.LastError != "" {
-			err := state.LastError
-			info.LastError = &err
-		} else {
-			info.LastError = nil
-		}
-		if info.Status == "" {
-			info.Status = "failed"
-		}
-		byID[id] = info
-	}
-	sort.Strings(stateIDs)
-	order = append(order, stateIDs...)
-
-	out := snapshotPluginsInfo{Plugins: make([]snapshotPluginInfo, 0, len(byID))}
-	seen := make(map[string]struct{}, len(byID))
-	for _, id := range order {
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		out.Plugins = append(out.Plugins, byID[id])
-	}
-	data, _ := json.Marshal(out)
-	return data
-}
-
 func snapshotRuntimes(h *Hub) []byte {
 	out := snapshotRuntimesInfo{Runtimes: []snapshotRuntimeInfo{}}
 	if h == nil || h.runtimes == nil {
@@ -182,13 +100,17 @@ func snapshotRuntimes(h *Hub) []byte {
 		return data
 	}
 	for _, attachment := range h.runtimes.Snapshot() {
+		capabilities := runtimeCapabilityNames(attachment.Capabilities)
+		tenantsServed := normalizedTenantsServed(attachment.TenantsServed)
 		info := snapshotRuntimeInfo{
-			ID:           attachment.ID,
-			Attached:     attachment.Attached,
-			PID:          attachment.PID,
-			Capabilities: runtimeCapabilityNames(attachment.Capabilities),
-			WorkerCount:  attachment.Health.WorkerCount,
-			Targets:      runtimeTargets(attachment),
+			ID:                   attachment.ID,
+			Attached:             attachment.Attached,
+			PID:                  attachment.PID,
+			Capabilities:         capabilities,
+			TenantsServed:        tenantsServed,
+			CapabilitiesByTenant: capabilitiesByTenant(tenantsServed, capabilities),
+			WorkerCount:          attachment.Health.WorkerCount,
+			Targets:              runtimeTargets(attachment),
 		}
 		if attachment.LastError != "" {
 			err := attachment.LastError
@@ -203,62 +125,22 @@ func snapshotRuntimes(h *Hub) []byte {
 	return data
 }
 
-func (h *Hub) snapshotPluginHandles() []*plugin.Handle {
-	if h == nil || h.plugins == nil {
-		return nil
+func normalizedTenantsServed(tenants []string) []string {
+	if len(tenants) == 0 {
+		return []string{"*"}
 	}
-	return h.plugins.All()
-}
-
-func (h *Hub) snapshotPluginStates() map[string]*pluginLifecycleState {
-	if h == nil {
-		return nil
-	}
-	h.pluginStatesMu.RLock()
-	defer h.pluginStatesMu.RUnlock()
-	out := make(map[string]*pluginLifecycleState, len(h.pluginStates))
-	for id, state := range h.pluginStates {
-		if state == nil {
-			continue
-		}
-		copyState := *state
-		out[id] = &copyState
-	}
+	out := append([]string(nil), tenants...)
+	sort.Strings(out)
 	return out
 }
 
-func pluginHandleStatus(handle *plugin.Handle) string {
-	if handle == nil {
-		return "failed"
+func capabilitiesByTenant(tenants, capabilities []string) map[string][]string {
+	out := make(map[string][]string, len(tenants))
+	for _, tenantID := range tenants {
+		out[tenantID] = append([]string(nil), capabilities...)
 	}
-	if handle.IsAlive() && handle.IsRegistered() {
-		return "running"
-	}
-	return "failed"
+	return out
 }
-
-func pluginToolNames(tools []plugin.ToolSpec) []string {
-	names := make([]string, 0, len(tools))
-	for _, tool := range tools {
-		if tool.Name != "" {
-			names = append(names, tool.Name)
-		}
-	}
-	sort.Strings(names)
-	return names
-}
-
-func pluginSubscriptionEvents(subs []plugin.SubscriptionSpec) []string {
-	events := make([]string, 0, len(subs))
-	for _, sub := range subs {
-		if sub.Event != "" {
-			events = append(events, sub.Event)
-		}
-	}
-	sort.Strings(events)
-	return events
-}
-
 func formatSnapshotTime(t time.Time) string {
 	return t.UTC().Format("2006-01-02T15:04:05Z07:00")
 }
@@ -304,6 +186,7 @@ func runtimeTargets(attachment RuntimeAttachment) []snapshotTargetInfo {
 		targets = append(targets, snapshotTargetInfo{
 			Kind:           string(capability.Target.Kind),
 			ID:             capability.Target.ID,
+			Tenants:        append([]string(nil), capability.Tenants...),
 			Tools:          tools,
 			Hooks:          hooks,
 			State:          string(capability.State),

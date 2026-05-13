@@ -38,11 +38,6 @@ func (h *Hub) broadcastToSession(session, msgType string, msg *Message, exclude 
 	h.Logger.Debug("broadcast", "type", msgType, "session", session, "delivered", delivered)
 }
 
-// sendToolResult sends a tool_result to a session.
-func (h *Hub) sendToolResult(session, toolID, output string) {
-	h.sendToolResultForTool(session, toolID, "", output)
-}
-
 func (h *Hub) sendToolResultForTool(session, toolID, toolName, output string) {
 	h.broadcastToSession(session, string(MsgToolResult), &Message{
 		Type:   string(MsgToolResult),
@@ -62,5 +57,7 @@ func (h *Hub) broadcastProcessError(session string, pid int, command string, exi
 		Type: string(MsgError),
 		Text: fmt.Sprintf("process %d crashed (exit %d)", pid, exitCode),
 	}, nil)
-	h.completeSessionTurn(session)
+	if queued, ok := h.completeSessionTurn(session); ok {
+		h.dispatchQueuedInput(session, queued)
+	}
 }

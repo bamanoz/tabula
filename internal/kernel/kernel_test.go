@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	runtimemock "github.com/bamanoz/tabula/internal/runtime/mock"
+	"github.com/bamanoz/tabula/internal/runtime/wire"
+	"github.com/bamanoz/tabula/internal/tenant"
 	"github.com/gorilla/websocket"
 )
 
@@ -21,23 +26,6 @@ var testUpgrader = websocket.Upgrader{
 }
 
 const testShellToolName = "test_shell"
-
-// testShellExecCommand is a test-only dynamic skill command that emulates the
-// old shell_exec payload shape through SkillExec. It keeps kernel_test coverage
-// focused on unified dynamic dispatch without reintroducing kernel builtins.
-const testShellExecCommand = `python3 -c 'import json, subprocess, sys
-try:
-    data=json.load(sys.stdin)
-except Exception as exc:
-    sys.stderr.write(f"ERROR: invalid input: {exc}\n")
-    sys.exit(1)
-cmd=data.get("command")
-if not isinstance(cmd, str) or not cmd:
-    sys.stderr.write("ERROR: missing command\n")
-    sys.exit(1)
-proc=subprocess.run(cmd, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-sys.stdout.write(proc.stdout)
-sys.exit(proc.returncode)'`
 
 // testEnv bundles a Hub + httptest server + WS client factory for tests.
 type testEnv struct {
@@ -50,8 +38,11 @@ func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 
 	toolsJSON := json.RawMessage(`[{"name":"echo_tool","description":"echo stdin","params":{"text":{"type":"string","description":"text to echo"}},"required":[]},{"name":"test_shell","description":"test-only shell-style skill","params":{"command":{"type":"string","description":"command to run"}},"required":["command"]}]`)
-	skillExec := map[string]string{"echo_tool": "cat", testShellToolName: testShellExecCommand}
-	hub := NewHub(toolsJSON, skillExec, 3, 5, nil)
+	hub := NewHub(toolsJSON, 3, 5, nil)
+	attachTestRuntime(t, hub,
+		runtimePluginCapability("echo", "echo_tool"),
+		runtimePluginCapability("test-shell", testShellToolName),
+	)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
@@ -233,9 +224,33 @@ func TestInitOnJoin(t *testing.T) {
 	}
 }
 
+func TestJoinPersistsSessionStateUnderTenantDir(t *testing.T) {
+	env := newTestEnv(t)
+	home := t.TempDir()
+	env.Hub.SetTenantStore(tenant.NewMemoryStore(
+		tenant.Tenant{ID: tenant.DefaultID, CreatedAt: time.Now()},
+		tenant.Tenant{ID: "alpha", CreatedAt: time.Now()},
+	))
+	env.Hub.SetSessionStore(NewDiskSessionStore(home))
+
+	conn := env.connect("driver", []string{"message"}, []string{"init", "message"})
+	writeJSON(t, conn, Message{Type: "join", Session: "tenant-s1", TenantID: "alpha"})
+	if msg := readMsg(t, conn); msg.Type != "joined" || msg.TenantID != "alpha" {
+		t.Fatalf("expected joined alpha, got %+v", msg)
+	}
+	path := filepath.Join(home, "tenants", "alpha", "state", "sessions", "tenant-s1.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("session state file missing: %v", err)
+	}
+	env.disconnectClient("driver")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("session state file should be removed, err=%v", err)
+	}
+}
+
 func TestRemovedKernelBuiltinsNotExposedOrExecutable(t *testing.T) {
 	toolsJSON := json.RawMessage(`[{"name":"echo_tool","description":"echo stdin","params":{"text":{"type":"string","description":"text to echo"}},"required":[]}]`)
-	hub := NewHub(toolsJSON, map[string]string{"echo_tool": "cat"}, 3, 5, nil)
+	hub := NewHub(toolsJSON, 3, 5, nil)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := testUpgrader.Upgrade(w, r, nil)
@@ -273,6 +288,44 @@ func TestRemovedKernelBuiltinsNotExposedOrExecutable(t *testing.T) {
 		if !strings.Contains(result.Output, expected) {
 			t.Fatalf("%s: expected removed builtin to be rejected with %q, got %q", removed, expected, result.Output)
 		}
+	}
+}
+
+func TestInitIncludesRuntimeManifestLoadedTools(t *testing.T) {
+	hub := NewHub(nil, 3, 5, nil)
+	hub.syncRuntimeCapability("local", wire.Capability{
+		Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "dynamic"},
+		Tools:  []wire.ToolSpec{{Name: "testbed_dynamic_ping"}},
+		State:  wire.CapabilityStateReady,
+		Source: wire.CapabilitySourceWorker,
+	})
+	hub.syncRuntimeCapability("local", wire.Capability{
+		Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "recorder"},
+		Tools:  []wire.ToolSpec{{Name: "testbed_hook_recorder_clear"}, {Name: "testbed_hook_recorder_events"}},
+		State:  wire.CapabilityStateReady,
+		Source: wire.CapabilitySourceWorker,
+	})
+	raw := hub.initToolsJSON()
+	if !strings.Contains(string(raw), `"testbed_dynamic_ping"`) || !strings.Contains(string(raw), `"testbed_hook_recorder_clear"`) || !strings.Contains(string(raw), `"testbed_hook_recorder_events"`) {
+		t.Fatalf("runtime manifest-loaded tool missing from init tools: %s", string(raw))
+	}
+}
+
+func TestInitSyncsAttachedRuntimeCapabilities(t *testing.T) {
+	hub := NewHub(nil, 3, 5, nil)
+	conn := runtimemock.New().WithCapabilities(wire.Capability{
+		Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "cron"},
+		Tools:  []wire.ToolSpec{{Name: "cron_add"}, {Name: "cron_list"}},
+		State:  wire.CapabilityStateReady,
+		Source: wire.CapabilitySourceWorker,
+	})
+	if err := hub.runtimes.RegisterHello("local", conn, nil, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+
+	raw := hub.initToolsJSON()
+	if !strings.Contains(string(raw), `"cron_add"`) || !strings.Contains(string(raw), `"cron_list"`) {
+		t.Fatalf("init did not sync attached runtime capabilities: %s", string(raw))
 	}
 }
 
@@ -744,7 +797,7 @@ func TestConcurrentMessages(t *testing.T) {
 	}
 }
 
-func TestSessionBusyBlocksConcurrentRootMessagesAndResetsAfterCancel(t *testing.T) {
+func TestSessionBusyQueuesConcurrentRootMessagesAndDispatchesAfterDone(t *testing.T) {
 	env := newTestEnv(t)
 	gateway := env.connectAndJoin("gateway", "main",
 		[]string{"message", "cancel"},
@@ -777,24 +830,60 @@ func TestSessionBusyBlocksConcurrentRootMessagesAndResetsAfterCancel(t *testing.
 	}
 
 	writeJSON(t, gateway, Message{Type: "message", Text: "second"})
-	errMsg := readMsg(t, gateway)
-	if errMsg.Type != "error" || !strings.Contains(errMsg.Text, "session busy") {
-		t.Fatalf("expected busy error, got %+v", errMsg)
+	if errMsg := readMsgTimeout(t, gateway, 100*time.Millisecond); errMsg != nil {
+		t.Fatalf("expected queued message without busy error, got %+v", errMsg)
+	}
+	if got := sess.PendingInputCount(); got != 1 {
+		t.Fatalf("pending input count = %d, want 1", got)
+	}
+
+	writeJSON(t, driver, Message{Type: "done"})
+	second := readMsg(t, driver)
+	if second.Type != "message" || second.Text != "second" {
+		t.Fatalf("expected queued second message after done, got %+v", second)
+	}
+	if !sess.IsBusy() {
+		t.Fatal("session should stay busy while queued turn is dispatched")
+	}
+	if sess.CancelRequested() {
+		t.Fatal("cancel state should reset before queued turn")
+	}
+	if got := sess.PendingInputCount(); got != 0 {
+		t.Fatalf("pending input count = %d, want 0", got)
 	}
 
 	writeJSON(t, driver, Message{Type: "done"})
 	time.Sleep(50 * time.Millisecond)
 	if sess.IsBusy() {
-		t.Fatal("session should stop being busy after done")
-	}
-	if sess.CancelRequested() {
-		t.Fatal("cancel state should reset after done")
+		t.Fatal("session should stop being busy after queued turn done")
 	}
 
 	writeJSON(t, gateway, Message{Type: "message", Text: "third"})
 	third := readMsg(t, driver)
 	if third.Type != "message" || third.Text != "third" {
 		t.Fatalf("expected turn to resume after done, got %+v", third)
+	}
+}
+
+func TestQueuedMessagesPreserveEnvelope(t *testing.T) {
+	env := newTestEnv(t)
+	gateway := env.connectAndJoin("gateway", "main",
+		[]string{"message"},
+		[]string{"error"})
+	driver := env.connectAndJoin("driver", "main",
+		[]string{"done"},
+		[]string{"message"})
+
+	writeJSON(t, gateway, Message{Type: "message", Text: "first"})
+	_ = readMsg(t, driver)
+
+	meta := json.RawMessage(`{"source":"timer","timer_id":"timer-1"}`)
+	writeJSON(t, gateway, Message{Type: "message", ID: "timer-1", Text: "queued", Meta: meta})
+	writeJSON(t, driver, Message{Type: "done"})
+
+	queued := readMsg(t, driver)
+	if queued.ID != "timer-1" || queued.Text != "queued" || string(queued.Meta) != string(meta) {
+		t.Fatalf("queued message envelope not preserved: %+v meta=%s", queued, string(queued.Meta))
 	}
 }
 

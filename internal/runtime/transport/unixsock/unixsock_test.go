@@ -56,7 +56,7 @@ func TestUnixSocketRuntimeConnRoundTripAndClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.CloseNow()
+	defer func() { _ = c.CloseNow() }()
 	waitFor(t, accepted, "server accept")
 
 	ack, err := runtimeconn.Handshake(context.Background(), c, wire.Hello{Op: wire.OpHello, RuntimeID: "local", Token: "redacted", ProtocolVersion: "1"})
@@ -147,7 +147,7 @@ func TestUnixSocketConcurrentInvokes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.CloseNow()
+	defer func() { _ = c.CloseNow() }()
 	waitFor(t, accepted, "server accept")
 	if _, err := runtimeconn.Handshake(context.Background(), c, wire.Hello{Op: wire.OpHello, RuntimeID: "local", Token: "redacted", ProtocolVersion: "1"}); err != nil {
 		t.Fatalf("Handshake: %v", err)

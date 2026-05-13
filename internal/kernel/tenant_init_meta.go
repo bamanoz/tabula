@@ -1,0 +1,84 @@
+package kernel
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/BurntSushi/toml"
+)
+
+type tenantInitMetaConfig struct {
+	Application struct {
+		PromptBuilder string `toml:"prompt_builder"`
+	} `toml:"application"`
+	Workspace struct {
+		ProjectRoot string `toml:"project_root"`
+	} `toml:"workspace"`
+	Claw struct {
+		Workspace struct {
+			Path string `toml:"path"`
+		} `toml:"workspace"`
+	} `toml:"claw"`
+}
+
+func (h *Hub) ConfigureTenantInitMeta(tabulaHome string) error {
+	if h == nil || strings.TrimSpace(tabulaHome) == "" {
+		return nil
+	}
+	root := filepath.Join(tabulaHome, "tenants")
+	entries, err := os.ReadDir(root)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		meta, err := LoadTenantInitMeta(tabulaHome, entry.Name())
+		if err != nil {
+			return err
+		}
+		if len(meta) > 0 {
+			h.SetTenantInitMeta(entry.Name(), meta)
+		}
+	}
+	return nil
+}
+
+func LoadTenantInitMeta(tabulaHome, tenantID string) (json.RawMessage, error) {
+	path := filepath.Join(tabulaHome, "tenants", tenantID, "config", "tenant.toml")
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	var cfg tenantInitMetaConfig
+	if _, err := toml.DecodeFile(path, &cfg); err != nil {
+		return nil, fmt.Errorf("load tenant init meta %s: %w", path, err)
+	}
+	meta := map[string]any{}
+	if promptBuilder := strings.TrimSpace(cfg.Application.PromptBuilder); promptBuilder != "" {
+		meta["prompt_builder"] = promptBuilder
+	}
+	workspacePath := strings.TrimSpace(cfg.Workspace.ProjectRoot)
+	if workspacePath == "" {
+		workspacePath = strings.TrimSpace(cfg.Claw.Workspace.Path)
+	}
+	if workspacePath != "" {
+		meta["workspace"] = map[string]any{"path": workspacePath, "source": "app", "kind": "assistant"}
+	}
+	if len(meta) == 0 {
+		return nil, nil
+	}
+	raw, err := json.Marshal(meta)
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
+}

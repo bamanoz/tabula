@@ -24,8 +24,8 @@ func TestCodecNetPipeRoundTripEveryOp(t *testing.T) {
 	clientWS, serverWS := websocketNetPipe(t)
 	client := codec.New(clientWS)
 	server := codec.New(serverWS)
-	defer client.CloseNow()
-	defer server.CloseNow()
+	defer func() { _ = client.CloseNow() }()
+	defer func() { _ = server.CloseNow() }()
 
 	frames := []any{
 		wire.Hello{Op: wire.OpHello, RuntimeID: "local", Token: "redacted", ProtocolVersion: "1", Capabilities: []wire.Capability{{Target: pluginTarget("fs"), Tools: []wire.ToolSpec{{Name: "read"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}}},
@@ -70,7 +70,7 @@ func TestRuntimeConnConcurrentInvokesAndDisconnect(t *testing.T) {
 	clientWS, serverWS := websocketNetPipe(t)
 	client := codec.New(clientWS)
 	server := codec.New(serverWS)
-	defer client.CloseNow()
+	defer func() { _ = client.CloseNow() }()
 
 	go func() {
 		_ = ServeAuthenticated(context.Background(), server, testHandler{})
@@ -132,7 +132,7 @@ func TestServeMapsMalformedInvokeToProtocolError(t *testing.T) {
 	clientWS, serverWS := websocketNetPipe(t)
 	client := codec.New(clientWS)
 	server := codec.New(serverWS)
-	defer client.CloseNow()
+	defer func() { _ = client.CloseNow() }()
 
 	go func() {
 		_ = ServeAuthenticated(context.Background(), server, testHandler{})
@@ -173,7 +173,7 @@ func TestServeRejectsMalformedNonInvokeFrame(t *testing.T) {
 	clientWS, serverWS := websocketNetPipe(t)
 	client := codec.New(clientWS)
 	server := codec.New(serverWS)
-	defer client.CloseNow()
+	defer func() { _ = client.CloseNow() }()
 
 	serveDone := make(chan error, 1)
 	go func() {
@@ -195,7 +195,7 @@ func TestRuntimeConnRoutesAsyncPluginControlFramesToSink(t *testing.T) {
 	clientWS, serverWS := websocketNetPipe(t)
 	client := codec.New(clientWS)
 	server := codec.New(serverWS)
-	defer client.CloseNow()
+	defer func() { _ = client.CloseNow() }()
 
 	go func() {
 		_ = ServeAuthenticated(context.Background(), server, testHandler{})
@@ -242,7 +242,7 @@ func TestServeWritesHandlerAsyncFramesToClientSink(t *testing.T) {
 	clientWS, serverWS := websocketNetPipe(t)
 	client := codec.New(clientWS)
 	server := codec.New(serverWS)
-	defer client.CloseNow()
+	defer func() { _ = client.CloseNow() }()
 
 	h := asyncHandler{frames: make(chan any, 8)}
 	go func() {
@@ -281,7 +281,7 @@ func TestServeHandlesHookEventFrames(t *testing.T) {
 	clientWS, serverWS := websocketNetPipe(t)
 	client := codec.New(clientWS)
 	server := codec.New(serverWS)
-	defer client.CloseNow()
+	defer func() { _ = client.CloseNow() }()
 
 	go func() {
 		_ = ServeAuthenticated(context.Background(), server, testHandler{})

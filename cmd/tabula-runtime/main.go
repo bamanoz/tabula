@@ -11,12 +11,15 @@ import (
 	"strings"
 	"syscall"
 
-	runtimeconfig "github.com/bamanoz/tabula/cmd/tabula-runtime/config"
-	"github.com/bamanoz/tabula/cmd/tabula-runtime/daemon"
-	"github.com/bamanoz/tabula/cmd/tabula-runtime/dialer"
-	"github.com/bamanoz/tabula/cmd/tabula-runtime/manifest"
-	"github.com/bamanoz/tabula/cmd/tabula-runtime/policy/bare"
-	"github.com/bamanoz/tabula/cmd/tabula-runtime/pool"
+	runtimeconn "github.com/bamanoz/tabula/internal/runtime/conn"
+	runtimeconfig "github.com/bamanoz/tabula/internal/runtime/host/config"
+	"github.com/bamanoz/tabula/internal/runtime/host/daemon"
+	"github.com/bamanoz/tabula/internal/runtime/host/dialer"
+	"github.com/bamanoz/tabula/internal/runtime/host/manifest"
+	"github.com/bamanoz/tabula/internal/runtime/host/policy/bare"
+	"github.com/bamanoz/tabula/internal/runtime/host/pool"
+	"github.com/bamanoz/tabula/internal/runtime/transport/stdio"
+	"github.com/bamanoz/tabula/internal/runtime/wire"
 )
 
 var (
@@ -44,8 +47,7 @@ func run(args []string, stderr io.Writer) int {
 	case "start":
 		return startCmd(args, stderr)
 	case "stdio":
-		fmt.Fprintln(stderr, "tabula-runtime stdio is not implemented in M2")
-		return 1
+		return stdioCmd(args, stderr)
 	case "version":
 		fmt.Fprintf(stderr, "tabula-runtime %s (%s) built %s\n", version, commit, date)
 		return 0
@@ -57,6 +59,71 @@ func run(args []string, stderr io.Writer) int {
 		printUsage(stderr)
 		return 1
 	}
+}
+
+func stdioCmd(args []string, stderr io.Writer) int {
+	fs := flag.NewFlagSet("stdio", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	configPath := fs.String("config", "", "path to runtime.toml")
+	tokenFile := fs.String("token-file", "", "runtime token file")
+	runtimeID := fs.String("runtime-id", dialer.DefaultRuntimeID, "runtime id sent in Hello")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	path := strings.TrimSpace(*configPath)
+	if path == "" {
+		defaultPath, err := runtimeconfig.DefaultPath()
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		path = defaultPath
+	}
+	cfg, err := runtimeconfig.Load(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	kernelCfg, err := cfg.SingleKernel()
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if strings.TrimSpace(*tokenFile) != "" {
+		kernelCfg.TokenFile = strings.TrimSpace(*tokenFile)
+	}
+	manifestStore, err := newManifestStore(cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	manifestStore.SetTabulaHome(os.Getenv("TABULA_HOME"))
+	logger := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	workerPool := pool.New(kernelCfg.ID, manifestStore, bare.New(), pool.Options{ColdWorkersPerTenantMax: cfg.Pool.ColdWorkersPerTenantMax, ColdWorkersByTenant: coldWorkerTenantOverrides(cfg.Pool.Tenants), AllowedTenants: kernelCfg.Tenants, TabulaHome: os.Getenv("TABULA_HOME")})
+	workerPool.SetLogger(logger)
+	defer workerPool.Close()
+	conn := stdio.NewConn(os.Stdin, os.Stdout)
+	token, err := dialer.ReadTokenFileForStdio(kernelCfg.TokenFile)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	handler := daemon.NewHandler(daemon.Options{Store: manifestStore, Pool: workerPool})
+	capabilities := dialer.InitialCapabilitiesForStdio(context.Background(), handler)
+	ack, err := runtimeconn.Handshake(context.Background(), conn, wire.Hello{Op: wire.OpHello, RuntimeID: strings.TrimSpace(*runtimeID), Token: token, ProtocolVersion: dialer.ProtocolVersion, Capabilities: capabilities, TenantsServed: kernelCfg.Tenants})
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	if !ack.Accepted {
+		fmt.Fprintf(stderr, "error: kernel rejected runtime hello\n")
+		return 1
+	}
+	if err := runtimeconn.Serve(context.Background(), conn, handler); err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 func startCmd(args []string, stderr io.Writer) int {
@@ -86,14 +153,21 @@ func startCmd(args []string, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
-	manifestStore, err := manifest.NewStore(cfg.PluginDirs)
+	manifestStore, err := newManifestStore(cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
-	workerPool := pool.New(kernelCfg.ID, manifestStore, bare.New())
-
+	manifestStore.SetTabulaHome(os.Getenv("TABULA_HOME"))
 	logger := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logger.Info("runtime manifest store loaded", "plugin_dirs", len(runtimePluginDirs(cfg)), "skill_dirs", len(runtimeSkillDirs(cfg)), "capabilities", len(manifestStore.Capabilities()))
+	workerPool := pool.New(kernelCfg.ID, manifestStore, bare.New(), pool.Options{
+		ColdWorkersPerTenantMax: cfg.Pool.ColdWorkersPerTenantMax,
+		ColdWorkersByTenant:     coldWorkerTenantOverrides(cfg.Pool.Tenants),
+		AllowedTenants:          kernelCfg.Tenants,
+		TabulaHome:              os.Getenv("TABULA_HOME"),
+	})
+	workerPool.SetLogger(logger)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	defer workerPool.Close()
@@ -108,4 +182,50 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Usage: tabula-runtime [start] [--config PATH] [--runtime-id ID]")
 	fmt.Fprintln(w, "       tabula-runtime stdio")
 	fmt.Fprintln(w, "       tabula-runtime --version")
+}
+
+func coldWorkerTenantOverrides(in map[string]runtimeconfig.TenantPool) map[string]int {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(in))
+	for tenantID, limits := range in {
+		if limits.ColdWorkersMax > 0 {
+			out[tenantID] = limits.ColdWorkersMax
+		}
+	}
+	return out
+}
+
+func newManifestStore(cfg runtimeconfig.Config) (*manifest.Store, error) {
+	if len(cfg.Tenants) == 0 {
+		return manifest.NewSearchStore(cfg.PluginDirs, cfg.SkillDirs)
+	}
+	catalogs := make(map[string]manifest.SearchDirs, len(cfg.Tenants))
+	for _, tenant := range cfg.Tenants {
+		catalogs[tenant.ID] = manifest.SearchDirs{PluginDirs: tenant.PluginDirs, SkillDirs: tenant.SkillDirs}
+	}
+	return manifest.NewTenantStore(catalogs)
+}
+
+func runtimePluginDirs(cfg runtimeconfig.Config) []string {
+	if len(cfg.Tenants) == 0 {
+		return cfg.PluginDirs
+	}
+	var out []string
+	for _, tenant := range cfg.Tenants {
+		out = append(out, tenant.PluginDirs...)
+	}
+	return out
+}
+
+func runtimeSkillDirs(cfg runtimeconfig.Config) []string {
+	if len(cfg.Tenants) == 0 {
+		return cfg.SkillDirs
+	}
+	var out []string
+	for _, tenant := range cfg.Tenants {
+		out = append(out, tenant.SkillDirs...)
+	}
+	return out
 }

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import socket
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -18,7 +19,10 @@ class ToolResult:
     output: str
 
     def json(self) -> Any:
-        return json.loads(self.output)
+        try:
+            return json.loads(self.output)
+        except json.JSONDecodeError as exc:
+            raise AssertionError(f"tool {self.name!r} returned non-JSON output: {self.output!r}") from exc
 
     @property
     def ok(self) -> bool:
@@ -58,15 +62,15 @@ class TestbedClient:
         self.ws.send(json.dumps(msg))
         return self.recv(type="connected")
 
-    def join(self, session: str) -> dict[str, Any]:
-        self._send({"version": 1, "type": "join", "session": session})
+    def join(self, session: str, *, tenant_id: str = "default") -> dict[str, Any]:
+        self._send({"version": 1, "type": "join", "session": session, "tenant_id": tenant_id})
         self.recv(type="joined")
         self.init = self.recv(type="init")
         return self.init
 
-    def connect_join(self, session: str, *, sends: list[str] | None = None, receives: list[str] | None = None) -> dict[str, Any]:
+    def connect_join(self, session: str, *, tenant_id: str = "default", sends: list[str] | None = None, receives: list[str] | None = None) -> dict[str, Any]:
         self.connect(sends=sends, receives=receives)
-        return self.join(session)
+        return self.join(session, tenant_id=tenant_id)
 
     def tools(self) -> list[dict[str, Any]]:
         tools = self.init.get("tools") or []
@@ -81,23 +85,24 @@ class TestbedClient:
                 return tool
         raise AssertionError(f"tool not advertised: {name}")
 
-    def wait_tools(self, names: set[str] | list[str] | tuple[str, ...], *, timeout: float = 20, session: str = "testbed-tool-wait") -> None:
+    def wait_tools(self, names: set[str] | list[str] | tuple[str, ...], *, timeout: float = 20, session: str = "testbed-tool-wait", tenant_id: str = "default") -> None:
         required = set(names)
         deadline = time.time() + timeout
         missing = required
+        advertised: set[str] = set()
         while time.time() < deadline:
-            self.refresh_init(session)
+            self.refresh_init(session, tenant_id=tenant_id)
             advertised = {tool.get("name") for tool in self.tools()}
             missing = required - advertised
             if not missing:
                 return
             time.sleep(0.5)
-        raise AssertionError(f"missing required testbed tools: {sorted(missing)}")
+        raise AssertionError(f"missing required testbed tools: {sorted(missing)}; advertised: {sorted(str(name) for name in advertised if name)}")
 
-    def refresh_init(self, session: str) -> dict[str, Any]:
+    def refresh_init(self, session: str, *, tenant_id: str = "default") -> dict[str, Any]:
         self.close()
         self.connect()
-        return self.join(session)
+        return self.join(session, tenant_id=tenant_id)
 
     def call_tool(self, name: str, input: dict[str, Any] | None = None, *, timeout: float = 10) -> ToolResult:
         call_id = f"tb-{uuid.uuid4().hex}"
@@ -107,6 +112,19 @@ class TestbedClient:
         except Exception as exc:
             raise TimeoutError(f"timed out waiting for tool_result: tool={name!r} id={call_id!r} client={self.name!r}") from exc
         return ToolResult(name=str(msg.get("name") or name), id=call_id, output=str(msg.get("output") or ""))
+
+    def call_tool_async(self, name: str, input: dict[str, Any] | None = None, *, timeout: float = 10) -> "AsyncToolCall":
+        result: dict[str, ToolResult | BaseException] = {}
+
+        def run() -> None:
+            try:
+                result["value"] = self.call_tool(name, input, timeout=timeout)
+            except BaseException as exc:
+                result["value"] = exc
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        return AsyncToolCall(thread=thread, result=result, timeout=timeout)
 
     def reset_fixtures(self) -> None:
         for name in ("testbed_hook_mutator_reset", "testbed_hook_blocker_reset", "testbed_hook_recorder_clear"):
@@ -150,3 +168,21 @@ class TestbedClient:
         if self.ws is None:
             raise RuntimeError("client is not connected")
         self.ws.send(json.dumps(msg))
+
+
+@dataclass
+class AsyncToolCall:
+    thread: threading.Thread
+    result: dict[str, ToolResult | BaseException]
+    timeout: float
+
+    def wait(self) -> ToolResult:
+        self.thread.join(self.timeout + 2)
+        if self.thread.is_alive():
+            raise TimeoutError("timed out waiting for async tool call")
+        value = self.result.get("value")
+        if isinstance(value, BaseException):
+            raise value
+        if value is None:
+            raise RuntimeError("async tool call finished without a result")
+        return value

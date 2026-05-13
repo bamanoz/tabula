@@ -7,94 +7,121 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bamanoz/tabula/internal/kernel/plugin"
+	"github.com/bamanoz/tabula/internal/tenant"
 )
 
 // Hub manages all connected clients, sessions, and spawned processes.
 type Hub struct {
-	clients   *ClientRegistry
-	sessions  *SessionRegistry
-	processes *ProcessSupervisor
-	hooks     *HookEngine
-	policy    *PolicyEngine
-	tools     *ToolService
-	plugins   *plugin.Registry
-	runtimes  *RuntimeRegistry
-	// pluginRuns tracks active supervisor lifecycles by plugin id. It is kept
-	// outside plugin.Registry so replacement/cancellation state does not leak
-	// into the public plugin handle snapshot/order semantics.
-	pluginRuns   map[string]*pluginLifecycle
-	pluginRunsMu sync.Mutex
-	// pluginStates tracks durable lifecycle diagnostics for SnapshotPlugins.
-	// Unlike pluginRuns, failed terminal states are retained after the handle is
-	// removed from the live registry so operators can see why a plugin vanished.
-	pluginStates   map[string]*pluginLifecycleState
-	pluginStatesMu sync.RWMutex
-	// pluginRuntime owns live plugin process startup/stdio mechanics. It is
-	// injected as a field (rather than through NewHub's signature) to keep the
-	// builder-style Plugin API additive per creative-plugin-runtime.md §3.
-	pluginRuntime plugin.Runtime
-	// pluginSupervisorPolicy defaults to the frozen protocol values. Tests may
-	// override it to avoid waiting for real backoff intervals.
-	pluginSupervisorPolicy plugin.SupervisorPolicy
+	clients      *ClientRegistry
+	sessions     *SessionRegistry
+	processes    *ProcessSupervisor
+	hooks        *HookEngine
+	policy       *PolicyEngine
+	tools        *ToolService
+	runtimes     *RuntimeRegistry
+	tenants      tenant.Store
+	sessionStore SessionStore
 	// toolExec is the unified tool dispatch table per creative
 	// `creative-plugin-runtime.md` §4 (D1.7). Keyed by tool name, value
-	// carries Source (skill | plugin) plus the source-specific routing
-	// payload. Skill tools are populated at NewHub time; plugin tools are
-	// inserted by Hub.RegisterPlugin (D2.14, future) on register-reply
-	// and atomically replaced on update_tools.
+	// carries the runtime routing payload. Entries are synchronized from
+	// attached Runtime API targets.
 	toolExec        map[string]toolDispatch
 	toolExecMu      sync.RWMutex
+	runtimeBusy     map[string]int
+	runtimeBusyMu   sync.RWMutex
 	toolsJSON       json.RawMessage
 	initMeta        json.RawMessage
+	tenantInitMeta  map[string]json.RawMessage
 	Logger          *slog.Logger
 	MaxClients      int           // max concurrent clients (default 100)
 	ShutdownTimeout time.Duration // grace period before SIGKILL (default 3s)
-	// ProjectRoot is the absolute workspace/project root exposed to skills via
-	// the `meta.project_root` field on `init`. Skills use it to scope file
-	// reads/writes, shell commands, and approval policies. Empty if unset.
-	ProjectRoot string
 }
 
 func (h *Hub) SetInitMeta(meta json.RawMessage) {
 	h.initMeta = meta
 }
 
+func (h *Hub) SetTenantInitMeta(tenantID string, meta json.RawMessage) {
+	if h == nil || tenantID == "" || len(meta) == 0 {
+		return
+	}
+	if h.tenantInitMeta == nil {
+		h.tenantInitMeta = map[string]json.RawMessage{}
+	}
+	h.tenantInitMeta[tenantID] = append(json.RawMessage(nil), meta...)
+}
+
 // NewHub creates a new Hub.
-//
-// skillExec is the legacy skill-tool dispatch map (`name → exec command`),
-// constructed in main.go from `bootConfig.Skills` (or the deprecated
-// `bootConfig.Tools` legacy alias). It is converted internally to the
-// unified Hub.toolExec dispatch table per creative §4.
-func NewHub(toolsJSON json.RawMessage, skillExec map[string]string, _ int, _ int, logger *slog.Logger) *Hub {
+func NewHub(toolsJSON json.RawMessage, _ int, _ int, logger *slog.Logger) *Hub {
 	if logger == nil {
 		logger = slog.Default()
-	}
-	dispatch := make(map[string]toolDispatch, len(skillExec))
-	for name, cmd := range skillExec {
-		if cmd == "" {
-			continue
-		}
-		dispatch[name] = skillDispatch(cmd)
 	}
 	hub := &Hub{
 		clients:         NewClientRegistry(),
 		sessions:        NewSessionRegistry(),
 		processes:       NewProcessSupervisor(logger, 3*time.Second),
 		hooks:           NewHookEngine(logger),
-		plugins:         plugin.NewRegistry(),
 		runtimes:        NewRuntimeRegistry(),
-		pluginRuns:      make(map[string]*pluginLifecycle),
-		pluginStates:    make(map[string]*pluginLifecycleState),
-		toolExec:        dispatch,
+		tenants:         tenant.NewMemoryStore(tenant.Tenant{ID: tenant.DefaultID, CreatedAt: time.Now().UTC()}),
+		toolExec:        make(map[string]toolDispatch),
+		runtimeBusy:     make(map[string]int),
+		tenantInitMeta:  map[string]json.RawMessage{},
 		toolsJSON:       toolsJSON,
 		Logger:          logger,
 		MaxClients:      100,
 		ShutdownTimeout: 3 * time.Second,
 	}
+	hub.hooks.SetSessionTenantResolver(hub.sessionTenantID)
 	hub.policy = NewPolicyEngine(hub)
 	hub.tools = NewToolService(hub)
 	return hub
+}
+
+func (h *Hub) ConfigureRuntimeRegistry(tabulaHome string) error {
+	if h == nil {
+		return nil
+	}
+	definitions, err := LoadRuntimeDefinitions(tabulaHome)
+	if err != nil {
+		return err
+	}
+	runtimeIDs := make(map[string]struct{}, len(definitions))
+	for _, definition := range definitions {
+		runtimeIDs[definition.ID] = struct{}{}
+	}
+	bindings := map[string]TenantRuntimeBinding{}
+	if h.tenants != nil {
+		items, err := h.tenants.List()
+		if err != nil {
+			return err
+		}
+		for _, item := range items {
+			binding, err := LoadTenantRuntimeBinding(tabulaHome, item.ID, runtimeIDs)
+			if err != nil {
+				return err
+			}
+			bindings[item.ID] = binding
+		}
+	}
+	if h.runtimes == nil {
+		h.runtimes = NewRuntimeRegistry()
+	}
+	return h.runtimes.Configure(definitions, bindings)
+}
+
+// SetTenantStore replaces the tenant read model used for join validation.
+func (h *Hub) SetTenantStore(store tenant.Store) {
+	if store == nil {
+		return
+	}
+	h.tenants = store
+}
+
+func (h *Hub) sessionTenantID(session string) string {
+	if h == nil || h.sessions == nil {
+		return tenant.DefaultID
+	}
+	return h.sessions.TenantID(session)
 }
 
 // Register adds a client to the hub.
@@ -131,9 +158,12 @@ func (h *Hub) onClientDisconnect(c *Client) {
 	}
 	sess.RemoveClient(c.name)
 	if sess.ClientCount() == 0 {
+		h.deleteSessionState(c.session, sess.TenantID)
 		h.emitSessionEnd(c.session)
 		h.sessions.Remove(c.session)
+		return
 	}
+	h.persistSessionState(c.session)
 }
 
 // HandleMessage processes an incoming message from a client.

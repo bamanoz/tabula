@@ -292,19 +292,21 @@ def _check_plugin_compat(plugin_name: str, plugin_dir: Path, *,
     return requires
 
 
-def _resolve_distro_source(value: str | Path, home: Path, *, offline: bool) -> tuple[Path, str | None]:
+def _resolve_distro_source(value: str | Path, home: Path, *, offline: bool, base_dir: Path | None = None) -> tuple[Path, str | None]:
     """Resolve a distro source (path / local: / git+) to a local directory.
 
-    Returns ``(directory, original_uri_or_None)``. The URI is returned only if
-    the source was non-local (so it can be persisted in the lockfile and re-used
-    by ``tabula-distro update`` later).
+    Returns ``(directory, source_string)``. The source string is what should be
+    persisted in the lockfile so later commands like ``update`` and
+    ``reinstall`` can resolve the same distro again. For direct local paths we
+    normalize to an absolute path.
     """
     if isinstance(value, Path):
-        return value.resolve(), None
+        resolved = value.resolve()
+        return resolved, str(resolved)
 
     text = str(value)
     if text.startswith("local:") or text.startswith("git+"):
-        src = srcmod.parse(text, base_dir=Path.cwd())
+        src = srcmod.parse(text, base_dir=base_dir or Path.cwd())
         if isinstance(src, srcmod.LocalSource):
             return src.path, text
         cache = GitCache(home / "cache")
@@ -314,7 +316,11 @@ def _resolve_distro_source(value: str | Path, home: Path, *, offline: bool) -> t
             raise InstallError(f"git source subpath not found: {src.subpath} in {src.url}")
         return root, text
 
-    return Path(text).expanduser().resolve(), None
+    candidate = Path(text).expanduser()
+    if not candidate.is_absolute():
+        candidate = (base_dir or Path.cwd()) / candidate
+    resolved = candidate.resolve()
+    return resolved, str(resolved)
 
 
 @dataclass
@@ -360,6 +366,9 @@ def install(distro_dir: str | Path, home: Path, *,
             offline: bool = False,
             update: bool = False,
             update_only: tuple[str, ...] = (),
+            tenant: str | None = None,
+            expose_global_boot: bool = True,
+            base_dir: Path | None = None,
             keep_generations: int = 5) -> InstallResult:
     """Install a distro into ``home``.
 
@@ -373,7 +382,7 @@ def install(distro_dir: str | Path, home: Path, *,
     was promoted.
     """
     distro_path, distro_source_uri = _resolve_distro_source(
-        distro_dir, home, offline=offline,
+        distro_dir, home, offline=offline, base_dir=base_dir,
     )
     distro = cfg.load(distro_path, override_name=override_name)
 
@@ -431,8 +440,8 @@ def install(distro_dir: str | Path, home: Path, *,
         # lock metadata) but keep the existing generation as current.
         lockmod.save(gens.distro_root(home, distro.name) / "distro.lock.json", new_lock)
         _expose_current(home, distro.name)
-        _set_active(home, distro.name)
-        _refresh_runtime_surface(home)
+        _set_active(home, distro.name, expose_global_boot=expose_global_boot)
+        _refresh_runtime_surface(home, tenant=tenant)
         return InstallResult(current, new_lock, False)
 
     (staging / ".fingerprint").write_text(staging_fp, encoding="utf-8")
@@ -443,8 +452,8 @@ def install(distro_dir: str | Path, home: Path, *,
 
     gens.set_current(home, distro.name, new_gen)
     _expose_current(home, distro.name)
-    _set_active(home, distro.name)
-    _refresh_runtime_surface(home)
+    _set_active(home, distro.name, expose_global_boot=expose_global_boot)
+    _refresh_runtime_surface(home, tenant=tenant)
     gens.prune(home, distro.name, keep=keep_generations)
     return InstallResult(new_gen, new_lock, True)
 
@@ -648,125 +657,7 @@ def _git_result(uri: str, src: GitSource, checkout) -> tuple[Path, lockmod.LockE
 def _install_skill(src: Path, dst: Path, *, override: bool, label: str) -> None:
     if not (src / "SKILL.md").is_file():
         raise InstallError(f"{label}: missing SKILL.md")
-    _validate_skill_manifest_tools(src / "SKILL.md", label=label)
     _install_component(src, dst, override=override, label=label)
-
-
-def _validate_skill_manifest_tools(path: Path, *, label: str) -> None:
-    """Validate advertised SKILL.md tools without requiring a full YAML parser.
-
-    Tabula skills use Anthropic-style YAML frontmatter. For this installer gate we
-    only need the migration-critical fields in top-level ``tools[]`` entries:
-    advertised tools must have non-empty ``name`` and ``exec``. Skills without a
-    frontmatter ``tools`` block remain valid no-tool/legacy components, but they
-    do not count as migrated per-call skills in the external evidence matrix.
-    """
-    frontmatter = _extract_skill_frontmatter(path)
-    if frontmatter is None:
-        return
-    tools = _parse_skill_frontmatter_tools(frontmatter, label=label)
-    seen: dict[str, int] = {}
-    for idx, tool in enumerate(tools):
-        name = (tool.get("name") or "").strip()
-        exec_cmd = (tool.get("exec") or "").strip()
-        if not name:
-            raise InstallError(f"{label}: tools[{idx}].name is required for tools[].exec migration")
-        if not exec_cmd:
-            raise InstallError(f"{label}: tools[{idx}].exec is required for tools[].exec migration")
-        if name in seen:
-            raise InstallError(
-                f"{label}: tools[{idx}].name duplicates tools[{seen[name]}].name {name!r}"
-            )
-        seen[name] = idx
-
-
-def _extract_skill_frontmatter(path: Path) -> str | None:
-    text = path.read_text(encoding="utf-8")
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return None
-    collected: list[str] = []
-    for line in lines[1:]:
-        if line.strip() == "---":
-            return "\n".join(collected)
-        collected.append(line)
-    raise InstallError(f"{path.name}: unterminated YAML frontmatter")
-
-
-def _parse_skill_frontmatter_tools(frontmatter: str, *, label: str) -> list[dict[str, str]]:
-    lines = frontmatter.splitlines()
-    for i, line in enumerate(lines):
-        if line.startswith((" ", "\t")) or line.lstrip().startswith("#"):
-            continue
-        key, sep, value = line.partition(":")
-        if sep and key.strip() == "tools":
-            value = value.strip()
-            if value.startswith("#"):
-                value = ""
-            if value == "":
-                return _parse_skill_tools_block(lines[i + 1:], label=label)
-            if value == "[]":
-                return []
-            if value in ("null", "~"):
-                return []
-            raise InstallError(f"{label}: tools must be a YAML list with tools[].name and tools[].exec")
-    return []
-
-
-def _parse_skill_tools_block(lines: list[str], *, label: str) -> list[dict[str, str]]:
-    tools: list[dict[str, str]] = []
-    current: dict[str, str] | None = None
-    list_indent: int | None = None
-    saw_indented_content = False
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if not line.startswith((" ", "\t")):
-            break
-        saw_indented_content = True
-        indent = len(line) - len(line.lstrip(" "))
-        stripped = stripped.split(" #", 1)[0].strip()
-        if stripped.startswith("- "):
-            if list_indent is None:
-                list_indent = indent
-            if indent > list_indent:
-                continue
-            if indent < list_indent:
-                break
-            if current is not None:
-                tools.append(current)
-            current = {}
-            item = stripped[2:].strip()
-            if item:
-                _parse_skill_tool_scalar(item, current, label=label)
-            continue
-        if list_indent is not None and indent > list_indent + 2:
-            continue
-        if current is None:
-            raise InstallError(f"{label}: tools must be a YAML list with tools[].name and tools[].exec")
-        _parse_skill_tool_scalar(stripped, current, label=label)
-    if current is not None:
-        tools.append(current)
-    if saw_indented_content and not tools:
-        raise InstallError(f"{label}: tools must be a YAML list with tools[].name and tools[].exec")
-    return tools
-
-
-def _parse_skill_tool_scalar(text: str, target: dict[str, str], *, label: str) -> None:
-    key, sep, value = text.partition(":")
-    if not sep:
-        raise InstallError(f"{label}: invalid tools[] entry; expected key: value")
-    key = key.strip()
-    if key not in {"name", "exec"}:
-        return
-    target[key] = _strip_yaml_scalar(value.strip()).strip()
-
-
-def _strip_yaml_scalar(value: str) -> str:
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-        return value[1:-1]
-    return value
 
 
 def _install_plugin(src: Path, dst: Path, *, override: bool, label: str) -> None:
@@ -905,6 +796,16 @@ def _install_lib_root(src: Path, lib_dir: Path, installed_libs: dict[str, Instal
         if existing is not None:
             if existing.fingerprint == fingerprint:
                 continue
+            if _shared_lib_can_merge(existing.source_path, entry):
+                _copytree_merge(entry, dst)
+                installed_libs[entry.name] = InstalledSharedLib(
+                    name=entry.name,
+                    fingerprint=_fingerprint_tree(dst),
+                    source_path=dst,
+                    source_uri=existing.source_uri + ", " + source_uri,
+                    bundle_name=existing.bundle_name + ", " + bundle_name,
+                )
+                continue
             raise InstallError(_shared_lib_conflict_message(entry.name, existing, entry, fingerprint, bundle_name, source_uri))
         _copytree(entry, dst)
         installed_libs[entry.name] = InstalledSharedLib(
@@ -933,6 +834,37 @@ def _shared_lib_conflict_message(lib_name: str, existing: InstalledSharedLib, ca
         f"Use a shared source alias if these bundles should share one repo checkout, "
         f"or align the shared _lib/{lib_name} contents."
     )
+
+
+def _shared_lib_can_merge(existing: Path, candidate: Path) -> bool:
+    existing_files = _relative_file_hashes(existing)
+    candidate_files = _relative_file_hashes(candidate)
+    for rel, fingerprint in candidate_files.items():
+        if rel in existing_files and existing_files[rel] != fingerprint:
+            return False
+    return True
+
+
+def _relative_file_hashes(root: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.name in IGNORE_NAMES or path.name.endswith(".pyc"):
+            continue
+        h = hashlib.sha256()
+        with path.open("rb") as f:
+            while chunk := f.read(65536):
+                h.update(chunk)
+        out[str(path.relative_to(root))] = h.hexdigest()
+    return out
+
+
+def _copytree_merge(src: Path, dst: Path) -> None:
+    for path in sorted(src.rglob("*")):
+        if not path.is_file() or path.name in IGNORE_NAMES or path.name.endswith(".pyc"):
+            continue
+        target = dst / path.relative_to(src)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
 
 
 def _bundle_component_candidates(bundle_root: Path, manifest: BundleManifest, *,
@@ -972,7 +904,7 @@ def _expose_current(home: Path, distro_name: str) -> None:
         link.symlink_to(Path("current") / entry)
 
 
-def _set_active(home: Path, distro_name: str) -> None:
+def _set_active(home: Path, distro_name: str, *, expose_global_boot: bool = True) -> None:
     distrib_root = home / "distrib"
     distrib_root.mkdir(parents=True, exist_ok=True)
     active = distrib_root / "active"
@@ -984,12 +916,16 @@ def _set_active(home: Path, distro_name: str) -> None:
     active.symlink_to(Path(distro_name))
 
     boot = home / "boot.py"
+    if not expose_global_boot:
+        if boot.exists() or boot.is_symlink():
+            boot.unlink(missing_ok=True)
+        return
     if boot.exists() or boot.is_symlink():
         boot.unlink(missing_ok=True)
     boot.symlink_to(Path("distrib") / "active" / "boot.py")
 
 
-def _refresh_runtime_surface(home: Path) -> None:
+def _refresh_runtime_surface(home: Path, *, tenant: str | None = None) -> None:
     for obsolete in (home / "drivers", home / "gateways"):
         if obsolete.exists() or obsolete.is_symlink():
             if obsolete.is_dir() and not obsolete.is_symlink():
@@ -1001,10 +937,34 @@ def _refresh_runtime_surface(home: Path) -> None:
     _link_runtime(home / "distrib" / "active" / "templates", home / "templates")
     _link_runtime(home / "distrib" / "active" / "plugins", home / "plugins")
     _link_runtime(home / "distrib" / "active" / "skills", home / "skills")
-    _touch_reload_trigger(home)
+    for tenant_dir in _tenant_roots(home, tenant=tenant):
+        _refresh_tenant_runtime_surface(home, tenant_dir)
+    _touch_reload_trigger(home, tenant=tenant)
 
 
-def _touch_reload_trigger(home: Path) -> None:
+def _tenant_roots(home: Path, *, tenant: str | None = None) -> list[Path]:
+    tenants = home / "tenants"
+    if not tenants.is_dir():
+        return []
+    roots = [entry for entry in sorted(tenants.iterdir()) if entry.is_dir() and not entry.name.startswith(".")]
+    if tenant is None:
+        return roots
+    return [entry for entry in roots if entry.name == tenant]
+
+
+def _refresh_tenant_runtime_surface(home: Path, tenant_dir: Path) -> None:
+    _link_runtime(home / "distrib" / "active" / "_lib", tenant_dir / "_lib")
+    _link_runtime(home / "distrib" / "active" / "clients", tenant_dir / "clients")
+    _link_runtime(home / "distrib" / "active" / "templates", tenant_dir / "templates")
+    _link_runtime(home / "distrib" / "active" / "plugins", tenant_dir / "plugins")
+    _link_runtime(home / "distrib" / "active" / "skills", tenant_dir / "skills")
+
+
+def touch_reload_trigger(home: Path, *, tenant: str | None = None) -> None:
+    _touch_reload_trigger(home, tenant=tenant)
+
+
+def _touch_reload_trigger(home: Path, *, tenant: str | None = None) -> None:
     """Signal a running ``tabula serve`` to reload plugins.
 
     Touches ``$TABULA_HOME/run/reload.touch`` atomically. The kernel polls
@@ -1020,7 +980,10 @@ def _touch_reload_trigger(home: Path) -> None:
     trigger = run_dir / "reload.touch"
     tmp = run_dir / ".reload.touch.tmp"
     try:
-        tmp.write_text(f"{time.time()}\n", encoding="utf-8")
+        lines = [f"time={time.time()}"]
+        if tenant:
+            lines.append(f"tenant={tenant}")
+        tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
         os.replace(tmp, trigger)
     except OSError:
         # Best-effort; reinstall succeeded even if the signal didn't.
@@ -1032,6 +995,8 @@ def _touch_reload_trigger(home: Path) -> None:
 
 def _link_runtime(src_dir: Path, dst_dir: Path, preserve: set[str] | None = None) -> None:
     preserve = preserve or set()
+    if dst_dir.is_symlink() or (dst_dir.exists() and not dst_dir.is_dir()):
+        dst_dir.unlink(missing_ok=True)
     dst_dir.mkdir(parents=True, exist_ok=True)
     for existing in list(dst_dir.iterdir()):
         if existing.name in preserve:

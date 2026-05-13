@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -28,6 +29,7 @@ class SuiteSpec:
     components: tuple[str, ...]
     tests: tuple[Path, ...]
     manifest: Path
+    runtime_tenants: tuple[str, ...] = ()
 
 
 def free_port() -> int:
@@ -51,6 +53,11 @@ def output(cmd: list[str], *, cwd: Path | None = None) -> str:
     return subprocess.check_output(cmd, cwd=str(cwd) if cwd else None, text=True).strip()
 
 
+def write_diagnostic(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Tabula testbed in an isolated TABULA_HOME")
     parser.add_argument("--repo-root", required=True, help="Path to tabula repository root")
@@ -68,11 +75,42 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--lint", action="store_true", help="Validate selected suite manifests/components without starting kernel")
     parser.add_argument("--direct", action="store_true", help="Run lint plus Python syntax checks without starting kernel")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON summary to stdout; logs go to stderr")
+    parser.add_argument("--bootstrap-check", action="store_true", help="Run scripts/bootstrap.sh after distro install and before suite execution")
     return parser.parse_args(argv)
 
 
 def load_toml(path: Path) -> dict[str, Any]:
     return tomllib.loads(path.read_text(encoding="utf-8"))
+
+
+def entry_protocol_markers(entry_path: Path, python_lib_dir: Path | None = None) -> list[str]:
+    sources: list[tuple[str, Path]] = [("entry", entry_path)]
+    if python_lib_dir is not None:
+        sdk_dir = python_lib_dir / "tabula_plugin_sdk"
+        for sdk_path in (sdk_dir / "api.py", sdk_dir / "protocol.py"):
+            if sdk_path.is_file():
+                sources.append((f"sdk:{sdk_path.name}", sdk_path))
+    markers: list[str] = []
+    checks = (
+        ("legacy-register-request", "register_request"),
+        ("legacy-register-request-error", "expected register_request as first plugin message"),
+        ("m2-worker-init-ack", "init_ack"),
+        ("m2-worker-tools-updated", "tools_updated"),
+    )
+    for label, path in sources:
+        try:
+            source = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            markers.append(f"{label}:not-utf8")
+            continue
+        for marker, needle in checks:
+            if needle in source:
+                markers.append(f"{label}:{marker}")
+    return markers or ["none"]
+
+
+def format_protocol_markers(markers: list[str]) -> str:
+    return ", ".join(markers)
 
 
 def parse_source(value: str) -> tuple[str, str]:
@@ -87,6 +125,34 @@ def local_source_root(source: str) -> Path | None:
         return None
     raw = source[len("local:"):].split("#", 1)[0]
     return Path(raw).expanduser().resolve()
+
+
+def describe_testbed_sources(source_roots: dict[str, str]) -> str:
+    if not source_roots:
+        return "no external sources configured\n"
+    sections: list[str] = []
+    for alias, source in sorted(source_roots.items()):
+        lines = [f"## {alias}", f"source = {source}"]
+        root = local_source_root(source)
+        if root is None:
+            lines.append("local_root = <non-local>")
+        else:
+            lines.append(f"local_root = {root}")
+            lines.append(f"exists = {str(root.is_dir()).lower()}")
+            if root.is_dir():
+                for label, cmd in (
+                    ("git_head", ["git", "rev-parse", "HEAD"]),
+                    ("git_branch", ["git", "rev-parse", "--abbrev-ref", "HEAD"]),
+                    ("git_remote", ["git", "remote", "get-url", "origin"]),
+                    ("git_status_short", ["git", "status", "--short"]),
+                ):
+                    try:
+                        value = output(cmd, cwd=root)
+                    except Exception as exc:
+                        value = f"<unavailable: {exc}>"
+                    lines.append(f"{label} = {value or '<clean>'}")
+        sections.append("\n".join(lines))
+    return "\n\n".join(sections).rstrip() + "\n"
 
 
 def discover_suite_specs(testbed_dir: Path, source_roots: dict[str, str]) -> tuple[dict[str, SuiteSpec], list[Path]]:
@@ -105,6 +171,7 @@ def discover_suite_specs(testbed_dir: Path, source_roots: dict[str, str]) -> tup
                 components=tuple(str(v) for v in data.get("components", [])),
                 tests=tests,
                 manifest=manifest_path,
+                runtime_tenants=tuple(str(v) for v in data.get("runtime_tenants", [])),
             )
 
     add_specs(testbed_dir / "testbed.toml", testbed_dir)
@@ -154,6 +221,47 @@ def resolve_selection(args: argparse.Namespace, suite_specs: dict[str, SuiteSpec
     if not tests:
         raise SystemExit(f"no tests found for suites: {', '.join(requested_suites)}")
     return set_name, all_set, bundles, without, components, tests, requested_suites
+
+
+def runtime_tenants_for_suites(suite_specs: dict[str, SuiteSpec], suites: list[str]) -> tuple[str, ...]:
+    selected = {suite_specs[name].runtime_tenants for name in suites if name in suite_specs and suite_specs[name].runtime_tenants}
+    if len(selected) > 1:
+        formatted = ", ".join("[" + ",".join(items) + "]" for items in sorted(selected))
+        raise SystemExit(f"selected suites require conflicting runtime_tenants: {formatted}")
+    return next(iter(selected)) if selected else ()
+
+
+def set_runtime_tenants(config_path: Path, tenants: tuple[str, ...]) -> None:
+    if not tenants:
+        return
+    if not config_path.exists():
+        home = config_path.parent.parent
+        plugin_manifests = sorted(str(path) for path in (home / "plugins").glob("*/plugin.toml"))
+        value = "[" + ", ".join(json.dumps(item) for item in tenants) + "]"
+        text = (
+            f'plugin_dirs = [{", ".join(json.dumps(item) for item in plugin_manifests)}]\n'
+            f'skill_dirs = [{json.dumps(str(home / "skills"))}]\n\n'
+            '[[kernel]]\n'
+            '  id = "main"\n'
+            f'  url = "unix://{home / "run" / "runtime.sock"}"\n'
+            f'  token_file = {json.dumps(str(home / "run" / "runtime-token"))}\n'
+            f'  tenants = {value}\n'
+            '  ca_file = ""\n'
+            '  cert_file = ""\n'
+            '  key_file = ""\n'
+            '  tls_insecure_skip_verify = false\n'
+        )
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(text, encoding="utf-8")
+        return
+    text = config_path.read_text(encoding="utf-8")
+    value = "[" + ", ".join(json.dumps(item) for item in tenants) + "]"
+    replacement = f"tenants = {value}"
+    if re.search(r"(?m)^\s*tenants\s*=\s*\[[^\n]*\]", text):
+        text = re.sub(r"(?m)^\s*tenants\s*=\s*\[[^\n]*\]", replacement, text, count=1)
+    else:
+        text = re.sub(r"(?m)^(\s*token_file\s*=\s*[^\n]+)$", r"\1\n  " + replacement, text, count=1)
+    config_path.write_text(text, encoding="utf-8")
 
 
 def merge_manifests(paths: list[Path]) -> dict[str, Any]:
@@ -218,6 +326,7 @@ def selected_bundles(manifest: dict[str, Any], set_name: str, all_set: bool, bun
     if effective_set not in sets:
         raise SystemExit(f"unknown testbed set {effective_set!r}; available: {', '.join(sorted(sets))}")
     selected = list(sets[effective_set])
+    unfiltered_set_bundles = set(selected) if effective_set in {"baseline", "all"} else set()
     selected.extend(bundles)
     component_map: dict[str, list[str]] = {}
     for raw in components:
@@ -229,7 +338,7 @@ def selected_bundles(manifest: dict[str, Any], set_name: str, all_set: bool, bun
     unknown = [name for name in selected if name not in known]
     if unknown:
         raise SystemExit(f"unknown testbed bundles: {', '.join(unknown)}; available: {', '.join(sorted(known))}")
-    return selected, {name: ordered_unique(values) for name, values in component_map.items() if name in selected}
+    return selected, {name: ordered_unique(values) for name, values in component_map.items() if name in selected and name not in unfiltered_set_bundles}
 
 
 def lint_selection(manifest: dict[str, Any], source_roots: dict[str, str], set_name: str, all_set: bool,
@@ -267,7 +376,7 @@ def direct_checks(roots: dict[str, Path], component_map: dict[str, list[str]], t
         run([sys.executable, "-m", "py_compile", *sorted(set(py_files))])
 
 
-def verify_runtime_sidecar_layout(home: Path, bin_dir: Path) -> None:
+def verify_runtime_sidecar_layout(home: Path, bin_dir: Path, logs_dir: Path) -> None:
     runtime_bin = bin_dir / ("tabula-runtime.exe" if os.name == "nt" else "tabula-runtime")
     if not runtime_bin.is_file():
         raise SystemExit(f"missing runtime sidecar binary: {runtime_bin}")
@@ -290,28 +399,117 @@ def verify_runtime_sidecar_layout(home: Path, bin_dir: Path) -> None:
         raise SystemExit(f"runtime config url must use unix://, got {url}")
     if not plugin_dirs:
         raise SystemExit("runtime config plugin_dirs is empty")
+    manifest_summary = logs_dir / "runtime-plugin-manifests.txt"
+    python_lib_dir = home / "_lib" / "python" / "src"
+    sections: list[str] = []
+    for entry in plugin_dirs:
+        manifest_path = Path(str(entry))
+        if manifest_path.is_dir():
+            manifests = sorted(manifest_path.glob("*/plugin.toml"))
+            if not manifests:
+                continue
+            for child in manifests:
+                manifest = load_toml(child)
+                runtime_name = str(manifest.get("runtime") or "")
+                entry_name = str(manifest.get("entry") or "")
+                if not runtime_name:
+                    raise SystemExit(f"plugin manifest missing runtime field: {child}")
+                if not entry_name:
+                    raise SystemExit(f"plugin manifest missing entry field: {child}")
+                entry_path = (child.parent / entry_name).resolve()
+                if not entry_path.is_file():
+                    raise SystemExit(f"plugin entry file is missing: {entry_path}")
+                markers = entry_protocol_markers(entry_path, python_lib_dir)
+                sections.append(
+                    f"## {child}\n"
+                    f"runtime = {runtime_name}\n"
+                    f"entry = {entry_name}\n"
+                    f"entry_path = {entry_path}\n"
+                    f"entry_protocol_markers = {format_protocol_markers(markers)}\n\n"
+                    f"{child.read_text(encoding='utf-8').rstrip()}\n"
+                )
+            continue
+        if not manifest_path.is_file():
+            raise SystemExit(f"runtime config plugin_dirs entry is missing: {manifest_path}")
+        manifest = load_toml(manifest_path)
+        runtime_name = str(manifest.get("runtime") or "")
+        entry_name = str(manifest.get("entry") or "")
+        if not runtime_name:
+            raise SystemExit(f"plugin manifest missing runtime field: {manifest_path}")
+        if not entry_name:
+            raise SystemExit(f"plugin manifest missing entry field: {manifest_path}")
+        entry_path = (manifest_path.parent / entry_name).resolve()
+        if not entry_path.is_file():
+            raise SystemExit(f"plugin entry file is missing: {entry_path}")
+        markers = entry_protocol_markers(entry_path, python_lib_dir)
+        sections.append(
+            f"## {manifest_path}\n"
+            f"runtime = {runtime_name}\n"
+            f"entry = {entry_name}\n"
+            f"entry_path = {entry_path}\n"
+            f"entry_protocol_markers = {format_protocol_markers(markers)}\n\n"
+            f"{manifest_path.read_text(encoding='utf-8').rstrip()}\n"
+        )
+    write_diagnostic(manifest_summary, "\n".join(sections).rstrip() + "\n")
 
 
-def wait_for_supervised_runtime(bin_dir: Path, home: Path) -> int:
+def attached_runtime_pid(body: dict[str, Any]) -> int:
+    runtimes = body.get("runtimes", [])
+    for runtime in runtimes:
+        if runtime.get("id") != "local" or not runtime.get("attached"):
+            continue
+        pid = int(runtime.get("pid") or 0)
+        if pid > 0:
+            return pid
+    return 0
+
+
+def find_runtime_pid(home: Path) -> int:
+    if os.name == "nt":
+        return 0
+    try:
+        raw = subprocess.check_output(["pgrep", "-f", str(home / "config" / "runtime.toml")], text=True)
+    except Exception:
+        return 0
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            return int(line)
+        except ValueError:
+            continue
+    return 0
+
+
+def wait_for_supervised_runtime(bin_dir: Path, home: Path, logs_dir: Path) -> int:
     tabula_bin = bin_dir / ("tabula.exe" if os.name == "nt" else "tabula")
     env = os.environ.copy()
     env["TABULA_HOME"] = str(home)
     deadline = time.time() + 20
     last: str | None = None
+    status_path = logs_dir / "runtime-status-last.json"
+    error_path = logs_dir / "runtime-status-last.error.txt"
+    if status_path.exists():
+        status_path.unlink()
+    if error_path.exists():
+        error_path.unlink()
     while time.time() < deadline:
         try:
             raw = subprocess.check_output([str(tabula_bin), "status", "--json"], env=env, text=True)
+            write_diagnostic(status_path, raw)
+            if error_path.exists():
+                error_path.unlink()
             body = json.loads(raw)
-            runtimes = body.get("runtimes", [])
-            for runtime in runtimes:
-                caps = runtime.get("capabilities") or []
-                if runtime.get("id") == "local" and runtime.get("attached") and int(runtime.get("pid") or 0) > 0 and len(caps) > 0:
-                    return int(runtime.get("pid") or 0)
+            runtime_pid = attached_runtime_pid(body) or find_runtime_pid(home)
+            if any(runtime.get("id") == "local" and runtime.get("attached") for runtime in body.get("runtimes", []) if isinstance(runtime, dict)):
+                return runtime_pid
             last = raw.strip()
         except Exception as exc:
             last = str(exc)
+            write_diagnostic(error_path, last + "\n")
         time.sleep(0.5)
-    raise SystemExit(f"supervised runtime did not appear in status output: {last}")
+    raise SystemExit(f"runtime did not attach in status output: {last}")
 
 
 def process_alive(pid: int) -> bool:
@@ -336,6 +534,8 @@ def wait_for_process_exit(pid: int, timeout: float) -> None:
 
 
 def verify_runtime_teardown(home: Path, runtime_pid: int) -> None:
+    if runtime_pid <= 0:
+        runtime_pid = find_runtime_pid(home)
     wait_for_process_exit(runtime_pid, 5)
     runtime_socket = home / "run" / "runtime.sock"
     if runtime_socket.exists():
@@ -419,6 +619,7 @@ def main(argv: list[str] | None = None) -> int:
         list_suites(suite_specs)
         return 0
     set_name, all_set, bundles, without, components, tests, suites = resolve_selection(args, suite_specs)
+    runtime_tenants = runtime_tenants_for_suites(suite_specs, suites)
     manifest = merge_manifests(manifest_paths)
 
     if args.lint or args.direct:
@@ -437,6 +638,8 @@ def main(argv: list[str] | None = None) -> int:
             if JSON_MODE:
                 print(json.dumps({"ok": True, "mode": "lint", "suites": suites, "bundles": selected, "components": component_map}, sort_keys=True))
         return 0
+
+    selected, component_map, _ = lint_selection(manifest, source_roots, set_name, all_set, bundles, without, components, tests)
 
     home = Path(args.home).resolve() if args.home else Path(tempfile.mkdtemp(prefix="tabula-testbed."))
     keep = args.keep or bool(args.home)
@@ -460,6 +663,7 @@ def main(argv: list[str] | None = None) -> int:
         bin_dir.mkdir(parents=True, exist_ok=True)
         logs_dir.mkdir(parents=True, exist_ok=True)
         (home / "config").mkdir(parents=True, exist_ok=True)
+        write_diagnostic(logs_dir / "testbed-sources.txt", describe_testbed_sources(source_roots))
 
         log("==> Installing isolated Python environment")
         run([sys.executable, "-m", "venv", str(venv)])
@@ -479,10 +683,11 @@ def main(argv: list[str] | None = None) -> int:
         ldflags = f"-X main.version={version} -X main.commit={commit} -X main.date={date}"
         run(["go", "build", "-ldflags", ldflags, "-o", str(bin_dir / "tabula"), "./cmd/tabula/"], cwd=repo_root)
         run(["go", "build", "-ldflags", ldflags, "-o", str(bin_dir / "tabula-runtime"), "./cmd/tabula-runtime/"], cwd=repo_root)
+        shutil.copy2(repo_root / "bin" / "tabula-runner", bin_dir / "tabula-runner")
         (home / "VERSION").write_text(version + "\n", encoding="utf-8")
 
-        # Snapshot the kernel's plugin protocol range so the distro installer's
-        # compat check has the same source of truth as install-dev.sh.
+        # Snapshot the runtime plugin compatibility range so the distro
+        # installer's compat check has the same source of truth as install-dev.sh.
         protocol_blob = output([str(bin_dir / "tabula"), "--protocol"])
         (home / "PROTOCOL").write_text(protocol_blob + "\n", encoding="utf-8")
 
@@ -498,19 +703,19 @@ def main(argv: list[str] | None = None) -> int:
             generate_args.extend(["--source", f"{alias}={source}"])
         if all_set:
             generate_args.append("--all")
-        for value in bundles:
+        for value in selected:
             generate_args.extend(["--bundle", value])
         for value in without:
             generate_args.extend(["--without", value])
-        for value in components:
-            generate_args.extend(["--component", value])
+        for bundle, values in sorted(component_map.items()):
+            for component in values:
+                generate_args.extend(["--component", f"{bundle}:{component}"])
 
         log("==> Generating concrete testbed distro")
         run(generate_args)
 
         log(f"==> Installing generated testbed distro from {generated}")
         run([str(venv / "bin" / "tabula-distro"), "--home", str(home), "install", str(generated)])
-
         env = os.environ.copy()
         env.update({
             "TABULA_HOME": str(home),
@@ -518,26 +723,32 @@ def main(argv: list[str] | None = None) -> int:
             "TABULA_OBSERVER_PORT": str(observer_port),
             "TABULA_CRON_DISABLE_OS_CRONTAB": "1",
             "TABULA_CRON_POLL_INTERVAL": "1",
+            "TABULA_PROVIDER": "anthropic",
             "TABULA_BOOT": f'"{python}" "{home / "boot.py"}"',
             "TABULA_PATH": f"{venv / 'bin'}:{bin_dir}:{env.get('PATH', '')}",
         })
+        if args.bootstrap_check:
+            log("==> Running bootstrap readiness check")
+            run([str(repo_root / "scripts" / "bootstrap.sh"), "--tabula-home", str(home), "--timeout", "20"], env=env, cwd=repo_root)
+        set_runtime_tenants(home / "config" / "runtime.toml", runtime_tenants)
         log("==> Starting isolated kernel")
         out = (logs_dir / "kernel.out.log").open("w", encoding="utf-8")
         err = (logs_dir / "kernel.err.log").open("w", encoding="utf-8")
-        kernel = subprocess.Popen([str(bin_dir / "tabula"), "serve"], env=env, stdout=out, stderr=err)
+        kernel = subprocess.Popen([str(bin_dir / "tabula-runner")], env=env, stdout=out, stderr=err)
 
         log("==> Waiting for isolated kernel")
         wait_for_kernel(python, kernel_url)
 
         log("==> Verifying runtime sidecar layout")
-        verify_runtime_sidecar_layout(home, bin_dir)
+        verify_runtime_sidecar_layout(home, bin_dir, logs_dir)
 
         log("==> Waiting for supervised runtime attachment")
-        runtime_pid = wait_for_supervised_runtime(bin_dir, home)
+        runtime_pid = wait_for_supervised_runtime(bin_dir, home, logs_dir)
 
         log("==> Running testbed smoke tests")
         runner_lib = Path(__file__).resolve().parents[1]
         smoke_env = env.copy()
+        smoke_env["TABULA_TESTBED_LIVE"] = "1"
         smoke_env["PYTHONPATH"] = f"{runner_lib}:{home / '_lib' / 'python' / 'src'}:{testbed_dir / 'tests'}"
         for test in tests:
             run([
@@ -579,6 +790,16 @@ def main(argv: list[str] | None = None) -> int:
             diagnostics = {
                 "home": str(home),
                 "generated_distro": str(home / "generated-testbed" / "distro.toml"),
+                "testbed_sources": str(logs_dir / "testbed-sources.txt"),
+                "runtime_config": str(home / "config" / "runtime.toml"),
+                "protocol_file": str(home / "PROTOCOL"),
+                "plugin_manifests": str(logs_dir / "runtime-plugin-manifests.txt"),
+                "bootstrap_status": str(logs_dir / "bootstrap-status-last.json"),
+                "bootstrap_status_error": str(logs_dir / "bootstrap-status-last.error.txt"),
+                "runtime_status": str(logs_dir / "runtime-status-last.json"),
+                "runtime_status_error": str(logs_dir / "runtime-status-last.error.txt"),
+                "bootstrap_stdout": str(logs_dir / "bootstrap-kernel.out.log"),
+                "bootstrap_stderr": str(logs_dir / "bootstrap-kernel.err.log"),
                 "kernel_stdout": str(logs_dir / "kernel.out.log"),
                 "kernel_stderr": str(logs_dir / "kernel.err.log"),
             }
@@ -587,6 +808,16 @@ def main(argv: list[str] | None = None) -> int:
             log("==> Testbed failed; keeping diagnostics")
             log(f"    home: {diagnostics['home']}")
             log(f"    generated distro: {diagnostics['generated_distro']}")
+            log(f"    testbed sources: {diagnostics['testbed_sources']}")
+            log(f"    runtime config: {diagnostics['runtime_config']}")
+            log(f"    protocol file: {diagnostics['protocol_file']}")
+            log(f"    plugin manifests: {diagnostics['plugin_manifests']}")
+            log(f"    bootstrap status: {diagnostics['bootstrap_status']}")
+            log(f"    bootstrap status error: {diagnostics['bootstrap_status_error']}")
+            log(f"    runtime status: {diagnostics['runtime_status']}")
+            log(f"    runtime status error: {diagnostics['runtime_status_error']}")
+            log(f"    bootstrap stdout: {diagnostics['bootstrap_stdout']}")
+            log(f"    bootstrap stderr: {diagnostics['bootstrap_stderr']}")
             log(f"    kernel stdout: {diagnostics['kernel_stdout']}")
             log(f"    kernel stderr: {diagnostics['kernel_stderr']}")
             if teardown_error:

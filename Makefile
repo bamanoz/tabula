@@ -1,7 +1,24 @@
-.PHONY: build test test-unit test-smoke test-e2e test-contract test-go test-go-unit test-go-smoke test-python test-python-unit test-python-smoke test-python-e2e test-python-contract lint vet install clean
+.PHONY: build test test-unit test-smoke test-e2e test-contract test-go test-go-unit test-go-smoke test-python test-python-unit test-python-smoke test-python-e2e test-python-contract lint vet install install-agent agent clean
 
 TABULA_HOME ?= .
 VENV_PYTHON = .venv/bin/python3
+AGENT_HOME ?= $(CURDIR)/.tabula
+MANIFEST ?= $(CURDIR)/tabula.app.toml
+
+PRIMARY_GOAL := $(firstword $(MAKECMDGOALS))
+SECOND_GOAL := $(word 2,$(MAKECMDGOALS))
+THIRD_GOAL := $(word 3,$(MAKECMDGOALS))
+KNOWN_AGENT_ACTIONS := prepare run connect
+AGENT_ACTION :=
+
+ifeq ($(PRIMARY_GOAL),agent)
+ifneq ($(filter $(SECOND_GOAL),$(KNOWN_AGENT_ACTIONS)),)
+AGENT_ACTION := $(SECOND_GOAL)
+.PHONY: $(SECOND_GOAL)
+$(SECOND_GOAL):
+	@:
+endif
+endif
 
 VERSION  := $(shell cat VERSION)
 COMMIT   := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -75,6 +92,30 @@ vet:
 
 install:
 	bash scripts/install-dev.sh
+
+install-agent:
+	TABULA_HOME=$(AGENT_HOME) bash scripts/install-dev.sh
+
+agent:
+	@ACTION="$(AGENT_ACTION)"; \
+	if [ -z "$$ACTION" ]; then ACTION=connect; fi; \
+	case "$$ACTION" in \
+	  prepare) \
+	    test -f "$(MANIFEST)" || { printf 'error: manifest not found: %s\n' "$(MANIFEST)" >&2; exit 2; }; \
+	    TABULA_HOME=$(AGENT_HOME) bash scripts/install-dev.sh; \
+	    TABULA_HOME=$(AGENT_HOME) $(AGENT_HOME)/bin/tabula-install app run "$(MANIFEST)" --dry-run --update; \
+	    ;; \
+	  run) \
+	    TABULA_HOME=$(AGENT_HOME) TABULA_LOG_LEVEL="$${TABULA_LOG_LEVEL:-info}" $(AGENT_HOME)/bin/tabula-runner; \
+	    ;; \
+	  connect) \
+	    TABULA_HOME=$(AGENT_HOME) $(AGENT_HOME)/bin/tabula-cli $(if $(SESSION),--session $(SESSION),); \
+	    ;; \
+	  *) \
+	    printf 'usage: make agent {prepare|run|connect} [MANIFEST=path] [SESSION=id]\n' >&2; \
+	    exit 2; \
+	    ;; \
+	esac
 
 # Clean
 

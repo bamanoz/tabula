@@ -54,7 +54,7 @@ func TestBeforeToolCallHookCanModifyToolInput(t *testing.T) {
 		t.Fatalf("expected tool_result, got %s", result.Type)
 	}
 	if !strings.Contains(result.Output, "rewritten") || strings.Contains(result.Output, "original") {
-		t.Fatalf("expected rewritten skill input, got %q", result.Output)
+		t.Fatalf("expected rewritten plugin input, got %q", result.Output)
 	}
 }
 

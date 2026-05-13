@@ -3,7 +3,7 @@
 #
 # Installs the local runtime layer:
 #   * Go binaries (`tabula` + `tabula-runtime`, built from this repo)
-#   * launch scripts (tabula-server, tabula-cli, tabula-api, tabula-install-distro)
+#   * launch scripts (tabula-runner, tabula-cli)
 #   * Python venv with runtime + dev dependencies
 #   * tabula-distro installer (editable, from tools/tabula-distro)
 #   * service unit templates
@@ -36,10 +36,8 @@ pkill -f "$TABULA_HOME/bin/tabula serve" 2>/dev/null || true
 pkill -f "$TABULA_HOME/bin/tabula-runtime start" 2>/dev/null || true
 sleep 0.3
 
-echo "==> Installing Tabula kernel to $TABULA_HOME"
+echo "==> Installing Tabula kernel/runtime to $TABULA_HOME"
 mkdir -p "$TABULA_HOME" "$BIN_DIR"
-
-cp "$REPO_ROOT/examples/boot-cicd.py" "$TABULA_HOME/"
 
 # Global config (don't overwrite user edits)
 mkdir -p "$TABULA_HOME/config"
@@ -68,10 +66,10 @@ DATE_STR="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 LDFLAGS="-X main.version=$VERSION_STR -X main.commit=$COMMIT_STR -X main.date=$DATE_STR"
 ( cd "$REPO_ROOT" && go build -ldflags "$LDFLAGS" -o "$BIN_DIR/tabula" ./cmd/tabula/ )
 ( cd "$REPO_ROOT" && go build -ldflags "$LDFLAGS" -o "$BIN_DIR/tabula-runtime" ./cmd/tabula-runtime/ )
-# Record installed kernel version for tabula-distro compatibility checks.
+# Record installed Tabula version for tabula-distro compatibility checks.
 echo "$VERSION_STR" > "$TABULA_HOME/VERSION"
-# Record kernel's supported plugin protocol version range so the distro tool
-# can enforce `requires.protocol_version` on plugin manifests offline.
+# Record the supported runtime plugin compatibility range so the distro tool can
+# enforce `requires.protocol_version` on plugin manifests offline.
 "$BIN_DIR/tabula" --protocol > "$TABULA_HOME/PROTOCOL"
 if [ "$(uname)" = "Darwin" ]; then
   codesign --force --sign - "$BIN_DIR/tabula" 2>/dev/null || true
@@ -79,13 +77,13 @@ if [ "$(uname)" = "Darwin" ]; then
 fi
 
 # Launch scripts
-for script in tabula-server tabula-api tabula-cli tabula-install-distro tabula-coder tabula-claw; do
+for script in tabula-runner tabula-cli; do
   cp "$REPO_ROOT/bin/$script" "$BIN_DIR/$script"
   chmod +x "$BIN_DIR/$script"
 done
-cp "$REPO_ROOT/scripts/install-distro.py" "$BIN_DIR/install-distro.py"
 
-# Symlink tabula-distro from venv into bin/ so it's on PATH alongside the rest.
+# Symlink installer entrypoints from venv into bin/ so they're on PATH alongside the rest.
+ln -sf "$VENV/bin/tabula-install" "$BIN_DIR/tabula-install"
 ln -sf "$VENV/bin/tabula-distro" "$BIN_DIR/tabula-distro"
 
 # PATH config
@@ -126,15 +124,15 @@ fi
 
 cat <<EOF
 
-Tabula kernel installed at $TABULA_HOME.
+Tabula kernel/runtime installed at $TABULA_HOME.
 
-Next: install a distro with tabula-distro. Examples:
+Next: install a distro with tabula-install. Examples:
 
-  tabula-distro install ../tabula-distrib/claw
-  tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=guardian'
+  tabula-install distro install ../tabula-distrib/claw
+  tabula-install distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=guardian'
 
 Then start the kernel:
 
-  tabula-server
+  tabula-runner
 
 EOF

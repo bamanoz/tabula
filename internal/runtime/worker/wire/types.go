@@ -97,6 +97,8 @@ type WorkerCall struct {
 	Tool string `json:"tool"`
 	// Args is raw JSON so the worker protocol stays tool-schema neutral.
 	Args json.RawMessage `json:"args,omitempty"`
+	// SessionID optionally carries the originating kernel session id.
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // WorkerResult is the terminal worker response for one call.

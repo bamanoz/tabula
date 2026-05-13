@@ -118,7 +118,7 @@ For a bundle in the main `tabula-bundles` repo, use:
 ```toml
 [suites.my-suite]
 set = "empty"
-components = ["base:shell", "my-bundle:my-component"]
+components = ["workspace:exec", "my-bundle:my-component"]
 tests = ["test_my_bundle.py"]
 ```
 

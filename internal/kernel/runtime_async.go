@@ -60,11 +60,7 @@ func (s hubRuntimeAsyncSink) PluginSent(runtimeID string, send wire.PluginSend) 
 	if send.Type == "" {
 		return fmt.Errorf("plugin_send type is required")
 	}
-	s.hub.broadcastToSession(send.SessionID, send.Type, &Message{
-		Type:    send.Type,
-		Session: send.SessionID,
-		Payload: send.Payload,
-	}, nil)
+	s.hub.broadcastToSession(send.SessionID, send.Type, busMessage(send.Type, send.SessionID, send.Payload), nil)
 	return nil
 }
 
@@ -73,7 +69,7 @@ func (s hubRuntimeAsyncSink) PluginLogged(runtimeID string, log wire.PluginLog) 
 		s.hub.Logger.Warn("dropping invalid runtime plugin log", "runtime_id", runtimeID, "err", err)
 		return
 	}
-	level := slog.LevelInfo
+	var level slog.Level
 	switch log.Level {
 	case "debug":
 		level = slog.LevelDebug
@@ -140,22 +136,33 @@ func (h *Hub) syncRuntimeCapability(runtimeID string, capability runtimeapi.Capa
 	if h == nil {
 		return
 	}
+	if capability.Target.Kind != wire.TargetKindPlugin {
+		return
+	}
 	h.toolExecMu.Lock()
 	defer h.toolExecMu.Unlock()
-	h.removeRuntimeTargetToolsLocked(runtimeID, capability.Target)
-	if capability.State != wire.CapabilityStateReady {
+	h.removeRuntimeTargetToolsLocked(runtimeID, capability.Target, capability.Tenants)
+	if capability.State != wire.CapabilityStateReady && capability.State != wire.CapabilityStateManifestLoaded && capability.State != wire.CapabilityStateInitializing {
 		return
+	}
+	tenants := capability.Tenants
+	if len(tenants) == 0 {
+		tenants = []string{"*"}
+	}
+	if h.runtimes != nil && len(capability.Tenants) == 0 {
+		tenants = h.runtimes.TenantsServed(runtimeID)
 	}
 	for _, tool := range capability.Tools {
 		if tool.Name == "" {
 			continue
 		}
-		if existing, ok := h.toolExec[tool.Name]; ok && existing.Source != toolSourceRuntime {
-			h.Logger.Warn("runtime tool shadows existing non-runtime tool", "tool", tool.Name, "runtime_id", runtimeID, "target", capability.Target.ID)
-		} else if ok && (existing.RuntimeID != runtimeID || !sameRuntimeTarget(existing.Target, capability.Target)) {
-			h.Logger.Warn("runtime tool shadows existing runtime tool", "tool", tool.Name, "runtime_id", runtimeID, "target", capability.Target.ID)
+		for _, tenantID := range tenants {
+			key := toolExecKey(tenantID, tool.Name)
+			if existing, ok := h.toolExec[key]; ok && (existing.RuntimeID != runtimeID || !sameRuntimeTarget(existing.Target, capability.Target)) {
+				h.Logger.Warn("runtime tool shadows existing runtime tool", "tool", tool.Name, "runtime_id", runtimeID, "target", capability.Target.ID, "tenant_id", tenantID)
+			}
+			h.toolExec[key] = runtimeDispatch(runtimeID, tenantID, capability.Target, tool.Schema, int(tool.DeadlineMS))
 		}
-		h.toolExec[tool.Name] = runtimeDispatch(runtimeID, capability.Target, tool.Schema, int(tool.DeadlineMS))
 	}
 }
 
@@ -169,12 +176,27 @@ func (h *Hub) removeRuntimeTools(runtimeID string) {
 	}
 }
 
-func (h *Hub) removeRuntimeTargetToolsLocked(runtimeID string, target wire.Target) {
+func (h *Hub) removeRuntimeTargetToolsLocked(runtimeID string, target wire.Target, tenants []string) {
 	for name, entry := range h.toolExec {
-		if entry.Source == toolSourceRuntime && entry.RuntimeID == runtimeID && sameRuntimeTarget(entry.Target, target) {
+		if entry.Source == toolSourceRuntime && entry.RuntimeID == runtimeID && sameRuntimeTarget(entry.Target, target) && toolDispatchMatchesTenants(entry, tenants) {
 			delete(h.toolExec, name)
 		}
 	}
+}
+
+func toolDispatchMatchesTenants(entry toolDispatch, tenants []string) bool {
+	if len(tenants) == 0 {
+		return true
+	}
+	if entry.TenantID == "" {
+		return true
+	}
+	for _, tenantID := range tenants {
+		if tenantID == "*" || tenantID == entry.TenantID {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Hub) runtimeConn(runtimeID string) runtimeapi.RuntimeConn {
@@ -184,14 +206,60 @@ func (h *Hub) runtimeConn(runtimeID string) runtimeapi.RuntimeConn {
 	return h.runtimes.RuntimeConn(runtimeID)
 }
 
+func (h *Hub) markRuntimeTargetBusy(runtimeID string, target wire.Target) func() {
+	if h == nil || runtimeID == "" {
+		return func() {}
+	}
+	key := runtimeTargetBusyKey(runtimeID, target)
+	h.runtimeBusyMu.Lock()
+	h.runtimeBusy[key]++
+	h.runtimeBusyMu.Unlock()
+	return func() {
+		h.runtimeBusyMu.Lock()
+		defer h.runtimeBusyMu.Unlock()
+		if h.runtimeBusy[key] <= 1 {
+			delete(h.runtimeBusy, key)
+			return
+		}
+		h.runtimeBusy[key]--
+	}
+}
+
+func (h *Hub) isRuntimeTargetBusy(runtimeID string, target wire.Target) bool {
+	if h == nil || runtimeID == "" {
+		return false
+	}
+	h.runtimeBusyMu.RLock()
+	defer h.runtimeBusyMu.RUnlock()
+	return h.runtimeBusy[runtimeTargetBusyKey(runtimeID, target)] > 0
+}
+
+func runtimeTargetBusyKey(runtimeID string, target wire.Target) string {
+	return runtimeID + "\x00" + string(target.Kind) + "\x00" + target.ID
+}
+
+func (h *Hub) pickRuntime(tenantID string) (runtimeapi.RuntimeConn, string, wire.ErrorCode, error) {
+	if h == nil || h.runtimes == nil {
+		return nil, "", wire.ErrorRuntimeUnavailable, fmt.Errorf("runtime registry is unavailable")
+	}
+	return h.runtimes.Pick(tenantID)
+}
+
+func (h *Hub) runtimeForTenant(tenantID, runtimeID string) (runtimeapi.RuntimeConn, wire.ErrorCode, error) {
+	if h == nil || h.runtimes == nil {
+		return nil, wire.ErrorRuntimeUnavailable, fmt.Errorf("runtime registry is unavailable")
+	}
+	return h.runtimes.RuntimeForTenant(tenantID, runtimeID)
+}
+
 // ReloadAttachedRuntime requests a Runtime API reload from one attached runtime.
 // The boolean result reports whether the runtime was attached and a reload was
 // attempted.
-func (h *Hub) ReloadAttachedRuntime(ctx context.Context, runtimeID string, target *wire.Target) (bool, error) {
+func (h *Hub) ReloadAttachedRuntime(ctx context.Context, runtimeID string, target *wire.Target, tenants ...string) (bool, error) {
 	conn := h.runtimeConn(runtimeID)
 	if conn == nil {
 		return false, nil
 	}
-	_, err := conn.Reload(ctx, runtimeapi.ReloadReq{Target: target})
+	_, err := conn.Reload(ctx, runtimeapi.ReloadReq{Target: target, Tenants: tenants})
 	return true, err
 }

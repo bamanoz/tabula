@@ -8,32 +8,25 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bamanoz/tabula/internal/kernel/plugin"
 	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
+	"github.com/bamanoz/tabula/internal/runtime/wire"
 )
 
 const maxExecOutput = 16 * 1024 // 16KB
 
 type ToolService struct {
-	hub     *Hub
-	process *ProcessManager
-	skill   *SkillExec
+	hub *Hub
 }
 
 func NewToolService(hub *Hub) *ToolService {
-	pm := NewProcessManager(hub, nil)
-	return &ToolService{
-		hub:     hub,
-		process: pm,
-		skill:   NewSkillExec(pm),
-	}
+	return &ToolService{hub: hub}
 }
 
 // HandleToolUse routes a tool_use message through the before_tool_call hook
-// and dispatches the result to a registered skill-exec tool.
+// and dispatches the result to a runtime-hosted tool.
 //
 // The kernel does not host builtin LLM tools. Runtime tools are dispatched
-// through the unified tool registry populated by boot skills and plugins.
+// through the unified tool registry populated by attached runtime targets.
 func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 	toolName := msg.Name
 	toolID := msg.ID
@@ -58,118 +51,78 @@ func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 }
 
 func (s *ToolService) handleDynamicTool(session, toolID, toolName string, input json.RawMessage) {
+	tenantID := s.hub.sessionTenantID(session)
 	s.hub.toolExecMu.RLock()
-	entry, ok := s.hub.toolExec[toolName]
+	entry, ok := s.hub.toolExec[toolExecKey(tenantID, toolName)]
+	if !ok {
+		entry, ok = s.hub.toolExec[toolName]
+	}
 	s.hub.toolExecMu.RUnlock()
 	if !ok {
 		s.hub.sendToolResultForTool(session, toolID, toolName, fmt.Sprintf("ERROR: unknown tool %s", toolName))
 		return
 	}
 	switch entry.Source {
-	case toolSourceSkill:
-		s.skill.Run(session, toolID, toolName, entry.Command, input)
-	case toolSourcePlugin:
-		s.handlePluginTool(session, toolID, toolName, entry, input)
 	case toolSourceRuntime:
 		s.handleRuntimeTool(session, toolID, toolName, entry, input)
 	default:
 		s.hub.sendToolResultForTool(session, toolID, toolName, fmt.Sprintf("ERROR: tool %s has unknown dispatch source", toolName))
 	}
 }
-
-func (s *ToolService) handlePluginTool(session, toolID, toolName string, entry toolDispatch, input json.RawMessage) {
-	if entry.Plugin == nil || !entry.Plugin.IsAlive() || !entry.Plugin.IsRegistered() {
-		s.hub.sendToolResultForTool(session, toolID, toolName, fmt.Sprintf("ERROR: plugin tool %s is unavailable", toolName))
-		return
-	}
-	deadline := resolveToolDeadline(entry.DeadlineMs)
-	ch, err := entry.Plugin.SendToolCall(&plugin.ToolCallParams{
-		CallID:     toolID,
-		Name:       toolName,
-		Args:       input,
-		Session:    session,
-		DeadlineMs: int(deadline / time.Millisecond),
-	})
-	if err != nil {
-		s.hub.Logger.Warn("plugin tool_call failed", "tool", toolName, "session", session, "err", err)
-		s.hub.sendToolResultForTool(session, toolID, toolName, fmt.Sprintf("ERROR: plugin tool %s failed: %v", toolName, err))
-		return
-	}
-
+func (s *ToolService) handleRuntimeTool(session, toolID, toolName string, entry toolDispatch, input json.RawMessage) {
 	go func() {
-		var output string
-		select {
-		case msg, ok := <-ch:
-			if !ok {
-				output = "ERROR: plugin call cancelled"
-			} else {
-				output = pluginToolOutput(msg)
-			}
-		case <-entry.Plugin.Done():
-			entry.Plugin.CancelPending(toolID)
-			output = "ERROR: plugin crashed"
-		case <-time.After(deadline):
-			entry.Plugin.CancelPending(toolID)
-			output = fmt.Sprintf("ERROR: plugin timeout after %dms", int(deadline/time.Millisecond))
+		tenantID := s.hub.sessionTenantID(session)
+		var conn runtimeapi.RuntimeConn
+		pickedRuntimeID := entry.RuntimeID
+		var code wire.ErrorCode
+		var pickErr error
+		if pickedRuntimeID == "" {
+			conn, pickedRuntimeID, code, pickErr = s.hub.pickRuntime(tenantID)
+		} else {
+			conn, code, pickErr = s.hub.runtimeForTenant(tenantID, pickedRuntimeID)
 		}
+		if pickErr != nil {
+			s.hub.sendToolResultForTool(session, toolID, toolName, "ERROR: "+pickErr.Error())
+			if code != "" {
+				s.hub.Logger.Warn("runtime pick failed", "tool", toolName, "runtime_id", pickedRuntimeID, "tenant_id", tenantID, "code", code, "err", pickErr)
+			}
+			return
+		}
+		if conn == nil {
+			s.hub.sendToolResultForTool(session, toolID, toolName, fmt.Sprintf("ERROR: runtime tool %s is unavailable", toolName))
+			return
+		}
+		releaseRuntimeTarget := s.hub.markRuntimeTargetBusy(pickedRuntimeID, entry.Target)
+		defer releaseRuntimeTarget()
+		deadline := resolveToolDeadline(entry.DeadlineMs)
+		ctx, cancel := context.WithTimeout(context.Background(), runtimeInvokeDeadline(deadline))
+		defer cancel()
+
+		resp, err := conn.Invoke(ctx, runtimeapi.InvokeReq{
+			CallID:    toolID,
+			TenantID:  tenantID,
+			SessionID: session,
+			Target:    entry.Target,
+			Tool:      toolName,
+			Args:      input,
+			TimeoutMS: int64(deadline / time.Millisecond),
+		})
+		if err != nil {
+			s.hub.Logger.Warn("runtime tool invoke failed", "tool", toolName, "runtime_id", pickedRuntimeID, "session", session, "err", err)
+			if ctx.Err() != nil {
+				s.hub.sendToolResultForTool(session, toolID, toolName, "ERROR: invoke timed out")
+				return
+			}
+			s.hub.sendToolResultForTool(session, toolID, toolName, fmt.Sprintf("ERROR: runtime tool %s failed: %v", toolName, err))
+			return
+		}
+		output := runtimeToolOutput(resp)
 		s.hub.sendToolResultForTool(session, toolID, toolName, output)
 		s.hub.emitAfterToolCall(session, toolID, map[string]string{
 			"tool": toolName, "id": toolID, "output": output,
 		})
 	}()
 }
-
-func (s *ToolService) handleRuntimeTool(session, toolID, toolName string, entry toolDispatch, input json.RawMessage) {
-	conn := s.hub.runtimeConn(entry.RuntimeID)
-	if conn == nil {
-		s.hub.sendToolResultForTool(session, toolID, toolName, fmt.Sprintf("ERROR: runtime tool %s is unavailable", toolName))
-		return
-	}
-	deadline := resolveToolDeadline(entry.DeadlineMs)
-	ctx, cancel := context.WithTimeout(context.Background(), deadline)
-	defer cancel()
-
-	resp, err := conn.Invoke(ctx, runtimeapi.InvokeReq{
-		CallID:    toolID,
-		TenantID:  "default",
-		Target:    entry.Target,
-		Tool:      toolName,
-		Args:      input,
-		TimeoutMS: int64(deadline / time.Millisecond),
-	})
-	if err != nil {
-		s.hub.Logger.Warn("runtime tool invoke failed", "tool", toolName, "runtime_id", entry.RuntimeID, "session", session, "err", err)
-		s.hub.sendToolResultForTool(session, toolID, toolName, fmt.Sprintf("ERROR: runtime tool %s failed: %v", toolName, err))
-		return
-	}
-	output := runtimeToolOutput(resp)
-	s.hub.sendToolResultForTool(session, toolID, toolName, output)
-	s.hub.emitAfterToolCall(session, toolID, map[string]string{
-		"tool": toolName, "id": toolID, "output": output,
-	})
-}
-
-func pluginToolOutput(msg *plugin.Message) string {
-	if msg == nil {
-		return "ERROR: plugin returned empty result"
-	}
-	var result plugin.ToolResultParams
-	if err := msg.DecodeParams(&result); err != nil {
-		return fmt.Sprintf("ERROR: invalid plugin tool_result: %v", err)
-	}
-	if result.Error != "" {
-		return "ERROR: " + result.Error
-	}
-	if len(result.Result) == 0 {
-		return "OK"
-	}
-	var text string
-	if err := json.Unmarshal(result.Result, &text); err == nil {
-		return text
-	}
-	return strings.TrimSpace(string(result.Result))
-}
-
 func runtimeToolOutput(resp runtimeapi.InvokeResp) string {
 	if resp.OK {
 		if len(resp.Data) == 0 {
@@ -190,6 +143,17 @@ func runtimeToolOutput(resp runtimeapi.InvokeResp) string {
 	return "ERROR: " + string(resp.Error.Code)
 }
 
+func runtimeInvokeDeadline(toolDeadline time.Duration) time.Duration {
+	if toolDeadline <= 0 {
+		toolDeadline = 30 * time.Second
+	}
+	grace := 5 * time.Second
+	if toolDeadline/10 > grace {
+		grace = toolDeadline / 10
+	}
+	return toolDeadline + grace
+}
+
 func resolveToolDeadline(deadlineMs int) time.Duration {
 	if deadlineMs <= 0 {
 		deadlineMs = 30000
@@ -198,25 +162,6 @@ func resolveToolDeadline(deadlineMs int) time.Duration {
 		deadlineMs = 600000
 	}
 	return time.Duration(deadlineMs) * time.Millisecond
-}
-
-type commandToolInput struct {
-	Command string `json:"command"`
-}
-
-// parseCommandToolInput is kept as a small reusable helper for tools whose
-// JSON shape is `{"command": "..."}`. After kernel cleanup it has no
-// in-tree caller; tests may still reference it. Skill or plugin tools
-// implementing shell-style semantics may use it via shared package import
-// in the future.
-//
-//nolint:unused // retained per Phase 1 D1.11(b) dead-code-keep policy
-func parseCommandToolInput(input json.RawMessage) (commandToolInput, error) {
-	var parsed commandToolInput
-	if err := json.Unmarshal(input, &parsed); err != nil || parsed.Command == "" {
-		return commandToolInput{}, fmt.Errorf("missing or invalid command")
-	}
-	return parsed, nil
 }
 
 func formatCommandResult(out []byte, err error) string {

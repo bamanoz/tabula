@@ -14,7 +14,7 @@ import (
 func TestHubRuntimeAsyncSinkRedactsStructuredPluginLogFields(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, logger)
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, logger)
 
 	hub.runtimeAsyncSink().PluginLogged("local", wire.PluginLog{
 		Op:      wire.OpPluginLog,
@@ -38,8 +38,26 @@ func TestHubRuntimeAsyncSinkRedactsStructuredPluginLogFields(t *testing.T) {
 	}
 }
 
+func TestBusMessagePreservesMessageEnvelopeFields(t *testing.T) {
+	msg := busMessage(string(MsgMessage), "sess-1", json.RawMessage(`{"id":"msg-1","text":"hello","meta":{"source":"sessions"}}`))
+
+	if msg.ID != "msg-1" {
+		t.Fatalf("ID = %q, want msg-1", msg.ID)
+	}
+	if msg.Text != "hello" {
+		t.Fatalf("Text = %q, want hello", msg.Text)
+	}
+	var meta map[string]string
+	if err := json.Unmarshal(msg.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta["source"] != "sessions" {
+		t.Fatalf("meta[source] = %q, want sessions", meta["source"])
+	}
+}
+
 func TestSnapshotRuntimesSanitizesRuntimeDiagnostics(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), nil, 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.runtimes = NewRuntimeRegistry()
 	conn := runtimemock.New()
 	if err := hub.runtimes.RegisterHello("local", conn, []wire.Capability{{

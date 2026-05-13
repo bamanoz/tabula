@@ -29,6 +29,7 @@ A sibling ``distro.override.toml`` (gitignored) is merged on top: any
 """
 from __future__ import annotations
 
+import os
 import sys
 import tomllib
 from dataclasses import dataclass, field
@@ -70,6 +71,7 @@ class SourceAlias:
 class DistroConfig:
     path: Path  # directory containing distro.toml (the distro root)
     name: str
+    id: str
     version: Version | None = None
     requires_kernel: Constraint | None = None
     sources: dict[str, SourceAlias] = field(default_factory=dict)
@@ -83,12 +85,18 @@ def load(distro_dir: Path, *, override_name: str | None = None) -> DistroConfig:
     distro_dir = distro_dir.resolve()
     base = _read_toml(distro_dir / "distro.toml")
     override = _read_toml(distro_dir / "distro.override.toml")
+    if not base and not override:
+        return DistroConfig(path=distro_dir, name=override_name or distro_dir.name, id="")
     merged = _merge(base, override)
+    merged = _apply_env_source_overrides(merged)
 
     distro_section = _section(merged, "distro")
     requires_section = _section(merged, "requires")
 
     name = override_name or distro_section.get("name") or distro_dir.name
+    distro_id = str(distro_section.get("id") or "").strip()
+    if not distro_id:
+        raise ConfigError(f"{distro_dir}/distro.toml: missing required distro.id")
 
     version_raw = distro_section.get("version")
     try:
@@ -105,6 +113,7 @@ def load(distro_dir: Path, *, override_name: str | None = None) -> DistroConfig:
     return DistroConfig(
         path=distro_dir,
         name=name,
+        id=distro_id,
         version=version,
         requires_kernel=requires_kernel,
         sources=_parse_sources(_section(merged, "sources")),
@@ -153,6 +162,31 @@ def _merge(base: dict, override: dict) -> dict:
             by_name[n] = entry  # later wins
         result[list_key] = [by_name[n] for n in order]
     return result
+
+
+def _apply_env_source_overrides(data: dict) -> dict:
+    sources = _section(data, "sources")
+    if not sources:
+        return data
+    result = dict(data)
+    merged_sources = {**sources}
+    changed = False
+    for name, raw in sources.items():
+        if not isinstance(raw, dict):
+            continue
+        override = os.environ.get(_source_alias_env_name(name), "").strip()
+        if not override:
+            continue
+        merged_sources[name] = {**raw, "source": override}
+        changed = True
+    if changed:
+        result["sources"] = merged_sources
+    return result
+
+
+def _source_alias_env_name(name: str) -> str:
+    suffix = "".join(ch.upper() if ch.isalnum() else "_" for ch in name)
+    return f"TABULA_SOURCE_ALIAS_{suffix}"
 
 
 def _parse_bundle(entry: dict) -> BundleEntry:

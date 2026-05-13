@@ -100,7 +100,7 @@ func (c *Conn) Invoke(ctx context.Context, req runtimeapi.InvokeReq) (runtimeapi
 	if err != nil {
 		return runtimeapi.InvokeResp{}, err
 	}
-	frame := wire.Invoke{Op: wire.OpInvoke, CallID: req.CallID, TenantID: req.TenantID, Target: req.Target, Tool: req.Tool, Args: req.Args, TimeoutMS: req.TimeoutMS}
+	frame := wire.Invoke{Op: wire.OpInvoke, CallID: req.CallID, TenantID: req.TenantID, SessionID: req.SessionID, Target: req.Target, Tool: req.Tool, Args: req.Args, TimeoutMS: req.TimeoutMS}
 	if err := c.write(ctx, frame); err != nil {
 		c.unregisterPending(req.CallID)
 		return runtimeapi.InvokeResp{}, err
@@ -165,7 +165,7 @@ func (c *Conn) ListCapabilities(ctx context.Context) (runtimeapi.ListCapabilitie
 }
 
 func (c *Conn) Reload(ctx context.Context, req runtimeapi.ReloadReq) (runtimeapi.ReloadResp, error) {
-	if err := c.write(ctx, wire.Reload{Op: wire.OpReload, Target: req.Target}); err != nil {
+	if err := c.write(ctx, wire.Reload{Op: wire.OpReload, Target: req.Target, Tenants: req.Tenants}); err != nil {
 		return runtimeapi.ReloadResp{}, err
 	}
 	select {
@@ -185,12 +185,20 @@ func (c *Conn) SendHookEvent(ctx context.Context, req runtimeapi.HookEventReq) e
 	}
 	frame := wire.HookEvent{
 		Op:        wire.OpHookEvent,
+		TenantID:  req.TenantID,
 		CallID:    req.CallID,
 		Target:    req.Target,
 		Event:     req.Event,
 		ReplyMode: replyMode,
 		Data:      req.Data,
 		SessionID: req.SessionID,
+	}
+	if frame.TenantID == "" && frame.SessionID != "" {
+		var payload struct {
+			TenantID string `json:"tenant_id"`
+		}
+		_ = json.Unmarshal(frame.Data, &payload)
+		frame.TenantID = payload.TenantID
 	}
 	return c.write(ctx, frame)
 }
@@ -208,7 +216,7 @@ func (c *Conn) Done() <-chan struct{} { return c.done }
 
 func (c *Conn) readLoop() {
 	for {
-		_, frame, err := c.c.Read(context.Background())
+		_, frame, err := c.c.Read(codec.NoIdleTimeoutContext())
 		if err != nil {
 			c.closeWithUnavailable()
 			return
@@ -378,7 +386,7 @@ func runtimeUnavailableError() error {
 // ServeAuthenticated handles one accepted runtime connection, requires the
 // first frame to be Hello, and closes the connection after rejected handshakes.
 func ServeAuthenticated(ctx context.Context, c *codec.Conn, handler Handler) error {
-	defer c.CloseNow()
+	defer func() { _ = c.CloseNow() }()
 	_, frame, err := c.Read(ctx)
 	if err != nil {
 		return err
@@ -402,7 +410,7 @@ func ServeAuthenticated(ctx context.Context, c *codec.Conn, handler Handler) err
 
 // Serve handles one accepted codec connection until it is closed.
 func Serve(ctx context.Context, c *codec.Conn, handler Handler) error {
-	defer c.CloseNow()
+	defer func() { _ = c.CloseNow() }()
 	return ServeAfterHandshake(ctx, c, handler)
 }
 
@@ -439,7 +447,7 @@ func ServeAfterHandshake(ctx context.Context, c *codec.Conn, handler Handler) er
 		}
 	}
 	for {
-		raw, err := c.ReadRaw(ctx)
+		raw, err := c.ReadRaw(codec.NoIdleTimeoutContext())
 		if err != nil {
 			return err
 		}
@@ -462,10 +470,9 @@ func ServeAfterHandshake(ctx context.Context, c *codec.Conn, handler Handler) er
 				if err != nil {
 					resp = wire.InvokeResult{Op: wire.OpInvokeResult, CallID: in.CallID, OK: false, Error: &wire.Error{Code: wire.ErrorInternal, Retryable: false, Message: err.Error()}}
 				}
-				if err := write(resp); err != nil && !errors.Is(err, io.EOF) {
-					// The read loop returns connection errors. This goroutine must not
-					// log frame content because Invoke args may contain user data.
-				}
+				// The read loop returns connection errors. This goroutine must not
+				// log frame content because Invoke args may contain user data.
+				_ = write(resp)
 			}(*f)
 		case *wire.Cancel:
 			ack, err := handler.Cancel(ctx, *f)
@@ -554,9 +561,9 @@ func sanitizeProtocolError(err error) string {
 
 func defaultHookReplyMode(event string) wire.HookReplyMode {
 	switch event {
-	case "after_message", "after_tool_call", "session_end", "cancel":
+	case "after_message", "after_tool_call", "session_join", "session_end", "cancel":
 		return wire.HookReplyModeNone
-	case "before_message", "before_tool_call", "session_start":
+	case "before_message", "before_tool_call", "session_start", "before_prompt_build":
 		return wire.HookReplyModeModifying
 	default:
 		return wire.HookReplyModeModifying

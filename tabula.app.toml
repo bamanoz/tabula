@@ -1,0 +1,13 @@
+[application]
+id = "code-tabula-dev"
+name = "Code for Tabula Dev"
+
+[distro]
+source = "local:../tabula-distrib/code"
+
+[values.workspace]
+path = "${project_root}"
+
+[values.prompt]
+project_files = ["AGENTS.md"]
+create_missing_project_files = false

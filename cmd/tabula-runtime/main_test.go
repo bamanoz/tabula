@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,19 +14,101 @@ import (
 	"testing"
 	"time"
 
+	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
 	"github.com/bamanoz/tabula/internal/runtime/codec"
+	runtimeconn "github.com/bamanoz/tabula/internal/runtime/conn"
+	runtimeconfig "github.com/bamanoz/tabula/internal/runtime/host/config"
+	"github.com/bamanoz/tabula/internal/runtime/host/dialer"
+	"github.com/bamanoz/tabula/internal/runtime/transport/stdio"
 	"github.com/bamanoz/tabula/internal/runtime/transport/unixsock"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
 )
 
-func TestStdioPlaceholderExitsNonZero(t *testing.T) {
+func TestStdioRequiresRuntimeConfig(t *testing.T) {
 	var stderr bytes.Buffer
+	t.Setenv("TABULA_HOME", t.TempDir())
 	code := run([]string{"stdio"}, &stderr)
 	if code == 0 {
-		t.Fatal("stdio placeholder unexpectedly succeeded")
+		t.Fatal("stdio unexpectedly succeeded without runtime config")
 	}
-	if !strings.Contains(stderr.String(), "not implemented in M2") {
+	if !strings.Contains(stderr.String(), "runtime.toml") {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+type testRuntimeHandler struct{}
+
+func (testRuntimeHandler) Hello(context.Context, wire.Hello) (wire.HelloAck, error) {
+	return wire.HelloAck{Op: wire.OpHelloAck, Accepted: true, KernelID: "main"}, nil
+}
+
+func (testRuntimeHandler) Invoke(context.Context, wire.Invoke) (wire.InvokeResult, error) {
+	return wire.InvokeResult{Op: wire.OpInvokeResult, CallID: "stdio-1", OK: true, Data: json.RawMessage(`{"stdio":true}`)}, nil
+}
+
+func (testRuntimeHandler) Cancel(context.Context, wire.Cancel) (wire.CancelAck, error) {
+	return wire.CancelAck{Op: wire.OpCancelAck, CallID: "unused"}, nil
+}
+
+func (testRuntimeHandler) Health(context.Context, wire.Health) (wire.HealthResp, error) {
+	return wire.HealthResp{Op: wire.OpHealthResp, OK: true}, nil
+}
+
+func (testRuntimeHandler) ListCapabilities(context.Context, wire.ListCapabilities) (wire.ListCapabilitiesResp, error) {
+	return wire.ListCapabilitiesResp{Op: wire.OpListCapabilitiesResp}, nil
+}
+
+func (testRuntimeHandler) Reload(context.Context, wire.Reload) (wire.ReloadAck, error) {
+	return wire.ReloadAck{Op: wire.OpReloadAck}, nil
+}
+
+func (testRuntimeHandler) HookEvent(context.Context, wire.HookEvent) (wire.HookEventReply, error) {
+	return wire.HookEventReply{Op: wire.OpHookEventReply, Action: wire.HookActionOK}, nil
+}
+
+func TestStdioRuntimeRoundTripsInvoke(t *testing.T) {
+	aRead, bWrite := io.Pipe()
+	bRead, aWrite := io.Pipe()
+	client := stdio.NewConn(bRead, bWrite)
+	runtimeSide := stdio.NewConn(aRead, aWrite)
+	defer func() { _ = client.CloseNow() }()
+	defer func() { _ = runtimeSide.CloseNow() }()
+	handler := testRuntimeHandler{}
+	serverDone := make(chan error, 1)
+	go func() {
+		_, frame, err := runtimeSide.Read(context.Background())
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		hello, ok := frame.(*wire.Hello)
+		if !ok || hello.RuntimeID != "remote" {
+			serverDone <- fmt.Errorf("unexpected hello: %#v", frame)
+			return
+		}
+		if err := runtimeSide.Write(context.Background(), wire.HelloAck{Op: wire.OpHelloAck, Accepted: true, KernelID: "main"}); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- runtimeconn.Serve(context.Background(), runtimeSide, handler)
+	}()
+	ack, err := runtimeconn.Handshake(context.Background(), client, wire.Hello{Op: wire.OpHello, RuntimeID: "remote", Token: "rtk", ProtocolVersion: dialer.ProtocolVersion})
+	if err != nil || !ack.Accepted {
+		t.Fatalf("Handshake = %#v, %v", ack, err)
+	}
+	rc := runtimeconn.New(client)
+	resp, err := rc.Invoke(context.Background(), runtimeapi.InvokeReq{CallID: "stdio-1", TenantID: "default", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Tool: "echo", Args: json.RawMessage(`{"ok":true}`)})
+	if err != nil || !resp.OK || string(resp.Data) != `{"stdio":true}` {
+		t.Fatalf("Invoke = %#v, %v", resp, err)
+	}
+	_ = client.CloseNow()
+	select {
+	case err := <-serverDone:
+		if err != nil && !strings.Contains(err.Error(), "closed") && !strings.Contains(err.Error(), "EOF") {
+			t.Fatalf("serverDone = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for stdio server")
 	}
 }
 
@@ -43,6 +128,64 @@ func TestVersionFlagPrintsRuntimeVersion(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "tabula-runtime") {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestNewManifestStoreLoadsTenantCatalogs(t *testing.T) {
+	dir := t.TempDir()
+	writePlugin(t, filepath.Join(dir, "tenants", "alpha", "plugins", "fs", "plugin.toml"), `id = "fs"
+name = "Filesystem"
+version = "0.1.0"
+runtime = "python"
+entry = "run.py"
+
+[[tools]]
+name = "fs_read"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`)
+	store, err := newManifestStore(runtimeconfig.Config{Tenants: []runtimeconfig.Tenant{{ID: "alpha", PluginDirs: []string{filepath.Join(dir, "tenants", "alpha", "plugins")}}}})
+	if err != nil {
+		t.Fatalf("newManifestStore: %v", err)
+	}
+	caps := store.Capabilities()
+	if len(caps) != 1 || caps[0].Target.ID != "fs" || caps[0].Tenants[0] != "alpha" {
+		t.Fatalf("capabilities = %#v", caps)
+	}
+	if got := runtimePluginDirs(runtimeconfig.Config{Tenants: []runtimeconfig.Tenant{{ID: "alpha", PluginDirs: []string{"/tmp/alpha"}}}}); len(got) != 1 || got[0] != "/tmp/alpha" {
+		t.Fatalf("runtimePluginDirs = %#v", got)
+	}
+}
+
+func TestNewManifestStoreSurfacesTenantCatalogErrors(t *testing.T) {
+	dir := t.TempDir()
+	writePlugin(t, filepath.Join(dir, "tenants", "alpha", "plugins", "broken", "plugin.toml"), `id = "broken"
+name = "Broken"
+version = "0.1.0"
+runtime = "python"
+entry = "run.py"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = "bad"
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`)
+	_, err := newManifestStore(runtimeconfig.Config{Tenants: []runtimeconfig.Tenant{{ID: "alpha", PluginDirs: []string{filepath.Join(dir, "tenants", "alpha", "plugins")}}}})
+	if err == nil || !strings.Contains(err.Error(), "requires.protocol_version") {
+		t.Fatalf("expected manifest load error, got %v", err)
+	}
+}
+
+func writePlugin(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir plugin dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write plugin: %v", err)
 	}
 }
 

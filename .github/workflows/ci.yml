@@ -1,0 +1,233 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-binaries:
+    name: Build binaries (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - name: Checkout tabula
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build tabula and tabula-runtime
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p dist/${GOOS}-${GOARCH}
+          ext=""
+          if [ "$GOOS" = "windows" ]; then
+            ext=".exe"
+          fi
+          go build -o "dist/${GOOS}-${GOARCH}/tabula${ext}" ./cmd/tabula
+          go build -o "dist/${GOOS}-${GOARCH}/tabula-runtime${ext}" ./cmd/tabula-runtime
+
+  runtime-smoke:
+    name: Runtime smoke and installed layout
+    runs-on: ubuntu-latest
+    env:
+      TESTBED_HOME: ${{ runner.temp }}/tabula-testbed-home
+    steps:
+      - name: Checkout tabula
+        uses: actions/checkout@v4
+
+      - name: Checkout tabula-bundles
+        env:
+          TABULA_BUNDLES_REF: ${{ vars.TABULA_BUNDLES_REF || 'main' }}
+        run: |
+          git clone --filter=blob:none https://github.com/bamanoz/tabula-bundles.git ../tabula-bundles
+          git -C ../tabula-bundles fetch --depth 1 origin "$TABULA_BUNDLES_REF"
+          git -C ../tabula-bundles checkout --detach FETCH_HEAD
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build all Go packages
+        run: go build ./...
+
+      - name: Run focused Go tests
+        run: go test ./cmd/tabula ./cmd/tabula-runtime ./internal/runtime/... ./internal/kernel/...
+
+      - name: Run runtime race tests
+        run: go test -race ./internal/runtime/...
+
+      - name: Verify no legacy kernel plugin path remains
+        run: |
+          matches="$(grep -R --line-number --include='*.go' --exclude='*_test.go' -E 'exec\.Command(Context)?' internal/kernel | grep -v '^internal/kernel/process_manager.go:' || true)"
+          if [ -n "$matches" ]; then
+            printf '%s\n' "$matches"
+            echo 'legacy kernel plugin process ownership remains outside process_manager.go' >&2
+            exit 1
+          fi
+          bundle_matches="$(grep -R --line-number -E 'register_request|expected register_request as first plugin message|METHOD_REGISTER_REQUEST|tabula-plugin-sdk>=0\.1\.0' ../tabula-bundles || true)"
+          if [ -n "$bundle_matches" ]; then
+            printf '%s\n' "$bundle_matches"
+            echo 'legacy plugin SDK symbols remain in tabula-bundles' >&2
+            exit 1
+          fi
+
+      - name: Run installed-layout direct checks
+        run: PYTHONPATH=tools/tabula-testbed/src python3 -m tabula_testbed_runner.cli direct --tabula-root . --source tabula-bundles=../tabula-bundles
+
+      - name: Run testbed runner unit tests
+        run: PYTHONPATH=tools/tabula-testbed/src python3 -m unittest discover -s tools/tabula-testbed/src/tabula_testbed_runner -p '*_test.py'
+
+      - name: Run runtime bootstrap and testbed suites
+        run: |
+          rm -rf "$TESTBED_HOME"
+          PYTHONPATH=tools/tabula-testbed/src python3 -m tabula_testbed_runner.cli run --tabula-root . --source tabula-bundles=../tabula-bundles --suite baseline --suite sessions --bootstrap-check --home "$TESTBED_HOME"
+
+      - name: Upload runtime smoke diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-smoke-diagnostics
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/tabula-testbed-home/logs/
+            ${{ runner.temp }}/tabula-testbed-home/config/runtime.toml
+            ${{ runner.temp }}/tabula-testbed-home/generated-testbed/distro.toml
+            ${{ runner.temp }}/tabula-testbed-home/run/kernel-status.json
+            ${{ runner.temp }}/tabula-testbed-home/PROTOCOL
+
+      - name: Print runtime smoke diagnostics summary
+        if: failure()
+        run: |
+          for spec in \
+            "testbed sources|$TESTBED_HOME/logs/testbed-sources.txt" \
+            "generated distro|$TESTBED_HOME/generated-testbed/distro.toml" \
+            "runtime config|$TESTBED_HOME/config/runtime.toml" \
+            "protocol file|$TESTBED_HOME/PROTOCOL" \
+            "plugin manifests|$TESTBED_HOME/logs/runtime-plugin-manifests.txt" \
+            "kernel status snapshot|$TESTBED_HOME/run/kernel-status.json" \
+            "bootstrap status|$TESTBED_HOME/logs/bootstrap-status-last.json" \
+            "bootstrap status error|$TESTBED_HOME/logs/bootstrap-status-last.error.txt" \
+            "runtime status|$TESTBED_HOME/logs/runtime-status-last.json" \
+            "runtime status error|$TESTBED_HOME/logs/runtime-status-last.error.txt" \
+            "bootstrap stdout|$TESTBED_HOME/logs/bootstrap-kernel.out.log" \
+            "bootstrap stderr|$TESTBED_HOME/logs/bootstrap-kernel.err.log" \
+            "kernel stdout|$TESTBED_HOME/logs/kernel.out.log" \
+            "kernel stderr|$TESTBED_HOME/logs/kernel.err.log"
+          do
+            label="${spec%%|*}"
+            file="${spec#*|}"
+            if [ -f "$file" ]; then
+              echo "::group::$label"
+              cat "$file"
+              echo "::endgroup::"
+            fi
+          done
+
+      - name: Clean runtime smoke home
+        if: always()
+        run: rm -rf "$TESTBED_HOME"
+
+  m6-remote-backends:
+    name: M6 remote backends (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            suites: runtime-wss-loopback runtime-mtls-loopback runtime-ssh-loopback runtime-token-revoke runtime-multi-backend
+          - os: macos-latest
+            suites: runtime-wss-loopback runtime-mtls-loopback runtime-multi-backend
+    steps:
+      - name: Checkout tabula
+        uses: actions/checkout@v4
+
+      - name: Checkout tabula-bundles
+        env:
+          TABULA_BUNDLES_REF: ${{ vars.TABULA_BUNDLES_REF || 'main' }}
+        run: |
+          git clone --filter=blob:none https://github.com/bamanoz/tabula-bundles.git ../tabula-bundles
+          git -C ../tabula-bundles fetch --depth 1 origin "$TABULA_BUNDLES_REF"
+          git -C ../tabula-bundles checkout --detach FETCH_HEAD
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run remote backend loopback tests
+        run: python3 tools/tabula-testbed/src/tabula_testbed_runner/testbed_template/tests/test_runtime_remote_backends.py --tabula-root .
+
+      - name: Verify M6 testbed suite generation
+        run: |
+          args=""
+          for suite in ${{ matrix.suites }}; do
+            args="$args --suite $suite"
+          done
+          PYTHONPATH=tools/tabula-testbed/src python3 -m tabula_testbed_runner.cli direct --tabula-root . --source tabula-bundles=../tabula-bundles $args
+
+  m6-service-scripts:
+    name: M6 service scripts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout tabula
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run service script tests
+        run: python3 -m unittest scripts.test_service_scripts
+
+      - name: Run serve foreground flag tests
+        run: go test ./cmd/tabula -run 'TestParseServeFlags|TestStatus'

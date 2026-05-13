@@ -18,14 +18,6 @@ func (h *Hub) configureClient(c *Client, name string, sends, receives, receivesG
 	return h.clients.Configure(c, name, sends, receives, receivesGlobal, hooks, depth)
 }
 
-func (h *Hub) processByPID(pid int) (*SpawnedProcess, bool) {
-	return h.processes.ByPID(pid)
-}
-
-func (h *Hub) updateProcess(pid int, fn func(*SpawnedProcess)) bool {
-	return h.processes.Update(pid, fn)
-}
-
 func (h *Hub) forEachProcess(fn func(pid int, proc *SpawnedProcess)) {
 	h.processes.ForEach(fn)
 }

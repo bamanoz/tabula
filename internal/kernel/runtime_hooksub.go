@@ -14,14 +14,16 @@ type runtimeHookSubscriber struct {
 	capability wire.Capability
 	conn       runtimeapi.RuntimeConn
 	done       <-chan struct{}
+	busy       func(string, wire.Target) bool
 }
 
-func newRuntimeHookSubscriber(target runtimeHookTarget) HookSubscriber {
+func newRuntimeHookSubscriber(target runtimeHookTarget, busy func(string, wire.Target) bool) HookSubscriber {
 	return &runtimeHookSubscriber{
 		runtimeID:  target.RuntimeID,
 		capability: target.Capability,
 		conn:       target.Conn,
 		done:       target.Done,
+		busy:       busy,
 	}
 }
 
@@ -36,6 +38,10 @@ func (s *runtimeHookSubscriber) Session() string { return "" }
 
 func (s *runtimeHookSubscriber) IsConnected() bool {
 	return s != nil && s.conn != nil && s.capability.State == wire.CapabilityStateReady
+}
+
+func (s *runtimeHookSubscriber) IsBusy() bool {
+	return s != nil && s.busy != nil && s.busy(s.runtimeID, s.capability.Target)
 }
 
 func (s *runtimeHookSubscriber) Hooks() []HookSubscription {
@@ -60,6 +66,7 @@ func (s *runtimeHookSubscriber) SendMsg(msg *Message) {
 	}
 	_ = s.conn.SendHookEvent(context.Background(), wire.HookEvent{
 		Op:        wire.OpHookEvent,
+		TenantID:  msg.TenantID,
 		CallID:    msg.ID,
 		Target:    s.capability.Target,
 		Event:     msg.Name,

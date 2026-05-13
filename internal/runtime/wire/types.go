@@ -229,10 +229,31 @@ const (
 	CapabilitySourceWorker   CapabilitySource = "worker"
 )
 
+// WorkerMode describes whether a target is reused or spawned per call.
+type WorkerMode string
+
+const (
+	WorkerModeWarm WorkerMode = "warm"
+	WorkerModeCold WorkerMode = "cold"
+)
+
+// HarnessKind identifies which runtime-side harness/execution family serves a target.
+type HarnessKind string
+
+const (
+	HarnessKindUnknown HarnessKind = "unknown"
+	HarnessKindBash    HarnessKind = "bash"
+	HarnessKindPython  HarnessKind = "python"
+	HarnessKindNode    HarnessKind = "node"
+)
+
 // Capability describes one target and its authoritative tool/hook metadata.
 type Capability struct {
 	// Target is the skill or plugin capability owner.
 	Target Target `json:"target"`
+	// Tenants optionally scopes this target metadata. Empty means all tenants
+	// served by the runtime.
+	Tenants []string `json:"tenants,omitempty"`
 	// Tools lists the current authoritative tool metadata for Target.
 	Tools []ToolSpec `json:"tools,omitempty"`
 	// Hooks lists the current authoritative hook subscriptions for Target.
@@ -243,11 +264,18 @@ type Capability struct {
 	State CapabilityState `json:"state"`
 	// Source reports whether Target metadata came from manifest or worker data.
 	Source CapabilitySource `json:"source"`
+	// WorkerMode reports whether Target is warm-reused or cold-spawned.
+	WorkerMode WorkerMode `json:"worker_mode,omitempty"`
+	// HarnessKind reports which harness/runtime family serves Target.
+	HarnessKind HarnessKind `json:"harness_kind,omitempty"`
 }
 
 // Validate returns a protocol error when the capability metadata is incomplete.
 func (c Capability) Validate() error {
 	if err := c.Target.Validate(); err != nil {
+		return err
+	}
+	if err := validateTenantsServed(c.Tenants); err != nil {
 		return err
 	}
 	for _, tool := range c.Tools {
@@ -269,6 +297,16 @@ func (c Capability) Validate() error {
 	case CapabilitySourceManifest, CapabilitySourceWorker:
 	default:
 		return ProtocolErrorf("unknown capability source %q", c.Source)
+	}
+	switch c.WorkerMode {
+	case "", WorkerModeWarm, WorkerModeCold:
+	default:
+		return ProtocolErrorf("unknown worker mode %q", c.WorkerMode)
+	}
+	switch c.HarnessKind {
+	case "", HarnessKindUnknown, HarnessKindBash, HarnessKindPython, HarnessKindNode:
+	default:
+		return ProtocolErrorf("unknown harness kind %q", c.HarnessKind)
 	}
 	return nil
 }
@@ -294,6 +332,9 @@ type Hello struct {
 	ProtocolVersion string `json:"protocol_version"`
 	// Capabilities is an optional pre-auth target capability preview.
 	Capabilities []Capability `json:"capabilities,omitempty"`
+	// TenantsServed is the runtime's configured tenant allow-list. ["*"] means
+	// any tenant known to the kernel.
+	TenantsServed []string `json:"tenants_served,omitempty"`
 }
 
 // HelloAck is the kernel-to-runtime handshake decision frame.
@@ -316,6 +357,8 @@ type Invoke struct {
 	CallID string `json:"call_id"`
 	// TenantID is mandatory for every tool call, including default-tenant periods.
 	TenantID string `json:"tenant_id"`
+	// SessionID optionally carries the originating kernel session id.
+	SessionID string `json:"session_id,omitempty"`
 	// Target is the skill or plugin target object.
 	Target Target `json:"target"`
 	// Tool is the tool name within Target.
@@ -394,6 +437,9 @@ type Reload struct {
 	Op Operation `json:"op"`
 	// Target optionally scopes reload to a single target. Nil means all targets.
 	Target *Target `json:"target,omitempty"`
+	// Tenants optionally scopes reload to specific tenant/app catalogs. Empty
+	// means every tenant served by this runtime.
+	Tenants []string `json:"tenants,omitempty"`
 }
 
 // ReloadAck reports which targets were evicted/refreshed by Reload.
@@ -409,6 +455,9 @@ type CatalogUpdate struct {
 	Op Operation `json:"op"`
 	// Target identifies the target whose metadata changed.
 	Target Target `json:"target"`
+	// Tenants optionally scopes this target metadata. Empty means all tenants
+	// served by the runtime.
+	Tenants []string `json:"tenants,omitempty"`
 	// Tools is the full authoritative current tool set.
 	Tools []ToolSpec `json:"tools,omitempty"`
 	// Hooks is the full authoritative current hook set.
@@ -428,6 +477,8 @@ type CatalogUpdate struct {
 // HookEvent is a kernel-originated hook event routed to one runtime target.
 type HookEvent struct {
 	Op Operation `json:"op"`
+	// TenantID scopes the hook to a tenant/app catalog. Empty means default.
+	TenantID string `json:"tenant_id,omitempty"`
 	// CallID is the correlation id for the hook event.
 	CallID string `json:"call_id"`
 	// Target identifies the target handling the hook event.

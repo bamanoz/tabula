@@ -22,7 +22,7 @@ Out of scope: sandbox, opencode integration, harness distro (отдельные 
    (`hook-permissions`, `hook-approvals`, `hook-workspace-boundary`, `caveman`).
 3. **Gateway / driver / runtime** — долгоживущий процесс с собственным lifecycle и
    внешним transport'ом (`gateway-tui`, `gateway-cli`, `gateway-telegram`,
-   `drivers/driver`, `drivers/subagent`, `consciousness`).
+   `drivers/driver`, `subagents/subagent`, `consciousness`).
 4. **Library** — shared-код без LLM-tool surface, опознаётся по `_` префиксу
    (`_pylib`, `_tslib`, `_drivers`, `_subagent_types`).
 
@@ -325,7 +325,7 @@ kernel → plugin : { "method": "shutdown" }
 | `code/hook-workspace-boundary`                    | bus subscription                    |
 | `caveman/`                                        | bus subscription                    |
 | `drivers/driver`                                  | long-lived LLM driver               |
-| `drivers/subagent`                                | tool registrar + supervisor         |
+| `subagents/subagent`                              | child-session runner client         |
 | `coder/skills/gateway-tui`                        | long-lived TTY frontend             |
 | `claw/clients/gateway-cli`                        | external client (not plugin)        |
 | `claw/plugins/gateway-telegram-plugin`            | plugin-wrapped transport            |
@@ -350,7 +350,7 @@ kernel → plugin : { "method": "shutdown" }
 - общий TS код — `tabula-bundles/_lib/ts/` или внутри плагина;
 - `_drivers` мигрирует внутрь `drivers/driver` plugin'а как его собственный
   internal module;
-- `_subagent_types` — внутрь `drivers/subagent` plugin'а.
+- `_subagent_types` — внутрь `subagents/subagents` plugin'а.
 
 `_` префикс упраздняется. `skills = []` allowlist hack удаляется.
 
@@ -372,7 +372,7 @@ long-lived `register(api) + api.on(...)`. Никаких compat shim'ов.
    `hook-workspace-boundary` → `caveman`.
 5. **Migrate `mcp`** (наиболее сложный, daemon + tools + first-class
    `mcp__*` registration).
-6. **Migrate drivers**: `drivers/driver`, затем `drivers/subagent`
+6. **Migrate drivers**: `drivers/driver`; child runner уже живёт в `subagents/subagent`
    (subagent забирает MaxChildren/depth/spawn-token).
 7. **Migrate gateways**: TUI, CLI, API, Telegram.
 8. **TypeScript runtime support** для plugin'ов (gateway-tui переходит на

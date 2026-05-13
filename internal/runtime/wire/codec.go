@@ -100,6 +100,9 @@ func validateFrame(frame any) error {
 		if f.ProtocolVersion == "" {
 			return ProtocolErrorf("protocol_version is required")
 		}
+		if err := validateTenantsServed(f.TenantsServed); err != nil {
+			return err
+		}
 		return validateCapabilities(f.Capabilities)
 	case HelloAck:
 		return validateFrame(&f)
@@ -128,6 +131,11 @@ func validateFrame(frame any) error {
 		}
 		if err := f.Target.Validate(); err != nil {
 			return err
+		}
+		if f.TenantID != "" {
+			if err := ValidateTenantID(f.TenantID); err != nil {
+				return err
+			}
 		}
 		if f.Tool == "" {
 			return ProtocolErrorf("tool is required")
@@ -203,6 +211,9 @@ func validateFrame(frame any) error {
 		if f.Op != OpReload {
 			return ProtocolErrorf("reload op must be %q", OpReload)
 		}
+		if err := validateTenantsServed(f.Tenants); err != nil {
+			return err
+		}
 		if f.Target != nil {
 			return f.Target.Validate()
 		}
@@ -248,7 +259,7 @@ func validateFrame(frame any) error {
 		if f.Op != OpCatalogUpdate {
 			return ProtocolErrorf("catalog_update op must be %q", OpCatalogUpdate)
 		}
-		if err := (Capability{Target: f.Target, Tools: f.Tools, Hooks: f.Hooks, Revision: f.Revision, State: f.State, Source: f.Source}).Validate(); err != nil {
+		if err := (Capability{Target: f.Target, Tenants: f.Tenants, Tools: f.Tools, Hooks: f.Hooks, Revision: f.Revision, State: f.State, Source: f.Source}).Validate(); err != nil {
 			return err
 		}
 		return nil
@@ -317,6 +328,23 @@ func validateFrame(frame any) error {
 	default:
 		return ProtocolErrorf("unsupported frame type %T", frame)
 	}
+}
+
+func validateTenantsServed(tenants []string) error {
+	wildcard := false
+	for _, tenantID := range tenants {
+		if tenantID == "*" {
+			wildcard = true
+			continue
+		}
+		if err := ValidateTenantID(tenantID); err != nil {
+			return err
+		}
+	}
+	if wildcard && len(tenants) > 1 {
+		return ProtocolErrorf("tenants_served cannot mix wildcard with explicit tenant ids")
+	}
+	return nil
 }
 
 func validateCapabilities(capabilities []Capability) error {

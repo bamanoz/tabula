@@ -55,11 +55,29 @@ func (h *Hub) applyMessagePlan(sender *Client, msg *Message, plan messagePlan) {
 	h.broadcastToSession(plan.targetSession, msg.Type, msg, sender)
 }
 
+func (h *Hub) queueMessagePlan(sender *Client, msg *Message, plan messagePlan) bool {
+	if plan.blocked {
+		sender.SendMsg(&Message{Type: string(MsgError), Text: "message blocked by hook"})
+		return true
+	}
+	sess, ok := h.sessions.Get(plan.targetSession)
+	if !ok {
+		return false
+	}
+	queued := cloneMessage(msg)
+	queued.Text = plan.text
+	return sess.EnqueueInput(queued, sender)
+}
+
 func (h *Hub) handleUserMessage(sender *Client, msg *Message) {
 	plan := h.buildMessagePlan(sender, msg)
 	if !plan.blocked && h.shouldStartSessionTurn(sender, plan.targetSession) {
 		if !h.tryBeginSessionTurn(plan.targetSession) {
-			sender.SendMsg(&Message{Type: string(MsgError), Text: "session busy: turn already in progress"})
+			if h.queueMessagePlan(sender, msg, plan) {
+				h.persistSessionState(plan.targetSession)
+				return
+			}
+			sender.SendMsg(&Message{Type: string(MsgError), Text: "session input queue full"})
 			return
 		}
 	}
@@ -71,10 +89,16 @@ func (h *Hub) forwardSessionMessage(sender *Client, msg *Message) {
 	h.broadcastToSession(target, msg.Type, msg, sender)
 	switch MsgType(msg.Type) {
 	case MsgDone:
-		h.completeSessionTurn(target)
+		queued, ok := h.completeSessionTurn(target)
 		h.emitAfterMessage(target, sender)
+		if ok {
+			h.dispatchQueuedInput(target, queued)
+		}
 	case MsgError:
-		h.completeSessionTurn(target)
+		queued, ok := h.completeSessionTurn(target)
+		if ok {
+			h.dispatchQueuedInput(target, queued)
+		}
 	}
 }
 
@@ -109,13 +133,26 @@ func (h *Hub) tryBeginSessionTurn(session string) bool {
 	if !ok {
 		return false
 	}
-	return sess.BeginTurn()
+	ok = sess.BeginTurn()
+	if ok {
+		h.persistSessionState(session)
+	}
+	return ok
 }
 
-func (h *Hub) completeSessionTurn(session string) {
+func (h *Hub) completeSessionTurn(session string) (queuedInput, bool) {
 	sess, ok := h.sessions.Get(session)
 	if !ok {
+		return queuedInput{}, false
+	}
+	queued, hasQueued := sess.CompleteTurn()
+	h.persistSessionState(session)
+	return queued, hasQueued
+}
+
+func (h *Hub) dispatchQueuedInput(session string, input queuedInput) {
+	if input.message == nil {
 		return
 	}
-	sess.EndTurn()
+	h.broadcastToSession(session, input.message.Type, input.message, input.exclude)
 }

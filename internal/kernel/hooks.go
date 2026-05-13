@@ -42,13 +42,15 @@ type HookEventDef struct {
 // HookEvents is the canonical registry of all hook events.
 // Defined as a package-level var so it can be overridden in tests.
 var HookEvents = map[string]HookEventDef{
-	"before_message":   {Strategy: strategyModifying, Type: HookDomain},
-	"after_message":    {Strategy: strategyVoid, Type: HookObservability},
-	"before_tool_call": {Strategy: strategyModifying, Type: HookSecurity},
-	"after_tool_call":  {Strategy: strategyVoid, Type: HookObservability},
-	"session_start":    {Strategy: strategyModifying, Type: HookDomain},
-	"session_end":      {Strategy: strategyVoid, Type: HookObservability},
-	"cancel":           {Strategy: strategyVoid, Type: HookObservability},
+	"before_message":      {Strategy: strategyModifying, Type: HookDomain},
+	"after_message":       {Strategy: strategyVoid, Type: HookObservability},
+	"before_tool_call":    {Strategy: strategyModifying, Type: HookSecurity},
+	"after_tool_call":     {Strategy: strategyVoid, Type: HookObservability},
+	"session_start":       {Strategy: strategyModifying, Type: HookDomain},
+	"before_prompt_build": {Strategy: strategyModifying, Type: HookDomain},
+	"session_join":        {Strategy: strategyVoid, Type: HookObservability},
+	"session_end":         {Strategy: strategyVoid, Type: HookObservability},
+	"cancel":              {Strategy: strategyVoid, Type: HookObservability},
 }
 
 func (h *Hub) rebuildHookIndex() {

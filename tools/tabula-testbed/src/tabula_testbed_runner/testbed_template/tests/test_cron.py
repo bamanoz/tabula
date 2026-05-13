@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import subprocess
+import sys
 import unittest
 
 from tabula_testbed import TestbedClient
@@ -52,8 +54,23 @@ class CronPluginSmoke(unittest.TestCase):
                 "once": True,
             }).json()
             self.assertTrue(add["ok"], add)
+            cron_runner = Path(self.tabula_home) / "plugins" / "cron" / "run.py"
+            python = Path(self.tabula_home) / ".venv" / "bin" / "python3"
+            if not python.is_file():
+                python = Path(sys.executable)
+            env = os.environ.copy()
+            env.update({"TABULA_HOME": self.tabula_home, "TABULA_URL": self.url})
+            subprocess.run(
+                [str(python), str(cron_runner), "fire", "--id", "testbed-cron-fire", "--task", "scheduled hello", "--session", "testbed-cron"],
+                env=env,
+                check=True,
+            )
             msg = receiver.recv(type="message", timeout=10)
-            self.assertEqual(msg.get("text"), "scheduled hello")
+            self.assertEqual(msg.get("id"), "testbed-cron-fire")
+            self.assertIn('<cron_job id="testbed-cron-fire"', msg.get("text", ""))
+            self.assertIn("scheduled hello", msg.get("text", ""))
+            self.assertEqual(msg.get("meta", {}).get("source"), "cron")
+            self.assertEqual(msg.get("meta", {}).get("job_id"), "testbed-cron-fire")
         finally:
             sender.call_tool("cron_remove", {"id": "testbed-cron-fire"})
             sender.close()

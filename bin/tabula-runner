@@ -1,0 +1,173 @@
+#!/bin/bash
+# Launch the Tabula kernel and local runtime as separate processes.
+set -euo pipefail
+
+TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
+
+load_tabula_env() {
+  local env_file="$TABULA_HOME/.env"
+  [ -f "$env_file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|'#'*) continue ;;
+    esac
+    local key="${line%%=*}"
+    local value="${line#*=}"
+    key="${key#${key%%[![:space:]]*}}"
+    key="${key%${key##*[![:space:]]}}"
+    value="${value#${value%%[![:space:]]*}}"
+    value="${value%${value##*[![:space:]]}}"
+    [ -n "$key" ] || continue
+    case "$key" in
+      [A-Za-z_][A-Za-z0-9_]*) ;;
+      *) continue ;;
+    esac
+    if [ -z "${!key+x}" ]; then
+      export "$key=$value"
+    fi
+  done < "$env_file"
+}
+
+load_tabula_env
+
+export TABULA_HOME
+if [ -z "${TABULA_BOOT:-}" ]; then
+  BOOT_FILE="$TABULA_HOME/boot.py"
+  if [ ! -f "$BOOT_FILE" ]; then
+    BOOT_FILE="$TABULA_HOME/distrib/active/boot.py"
+  fi
+  export TABULA_BOOT="\"$TABULA_HOME/.venv/bin/python3\" \"$BOOT_FILE\""
+fi
+export TABULA_PATH="${TABULA_PATH:-$TABULA_HOME/.venv/bin:$TABULA_HOME/bin:$PATH}"
+export PATH="$TABULA_HOME/bin:$PATH"
+
+RUNTIME_MODE="external"
+ARGS=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --runtime-mode)
+      [ "$#" -ge 2 ] || { echo "error: --runtime-mode requires a value" >&2; exit 2; }
+      RUNTIME_MODE="$2"
+      shift 2
+      ;;
+    --runtime-mode=*)
+      RUNTIME_MODE="${1#*=}"
+      shift
+      ;;
+    *)
+      ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+case "$RUNTIME_MODE" in
+  external|disabled) ;;
+  *)
+    echo "error: tabula-runner supports only --runtime-mode external|disabled" >&2
+    exit 2
+    ;;
+esac
+
+if [ "$RUNTIME_MODE" = "disabled" ]; then
+  if [ "${#ARGS[@]}" -eq 0 ]; then
+    exec "$TABULA_HOME/bin/tabula" serve --runtime-mode disabled
+  fi
+  exec "$TABULA_HOME/bin/tabula" serve --runtime-mode disabled "${ARGS[@]}"
+fi
+
+KERNEL_PID=0
+RUNTIME_PID=0
+STARTUP_TIMEOUT="${TABULA_RUNNER_STARTUP_TIMEOUT:-30}"
+
+terminate_children() {
+  local sig="${1:-TERM}"
+  if [ "$RUNTIME_PID" -gt 0 ] && kill -0 "$RUNTIME_PID" 2>/dev/null; then
+    kill -s "$sig" "$RUNTIME_PID" 2>/dev/null || true
+  fi
+  if [ "$KERNEL_PID" -gt 0 ] && kill -0 "$KERNEL_PID" 2>/dev/null; then
+    kill -s "$sig" "$KERNEL_PID" 2>/dev/null || true
+  fi
+}
+
+cleanup() {
+  trap - EXIT INT TERM
+  terminate_children TERM
+  if [ "$RUNTIME_PID" -gt 0 ]; then
+    wait "$RUNTIME_PID" 2>/dev/null || true
+  fi
+  if [ "$KERNEL_PID" -gt 0 ]; then
+    wait "$KERNEL_PID" 2>/dev/null || true
+  fi
+}
+
+trap 'terminate_children INT' INT
+trap 'terminate_children TERM' TERM
+trap cleanup EXIT
+
+wait_for_file() {
+  local path="$1"
+  local label="$2"
+  local deadline=$(( $(date +%s) + STARTUP_TIMEOUT ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if [ -e "$path" ]; then
+      return 0
+    fi
+    if ! kill -0 "$KERNEL_PID" 2>/dev/null; then
+      local status=0
+      wait "$KERNEL_PID" || status=$?
+      return 1
+    fi
+    sleep 0.2
+  done
+  echo "error: timed out waiting for $label at $path" >&2
+  return 1
+}
+
+runtime_socket_path() {
+  "$TABULA_HOME/.venv/bin/python3" - "$TABULA_HOME/config/runtime.toml" <<'PY'
+import sys
+import tomllib
+from pathlib import Path
+
+path = Path(sys.argv[1])
+with path.open("rb") as f:
+    data = tomllib.load(f)
+kernels = data.get("kernel") or []
+if not kernels:
+    raise SystemExit(1)
+url = str(kernels[0].get("url") or "").strip()
+if not url.startswith("unix://"):
+    raise SystemExit(1)
+print(url[len("unix://"):])
+PY
+}
+
+if [ "${#ARGS[@]}" -eq 0 ]; then
+  "$TABULA_HOME/bin/tabula" serve --runtime-mode external &
+else
+  "$TABULA_HOME/bin/tabula" serve --runtime-mode external "${ARGS[@]}" &
+fi
+KERNEL_PID=$!
+
+wait_for_file "$TABULA_HOME/config/runtime.toml" "runtime config"
+wait_for_file "$TABULA_HOME/run/runtime-token" "runtime token"
+RUNTIME_SOCKET="$(runtime_socket_path)"
+wait_for_file "$RUNTIME_SOCKET" "runtime socket"
+
+"$TABULA_HOME/bin/tabula-runtime" start --config "$TABULA_HOME/config/runtime.toml" --runtime-id local &
+RUNTIME_PID=$!
+
+while true; do
+  if ! kill -0 "$KERNEL_PID" 2>/dev/null; then
+    status=0
+    wait "$KERNEL_PID" || status=$?
+    exit "$status"
+  fi
+  if ! kill -0 "$RUNTIME_PID" 2>/dev/null; then
+    status=0
+    wait "$RUNTIME_PID" || status=$?
+    exit "$status"
+  fi
+  sleep 0.2
+done

@@ -83,6 +83,22 @@ class MemorySmoke(unittest.TestCase):
             found = client.call_tool("memory_search", {"query": "installed-layout tests", "wing": "testbed", "limit": 5}, timeout=30).json()
             self.assertIn(content, str(found))
 
+            cyrillic_room = "cyrillic-search"
+            warmup = client.call_tool("memory_search", {"query": "smoke", "wing": "testbed", "room": cyrillic_room, "limit": 5}, timeout=30).json()
+            self.assertEqual(warmup.get("results"), [])
+            cyrillic_content = "кириллица smoke память поиск"
+            cyrillic = client.call_tool("memory_save", {
+                "wing": "testbed",
+                "room": cyrillic_room,
+                "content": cyrillic_content,
+                "source": "testbed-memory-cyrillic",
+            }, timeout=30).json()
+            self.assertTrue(cyrillic.get("success"), cyrillic)
+            cyrillic_id = cyrillic.get("drawer_id")
+            found_cyrillic = client.call_tool("memory_search", {"query": "smoke", "wing": "testbed", "room": cyrillic_room, "limit": 5}, timeout=30).json()
+            self.assertIn(cyrillic_content, str(found_cyrillic))
+            self.assertTrue(client.call_tool("memory_delete", {"drawer_id": cyrillic_id}, timeout=30).json().get("success"))
+
             wake = client.call_tool("memory_wake_up", {"wing": "testbed"}, timeout=30).json()
             self.assertIn("testbed", str(wake))
 

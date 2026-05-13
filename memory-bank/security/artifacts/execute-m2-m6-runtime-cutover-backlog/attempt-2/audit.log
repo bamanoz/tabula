@@ -1,6 +1,0 @@
-# Dependency audit — execute-m2-m6-runtime-cutover-backlog / attempt 2
-
-- Reviewed dependency-manifest delta for the audited scope.
-- No dependency manifests changed from base commit `3c65cc15253d0db5fb5e63b1248951b521716e64`.
-- No new packages were introduced in this BUILD scope.
-- `npm audit` / `pip-audit` not required for this attempt because there was no dependency delta to audit.

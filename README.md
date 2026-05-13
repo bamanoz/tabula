@@ -88,7 +88,7 @@ VERSION=v1.0.0 curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/
 Switch distro later:
 
 ```bash
-tabula-install-distro <local-path-or-github-tree-url>
+tabula-install distro install <local-path-or-github-tree-url>
 ```
 
 <details>
@@ -107,11 +107,22 @@ macOS/Linux-first.
 ```bash
 git clone https://github.com/bamanoz/tabula.git
 cd tabula
-bash scripts/install-dev.sh                                        # kernel only
+bash scripts/install-dev.sh                                        # installs tabula + tabula-runtime
 
 # then install a distro (pick one):
-tabula-distro install ../tabula-distrib/claw                       # local checkout
-tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=guardian'
+tabula-install distro install ../tabula-distrib/claw                       # local checkout
+tabula-install distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=guardian'
+
+# local dev flow
+make agent prepare
+make agent run                   # foreground kernel with info logs
+make agent connect
+
+# installed CLI shortcuts
+tabula-install use code
+tabula-install distro reinstall code
+tabula-install distro use code
+tabula-install distro use claw --update
 ```
 
 Requires Go 1.26+ and Python 3.11+.
@@ -120,7 +131,7 @@ Requires Go 1.26+ and Python 3.11+.
 
 ```bash
 echo 'ANTHROPIC_API_KEY=sk-ant-...' >> "$TABULA_HOME/.env"
-tabula-server
+tabula-runner
 tabula-cli
 ```
 
@@ -131,7 +142,7 @@ cat >> "$TABULA_HOME/.env" <<'EOF'
 TABULA_PROVIDER=openai
 OPENAI_API_KEY=sk-...
 EOF
-tabula-server
+tabula-runner
 tabula-cli
 ```
 
@@ -243,12 +254,15 @@ More about what each distro contains lives in the
 
 | Command                                             | What it does                                 |
 | --------------------------------------------------- | -------------------------------------------- |
-| `tabula-server`                                     | Start the kernel with sane defaults          |
-| `tabula-cli`                                        | Local terminal gateway                       |
+| `tabula-runner`                                     | Start the kernel plus local runtime wrapper  |
+| `tabula-cli`                                        | Connect to a running kernel                  |
 | `TABULA_API_PORT=8090 tabula-api`                   | OpenAI-compatible HTTP gateway               |
-| `tabula-install-distro <path-or-github-tree-url>`   | Install or switch the active distro          |
+| `tabula-install distro install <path-or-uri>`       | Install or switch the active distro          |
 | `tabula serve`                                      | Low-level kernel entrypoint                  |
 | `tabula run --prompt "..."`                         | One-shot prompt → response                   |
+
+`tabula-runner` is the product wrapper. `tabula serve` is the low-level kernel
+entrypoint and does not supervise a local runtime process.
 
 Direct `tabula serve` and `tabula run` need `TABULA_BOOT`:
 
@@ -256,15 +270,12 @@ Direct `tabula serve` and `tabula run` need `TABULA_BOOT`:
 TABULA_BOOT='"$TABULA_HOME/.venv/bin/python3" "$TABULA_HOME/boot.py"' tabula serve
 ```
 
-For CI-style minimal runs, `boot-cicd.py` is a driver-only boot without the
-full shell.
-
 ## API gateway
 
 Start a kernel, then start the API gateway:
 
 ```bash
-tabula-server
+tabula-runner
 TABULA_API_PORT=8090 tabula-api
 ```
 
@@ -351,8 +362,8 @@ The Vercel skills installer works through its universal target:
 npx skills add vercel-labs/agent-skills -a universal --skill frontend-design
 ```
 
-External skills are instruction-only by default. Their `tools[].exec` entries
-are ignored unless those tools are also present in Tabula's active tool surface.
+External skills are instruction-only. Executable tools must come from installed
+plugins, not from skill frontmatter.
 
 Useful environment variables:
 
@@ -368,22 +379,45 @@ Useful environment variables:
 | `TABULA_MAX_CHILDREN_PER_SESSION`          | Max child subagents per session            |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`     | Provider API keys                          |
 
+## Agent Applications
+
+A runnable agent application manifest can live in a project as
+`tabula.app.toml`. It applies a distro, creates a tenant whose id is
+`application.id`, starts or reuses the configured kernel/runtime, and binds the
+project directory to that app.
+
+On a machine without Tabula installed yet, install Tabula and run the app in one
+command from the project directory:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- app run ./tabula.app.toml
+```
+
+If Tabula is already installed:
+
+```bash
+tabula-install app run ./tabula.app.toml
+```
+
+See `docs/AGENT_APPLICATIONS.md` for examples, local overrides, bindings, and
+Claw memory modes.
+
 ## Writing skills
 
-A common built-in convention, used by the `claw` distro, is a skill
+A common convention, used by the `claw` distro, is a prompt-only skill
 directory like this:
 
 ```text
 my-skill/
-├── SKILL.md     # frontmatter contract + human-readable docs
-└── run.py       # one possible entrypoint used by many built-in skills
+├── SKILL.md       # frontmatter + human-readable docs
+├── references/
+└── scripts/       # optional helper scripts/resources, not published as tools
 ```
 
-In `claw`, `SKILL.md` frontmatter declares tools, commands, and
-compatibility metadata. Claw boot discovers skills, parses frontmatter,
-assembles the system prompt, and exposes tools to the active driver. Some
-built-in claw paths also default to `run.py`, but that is a convention of
-the current distro, not a platform rule.
+In `claw`, `SKILL.md` frontmatter describes the skill and optional
+`user-invocable` slash-command behavior. Boot discovers skills, parses
+frontmatter, and assembles the system prompt. Executable tools are published by
+installed plugins via `plugin.toml` and runtime capability registration.
 
 This is the same mechanism the agent uses when it writes a new skill for
 itself — there is no separate "agent-authored skills" path.

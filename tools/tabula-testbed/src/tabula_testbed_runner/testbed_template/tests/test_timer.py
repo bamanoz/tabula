@@ -51,9 +51,35 @@ class TimerSkillSmoke(unittest.TestCase):
             self.assertTrue(started["ok"], started)
             msg = receiver.recv(type="message", timeout=10)
             self.assertEqual(msg.get("id"), "testbed-timer-fire")
-            self.assertEqual(msg.get("text"), "timer scheduled hello")
+            self.assertIn('<timer id="testbed-timer-fire"', msg.get("text", ""))
+            self.assertIn("timer scheduled hello", msg.get("text", ""))
+            self.assertEqual(msg.get("meta", {}).get("source"), "timer")
+            self.assertEqual(msg.get("meta", {}).get("timer_id"), "testbed-timer-fire")
         finally:
             sender.call_tool("timer_cancel", {"id": "testbed-timer-fire"})
+            sender.close()
+            receiver.close()
+
+    def test_timer_defaults_to_current_session(self):
+        receiver = self.make_client("testbed-timer-current-receiver", "testbed-timer-current")
+        sender = self.make_client("testbed-timer-current-sender", "testbed-timer-current")
+        try:
+            sender.wait_tools({"timer_start"}, session="testbed-timer-current")
+            started = sender.call_tool("timer_start", {
+                "after": "2s",
+                "message": "timer current session hello",
+                "id": "testbed-timer-current",
+            }).json()
+            self.assertTrue(started["ok"], started)
+            self.assertEqual(started["session"], "testbed-timer-current")
+            msg = receiver.recv(type="message", timeout=10)
+            self.assertEqual(msg.get("id"), "testbed-timer-current")
+            self.assertIn('<timer id="testbed-timer-current"', msg.get("text", ""))
+            self.assertIn("timer current session hello", msg.get("text", ""))
+            self.assertEqual(msg.get("meta", {}).get("source"), "timer")
+            self.assertEqual(msg.get("meta", {}).get("timer_id"), "testbed-timer-current")
+        finally:
+            sender.call_tool("timer_cancel", {"id": "testbed-timer-current"})
             sender.close()
             receiver.close()
 

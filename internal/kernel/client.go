@@ -102,6 +102,8 @@ func (c *Client) IsConnected() bool {
 	return c.state != ClientClosed
 }
 
+func (c *Client) IsBusy() bool { return false }
+
 // Name returns the client's name. Implements HookSubscriber.
 func (c *Client) Name() string { return c.name }
 
