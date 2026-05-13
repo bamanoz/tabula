@@ -62,6 +62,20 @@ venv by the installer from bundled package artifacts. They are runtime
 contracts, but they are not owned by a single distro and are not special skill
 directories.
 
+Distros may also declare external runtime executables in `distro.toml`:
+
+```toml
+[[runtime_requirements.executables]]
+name = "npx"
+required = true
+required_for = ["mcp.context7"]
+install_hint = "Install Node.js LTS from https://nodejs.org/."
+```
+
+The installer checks these against `PATH`. Required missing executables fail
+install/apply with the `install_hint`; optional missing executables are reported
+as warnings. Tabula does not auto-install these tools in this phase.
+
 ## Why distros exist
 
 Distros solve a specific problem: the same kernel should be able to power

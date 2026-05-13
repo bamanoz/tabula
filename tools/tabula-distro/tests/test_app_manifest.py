@@ -59,6 +59,21 @@ plugin_dir.mkdir(parents=True, exist_ok=True)
     return distro
 
 
+def _make_requirements_distro(root: Path) -> Path:
+    distro = root / "claw"
+    _write(
+        distro / "distro.toml",
+        '[distro]\nid = "tabula.claw"\nname = "claw"\nversion = "0.1.0"\n'
+        '[[runtime_requirements.executables]]\n'
+        'name = "definitely-missing-tabula-tool"\n'
+        'required = true\n'
+        'required_for = ["mcp.demo"]\n'
+        'install_hint = "Install demo tool."\n',
+    )
+    _write(distro / "boot.py", "# boot\n")
+    return distro
+
+
 def _manifest(source: str) -> str:
     return f'''
 [application]
@@ -168,6 +183,38 @@ class AppCLITests(unittest.TestCase):
             self.assertFalse(payload["applied"])
             self.assertIn("missing tenant.toml", payload["issues"])
             self.assertIn("applied app lock is missing", payload["issues"])
+
+    def test_app_audit_reports_runtime_requirements(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            _make_requirements_distro(root)
+            _write(root / ".tabula" / "local.toml", '[memory]\npath = "/tmp/shared-memory"\n')
+            manifest_path = root / "tabula.app.toml"
+            _write(manifest_path, _manifest("local:./claw"))
+
+            code, out, err = self._run(["--home", str(home), "app", "audit", str(manifest_path), "--json"])
+
+            self.assertEqual(code, 0, err)
+            payload = json.loads(out)
+            self.assertEqual(payload["runtime_requirements"]["executables"][0]["name"], "definitely-missing-tabula-tool")
+            self.assertFalse(payload["runtime_requirements"]["executables"][0]["found"])
+            self.assertIn("missing required runtime executable: definitely-missing-tabula-tool", payload["issues"])
+
+    def test_app_apply_fails_when_required_runtime_executable_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            _make_requirements_distro(root)
+            _write(root / ".tabula" / "local.toml", '[memory]\npath = "/tmp/shared-memory"\n')
+            manifest_path = root / "tabula.app.toml"
+            _write(manifest_path, _manifest("local:./claw"))
+
+            code, _out, err = self._run(["--home", str(home), "app", "apply", str(manifest_path)])
+
+            self.assertEqual(code, 1)
+            self.assertIn("missing required runtime executables", err)
+            self.assertIn("definitely-missing-tabula-tool", err)
 
     def test_app_inspect_reports_materialized_surface(self):
         with tempfile.TemporaryDirectory() as tmp:

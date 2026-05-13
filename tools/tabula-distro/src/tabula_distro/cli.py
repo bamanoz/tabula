@@ -17,6 +17,7 @@ from . import config as cfg
 from . import generations as gens
 from . import install as installmod
 from . import lock as lockmod
+from . import requirements as reqmod
 from . import runtime_config as runtimecfg
 from . import sources as srcmod
 
@@ -112,7 +113,7 @@ def main(argv: list[str] | None = None, *, prog: str = "tabula-distro") -> int:
     home.mkdir(parents=True, exist_ok=True)
     try:
         return args.func(args, home)
-    except (installmod.InstallError, cfg.ConfigError, lockmod.LockError, appmod.AppManifestError, bindmod.BindingError, runmod.AppRunError) as exc:
+    except (installmod.InstallError, cfg.ConfigError, lockmod.LockError, reqmod.RequirementsError, appmod.AppManifestError, bindmod.BindingError, runmod.AppRunError) as exc:
         print(f"{prog}: {exc}", file=sys.stderr)
         return 1
 
@@ -489,7 +490,8 @@ def _app_audit_json(manifest: appmod.AppManifest, lock_path: Path, lock: appmod.
     tenant_dir = home / "tenants" / manifest.application.id
     runtime_cfg = _read_runtime_config(home / "config" / "runtime.toml", manifest.application.id)
     materializer = _materializer_status(tenant_dir, expected=appmod.materializer_declared(manifest, home))
-    issues = _inspect_issues(tenant_dir, runtime_cfg, materializer)
+    runtime_requirements = _runtime_requirements_for_manifest(manifest, home)
+    issues = _inspect_issues(tenant_dir, runtime_cfg, materializer, runtime_requirements=runtime_requirements)
     applied_lock = appmod.load_lock(tenant_dir / "app.lock.json")
     if applied_lock is None:
         issues.append("applied app lock is missing")
@@ -506,6 +508,7 @@ def _app_audit_json(manifest: appmod.AppManifest, lock_path: Path, lock: appmod.
         "runtimes": list(lock.runtimes),
         "bindings": lock.bindings,
         "runtime_surface": runtime_cfg,
+        "runtime_requirements": runtime_requirements,
         "materializer": materializer,
         "issues": issues,
     }
@@ -520,6 +523,7 @@ def _app_inspect_json(home: Path, app_id: str) -> dict:
     registry = bindmod.load(home)
     runtime_cfg = _read_runtime_config(home / "config" / "runtime.toml", app_id)
     materializer = _materializer_status(tenant_dir, expected=_materializer_expected(home, lock))
+    runtime_requirements = _runtime_requirements_for_lock(home, lock)
     bindings = {
         "directory": [item.__dict__ for item in registry.directories if item.app == app_id],
         "default": registry.default.__dict__ if registry.default is not None and registry.default.app == app_id else None,
@@ -555,8 +559,9 @@ def _app_inspect_json(home: Path, app_id: str) -> dict:
         "runtimes": list(lock.runtimes) if lock is not None else [],
         "bindings": bindings,
         "runtime_surface": runtime_cfg,
+        "runtime_requirements": runtime_requirements,
         "materializer": materializer,
-        "issues": _inspect_issues(tenant_dir, runtime_cfg, materializer),
+        "issues": _inspect_issues(tenant_dir, runtime_cfg, materializer, runtime_requirements=runtime_requirements),
     }
 
 
@@ -602,7 +607,7 @@ def _materializer_expected(home: Path, lock: appmod.AppLock | None) -> bool:
     return appmod.materializer_declared(manifest, home)
 
 
-def _inspect_issues(tenant_dir: Path, runtime_cfg: dict, materializer: dict) -> list[str]:
+def _inspect_issues(tenant_dir: Path, runtime_cfg: dict, materializer: dict, *, runtime_requirements: dict | None = None) -> list[str]:
     issues: list[str] = []
     required = {
         "tenant.toml": tenant_dir / "tenant.toml",
@@ -617,7 +622,28 @@ def _inspect_issues(tenant_dir: Path, runtime_cfg: dict, materializer: dict) -> 
         issues.append("runtime config does not include this app tenant")
     if materializer.get("expected") and not materializer.get("ran"):
         issues.append("materializer output config is missing")
+    for item in (runtime_requirements or {}).get("executables", []):
+        if item.get("required") and not item.get("found"):
+            issues.append(f"missing required runtime executable: {item.get('name')}")
     return issues
+
+
+def _runtime_requirements_for_manifest(manifest: appmod.AppManifest, home: Path) -> dict:
+    try:
+        distro = cfg.load(appmod.resolve_distro_path(manifest, home))
+    except (cfg.ConfigError, appmod.AppManifestError):
+        return {"executables": []}
+    return {"executables": [status.to_json() for status in reqmod.check_executables(distro)]}
+
+
+def _runtime_requirements_for_lock(home: Path, lock: appmod.AppLock | None) -> dict:
+    if lock is None or not lock.manifest_path.strip():
+        return {"executables": []}
+    try:
+        manifest = appmod.load(Path(lock.manifest_path), tabula_home=home)
+    except appmod.AppManifestError:
+        return {"executables": []}
+    return _runtime_requirements_for_manifest(manifest, home)
 
 
 def _print_app_inspect(payload: dict) -> None:
@@ -630,6 +656,7 @@ def _print_app_inspect(payload: dict) -> None:
     print(f"kernel:   {kernel.get('id')}  {kernel.get('mode')}  {kernel.get('url')}")
     runtime_surface = payload.get("runtime_surface") or {}
     print(f"runtime:  configured={runtime_surface.get('configured')}  {runtime_surface.get('config_path')}")
+    _print_runtime_requirements(payload.get("runtime_requirements") or {})
     materializer = payload.get("materializer") or {}
     print(f"materializer: ran={materializer.get('ran')} plugin_configs={len(materializer.get('plugin_configs') or [])}")
     issues = payload.get("issues") or []
@@ -653,6 +680,7 @@ def _print_app_audit(manifest: appmod.AppManifest, lock_path: Path, lock: appmod
     for runtime in lock.runtimes:
         exec_cfg = runtime.get("exec") if isinstance(runtime.get("exec"), dict) else {}
         print(f"  - {runtime.get('id')}  mode={runtime.get('mode')}  backend={exec_cfg.get('backend')}  tenants={runtime.get('tenants')}")
+    _print_runtime_requirements(audit.get("runtime_requirements") or {})
     if lock.bindings:
         print("bindings:")
         default = lock.bindings.get("default")
@@ -667,6 +695,18 @@ def _print_app_audit(manifest: appmod.AppManifest, lock_path: Path, lock: appmod
             print(f"  - {issue}")
     else:
         print("issues: none")
+
+
+def _print_runtime_requirements(payload: dict) -> None:
+    executables = payload.get("executables") or []
+    if not executables:
+        return
+    print("requirements:")
+    for item in executables:
+        state = "found" if item.get("found") else "missing"
+        required = "required" if item.get("required") else "optional"
+        detail = f" ({', '.join(item.get('required_for') or [])})" if item.get("required_for") else ""
+        print(f"  - {item.get('name')}: {state} {required}{detail}")
 
 
 def _print_run_plan(plan: runmod.RunPlan, tenant_dir: Path) -> None:

@@ -12,6 +12,7 @@ from pathlib import Path
 from . import config as cfg
 from . import generations as gens
 from . import lock as lockmod
+from . import requirements as reqmod
 from . import sources as srcmod
 from .cache import GitCache
 from .manifest import BundleManifest, ManifestError, load_bundle_manifest
@@ -390,6 +391,9 @@ def install(distro_dir: str | Path, home: Path, *,
     # installed kernel.
     kernel_version = _read_kernel_version(home)
     _check_kernel_compat(distro, kernel_version)
+    statuses = reqmod.require_executables(distro)
+    for warning in reqmod.warnings(statuses):
+        print(f"tabula-distro: warning: {warning}")
 
     plan = Plan(distro=distro, home=home, offline=offline, update=update, update_only=tuple(update_only))
 

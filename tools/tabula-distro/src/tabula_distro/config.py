@@ -68,6 +68,14 @@ class SourceAlias:
 
 
 @dataclass(frozen=True)
+class ExecutableRequirement:
+    name: str
+    required: bool = True
+    required_for: tuple[str, ...] = ()
+    install_hint: str = ""
+
+
+@dataclass(frozen=True)
 class DistroConfig:
     path: Path  # directory containing distro.toml (the distro root)
     name: str
@@ -78,6 +86,7 @@ class DistroConfig:
     bundles: tuple[BundleEntry, ...] = ()
     skills: tuple[SkillEntry, ...] = ()
     plugins: tuple[SkillEntry, ...] = ()
+    executable_requirements: tuple[ExecutableRequirement, ...] = ()
 
 
 def load(distro_dir: Path, *, override_name: str | None = None) -> DistroConfig:
@@ -120,6 +129,7 @@ def load(distro_dir: Path, *, override_name: str | None = None) -> DistroConfig:
         bundles=tuple(_parse_bundle(entry) for entry in merged.get("bundles", [])),
         skills=tuple(_parse_skill(entry) for entry in merged.get("skills", [])),
         plugins=tuple(_parse_skill(entry) for entry in merged.get("plugins", [])),
+        executable_requirements=_parse_executable_requirements(merged),
     )
 
 
@@ -162,6 +172,37 @@ def _merge(base: dict, override: dict) -> dict:
             by_name[n] = entry  # later wins
         result[list_key] = [by_name[n] for n in order]
     return result
+
+
+def _parse_executable_requirements(data: dict) -> tuple[ExecutableRequirement, ...]:
+    runtime_requirements = _section(data, "runtime_requirements")
+    raw = runtime_requirements.get("executables")
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ConfigError("runtime_requirements.executables must be an array of tables")
+    requirements: list[ExecutableRequirement] = []
+    seen: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise ConfigError("runtime_requirements.executables entries must be tables")
+        _require(entry, ("name",), kind="runtime executable requirement")
+        name = str(entry["name"]).strip()
+        if not name:
+            raise ConfigError("runtime executable requirement name must be non-empty")
+        if name in seen:
+            raise ConfigError(f"duplicate runtime executable requirement: {name}")
+        seen.add(name)
+        required_for = entry.get("required_for") or []
+        if not isinstance(required_for, list) or not all(isinstance(item, str) for item in required_for):
+            raise ConfigError(f"runtime executable requirement {name!r}: required_for must be list[str]")
+        requirements.append(ExecutableRequirement(
+            name=name,
+            required=bool(entry.get("required", True)),
+            required_for=tuple(item for item in required_for if item.strip()),
+            install_hint=str(entry.get("install_hint") or "").strip(),
+        ))
+    return tuple(requirements)
 
 
 def _apply_env_source_overrides(data: dict) -> dict:

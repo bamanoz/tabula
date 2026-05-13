@@ -34,6 +34,7 @@ Before invoking the materializer, the installer owns these mechanical steps:
 - expand installer-owned variables such as `${project_root}`,
   `${application_id}`, `${tabula_home}`, and `${local.*}`;
 - resolve and write the app lockfile;
+- check distro-declared `runtime_requirements.executables` against `PATH`;
 - create `TABULA_HOME/tenants/<app-id>/tenant.toml`;
 - write `app.toml`, `app.lock.json`, and `values.toml` in the app tenant;
 - clear any previous `TABULA_TENANT_DIR/config/` materializer output so app

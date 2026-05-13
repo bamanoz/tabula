@@ -199,6 +199,52 @@ class InstallCliTests(unittest.TestCase):
                 os.chdir(prev_cwd)
             self.assertTrue((home / "plugins" / "hello" / "plugin.toml").is_file())
 
+    def test_missing_required_runtime_executable_blocks_install(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_distro(root)
+            _write(
+                distro / "distro.toml",
+                '[distro]\nid = "tabula.demo"\nname = "demo"\nversion = "0.1.0"\n'
+                '[[runtime_requirements.executables]]\n'
+                'name = "definitely-missing-tabula-tool"\n'
+                'required = true\n'
+                'required_for = ["mcp.demo"]\n'
+                'install_hint = "Install demo tool."\n',
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                code = install_cli.main(["--home", str(home), "distro", "install", str(distro)])
+
+            self.assertEqual(code, 1)
+            self.assertIn("missing required runtime executables", stderr.getvalue())
+            self.assertIn("definitely-missing-tabula-tool", stderr.getvalue())
+            self.assertIn("Install demo tool.", stderr.getvalue())
+
+    def test_missing_optional_runtime_executable_warns_but_installs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_distro(root)
+            _write(
+                distro / "distro.toml",
+                '[distro]\nid = "tabula.demo"\nname = "demo"\nversion = "0.1.0"\n'
+                '[[runtime_requirements.executables]]\n'
+                'name = "definitely-missing-tabula-optional-tool"\n'
+                'required = false\n'
+                'required_for = ["fs.grep"]\n',
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                code = install_cli.main(["--home", str(home), "distro", "install", str(distro)])
+
+            self.assertEqual(code, 0, stderr.getvalue())
+            self.assertIn("optional runtime executable", stdout.getvalue())
+            self.assertTrue((home / "distrib" / "demo" / "distro.lock.json").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()
