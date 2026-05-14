@@ -21,13 +21,13 @@ Tabula is the same idea applied to AI agents.
 | Neovim                 | Tabula                                |
 | ---------------------- | ------------------------------------- |
 | `nvim` core            | `bin/tabula` (Go kernel)              |
-| Plugins                | Skills (per-call) + Plugins (long-lived) |
+| Plugins                | Skills (instructions) + Plugins (tools/workers) |
 | `runtimepath`          | `$TABULA_HOME/skills/`                |
 | `~/.config/nvim/`      | `$TABULA_HOME/`                       |
 | `init.lua`             | `IDENTITY.md`, `SOUL.md`, `AGENTS.md` |
 | Plugin manager         | `tabula-distro` + bundles             |
 | `:help`                | `SKILL.md` / `README.md` per component |
-| Distro (LazyVim, etc.) | Distro (`coder`, `claw`, `guardian`) |
+| Distro (LazyVim, etc.) | Distro (`code`, `claw`, `guardian`) |
 
 ## What Tabula is not
 
@@ -112,7 +112,7 @@ For claw, the directory layout *is* the configuration.
 
 ### 7. Distros are products
 
-A kernel + a curated bundle set + a personality = a product. `coder`,
+A kernel + a curated bundle set + a personality = a product. `code`,
 `claw`, and `guardian` are three products on the same kernel. Anyone
 can build their own.
 

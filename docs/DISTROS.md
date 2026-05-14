@@ -97,28 +97,29 @@ setups. The kernel is not the product. The assembled environment is.
 Tabula currently ships three distros in the
 [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib) repo:
 
-- `coder`
+- `code`
 - `claw`
 - `guardian`
 
 They share the same kernel and protocol, but they are different products.
 
-### `coder`
+### `code`
 
-Coding-agent distro with a TUI, structured tool metadata, and a coding-tuned
-skill set.
+Focused coding-agent distro with workspace tools, approvals, memory, and MCP
+defaults for common coding workflows.
 
 What it is for:
 
-- terminal-first coding agent (claude-code / opencode style)
-- structured git, tasks, review, workspace boundary, approvals
-- per-turn agent/model/effort selection
-- subagents for parallel work
+- terminal-first coding agent
+- workspace fs/exec tools with approvals
+- Context7, Playwright, and DuckDuckGo MCP defaults
+- project-local app manifests
 
 What it includes:
 
-- distro-specific TUI gateway plugin (TypeScript/Ink) under `coder/`
-- shared bundles: `base`, `files`, `drivers`, `memory`, `code`, `subagents`
+- shared bundles: `base`, `workspace`, `drivers`, `gateways`, `memory`
+- required runtime executables: `npx`, `uvx`
+- optional runtime executable: `rg` for faster grep
 
 ### `claw`
 
@@ -128,7 +129,6 @@ What it is for:
 
 - daily driver personal agent
 - terminal-first interaction
-- OpenAI-compatible local API
 - Telegram bot usage
 - tool use across files, memory, sessions, MCP, and scheduling
 - multi-step work using real subagents
@@ -136,8 +136,8 @@ What it is for:
 What it includes:
 
 - unified driver plugin (Anthropic and OpenAI selected per-turn)
-- gateways: CLI, HTTP API, Telegram (distro-specific)
-- tool and support components via bundles: `files`, `base` (sessions, pair,
+- gateways: CLI and Telegram
+- tool and support components via bundles: `workspace`, `base` (sessions, pair,
   timer, cron, hook-logger, hook-permissions, observer,
   skill-contract, tabula-guide), `memory` (save/search/admin), `mcp`
 - shared subagent runtime (from the `drivers` bundle)
@@ -207,14 +207,14 @@ These concepts are related but different.
 
 Smallest extension units.
 
-- **Skill** (`SKILL.md`): prompt/instruction artifact;
-  prompt/instruction artifact. Examples: `tabula-guide`, `skill-contract`.
+- **Skill** (`SKILL.md`): prompt/instruction artifact. Examples:
+  `tabula-guide`, `skill-contract`.
 - **Plugin** (`plugin.toml` + `register(api)`): long-lived process; subscribes
   to events; owns executable tools; has state. Examples: `mcp`,
   `hook-permissions`, `drivers/driver`, `timer`, `memory-save`, `code/git`.
 
 See [SKILL_AUTHORING.md](SKILL_AUTHORING.md) and
-[plans/SKILL_PLUGIN_ARCHITECTURE.md](plans/SKILL_PLUGIN_ARCHITECTURE.md).
+[PLUGIN_AUTHORING.md](PLUGIN_AUTHORING.md).
 
 ### Bundle
 
@@ -223,7 +223,7 @@ Reusable collection of skills and plugins, kept in
 
 - referenced from a distro via `distro.toml`
 - materialized into the flat runtime surface at install time
-- examples: `base`, `files`, `drivers`, `memory`, `caveman`, `coder-*`
+- examples: `base`, `workspace`, `drivers`, `memory`, `caveman`, `code`
 
 Bundles are capability packs — they may contain a mix of skills and plugins
 on the same level.
@@ -244,9 +244,9 @@ Distros are not just bigger bundles. They decide what the runtime *is*.
 From a local path, `local:` URI, or `git+...` URI:
 
 ```bash
-tabula-distro install ./path/to/my-distro
-tabula-distro install local:./path/to/my-distro
-tabula-distro install "git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw"
+tabula-install distro install ./path/to/my-distro
+tabula-install distro install local:./path/to/my-distro
+tabula-install distro install "git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw"
 ```
 
 What this does:
@@ -263,7 +263,7 @@ What this does:
 
 For development, clone `tabula-distrib` next to this repo and run
 `bash scripts/install-dev.sh` (installs `tabula` + `tabula-runtime`), then
-`tabula-distro install ../tabula-distrib/<name>`.
+`tabula-install distro install ../tabula-distrib/<name>`.
 
 For local development, keep `tabula.app.toml` in the repo root and use
 `make agent prepare`, `make agent run`, and `make agent connect`.
@@ -304,7 +304,7 @@ You do not need every skill in every distro.
 
 - Claw is broad.
 - Guardian is narrow.
-- Ouroboros is moderate but very opinionated about self-state.
+- Code is focused on coding workflows and explicit tool approvals.
 
 That is a feature, not inconsistency.
 
@@ -358,6 +358,6 @@ Skills and plugins are how an agent grows.
 Bundles are how capabilities are shared.
 Distros are how complete agents become recognizable products.
 
-Today there are three built-in distros (`coder`, `claw`, `guardian`).
+Today there are three maintained distros (`code`, `claw`, `guardian`).
 That is enough to demonstrate the model — coding-tuned / general-purpose /
 sandboxed — but not enough to call the ecosystem mature yet.

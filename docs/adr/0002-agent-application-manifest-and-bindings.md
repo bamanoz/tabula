@@ -7,7 +7,7 @@ Superseded by: nothing
 
 ## Context
 
-Tabula has a distro model. A distro such as `claw`, `guardian`, or `ouroboros`
+Tabula has a distro model. A distro such as `claw`, `code`, or `guardian`
 is a reusable agent package: it owns boot policy, templates, bundled
 skills/plugins/clients, prompt policy, product defaults, and distro-specific
 runtime behavior.
@@ -100,7 +100,9 @@ kernel = "claw-tabula"
 path = "${project_root}"
 ```
 
-`kernel`, `runtimes`, and `bindings` are launch topology. `values` are passed to
+The user-authored `[distro]` table intentionally uses only `source`; distro id
+and name come from the resolved distro's own `distro.toml` and are recorded in
+the lock. `kernel`, `runtimes`, and `bindings` are launch topology. `values` are passed to
 the distro contract/materializer. The installer may expand a small set of
 mechanical variables such as `${project_root}`, `${application_id}`, and
 `${tabula_home}`, but it must not interpret values as a workspace, prompt,
@@ -272,11 +274,9 @@ Negative / costs:
   `claw` prompt logic out of shared libraries.
 - Existing global active-distro scripts/docs need a staged transition.
 
-## Implementation Track
+## Implementation Notes
 
-See `docs/issues/agent-manifest/README.md` and child issues `AM-01` through
-`AM-22`.
-
+The historical implementation issue backlog has been removed after completion.
 The installer-to-distro materializer interface is specified in
 `docs/APP_MATERIALIZER_CONTRACT.md`.
 
@@ -286,8 +286,8 @@ The installer-to-distro materializer interface is specified in
   later support `.tabula/app.toml` or explicit paths.
 - Exact on-disk binding registry format may be TOML or JSON. The semantic model
   is the decision, not the serialization.
-- The installer binary may start as `tabula-distro app ...` and later be renamed
-  to `tabula-install`.
+- The installer binary is `tabula-install`; `tabula-distro` remains the package
+  name/internal implementation surface.
 - App-scoped runtime surfaces may reuse existing tenant directories or introduce
   helper symlinks. The required property is app isolation, not a specific
   symlink layout.

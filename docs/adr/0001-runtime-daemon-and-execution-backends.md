@@ -1,9 +1,9 @@
 # ADR 0001 — Runtime daemon, execution backends, unified worker model
 
 Date: 2026-05-02
-Status: Accepted
+Status: Accepted, partly superseded by current `tabula-runner` orchestration
 Supersedes: nothing
-Superseded by: nothing
+Superseded by: local kernel startup now uses `tabula serve --runtime-mode external` plus a sibling `tabula-runtime` launched by `tabula-runner`; the kernel no longer owns the local managed child lifecycle.
 
 ## Context
 
@@ -127,8 +127,7 @@ independent plugins expose orthogonal capabilities:
 
 Capability and scope are independent axes. Tenant configs assemble
 "workspace personas" via templates substituting `${project_root}`
-into both plugins. `code/workspace`, `files`, and `shell` skills
-are removed in M5.
+into both plugins. The old workspace/file/shell tool surfaces were removed.
 
 ### 6. Multi-tenant invariants
 
@@ -275,7 +274,7 @@ warm-for-skills is a later opt-in.
 
 ## Implementation reference
 
-See `docs/plans/REMOTE_RUNTIME.md` for the rolling implementation
-plan, milestone breakdown (M1–M6), and outstanding details. This
-ADR captures the durable architectural choice; the plan is the
-working document for sequencing and issue creation.
+This ADR captures the durable architectural choice to keep tool execution in a
+separate runtime daemon. The old rolling implementation plan was removed after
+the migration; current behavior is documented in `docs/ARCHITECTURE.md` and the
+runtime protocol docs.

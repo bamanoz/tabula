@@ -17,10 +17,9 @@ sources, locks, or generations — at runtime it only sees the materialized
 
 ```sh
 pip install -e tools/tabula-distro
-tabula-distro install ../tabula-distrib/ouroboros
-tabula-distro list
-tabula-distro update --frozen   # CI-style: lock must match
-tabula-distro rollback ouroboros
+tabula-install distro install ../tabula-distrib/claw
+tabula-install distro list
+tabula-install distro reinstall claw --frozen
 ```
 
 ## Distro config
@@ -29,7 +28,8 @@ A distro may declare external sources in `distro.toml` at its root:
 
 ```toml
 [distro]
-name = "ouroboros"
+id = "tabula.claw"
+name = "claw"
 
 [[bundles]]
 name   = "memory"

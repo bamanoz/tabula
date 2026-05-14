@@ -88,13 +88,7 @@ vet:
 	go vet ./...
 	GOOS=windows go vet ./...
 
-# Install
-
-install:
-	bash scripts/install-dev.sh
-
-install-agent:
-	TABULA_HOME=$(AGENT_HOME) bash scripts/install-dev.sh
+# Agent
 
 agent:
 	@ACTION="$(AGENT_ACTION)"; \

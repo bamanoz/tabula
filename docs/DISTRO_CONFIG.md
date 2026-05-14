@@ -8,13 +8,14 @@ Related docs: [tools/tabula-distro/README.md](../tools/tabula-distro/README.md).
 
 ## `distro.toml`
 
-Lives at the root of a distro source tree (e.g. `../tabula-distrib/coder/distro.toml`).
-The file is optional — absent means "no external sources; use what's in the
-tree as-is".
+Lives at the root of a distro source tree (for example
+`../tabula-distrib/claw/distro.toml`). The file is required for maintained
+distros because `[distro].id` is required.
 
 ```toml
 [distro]
-name    = "coder"
+id      = "tabula.claw"
+name    = "claw"
 version = "0.1.0"
 
 [requires]
@@ -24,10 +25,10 @@ kernel = ">=0.8.0,<1.0.0"
 source = "git+https://github.com/bamanoz/tabula-bundles.git@main"
 
 [[bundles]]
-name   = "memory"
-source = "source:tabula-bundles#path=memory"
-# components = ["memory-save", "memory-search"]  # optional skill/plugin allowlist
-# override = false                             # must be true to replace existing
+name   = "workspace"
+source = "source:tabula-bundles#path=workspace"
+# components = ["fs", "exec"]  # optional skill/plugin/client allowlist
+# override = false              # must be true to replace existing
 
 [[bundles]]
 name   = "caveman"
@@ -40,6 +41,12 @@ source = "git+https://github.com/foo/weather-skill.git@main#path=skill"
 [[plugins]]
 name   = "mcp"
 source = "git+https://github.com/foo/mcp-plugin.git@main#path=plugin"
+
+[[runtime_requirements.executables]]
+name = "npx"
+required = true
+required_for = ["mcp.context7"]
+install_hint = "Install Node.js LTS from https://nodejs.org/."
 ```
 
 A bundle is a directory whose top level holds skill directories (`SKILL.md`) and
@@ -50,6 +57,7 @@ for one compatibility cycle; new configs should use `components`.
 
 ### Fields
 
+- `[distro].id` — required stable distro identifier such as `tabula.claw`.
 - `[distro].name` — installed distro name. Defaults to the directory name.
 - `[distro].version` — optional SemVer (`MAJOR.MINOR.PATCH`). Recorded in
   the lockfile; used by external tooling.
@@ -68,6 +76,14 @@ for one compatibility cycle; new configs should use `components`.
   - `components` — bundles only. Optional allowlist of skill/plugin/client component
     subdirectories to include. `skills` is a deprecated alias.
   - `override` — required to replace a pre-existing target with the same name.
+- `[[runtime_requirements.executables]]` — external commands the distro expects
+  on `PATH`. The installer checks these before staging a generation.
+  - `name` — executable name to resolve with `PATH`.
+  - `required` — defaults to `true`. Missing required executables fail install
+    or app apply/run; missing optional executables produce a warning.
+  - `required_for` — optional list of capabilities such as `mcp.duckduckgo` or
+    `fs.grep`.
+  - `install_hint` — actionable text shown when missing.
 
 ### Bundle manifests
 
@@ -152,8 +168,8 @@ root (`$TABULA_HOME/distrib/<name>/distro.lock.json`). Example:
 
 ```json
 {
-  "version": 2,
-  "distro": "coder",
+  "version": 3,
+  "distro": "claw",
   "distro_version": "0.1.0",
   "kernel_version": "0.8.0",
   "generated_at": "2026-04-21T14:30:00Z",
@@ -189,15 +205,15 @@ Semantics:
 
 - `distro.toml` expresses **intent** (`@main`, `@v0.2.0`).
 - `distro.lock.json` expresses **reality** (pinned sha).
-- Plain `tabula-distro install` prefers pinned shas from the lock, so
+- Plain `tabula-install distro install` prefers pinned shas from the lock, so
   repeated installs are reproducible.
-- `tabula-distro install --update [--update-only NAME …]` ignores pinned
+- `tabula-install distro install --update [--update-only NAME ...]` ignores pinned
   shas for the selected entries, re-resolves them, and writes a new lock.
-- `tabula-distro install --frozen` forbids any network access: the lock
+- `tabula-install distro install --frozen` forbids any network access: the lock
   must fully describe the distro, otherwise the install fails.
-- Lock v2 records `plugins` alongside `bundles` and `skills`. v1 lockfiles are
-  migrated on load with an empty `plugins` map and rewritten as v2 on the next
-  save.
+- Lock v3 records `plugins`, `clients`, plugin protocol, and SDK versions
+  alongside `bundles` and `skills`. Older lockfiles are migrated on load and
+  rewritten on the next install.
 
 Local sources (`local:…`) are not hashable by design; their lock entry only
 records the resolved absolute path.
@@ -207,7 +223,7 @@ records the resolved absolute path.
 ### Generations layout
 
 ```
-$TABULA_HOME/distrib/coder/
+$TABULA_HOME/distrib/claw/
   generations/
     0001-2026-04-21T10-00-00Z/   # full staged tree
     0002-2026-04-21T14-30-00Z/
@@ -221,7 +237,7 @@ $TABULA_HOME/distrib/coder/
 
 - A staging directory (`<name>.staging`) is built first; on success it is
   renamed into place, then the `current` symlink is atomically swapped.
-- `tabula-distro rollback [name] [--to N]` flips `current` to a previous
+- `tabula-install distro rollback [name] [--to N]` flips `current` to a previous
   generation without touching the filesystem otherwise.
 - Old generations are pruned after install (default: keep 5 + the current).
 
@@ -236,17 +252,18 @@ Git sources are cached under `$TABULA_HOME/cache/git/<url-sha1>/`:
 - `worktrees/<commit-sha>/` — one worktree per pinned commit, shared across
   distros and generations.
 
-`tabula-distro gc` removes worktrees not referenced by any installed
+`tabula-install distro gc` removes worktrees not referenced by any installed
 distro's lockfile.
 
 ## CLI summary
 
 ```
-tabula-distro install <source> [--frozen] [--update] [--update-only NAME]
-tabula-distro rollback [<name>] [--to N]
-tabula-distro list
-tabula-distro lock [<name>]
-tabula-distro gc
+tabula-install distro install <source> [--frozen] [--update] [--update-only NAME]
+tabula-install distro use <name> [--source-root DIR] [--update]
+tabula-install distro reinstall [<name>]
+tabula-install distro list
+tabula-install distro lock [<name>]
+tabula-install distro gc
 ```
 
 `<source>` is the path to a distro source directory (the one containing

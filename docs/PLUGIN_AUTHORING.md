@@ -1,9 +1,9 @@
 # Plugin Authoring
 
-Plugins are Tabula's long-lived extension shape. Use a plugin when a component
-needs to keep state, subscribe to kernel events, own child processes, or update
-its tool catalog after startup. Per-call, stateless tool providers should stay
-as skills; see [SKILL_AUTHORING.md](SKILL_AUTHORING.md).
+Plugins are Tabula's executable extension shape. Use a plugin when a component
+needs to publish tools, keep state, subscribe to kernel events, own child
+processes, or update its tool catalog after startup. Instruction-only workflows
+should stay as skills; see [SKILL_AUTHORING.md](SKILL_AUTHORING.md).
 
 This document describes the runtime-owned plugin worker contract implemented by
 `tabula-runtime` and demonstrated by the migrated bundle plugins.
@@ -50,7 +50,7 @@ Validation rules enforced by `internal/runtime/host/manifest/manifest.go`:
 - `id` must match `^[a-z0-9_-]+$`.
 - `version` must be SemVer-shaped (`X.Y.Z`, with optional prerelease/build).
 - `runtime` must be `python`. Skill SDKs exist in TypeScript, but plugins are
-  Python-only today. See `docs/plans/HERMES_COMPARISON_FOLLOWUPS.md` §P0.1.
+  Python-only today.
 - `entry` must be relative and must not contain `..`.
 - advisory `[[tools]]` entries require non-empty `name`; `deadline_ms` must be
   non-negative.
@@ -82,8 +82,10 @@ The standard precedence is:
 1. code defaults
 2. `$TABULA_HOME/config/global.toml` under `[plugins.<plugin-id>]`
 3. `$TABULA_HOME/config/plugins/<plugin-id>/config.toml`
-4. environment variables declared by the plugin
-5. explicit runtime or CLI arguments
+4. tenant effective `$TABULA_TENANT_DIR/config/plugins/<plugin-id>/config.toml`,
+   when present
+5. environment variables declared by the plugin
+6. explicit runtime or CLI arguments
 
 Example plugin-local config:
 

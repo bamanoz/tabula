@@ -10,7 +10,7 @@ and shared development tooling. Distro-specific product policy belongs in
 - Keep kernel changes generic. The kernel should not know about concrete
   distros, bundles, skills, plugins, gateways, MCP servers, workspaces, or
   product-specific policy.
-- Put distro policy in distro boot code, not in the kernel.
+- Put distro policy in distro boot/materializer code, not in the kernel.
 - Put reusable Python runtime helpers in shared bundle libraries when multiple
   distros or components need the same behavior.
 - Do not put distro-specific assumptions into this repo's docs or tests unless
@@ -21,9 +21,10 @@ and shared development tooling. Distro-specific product policy belongs in
 - Treat `TABULA_HOME` as runtime/config/state root, not as a user workspace.
 - Do not hardcode `~/.tabula` in user-facing text except when documenting the
   default value of `TABULA_HOME`.
-- Plugin runtime config uses `config/global.toml` and
-  `config/plugins/<plugin-id>/config.toml`; do not add new `plugin.toml`
-  runtime config blocks.
+- Plugin runtime config uses `config/global.toml`, user-owned
+  `config/plugins/<plugin-id>/config.toml`, and installer-compiled tenant
+  `tenants/<tenant>/config/plugins/<plugin-id>/config.toml`; do not add new
+  `plugin.toml` runtime config blocks.
 
 ## No Legacy / No Backward Compatibility
 
@@ -55,7 +56,7 @@ and shared development tooling. Distro-specific product policy belongs in
 
 - Do not commit generated artifacts: `dist/`, `build/`, `*.egg-info/`,
   `__pycache__/`, or `*.pyc`.
-- Use `tabula-distro` install behavior as the source of truth for runtime
+- Use `tabula-install`/`tabula-distro` install behavior as the source of truth for runtime
   layout. If a component needs files at runtime, ensure the installer actually
   fans them out.
 - After switching the active generation, the installer atomically updates

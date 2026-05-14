@@ -12,16 +12,15 @@ configured is an agent.
 Tabula is not a chatbot app and not a framework. It is an **environment** for
 building and living with an agent.
 
-- A small Go kernel owns routing, sessions, process supervision, and hooks.
-- **Skills** are separate processes that plug into the kernel over WebSocket.
-  They can be written by you, installed from a bundle, or written by the agent
-  itself.
+- A small Go kernel owns routing, sessions, runtime attachments, and hooks.
+- **Plugins** are long-lived runtime workers that publish executable tools.
+- **Skills** are prompt/instruction artifacts with optional bundled resources.
 - Your agent's utilities live as plain files under
   `$TABULA_HOME` (default `~/.tabula`). Like dotfiles, for an agent.
-- **Distros** package a kernel + a set of skills + a personality into a
-  product. Three ship today: `claw` (general-purpose), `guardian`
-  (sandboxed code execution), and `ouroboros` (self-hosting/evolving). You can
-  build your own.
+- **Distros** package a runtime surface, tool policy, and personality into a
+  product. Current maintained distros are `claw` (general-purpose), `code`
+  (coding-focused), and `guardian` (sandboxed code execution). You can build
+  your own.
 
 A Tabula agent is something you own, can inspect, can break, can fix, and can
 grow over years. Not something you rent.
@@ -42,13 +41,14 @@ clear extension contracts, and a userland you build yourself.
 
 That design makes a few things natural:
 
-- **Self-modification is a normal operation.** A skill is whatever the active
-  distro knows how to discover, describe, and optionally execute. The agent has
-  file-writing and shell tools, so it can create, edit, and install skills for
-  itself using the same mechanisms a human extender would use.
-- **Process isolation is real.** A skill is a real OS process. Crashes don't
-  take down the kernel. Subagents are supervised by userland plugins as real
-  child processes with their own session, not fake threads.
+- **Self-modification is a normal operation.** Skills and plugins are plain
+  files in the active runtime surface. The agent has file and command tools, so
+  it can create, edit, and install new components using the same mechanisms a
+  human extender would use.
+- **Process isolation is real.** Executable tools run in runtime-managed plugin
+  workers. Crashes don't take down the kernel. Subagents are supervised by
+  userland plugins as real child processes with their own session, not fake
+  threads.
 - **State is inspectable.** Everything lives in plain files under
   `$TABULA_HOME`. You can `cat`, `diff`, `grep`, and put it in git.
 - **The kernel stays small.** Features live in skills, not in the core. Same
@@ -59,9 +59,9 @@ That design makes a few things natural:
 Tabula is useful today, but it is in the "strong core, maturing extension
 surface" phase.
 
-- **Solid:** kernel, process-based skills, distro model, official Anthropic /
-  OpenAI SDK drivers, OpenAI-compatible HTTP gateway, plugin-owned subagent
-  processes, local memory via MemPalace.
+- **Solid:** kernel, runtime-hosted plugins, distro model, official Anthropic /
+  OpenAI SDK drivers, CLI gateway, plugin-owned subagent processes, local memory
+  via MemPalace.
 - **Maturing:** stable claw skill-manifest versioning, subagent ops,
   packaged SDK distribution, self-edit safety (git-backed rollback), skill
   distribution story.
@@ -85,7 +85,7 @@ Install a specific version:
 VERSION=v1.0.0 curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash
 ```
 
-Switch distro later:
+Install or switch distro later:
 
 ```bash
 tabula-install distro install <local-path-or-github-tree-url>
@@ -109,9 +109,10 @@ git clone https://github.com/bamanoz/tabula.git
 cd tabula
 bash scripts/install-dev.sh                                        # installs tabula + tabula-runtime
 
-# then install a distro (pick one):
+# then install a distro or run an app manifest:
 tabula-install distro install ../tabula-distrib/claw                       # local checkout
 tabula-install distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=guardian'
+tabula-install app run ./tabula.app.toml --dry-run
 
 # local dev flow
 make agent prepare
@@ -167,8 +168,9 @@ Pieces:
   kernel. In the built-in distros this is currently implemented in Python.
 - **Drivers** — one provider loop per process (Anthropic, OpenAI).
 - **Gateways** — the mouths and ears: CLI, HTTP API, Telegram.
-- **Skills** — everything else. Tools, hooks, integrations, memory. Their
-  exact format is defined by the active distro, not by the kernel.
+- **Plugins** — executable tools, hooks, integrations, memory, MCP, and gateway
+  daemons.
+- **Skills** — prompt/instruction artifacts discovered by the active distro.
 - **Subagents** — real child processes running their own driver in their own
   session.
 
@@ -179,7 +181,6 @@ $TABULA_HOME/
 ├── distrib/
 │   ├── claw/current/
 │   ├── guardian/current/
-│   ├── ouroboros/current/
 │   └── active -> claw
 ├── boot.py         -> distrib/active/current/boot.py
 ├── templates/      -> distrib/active/current/templates
@@ -216,13 +217,22 @@ bundle dependencies against
 Default general-purpose agent.
 
 - providers: Anthropic and OpenAI (official SDKs, from the `drivers` bundle)
-- gateways: CLI, OpenAI-compatible HTTP API, Telegram
-- tools: `files` (`read`, `list_dir`, `glob`, `grep`, `write`, `edit`, `multiedit`, `apply_patch`), `sessions`, `pair`, `mcp`,
-  `timer`, `cron`
+- gateways: CLI and Telegram
+- tools: workspace `fs`/`exec`, `sessions`, `pair`, `mcp`, `timer`, `cron`, `todo`
 - hooks: `hook-logger`, `hook-permissions`
 - observability: `observer`
 - memory: `memory-save`, `memory-search`, `memory-admin` (backed by MemPalace)
 - subagents: provider-matched, real processes
+
+### `code`
+
+Focused coding-agent distro.
+
+- providers: Anthropic and OpenAI through the shared driver
+- gateway: CLI
+- tools: workspace `fs`/`exec`, MCP defaults for Context7, Playwright, and DuckDuckGo,
+  memory, todo, and approval hooks
+- runtime requirements: `npx` and `uvx` are required; `rg` is optional for faster grep
 
 ### `guardian`
 
@@ -233,12 +243,6 @@ Focused runtime for sandboxed Python execution.
 - builds its sandbox image during install
 - no files / mcp / sessions / memory / telegram / hooks
 
-### `ouroboros`
-
-Self-hosting distro for a long-running agent with persistent identity,
-scratchpad, task list, and knowledge base. Ships its own driver variants plus
-consciousness / control / evolve / review skills.
-
 More about what each distro contains lives in the
 [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib) repo.
 
@@ -247,7 +251,7 @@ More about what each distro contains lives in the
 - [`docs/PHILOSOPHY.md`](docs/PHILOSOPHY.md) — why Tabula is shaped like Linux / Neovim
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how kernel, boot, distros, and skills fit together
 - [`docs/SKILL_AUTHORING.md`](docs/SKILL_AUTHORING.md) — practical guide to writing skills
-- [`docs/DISTROS.md`](docs/DISTROS.md) — what distros are and what `claw` / `guardian` / `ouroboros` mean
+- [`docs/DISTROS.md`](docs/DISTROS.md) — what distros are and how the installer composes them
 - [`docs/distro-config.md`](docs/distro-config.md) — `distro.toml` reference
 
 ## Common commands
@@ -256,7 +260,6 @@ More about what each distro contains lives in the
 | --------------------------------------------------- | -------------------------------------------- |
 | `tabula-runner`                                     | Start the kernel plus local runtime wrapper  |
 | `tabula-cli`                                        | Connect to a running kernel                  |
-| `TABULA_API_PORT=8090 tabula-api`                   | OpenAI-compatible HTTP gateway               |
 | `tabula-install distro install <path-or-uri>`       | Install or switch the active distro          |
 | `tabula serve`                                      | Low-level kernel entrypoint                  |
 | `tabula run --prompt "..."`                         | One-shot prompt → response                   |
@@ -269,24 +272,6 @@ Direct `tabula serve` and `tabula run` need `TABULA_BOOT`:
 ```bash
 TABULA_BOOT='"$TABULA_HOME/.venv/bin/python3" "$TABULA_HOME/boot.py"' tabula serve
 ```
-
-## API gateway
-
-Start a kernel, then start the API gateway:
-
-```bash
-tabula-runner
-TABULA_API_PORT=8090 tabula-api
-```
-
-```bash
-curl http://localhost:8090/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"tabula","messages":[{"role":"user","content":"hello"}]}'
-```
-
-The gateway is OpenAI-compatible on purpose: any OpenAI SDK client can talk to
-Tabula without a custom client.
 
 ## Configuration
 
@@ -317,13 +302,18 @@ base_url = "https://api.openai.com/v1"
 api_key = { source = "store", id = "driver-openai.api_key" }
 ```
 
-Plugins use a standard precedence:
+Plugins use a standard precedence. Without a tenant-local effective config,
+global plugin config participates normally. When
+`tenants/<tenant>/config/plugins/<plugin-id>/config.toml` exists, it is the
+installer-compiled effective config and replaces the global plugin file for that
+tenant:
 
 1. code defaults
 2. `config/global.toml` under `[plugins.<plugin-id>]`
 3. `config/plugins/<plugin-id>/config.toml`
-4. plugin-declared environment variables
-5. explicit CLI/runtime arguments
+4. tenant effective `tenants/<tenant>/config/plugins/<plugin-id>/config.toml`, if present
+5. plugin-declared environment variables
+6. explicit CLI/runtime arguments
 
 Example plugin-local config:
 
@@ -374,7 +364,6 @@ Useful environment variables:
 | `TABULA_PROVIDER`                          | Active provider                            |
 | `TABULA_BOOT`                              | Boot command for `tabula serve / run`      |
 | `TABULA_URL`                               | Kernel WebSocket URL                       |
-| `TABULA_API_PORT`                          | HTTP port for `tabula-api`                 |
 | `TABULA_MAX_SPAWN_DEPTH`                   | Max nested subagent depth                  |
 | `TABULA_MAX_CHILDREN_PER_SESSION`          | Max child subagents per session            |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`     | Provider API keys                          |

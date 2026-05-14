@@ -7,7 +7,7 @@ and bind launchers to the app, except for secrets and machine-local values.
 
 ## Concepts
 
-- **Distro**: reusable agent package such as `claw` or `coder`.
+- **Distro**: reusable agent package such as `claw`, `code`, or `guardian`.
 - **Application**: named runnable instance of a distro. `application.id` is the
   tenant id used on client joins and runtime catalog isolation.
 - **Kernel**: WebSocket server the app connects to.
@@ -36,6 +36,9 @@ path = "${project_root}"
 project_files = ["AGENTS.md"]
 create_missing_project_files = false
 ```
+
+`[distro]` intentionally has only `source`. The distro id/name are resolved from
+the distro's own `distro.toml` and recorded in the app lock.
 
 If omitted, the installer defaults to a managed local kernel at
 `ws://127.0.0.1:8089/ws`, one managed bare runtime for `application.id`, and a
@@ -121,7 +124,8 @@ tabula-install app inspect claw-tabula --json
 ```
 
 Inspect reports the tenant directory, required app files, lock/source metadata,
-bindings, runtime config surface, materializer output, and missing/stale issues.
+bindings, runtime config surface, distro runtime executable requirements,
+materializer output, and missing/stale issues.
 
 ## Memory Modes
 

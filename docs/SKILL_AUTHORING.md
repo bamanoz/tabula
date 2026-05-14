@@ -1,18 +1,13 @@
 # Skill Authoring
 
-This document explains how to write **skills**: per-call, stateless tool
-providers. Long-lived components are **plugins**; author those with
-[PLUGIN_AUTHORING.md](PLUGIN_AUTHORING.md). The architectural rationale lives
-in [plans/SKILL_PLUGIN_ARCHITECTURE.md](plans/SKILL_PLUGIN_ARCHITECTURE.md).
+This document explains how to write **skills**: prompt/instruction artifacts
+with optional resources. Executable tools and long-lived components are
+**plugins**; author those with [PLUGIN_AUTHORING.md](PLUGIN_AUTHORING.md).
 
 ## When to write a skill vs a plugin
 
-Pick a **skill** if your component:
-
-- exposes one or more tools that run to completion per call;
-- has no persistent state between calls;
-- doesn't need to subscribe to bus events;
-- doesn't spawn its own children.
+Pick a **skill** if your component only needs to add instructions, workflow
+guidance, references, slash-command text, or helper resources.
 
 Pick a **plugin** if your component:
 
@@ -37,13 +32,12 @@ In source, components may live in three places:
 - distro-specific in `tabula-distrib/<name>/skills/...` or
   `tabula-distrib/<name>/plugins/...`;
 - shared in [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles)
-  (`base/`, `files/`, `drivers/`, `memory/`, `caveman/`, `coder-*/`);
-- shared SDK/runtime libraries are packaged with bundles (the Phase 3 reference
-  Python plugin SDK lives in `examples/plugin-sdk-python/`; final SDK authority
-  moves to `tabula-bundles` during library relocation).
+  (`base/`, `workspace/`, `drivers/`, `memory/`, `caveman/`, `code/`);
+- shared SDK/runtime libraries are packaged with bundles, primarily under
+  `tabula-bundles/_lib`.
 
 The active distro plus its bundles are fanned out into `$TABULA_HOME/skills/`
-by `tabula-distro install`.
+by `tabula-install distro install` or `tabula-install app run/apply`.
 
 External Agent Skills installed by ecosystem tools such as `npx skills` should
 use `$TABULA_WORKSPACE/skills/`, `$TABULA_WORKSPACE/.agents/skills/`, or
@@ -175,7 +169,7 @@ Some names carry behavior by convention (not enforced by the kernel):
 
 - `gateway-*` — user interface plugin.
 - `hook-*` — bus subscriber plugin.
-- `coder-*` bundle prefix — components used by the `coder` distro.
+- `gateway-*` — user interface clients/plugins.
 
 These are project conventions; distros and bundles enforce them.
 

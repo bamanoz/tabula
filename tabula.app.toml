@@ -1,9 +1,9 @@
 [application]
-id = "code-tabula-dev"
-name = "Code for Tabula Dev"
+id = "claw-tabula-dev"
+name = "Claw for Tabula Dev"
 
 [distro]
-source = "local:../tabula-distrib/code"
+source = "local:../tabula-distrib/claw"
 
 [values.workspace]
 path = "${project_root}"
