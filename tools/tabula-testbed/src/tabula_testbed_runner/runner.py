@@ -8,6 +8,7 @@ import re
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -684,6 +685,8 @@ def main(argv: list[str] | None = None) -> int:
         run(["go", "build", "-ldflags", ldflags, "-o", str(bin_dir / "tabula"), "./cmd/tabula/"], cwd=repo_root)
         run(["go", "build", "-ldflags", ldflags, "-o", str(bin_dir / "tabula-runtime"), "./cmd/tabula-runtime/"], cwd=repo_root)
         shutil.copy2(repo_root / "bin" / "tabula-runner", bin_dir / "tabula-runner")
+        runner_path = bin_dir / "tabula-runner"
+        runner_path.chmod(runner_path.stat().st_mode | stat.S_IXUSR)
         (home / "VERSION").write_text(version + "\n", encoding="utf-8")
 
         # Snapshot the runtime plugin compatibility range so the distro

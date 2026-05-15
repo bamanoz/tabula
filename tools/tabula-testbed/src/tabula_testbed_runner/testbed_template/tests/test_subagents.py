@@ -6,10 +6,62 @@ import time
 import os
 from pathlib import Path
 import json
+import sys
 import unittest
 import websocket
 
 from tabula_testbed import TestbedClient
+
+
+FAKE_ACP = """#!/usr/bin/env python3
+import json
+import sys
+from uuid import uuid4
+
+session_id = None
+
+for raw in sys.stdin:
+    if not raw.strip():
+        continue
+    message = json.loads(raw)
+    method = message.get('method')
+    if method == 'initialize':
+        payload = {
+            'jsonrpc': '2.0',
+            'id': message['id'],
+            'result': {
+                'protocolVersion': 1,
+                'agentInfo': {'name': 'fake-acp', 'version': '0.1.0'},
+                'agentCapabilities': {'loadSession': True, 'promptCapabilities': {'embeddedContext': True}, 'sessionCapabilities': {'close': {}, 'list': {}, 'resume': {}}},
+                'authMethods': [],
+            },
+        }
+        sys.stdout.write(json.dumps(payload) + '\\n')
+        sys.stdout.flush()
+    elif method == 'session/new':
+        session_id = f'acp-{uuid4().hex[:8]}'
+        payload = {'jsonrpc': '2.0', 'id': message['id'], 'result': {'sessionId': session_id}}
+        sys.stdout.write(json.dumps(payload) + '\\n')
+        sys.stdout.flush()
+    elif method == 'session/prompt':
+        params = message.get('params') or {}
+        prompt = params.get('prompt') or []
+        text = ''
+        for block in prompt:
+            if isinstance(block, dict) and block.get('type') == 'text':
+                text += str(block.get('text') or '')
+        response = f'FAKE ACP: {text}'
+        note = {'jsonrpc': '2.0', 'method': 'session/update', 'params': {'sessionId': params.get('sessionId'), 'update': {'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': response}}}}
+        sys.stdout.write(json.dumps(note) + '\\n')
+        sys.stdout.write(json.dumps({'jsonrpc': '2.0', 'id': message['id'], 'result': {'stopReason': 'end_turn'}}) + '\\n')
+        sys.stdout.flush()
+    elif method in {'session/cancel', 'session/close'}:
+        sys.stdout.write(json.dumps({'jsonrpc': '2.0', 'id': message['id'], 'result': {}}) + '\\n')
+        sys.stdout.flush()
+    else:
+        sys.stdout.write(json.dumps({'jsonrpc': '2.0', 'id': message.get('id'), 'error': {'code': -32601, 'message': f'method not found: {method}'}}) + '\\n')
+        sys.stdout.flush()
+"""
 
 
 class SubagentsPluginSmoke(unittest.TestCase):
@@ -61,6 +113,7 @@ class SubagentsPluginSmoke(unittest.TestCase):
         home = Path(self.tabula_home)
         self.assertTrue((home / "plugins" / "subagents" / "plugin.toml").is_file())
         self.assertTrue((home / "clients" / "subagent" / "client.toml").is_file())
+        self.assertTrue((home / "clients" / "subagent-acp" / "client.toml").is_file())
         self.assertFalse((home / "skills" / "_subagent_types").exists())
         self.assertFalse((home / "plugins" / "_subagent_types").exists())
         self.assertFalse((home / "state" / "subagents").exists())
@@ -135,6 +188,40 @@ class SubagentsPluginSmoke(unittest.TestCase):
             self.assertEqual(msg.get("meta", {}).get("source"), "subagent")
             self.assertEqual(msg.get("meta", {}).get("subagent_id"), "sa-async-history")
             client.call_tool("subagent_kill", {"id": "sa-async-history"}, timeout=10)
+
+    def test_acp_subagent_send_wait_returns_new_result(self):
+        home = Path(self.tabula_home)
+        fake_acp = home / "data" / "testbed" / "fake-acp-agent.py"
+        fake_acp.parent.mkdir(parents=True, exist_ok=True)
+        fake_acp.write_text(FAKE_ACP, encoding="utf-8")
+        python = home / ".venv" / "bin" / "python3"
+        if not python.is_file():
+            python = Path(sys.executable)
+        with self.make_client("testbed-subagents-acp") as client:
+            client.wait_tools({"subagent_spawn", "subagent_send", "subagent_wait", "subagent_kill"}, session="testbed-subagents")
+            spawned = client.call_tool(
+                "subagent_spawn",
+                {
+                    "type": "acp",
+                    "task": "FIRST",
+                    "id": "sa-acp-history",
+                    "mode": "async",
+                    "timeout": 30,
+                    "acp_command": [str(python), str(fake_acp)],
+                },
+                timeout=20,
+            ).json()
+            self.assertEqual(spawned.get("status"), "running")
+            waited_first = client.call_tool("subagent_wait", {"id": "sa-acp-history", "timeout": 30}, timeout=35).json()
+            self.assertTrue(waited_first.get("ok"), waited_first)
+            self.assertIn("FAKE ACP:", str(waited_first.get("result", "")))
+            self.assertIn("FIRST", str(waited_first.get("result", "")))
+            delivered = client.call_tool("subagent_send", {"id": "sa-acp-history", "message": "SECOND"}, timeout=10).json()
+            self.assertTrue(delivered.get("delivered"), delivered)
+            waited = client.call_tool("subagent_wait", {"id": "sa-acp-history", "timeout": 30}, timeout=35).json()
+            self.assertTrue(waited.get("ok"), waited)
+            self.assertIn("FAKE ACP: SECOND", str(waited.get("result", "")))
+            client.call_tool("subagent_kill", {"id": "sa-acp-history"}, timeout=10)
 
 
 def main() -> int:

@@ -27,6 +27,9 @@ source = "source:tabula-bundles#path=base"
 [bundles.drivers]
 source = "source:tabula-bundles#path=drivers"
 
+[bundles.gateways]
+source = "source:tabula-bundles#path=gateways"
+
 [bundles.workspace]
 source = "source:tabula-bundles#path=workspace"
 
@@ -171,13 +174,18 @@ tests = ["tests/test_memory.py"]
 
 [suites.subagents]
 set = "empty"
-components = ["base:sessions", "drivers:driver", "subagents:subagent", "subagents:subagents"]
+components = ["base:sessions", "drivers:driver", "subagents:subagent", "subagents:subagent-acp", "subagents:subagents"]
 tests = ["tests/test_subagents.py"]
 
 [suites.compaction]
 set = "empty"
 components = ["drivers:driver"]
 tests = ["tests/test_compaction.py"]
+
+[suites.acp]
+set = "empty"
+components = ["base:ask-user", "base:hook-approvals", "base:hook-permissions", "drivers:driver", "gateways:gateway-acp", "workspace:exec"]
+tests = ["tests/test_acp.py"]
 
 [suites.runtime-wss-loopback]
 set = "empty"
