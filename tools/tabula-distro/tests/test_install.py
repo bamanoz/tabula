@@ -83,10 +83,21 @@ def _make_client(root: Path, name: str, marker: str = "v1") -> Path:
     return d
 
 
+def _make_python_package(root: Path, package: str, content: str = "VALUE = 1\n") -> Path:
+    pkg = root / package
+    _touch(pkg / "__init__.py", content)
+    return pkg
+
+
 def _make_minimal_distro(root: Path, name: str = "demo") -> Path:
     dist = root / name
     _touch(dist / "distro.toml", f'[distro]\nid = "tabula.{name}"\nname = "{name}"\n')
-    _touch(dist / "boot.py", "# boot\n")
+    _touch(
+        dist / "boot.py",
+        "#!/usr/bin/env python3\n"
+        "import json\n"
+        "print(json.dumps({\"url\": \"ws://localhost:8089/ws\", \"plugins\": [], \"meta\": {}}))\n",
+    )
     (dist / "templates").mkdir(parents=True, exist_ok=True)
     (dist / "skills").mkdir(parents=True, exist_ok=True)
     _touch(dist / "templates" / "SYSTEM.md", "hello\n")
@@ -667,6 +678,113 @@ class InstallTests(unittest.TestCase):
             self.assertTrue((home / "distrib" / "demo" / "plugins" / "plugin-a" / "plugin.toml").exists())
             self.assertIn("skill-a", lock.skills)
             self.assertIn("plugin-a", lock.plugins)
+
+    def test_bundle_exported_python_package_is_installed_into_shared_lib(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            bundle = root / "ext" / "bundles" / "base"
+            _make_plugin(bundle, "sessions")
+            _make_python_package(bundle / "sessions" / "sdk" / "python" / "src", "tabula_session_sdk")
+            _touch(bundle / "bundle.toml", (
+                '[bundle]\nname="base"\ncomponents=["sessions"]\n'
+                '[[exports.python_packages]]\n'
+                'name="tabula_session_sdk"\n'
+                'path="sessions/sdk/python/src/tabula_session_sdk"\n'
+            ))
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
+                '[[bundles]]\nname="base"\nsource="local:../ext/bundles/base"\n',
+                encoding="utf-8",
+            )
+
+            installmod.install(distro, home)
+            self.assertTrue((home / "_lib" / "python" / "src" / "tabula_session_sdk" / "__init__.py").is_file())
+
+    def test_bundle_dependency_requires_selected_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            gateways = root / "ext" / "bundles" / "gateways"
+            _make_plugin(gateways, "gateway-web")
+            _touch(gateways / "bundle.toml", (
+                '[bundle]\nname="gateways"\ncomponents=["gateway-web"]\n'
+                '[[dependencies]]\n'
+                'bundle="base"\n'
+                'python_packages=["tabula_session_sdk"]\n'
+            ))
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
+                '[[bundles]]\nname="gateways"\nsource="local:../ext/bundles/gateways"\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(installmod.InstallError, "depends on bundle 'base'"):
+                installmod.install(distro, home)
+
+    def test_bundle_dependency_requires_exported_python_package(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            base = root / "ext" / "bundles" / "base"
+            _make_plugin(base, "sessions")
+            _touch(base / "bundle.toml", '[bundle]\nname="base"\ncomponents=["sessions"]\n')
+
+            gateways = root / "ext" / "bundles" / "gateways"
+            _make_plugin(gateways, "gateway-web")
+            _touch(gateways / "bundle.toml", (
+                '[bundle]\nname="gateways"\ncomponents=["gateway-web"]\n'
+                '[[dependencies]]\n'
+                'bundle="base"\n'
+                'python_packages=["tabula_session_sdk"]\n'
+            ))
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
+                '[[bundles]]\nname="base"\nsource="local:../ext/bundles/base"\n'
+                '[[bundles]]\nname="gateways"\nsource="local:../ext/bundles/gateways"\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(installmod.InstallError, 'does not export'):
+                installmod.install(distro, home)
+
+    def test_bundle_dependency_cycle_fails_install(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            alpha = root / "ext" / "bundles" / "alpha"
+            _make_plugin(alpha, "a")
+            _touch(alpha / "bundle.toml", (
+                '[bundle]\nname="alpha"\ncomponents=["a"]\n'
+                '[[dependencies]]\n'
+                'bundle="beta"\n'
+            ))
+
+            beta = root / "ext" / "bundles" / "beta"
+            _make_plugin(beta, "b")
+            _touch(beta / "bundle.toml", (
+                '[bundle]\nname="beta"\ncomponents=["b"]\n'
+                '[[dependencies]]\n'
+                'bundle="alpha"\n'
+            ))
+
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
+                '[[bundles]]\nname="alpha"\nsource="local:../ext/bundles/alpha"\n'
+                '[[bundles]]\nname="beta"\nsource="local:../ext/bundles/beta"\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(installmod.InstallError, 'bundle dependency cycle'):
+                installmod.install(distro, home)
 
     def test_update_only_plugin_name_refreshes_standalone_plugin_git_source(self):
         with tempfile.TemporaryDirectory() as tmp:

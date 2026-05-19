@@ -10,6 +10,16 @@ Schema:
     [requires]
     kernel = ">=0.8.0,<1.0.0"
 
+    [[exports.python_packages]]
+    name = "tabula_session_sdk"
+    path = "sessions/sdk/python/src/tabula_session_sdk"
+    public = true
+    owner = "sessions"
+
+    [[dependencies]]
+    bundle = "base"
+    python_packages = ["tabula_session_sdk"]
+
 A bundle without a ``bundle.toml`` is treated as an unversioned legacy bundle:
 no compatibility check is performed and ``BundleManifest.version`` is ``None``.
 We may tighten this later.
@@ -31,6 +41,8 @@ class BundleManifest:
     path: Path  # bundle root
     # None means legacy walk-discovery; an empty tuple means explicit empty bundle.
     components: tuple[str, ...] | None = None
+    exports_python_packages: tuple["PythonPackageExport", ...] = ()
+    dependencies: tuple["BundleDependency", ...] = ()
 
     @property
     def is_versioned(self) -> bool:
@@ -39,6 +51,20 @@ class BundleManifest:
 
 class ManifestError(ValueError):
     """Raised when a bundle.toml is malformed."""
+
+
+@dataclass(frozen=True)
+class PythonPackageExport:
+    name: str
+    path: str
+    public: bool = True
+    owner: str = ""
+
+
+@dataclass(frozen=True)
+class BundleDependency:
+    bundle: str
+    python_packages: tuple[str, ...] = ()
 
 
 def load_bundle_manifest(bundle_root: Path) -> BundleManifest:
@@ -52,6 +78,7 @@ def load_bundle_manifest(bundle_root: Path) -> BundleManifest:
 
     bundle = data.get("bundle") or {}
     requires = data.get("requires") or {}
+    exports = data.get("exports") or {}
 
     name = bundle.get("name")
     version_raw = bundle.get("version")
@@ -68,8 +95,15 @@ def load_bundle_manifest(bundle_root: Path) -> BundleManifest:
     except VersionError as exc:
         raise ManifestError(f"{manifest_path}: invalid requires.kernel: {exc}") from exc
 
-    return BundleManifest(name=name, version=version, requires_kernel=kernel, path=bundle_root,
-                          components=components)
+    return BundleManifest(
+        name=name,
+        version=version,
+        requires_kernel=kernel,
+        path=bundle_root,
+        components=components,
+        exports_python_packages=_parse_python_package_exports(manifest_path, exports.get("python_packages")),
+        dependencies=_parse_dependencies(manifest_path, data.get("dependencies")),
+    )
 
 
 def _parse_components(manifest_path: Path, raw: object) -> tuple[str, ...] | None:
@@ -86,3 +120,44 @@ def _parse_components(manifest_path: Path, raw: object) -> tuple[str, ...] | Non
             raise ManifestError(f"{manifest_path}: bundle.components entry must be relative and stay inside bundle: {value!r}")
         components.append(p.as_posix())
     return tuple(components)
+
+
+def _parse_python_package_exports(manifest_path: Path, raw: object) -> tuple[PythonPackageExport, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ManifestError(f"{manifest_path}: exports.python_packages must be an array of tables")
+    exports: list[PythonPackageExport] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise ManifestError(f"{manifest_path}: exports.python_packages entries must be tables")
+        name = str(entry.get("name") or "").strip()
+        path = str(entry.get("path") or "").strip()
+        if not name or not path:
+            raise ManifestError(f"{manifest_path}: exports.python_packages entries require name and path")
+        rel = Path(path)
+        if rel.is_absolute() or ".." in rel.parts:
+            raise ManifestError(f"{manifest_path}: exports.python_packages path must stay inside bundle: {path!r}")
+        if Path(name).name != name:
+            raise ManifestError(f"{manifest_path}: exports.python_packages name must be a single package name: {name!r}")
+        exports.append(PythonPackageExport(name=name, path=rel.as_posix(), public=bool(entry.get("public", True)), owner=str(entry.get("owner") or "").strip()))
+    return tuple(exports)
+
+
+def _parse_dependencies(manifest_path: Path, raw: object) -> tuple[BundleDependency, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ManifestError(f"{manifest_path}: dependencies must be an array of tables")
+    deps: list[BundleDependency] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise ManifestError(f"{manifest_path}: dependencies entries must be tables")
+        bundle = str(entry.get("bundle") or "").strip()
+        if not bundle:
+            raise ManifestError(f"{manifest_path}: dependency entry missing bundle")
+        pkgs = entry.get("python_packages") or []
+        if not isinstance(pkgs, list) or not all(isinstance(item, str) and item.strip() for item in pkgs):
+            raise ManifestError(f"{manifest_path}: dependency {bundle!r} python_packages must be list[str]")
+        deps.append(BundleDependency(bundle=bundle, python_packages=tuple(str(item).strip() for item in pkgs)))
+    return tuple(deps)

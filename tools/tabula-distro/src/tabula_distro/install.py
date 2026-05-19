@@ -362,6 +362,14 @@ class InstalledSharedLib:
     bundle_name: str
 
 
+@dataclass(frozen=True)
+class ResolvedBundleInstall:
+    entry: cfg.BundleEntry
+    resolved_dir: Path
+    lock_entry: lockmod.LockEntry
+    manifest: BundleManifest
+
+
 def install(distro_dir: str | Path, home: Path, *,
             override_name: str | None = None,
             offline: bool = False,
@@ -486,6 +494,7 @@ def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lock
     prior_lock = lockmod.load(gens.distro_root(plan.home, distro.name) / "distro.lock.json")
     new_lock = lockmod.Lock(distro=distro.name)
     installed_libs: dict[str, InstalledSharedLib] = {}
+    installed_python_packages: dict[str, tuple[str, Path]] = {}
 
     for entry in distro.skills:
         resolved_dir, lock_entry = _resolve(entry.source, distro.path, cache, plan,
@@ -501,16 +510,26 @@ def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lock
         _install_plugin(resolved_dir, plugins_dir / entry.name, override=entry.override, label=f"plugin {entry.name}")
         new_lock.plugins[entry.name] = lock_entry
 
+    resolved_bundles: list[ResolvedBundleInstall] = []
+    bundle_manifests: dict[str, BundleManifest] = {}
     for entry in distro.bundles:
         bundle_names = _bundle_update_names(entry, prior_lock)
         resolved_dir, lock_entry = _resolve(entry.source, distro.path, cache, plan,
-                                           prior=_prior_bundle(prior_lock, entry.name),
-                                           lock_names=bundle_names)
+                                            prior=_prior_bundle(prior_lock, entry.name),
+                                            lock_names=bundle_names)
         manifest = load_bundle_manifest(resolved_dir)
         _check_bundle_compat(entry.name, manifest, kernel_version)
         if manifest.version is not None:
             lock_entry.version = str(manifest.version)
-        installed = _install_bundle(resolved_dir, skills_dir, plugins_dir, clients_dir, lib_dir, installed_libs, manifest=manifest,
+        resolved_bundles.append(ResolvedBundleInstall(entry=entry, resolved_dir=resolved_dir, lock_entry=lock_entry, manifest=manifest))
+        bundle_manifests[entry.name] = manifest
+
+    _validate_bundle_dependencies(bundle_manifests)
+
+    for resolved in resolved_bundles:
+        entry = resolved.entry
+        lock_entry = resolved.lock_entry
+        installed = _install_bundle(resolved.resolved_dir, skills_dir, plugins_dir, clients_dir, lib_dir, installed_libs, installed_python_packages, manifest=resolved.manifest,
                                       allowlist=entry.components, override=entry.override,
                                       bundle_name=entry.name, source_uri=lock_entry.source)
         new_lock.bundles[entry.name] = lock_entry
@@ -726,7 +745,7 @@ def _validate_client_manifest(src: Path, *, label: str) -> None:
 
 
 def _install_bundle(bundle_root: Path, skills_dir: Path, plugins_dir: Path, clients_dir: Path, lib_dir: Path,
-                    installed_libs: dict[str, InstalledSharedLib], *,
+                    installed_libs: dict[str, InstalledSharedLib], installed_python_packages: dict[str, tuple[str, Path]], *,
                     manifest: BundleManifest, allowlist: tuple[str, ...] | None,
                     override: bool, bundle_name: str, source_uri: str) -> InstalledBundleComponents:
     if not bundle_root.is_dir():
@@ -767,7 +786,70 @@ def _install_bundle(bundle_root: Path, skills_dir: Path, plugins_dir: Path, clie
         else:
             raise InstallError(f"bundle {bundle_name}: component {name!r} has no SKILL.md, plugin.toml or client.toml")
     _install_bundle_lib(bundle_root, lib_dir, installed_libs, bundle_name=bundle_name, source_uri=source_uri)
+    _install_bundle_python_exports(bundle_root, manifest, lib_dir, installed_python_packages, bundle_name=bundle_name)
     return InstalledBundleComponents(skills=tuple(installed_skills), plugins=tuple(installed_plugins), clients=tuple(installed_clients))
+
+
+def _validate_bundle_dependencies(bundle_manifests: dict[str, BundleManifest]) -> None:
+    export_map = {bundle_name: {item.name for item in manifest.exports_python_packages} for bundle_name, manifest in bundle_manifests.items()}
+    for bundle_name, manifest in bundle_manifests.items():
+        for dependency in manifest.dependencies:
+            target = bundle_manifests.get(dependency.bundle)
+            if target is None:
+                raise InstallError(f"bundle {bundle_name!r} depends on bundle {dependency.bundle!r}, but it is not selected")
+            missing = [pkg for pkg in dependency.python_packages if pkg not in export_map.get(dependency.bundle, set())]
+            if missing:
+                raise InstallError(
+                    f"bundle {bundle_name!r} depends on python package(s) {', '.join(missing)} from bundle {dependency.bundle!r}, "
+                    f"but bundle {dependency.bundle!r} does not export them"
+                )
+    graph = {bundle_name: [dependency.bundle for dependency in manifest.dependencies] for bundle_name, manifest in bundle_manifests.items()}
+    visiting: list[str] = []
+    visited: set[str] = set()
+
+    def visit(node: str) -> None:
+        if node in visited:
+            return
+        if node in visiting:
+            cycle = visiting[visiting.index(node):] + [node]
+            raise InstallError(f"bundle dependency cycle: {' -> '.join(cycle)}")
+        visiting.append(node)
+        for dep in graph.get(node, []):
+            visit(dep)
+        visiting.pop()
+        visited.add(node)
+
+    for node in graph:
+        visit(node)
+
+
+def _install_bundle_python_exports(bundle_root: Path, manifest: BundleManifest, lib_dir: Path,
+                                   installed_python_packages: dict[str, tuple[str, Path]], *, bundle_name: str) -> None:
+    root = bundle_root.resolve()
+    python_src_root = lib_dir / "python" / "src"
+    python_src_root.mkdir(parents=True, exist_ok=True)
+    for export in manifest.exports_python_packages:
+        src = (bundle_root / export.path).resolve()
+        try:
+            src.relative_to(root)
+        except ValueError as exc:
+            raise InstallError(f"bundle {bundle_name}: exported package path escapes bundle root: {export.path}") from exc
+        if not src.is_dir():
+            raise InstallError(f"bundle {bundle_name}: exported python package path not found: {export.path}")
+        if src.name != export.name:
+            raise InstallError(f"bundle {bundle_name}: exported package name {export.name!r} must match directory name {src.name!r}")
+        if not (src / "__init__.py").is_file():
+            raise InstallError(f"bundle {bundle_name}: exported python package {export.name!r} is missing __init__.py")
+        if export.name in installed_python_packages:
+            existing_bundle, existing_path = installed_python_packages[export.name]
+            raise InstallError(
+                f"bundle {bundle_name}: exported python package {export.name!r} conflicts with bundle {existing_bundle!r} at {existing_path}"
+            )
+        dst = python_src_root / export.name
+        if dst.exists():
+            raise InstallError(f"bundle {bundle_name}: exported python package target already exists: {dst}")
+        _copytree(src, dst)
+        installed_python_packages[export.name] = (bundle_name, src)
 
 
 def _install_bundle_lib(bundle_root: Path, lib_dir: Path, installed_libs: dict[str, InstalledSharedLib], *,
