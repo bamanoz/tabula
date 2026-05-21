@@ -572,17 +572,26 @@ def list_suites(specs: dict[str, SuiteSpec]) -> None:
 def wait_for_kernel(python: Path, url: str) -> None:
     code = r'''
 import json
+import os
+from pathlib import Path
 import sys
 import time
 import websocket
 
 url = sys.argv[1]
+tabula_home = os.environ.get("TABULA_HOME", "").strip()
+token = os.environ.get("TABULA_KERNEL_TOKEN", "").strip()
+if not token and tabula_home:
+    try:
+        token = (Path(tabula_home) / "run" / "kernel-client-token").read_text(encoding="utf-8").strip()
+    except OSError:
+        token = ""
 deadline = time.time() + 20
 last = None
 while time.time() < deadline:
     try:
         ws = websocket.create_connection(url, timeout=1)
-        ws.send(json.dumps({"type": "connect", "name": "testbed-isolated-ready", "sends": [], "receives": [], "version": 1}))
+        ws.send(json.dumps({"type": "connect", "name": "testbed-isolated-ready", "sends": [], "receives": [], "version": 2, "auth_token": token}))
         msg = json.loads(ws.recv())
         ws.close()
         if msg.get("type") == "connected":

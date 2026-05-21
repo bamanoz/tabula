@@ -36,7 +36,7 @@ func (h *Hub) buildConnectPlan(c *Client, msg *Message) connectPlan {
 		return connectPlan{errorMsg: fmt.Sprintf("unsupported protocol version %d (kernel expects %d)", msg.Version, ProtocolVersion)}
 	}
 
-	depth, err := h.policy.CanConnect(msg.Token)
+	depth, err := h.policy.CanConnect(msg.Token, msg.AuthToken)
 	if err != nil {
 		return connectPlan{errorMsg: err.Error()}
 	}
@@ -58,7 +58,7 @@ func (h *Hub) buildConnectPlan(c *Client, msg *Message) connectPlan {
 // mutates state (configure client, rebuild hooks) and sends messages.
 func (h *Hub) applyConnectPlan(c *Client, plan connectPlan) {
 	if plan.errorMsg != "" {
-		h.Logger.Warn("invalid spawn token", "from", plan.name)
+		h.Logger.Warn("client connect rejected", "from", plan.name, "reason", plan.errorMsg)
 		c.SendMsg(&Message{
 			Type: string(MsgError),
 			Text: plan.errorMsg,

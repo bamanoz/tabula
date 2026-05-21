@@ -188,7 +188,15 @@ def _kernel_websocket_ready(kernel_url: str, *, timeout_seconds: float) -> bool:
     try:
         ws = websocket.create_connection(kernel_url, timeout=max(timeout_seconds, 0.1))
         try:
-            ws.send(json.dumps({"version": 1, "type": "connect", "name": "tabula-install-ready", "sends": [], "receives": []}))
+            token = os.environ.get("TABULA_KERNEL_TOKEN", "").strip()
+            if not token:
+                home = os.environ.get("TABULA_HOME", "").strip()
+                if home:
+                    try:
+                        token = (Path(home) / "run" / "kernel-client-token").read_text(encoding="utf-8").strip()
+                    except OSError:
+                        token = ""
+            ws.send(json.dumps({"version": 2, "type": "connect", "name": "tabula-install-ready", "sends": [], "receives": [], "auth_token": token}))
             msg = json.loads(ws.recv())
             return msg.get("type") == "connected"
         finally:

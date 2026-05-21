@@ -4,7 +4,7 @@ import "fmt"
 
 // ProtocolVersion is the current wire protocol version.
 // Incremented when breaking changes are made to the message format.
-const ProtocolVersion = 1
+const ProtocolVersion = 2
 
 // MsgType constants for the wire protocol.
 // These are the string values used in JSON over WebSocket.

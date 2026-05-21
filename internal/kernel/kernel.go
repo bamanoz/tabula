@@ -32,6 +32,7 @@ type Hub struct {
 	toolsJSON       json.RawMessage
 	initMeta        json.RawMessage
 	tenantInitMeta  map[string]json.RawMessage
+	clientAuthToken string
 	Logger          *slog.Logger
 	MaxClients      int           // max concurrent clients (default 100)
 	ShutdownTimeout time.Duration // grace period before SIGKILL (default 3s)
@@ -39,6 +40,14 @@ type Hub struct {
 
 func (h *Hub) SetInitMeta(meta json.RawMessage) {
 	h.initMeta = meta
+}
+
+// SetClientAuthToken configures the bearer token required by kernel WebSocket clients.
+func (h *Hub) SetClientAuthToken(token string) {
+	if h == nil {
+		return
+	}
+	h.clientAuthToken = token
 }
 
 func (h *Hub) SetTenantInitMeta(tenantID string, meta json.RawMessage) {

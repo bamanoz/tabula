@@ -2,7 +2,11 @@ package kernel
 
 func (h *Hub) handleSessionMessage(sender *Client, msg *Message) {
 	if MsgType(msg.Type) == MsgHookResult {
-		h.handleHookResult(msg)
+		if err := h.policy.CanRespondHook(sender, msg); err != nil {
+			h.Logger.Warn("policy denied hook_result", "reason", err.Error(), "client", sender.name)
+			return
+		}
+		h.handleHookResult(sender, msg)
 		return
 	}
 	if err := h.policy.CanSend(sender, msg); err != nil {

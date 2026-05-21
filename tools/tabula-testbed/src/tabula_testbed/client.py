@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import threading
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 import websocket
@@ -53,17 +55,18 @@ class TestbedClient:
     def connect(self, *, sends: list[str] | None = None, receives: list[str] | None = None) -> dict[str, Any]:
         self.ws = websocket.create_connection(self.url, timeout=30)
         msg = {
-            "version": 1,
+            "version": 2,
             "type": "connect",
             "name": self.name,
             "sends": sends if sends is not None else ["message", "tool_use"],
             "receives": receives if receives is not None else ["init", "message", "tool_result", "error"],
+            "auth_token": kernel_auth_token(),
         }
         self.ws.send(json.dumps(msg))
         return self.recv(type="connected")
 
     def join(self, session: str, *, tenant_id: str = "default") -> dict[str, Any]:
-        self._send({"version": 1, "type": "join", "session": session, "tenant_id": tenant_id})
+        self._send({"version": 2, "type": "join", "session": session, "tenant_id": tenant_id})
         self.recv(type="joined")
         self.init = self.recv(type="init")
         return self.init
@@ -106,7 +109,7 @@ class TestbedClient:
 
     def call_tool(self, name: str, input: dict[str, Any] | None = None, *, timeout: float = 10) -> ToolResult:
         call_id = f"tb-{uuid.uuid4().hex}"
-        self._send({"version": 1, "type": "tool_use", "id": call_id, "name": name, "input": input or {}})
+        self._send({"version": 2, "type": "tool_use", "id": call_id, "name": name, "input": input or {}})
         try:
             msg = self.wait_for(lambda m: m.get("type") == "tool_result" and m.get("id") == call_id, timeout=timeout)
         except Exception as exc:
@@ -132,7 +135,7 @@ class TestbedClient:
                 self.call_tool(name, {})
 
     def send_message(self, text: str) -> None:
-        self._send({"version": 1, "type": "message", "text": text})
+        self._send({"version": 2, "type": "message", "text": text})
 
     def wait_for(self, predicate: Callable[[dict[str, Any]], bool], *, timeout: float = 10) -> dict[str, Any]:
         deadline = time.time() + timeout
@@ -168,6 +171,19 @@ class TestbedClient:
         if self.ws is None:
             raise RuntimeError("client is not connected")
         self.ws.send(json.dumps(msg))
+
+
+def kernel_auth_token() -> str:
+    token = os.environ.get("TABULA_KERNEL_TOKEN", "").strip()
+    if token:
+        return token
+    root = os.environ.get("TABULA_HOME", "").strip()
+    if not root:
+        return ""
+    try:
+        return (Path(root) / "run" / "kernel-client-token").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 
 
 @dataclass

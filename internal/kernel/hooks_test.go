@@ -17,12 +17,13 @@ func (e *testEnv) connectHook(name string, hooks []HookSubscription) *websocket.
 	e.t.Helper()
 	conn := e.dial()
 	writeJSON(e.t, conn, Message{
-		Type:     "connect",
-		Name:     name,
-		Sends:    []string{"hook_result"},
-		Receives: []string{"hook"},
-		Hooks:    hooks,
-		Version:  ProtocolVersion,
+		Type:      "connect",
+		Name:      name,
+		Sends:     []string{"hook_result"},
+		Receives:  []string{"hook"},
+		Hooks:     hooks,
+		Version:   ProtocolVersion,
+		AuthToken: e.Token,
 	})
 	msg := readMsg(e.t, conn)
 	if msg.Type != "connected" {
@@ -187,6 +188,47 @@ func TestHookSessionStartCanBlockJoin(t *testing.T) {
 	noInit := readMsgTimeout(t, conn, 300*time.Millisecond)
 	if noInit != nil {
 		t.Fatalf("expected no init after blocked session start, got %s", noInit.Type)
+	}
+}
+
+func TestHookResultRequiresSubscriberIdentity(t *testing.T) {
+	env := newTestEnv(t)
+
+	hook := env.connectHook("guard", []HookSubscription{
+		{Event: "session_start", Priority: 100},
+	})
+	attacker := env.connect("attacker", []string{"hook_result"}, []string{})
+	conn := env.connect("cli", []string{"message"}, []string{"init"})
+
+	go func() {
+		writeJSON(t, conn, Message{Type: "join", Session: "s1"})
+	}()
+	joinedCh := make(chan Message, 1)
+	go func() {
+		joinedCh <- readMsg(t, conn)
+	}()
+
+	hookMsg := readMsg(t, hook)
+	if hookMsg.Type != "hook" || hookMsg.Name != "session_start" {
+		t.Fatalf("expected hook/session_start, got %s/%s", hookMsg.Type, hookMsg.Name)
+	}
+
+	writeJSON(t, attacker, Message{Type: "hook_result", ID: hookMsg.ID, Action: "pass"})
+	select {
+	case msg := <-joinedCh:
+		t.Fatalf("wrong-client hook_result completed join with %s", msg.Type)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	writeJSON(t, hook, Message{Type: "hook_result", ID: hookMsg.ID, Action: "pass"})
+	var joined Message
+	select {
+	case joined = <-joinedCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for joined after intended subscriber response")
+	}
+	if joined.Type != "joined" {
+		t.Fatalf("expected joined after intended subscriber response, got %s", joined.Type)
 	}
 }
 
@@ -562,6 +604,7 @@ func newTestEnvWithSkillTool(t *testing.T) *testEnv {
 	t.Helper()
 	toolsJSON := json.RawMessage(`[{"name":"echo_tool","description":"echo","params":{"text":{"type":"string","description":"text"},"command":{"type":"string","description":"command text"}},"required":[]}]`)
 	hub := NewHub(toolsJSON, 3, 5, nil)
+	hub.SetClientAuthToken("test-kernel-token")
 	attachTestRuntime(t, hub, runtimePluginCapability("echo", "echo_tool"))
 
 	mux := http.NewServeMux()
@@ -578,7 +621,7 @@ func newTestEnvWithSkillTool(t *testing.T) *testEnv {
 		hub.Shutdown()
 		server.Close()
 	})
-	return &testEnv{Hub: hub, Server: server, t: t}
+	return &testEnv{Hub: hub, Server: server, t: t, Token: "test-kernel-token"}
 }
 
 func TestBeforeToolCallHookFiresForDynamicSkillTool(t *testing.T) {

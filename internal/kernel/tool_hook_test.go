@@ -170,12 +170,13 @@ func TestBeforeToolCallHookSkipsSenderHookSubscription(t *testing.T) {
 	// readPump is currently handling this tool_use.
 	client := env.dial()
 	writeJSON(t, client, Message{
-		Type:     "connect",
-		Name:     "gateway-self-hook",
-		Sends:    []string{"tool_use", "hook_result"},
-		Receives: []string{"tool_result", "hook"},
-		Hooks:    []HookSubscription{{Event: "before_tool_call", Priority: 10, TimeoutMs: &infinite}},
-		Version:  ProtocolVersion,
+		Type:      "connect",
+		Name:      "gateway-self-hook",
+		Sends:     []string{"tool_use", "hook_result"},
+		Receives:  []string{"tool_result", "hook"},
+		Hooks:     []HookSubscription{{Event: "before_tool_call", Priority: 10, TimeoutMs: &infinite}},
+		Version:   ProtocolVersion,
+		AuthToken: env.Token,
 	})
 	if msg := readMsg(t, client); msg.Type != "connected" {
 		t.Fatalf("expected connected, got %s", msg.Type)

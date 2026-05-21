@@ -352,7 +352,7 @@ func TestServeAuthenticatedRuntimeAsyncFramesRouteHookRepliesAndBusMessages(t *t
 	}
 
 	hookResultCh := make(chan *HookResult, 1)
-	hub.hooks.addPendingHook("hook-1", hookResultCh)
+	hub.hooks.addPendingRuntimeHook("hook-1", runtimeauth.LocalRuntimeID, hookResultCh)
 	defer hub.hooks.removePendingHook("hook-1")
 
 	if err := client.Write(context.Background(), wire.PluginSend{

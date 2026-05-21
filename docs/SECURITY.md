@@ -1,6 +1,7 @@
 # Security Model
 
-Tabula remote runtimes use layered defenses. No single layer replaces the others.
+Tabula kernel clients and remote runtimes use layered defenses. No single layer
+replaces the others.
 
 ## Layers
 
@@ -10,7 +11,22 @@ Tabula remote runtimes use layered defenses. No single layer replaces the others
 4. Kernel runtime registry and tenant runtime allowlists.
 5. Runtime worker tenant environment checks before execution.
 
-## Bearer Tokens
+## Kernel Client Token
+
+Kernel WebSocket clients connect to `/ws` and must authenticate in their first
+`connect` frame with `auth_token`. On startup, `tabula serve` writes a fresh
+local token to `$TABULA_HOME/run/kernel-client-token` with mode `0600`, exports
+it to child processes as `TABULA_KERNEL_TOKEN`, and stores only the in-memory
+expected value in the running hub.
+
+This token is distinct from Runtime API bearer tokens. Runtime tokens authorize
+runtime workers to attach to the Runtime API; the kernel client token authorizes
+drivers, gateways, and other bus clients to use the kernel client WebSocket.
+
+Hook replies are also identity-bound. A `hook_result` is accepted only from the
+client or runtime hook subscriber that received that specific hook id.
+
+## Runtime Bearer Tokens
 
 Remote runtime tokens are issued with:
 

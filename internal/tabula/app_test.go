@@ -300,8 +300,8 @@ func TestHealthEndpoint(t *testing.T) {
 	if body.KernelVersion != body.Version {
 		t.Fatalf("expected kernel_version to mirror version, got %+v", body)
 	}
-	if body.ProtocolVersion != 1 {
-		t.Fatalf("expected protocol version 1, got %d", body.ProtocolVersion)
+	if body.ProtocolVersion != kernel.ProtocolVersion {
+		t.Fatalf("expected protocol version %d, got %d", kernel.ProtocolVersion, body.ProtocolVersion)
 	}
 	if body.MinPluginProtocolVersion != 1 || body.MaxPluginProtocolVersion != 1 {
 		t.Fatalf("expected plugin protocol range 1..1, got %+v", body)

@@ -40,7 +40,7 @@ func (s hubRuntimeAsyncSink) HookEventReplied(runtimeID string, reply wire.HookE
 	if err != nil {
 		return err
 	}
-	s.hub.hooks.HandleResult(&Message{
+	s.hub.hooks.HandleRuntimeResult(runtimeID, &Message{
 		Type:    string(MsgHookResult),
 		ID:      reply.CallID,
 		Action:  action,

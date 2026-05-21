@@ -38,7 +38,7 @@ intentional: the WS surface is small, the client population is in-tree
   otherwise.
 - Changing semantics of an existing field → **bump**.
 
-Current version: `1`.
+Current version: `2`.
 
 ### Message envelope
 
@@ -49,6 +49,29 @@ on the type. See `internal/kernel/protocol.go` for the full enum and
 Unknown fields on incoming messages are tolerated (forward compatibility).
 Unknown `type` values are rejected with an error message but do not close
 the socket.
+
+### Kernel client `connect`
+
+Kernel WebSocket clients must send protocol version `2` and authenticate in the
+first `connect` frame:
+
+```json
+{
+  "version": 2,
+  "type": "connect",
+  "name": "gateway-cli-main",
+  "auth_token": "ktk_...",
+  "sends": ["message", "status"],
+  "receives": ["init", "message", "error"]
+}
+```
+
+`auth_token` is the local token from `$TABULA_HOME/run/kernel-client-token` or
+`TABULA_KERNEL_TOKEN`. The old `token` field is not a client auth field; non-empty
+values are rejected because kernel-managed spawn tokens were removed.
+
+`hook_result` frames are valid only for the client or runtime subscriber that
+received the matching `hook` frame.
 
 ---
 

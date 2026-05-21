@@ -32,10 +32,16 @@ type HookResult struct {
 	Reason  string
 }
 
+type pendingHook struct {
+	subscriber HookSubscriber
+	runtimeID  string
+	ch         chan *HookResult
+}
+
 type HookEngine struct {
 	mu             sync.RWMutex
 	index          map[string][]hookEntry
-	pending        map[string]chan *HookResult
+	pending        map[string]pendingHook
 	logger         *slog.Logger
 	sessionTenants func(string) string
 }
@@ -46,7 +52,7 @@ func NewHookEngine(logger *slog.Logger) *HookEngine {
 	}
 	return &HookEngine{
 		index:   make(map[string][]hookEntry),
-		pending: make(map[string]chan *HookResult),
+		pending: make(map[string]pendingHook),
 		logger:  logger,
 	}
 }
@@ -138,19 +144,38 @@ func (e *HookEngine) eventType(event string) HookEventType {
 	return HookSecurity
 }
 
-func (e *HookEngine) HandleResult(msg *Message) {
-	ch, ok := e.pendingHook(msg.ID)
+func (e *HookEngine) CanHandleResult(sender HookSubscriber, id string) bool {
+	pending, ok := e.pendingHook(id)
+	return ok && pending.subscriber == sender
+}
+
+func (e *HookEngine) HandleRuntimeResult(runtimeID string, msg *Message) {
+	pending, ok := e.pendingHook(msg.ID)
+	if !ok || pending.runtimeID != runtimeID {
+		return
+	}
+	e.deliverResult(pending, msg)
+}
+
+func (e *HookEngine) HandleResult(sender HookSubscriber, msg *Message) {
+	pending, ok := e.pendingHook(msg.ID)
 	if !ok {
 		return
 	}
+	if pending.subscriber != sender {
+		return
+	}
+	e.deliverResult(pending, msg)
+}
 
+func (e *HookEngine) deliverResult(pending pendingHook, msg *Message) {
 	result := &HookResult{
 		Action:  msg.Action,
 		Payload: msg.Payload,
 		Reason:  msg.Reason,
 	}
 	select {
-	case ch <- result:
+	case pending.ch <- result:
 	default:
 	}
 }
@@ -267,7 +292,7 @@ func (e *HookEngine) sendAndWait(entry hookEntry, event string, payload json.Raw
 	s := entry.sub
 	id := generateHookID()
 	ch := make(chan *HookResult, 1)
-	e.addPendingHook(id, ch)
+	e.addPendingHook(id, s, ch)
 
 	s.SendMsg(&Message{
 		Type:     "hook",
@@ -346,10 +371,20 @@ func (e *HookEngine) entries(event string) []hookEntry {
 	return out
 }
 
-func (e *HookEngine) addPendingHook(id string, ch chan *HookResult) {
+func (e *HookEngine) addPendingHook(id string, subscriber HookSubscriber, ch chan *HookResult) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.pending[id] = ch
+	pending := pendingHook{subscriber: subscriber, ch: ch}
+	if runtimeSub, ok := subscriber.(*runtimeHookSubscriber); ok {
+		pending.runtimeID = runtimeSub.runtimeID
+	}
+	e.pending[id] = pending
+}
+
+func (e *HookEngine) addPendingRuntimeHook(id string, runtimeID string, ch chan *HookResult) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.pending[id] = pendingHook{runtimeID: runtimeID, ch: ch}
 }
 
 func (e *HookEngine) removePendingHook(id string) {
@@ -358,7 +393,7 @@ func (e *HookEngine) removePendingHook(id string) {
 	delete(e.pending, id)
 }
 
-func (e *HookEngine) pendingHook(id string) (chan *HookResult, bool) {
+func (e *HookEngine) pendingHook(id string) (pendingHook, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	ch, ok := e.pending[id]

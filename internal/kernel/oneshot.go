@@ -38,11 +38,12 @@ func (h *Hub) RunOneShot(cfg OneShotConfig) (string, error) {
 
 	// Connect.
 	connectMsg := &Message{
-		Type:     string(MsgConnect),
-		Version:  ProtocolVersion,
-		Name:     "oneshot",
-		Sends:    []string{string(MsgMessage), string(MsgDone)},
-		Receives: []string{string(MsgMessage), string(MsgStreamStart), string(MsgStreamDelta), string(MsgStreamEnd), string(MsgDone), string(MsgError)},
+		Type:      string(MsgConnect),
+		Version:   ProtocolVersion,
+		Name:      "oneshot",
+		Sends:     []string{string(MsgMessage), string(MsgDone)},
+		Receives:  []string{string(MsgMessage), string(MsgStreamStart), string(MsgStreamDelta), string(MsgStreamEnd), string(MsgDone), string(MsgError)},
+		AuthToken: h.clientAuthToken,
 	}
 	plan := h.buildConnectPlan(c, connectMsg)
 	h.applyConnectPlan(c, plan)

@@ -13,6 +13,19 @@ import websocket
 from tabula_testbed import TestbedClient
 
 
+def kernel_auth_token() -> str:
+    token = os.environ.get("TABULA_KERNEL_TOKEN", "").strip()
+    if token:
+        return token
+    root = os.environ.get("TABULA_HOME", "").strip()
+    if not root:
+        return ""
+    try:
+        return (Path(root) / "run" / "kernel-client-token").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 FAKE_ACP = """#!/usr/bin/env python3
 import json
 import sys
@@ -78,26 +91,28 @@ class SubagentsPluginSmoke(unittest.TestCase):
         client = websocket.create_connection(self.url, timeout=5)
         try:
             hook.send(json.dumps({
-                "version": 1,
+                "version": 2,
                 "type": "connect",
                 "name": "testbed-slow-before-prompt-build",
                 "sends": ["hook_result"],
                 "receives": ["hook"],
+                "auth_token": kernel_auth_token(),
                 "hooks": [{"event": "before_prompt_build", "priority": 100, "timeout_ms": 2000}],
             }))
             self.assertEqual(json.loads(hook.recv()).get("type"), "connected")
 
             client.send(json.dumps({
-                "version": 1,
+                "version": 2,
                 "type": "connect",
                 "name": "testbed-subagent-join-ack",
                 "sends": ["message", "tool_use"],
                 "receives": ["init", "message", "tool_result", "error"],
+                "auth_token": kernel_auth_token(),
             }))
             self.assertEqual(json.loads(client.recv()).get("type"), "connected")
 
             started = time.monotonic()
-            client.send(json.dumps({"version": 1, "type": "join", "session": "subagent-testbed-join-ack", "tenant_id": "default"}))
+            client.send(json.dumps({"version": 2, "type": "join", "session": "subagent-testbed-join-ack", "tenant_id": "default"}))
             joined = json.loads(client.recv())
             elapsed = time.monotonic() - started
             self.assertEqual(joined.get("type"), "joined")

@@ -1,6 +1,7 @@
 package kernel
 
 import (
+	"encoding/json"
 	"fmt"
 )
 
@@ -31,7 +32,23 @@ func (h *Hub) broadcastToSession(session, msgType string, msg *Message, exclude 
 		if !c.canReceiveGlobal(msgType) {
 			continue
 		}
-		c.SendMsg(msg)
+		globalMsg := cloneMessage(msg)
+		if globalMsg != nil {
+			if globalMsg.Session == "" {
+				globalMsg.Session = session
+			}
+			if globalMsg.TenantID == "" {
+				if sess, ok := h.sessions.Get(session); ok {
+					globalMsg.TenantID = sess.TenantID
+				}
+			}
+			if globalMsg.Meta == nil {
+				globalMsg.Meta = json.RawMessage([]byte("{}"))
+			}
+			c.SendMsg(globalMsg)
+		} else {
+			c.SendMsg(msg)
+		}
 		delivered++
 	}
 

@@ -355,12 +355,19 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 	// Set environment for all child processes
 	os.Setenv("TABULA_URL", bootConfig.URL)
 	os.Setenv("TABULA_HOME", tabulaHome)
+	clientAuthToken, err := kernel.IssueKernelClientTokenFile(kernel.KernelClientTokenPath(tabulaHome))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: kernel client token setup failed: %v\n", err)
+		return 1
+	}
+	os.Setenv("TABULA_KERNEL_TOKEN", clientAuthToken)
 
 	// Init kernel hub
 	slog.Info("initializing kernel")
 	maxSpawnDepth := envInt("TABULA_MAX_SPAWN_DEPTH", 3)
 	maxChildren := envInt("TABULA_MAX_CHILDREN_PER_SESSION", 5)
 	hub := kernel.NewHub(toolsJSON, maxSpawnDepth, maxChildren, logger.Logger)
+	hub.SetClientAuthToken(clientAuthToken)
 	hub.SetTenantStore(tenant.NewFSStore(tabulaHome))
 	hub.SetSessionStore(kernel.NewDiskSessionStore(tabulaHome))
 	if err := hub.ConfigureRuntimeRegistry(tabulaHome); err != nil {
@@ -799,11 +806,18 @@ func runCmd(args []string, build BuildInfo) int {
 	os.Setenv("TABULA_URL", bootConfig.URL)
 	os.Setenv("TABULA_HOME", tabulaHome)
 	os.Setenv("TABULA_SKIP_MCP", "1")
+	clientAuthToken, err := kernel.IssueKernelClientTokenFile(kernel.KernelClientTokenPath(tabulaHome))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: kernel client token setup failed: %v\n", err)
+		return 1
+	}
+	os.Setenv("TABULA_KERNEL_TOKEN", clientAuthToken)
 
 	// Init hub.
 	maxSpawnDepth := envInt("TABULA_MAX_SPAWN_DEPTH", 3)
 	maxChildren := envInt("TABULA_MAX_CHILDREN_PER_SESSION", 5)
 	hub := kernel.NewHub(toolsJSON, maxSpawnDepth, maxChildren, logger.Logger)
+	hub.SetClientAuthToken(clientAuthToken)
 	hub.SetTenantStore(tenant.NewFSStore(tabulaHome))
 	hub.SetSessionStore(kernel.NewDiskSessionStore(tabulaHome))
 	if err := hub.ConfigureRuntimeRegistry(tabulaHome); err != nil {

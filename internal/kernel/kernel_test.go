@@ -32,6 +32,7 @@ type testEnv struct {
 	Hub    *Hub
 	Server *httptest.Server
 	t      *testing.T
+	Token  string
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -39,6 +40,7 @@ func newTestEnv(t *testing.T) *testEnv {
 
 	toolsJSON := json.RawMessage(`[{"name":"echo_tool","description":"echo stdin","params":{"text":{"type":"string","description":"text to echo"}},"required":[]},{"name":"test_shell","description":"test-only shell-style skill","params":{"command":{"type":"string","description":"command to run"}},"required":["command"]}]`)
 	hub := NewHub(toolsJSON, 3, 5, nil)
+	hub.SetClientAuthToken("test-kernel-token")
 	attachTestRuntime(t, hub,
 		runtimePluginCapability("echo", "echo_tool"),
 		runtimePluginCapability("test-shell", testShellToolName),
@@ -60,7 +62,27 @@ func newTestEnv(t *testing.T) *testEnv {
 		// Give readPump goroutines time to finish Unregister after server.Close()
 		time.Sleep(50 * time.Millisecond)
 	})
-	return &testEnv{Hub: hub, Server: server, t: t}
+	return &testEnv{Hub: hub, Server: server, t: t, Token: "test-kernel-token"}
+}
+
+func TestBroadcastToSessionAnnotatesGlobalReceiversWithSession(t *testing.T) {
+	env := newTestEnv(t)
+	member := addCaptureClient(t, env.Hub, "member", "main", []string{string(MsgStreamDelta)}, nil)
+	global := addCaptureClient(t, env.Hub, "global", "", nil, []string{string(MsgStreamDelta)})
+
+	env.Hub.broadcastToSession("main", string(MsgStreamDelta), &Message{Type: string(MsgStreamDelta), Text: "hi"}, nil)
+
+	memberMsg := waitForMessage(t, member.recvCh)
+	if memberMsg.Session != "" {
+		t.Fatalf("expected session member message to keep empty session field, got %q", memberMsg.Session)
+	}
+	globalMsg := waitForMessage(t, global.recvCh)
+	if globalMsg.Session != "main" {
+		t.Fatalf("expected global receiver session=main, got %q", globalMsg.Session)
+	}
+	if globalMsg.TenantID != tenant.DefaultID {
+		t.Fatalf("expected global receiver tenant=%q, got %q", tenant.DefaultID, globalMsg.TenantID)
+	}
 }
 
 // wsURL returns the WebSocket URL for the test server.
@@ -84,11 +106,12 @@ func (e *testEnv) connect(name string, sends, receives []string) *websocket.Conn
 	e.t.Helper()
 	conn := e.dial()
 	writeJSON(e.t, conn, Message{
-		Type:     "connect",
-		Name:     name,
-		Sends:    sends,
-		Receives: receives,
-		Version:  ProtocolVersion,
+		Type:      "connect",
+		Name:      name,
+		Sends:     sends,
+		Receives:  receives,
+		Version:   ProtocolVersion,
+		AuthToken: e.Token,
 	})
 	msg := readMsg(e.t, conn)
 	if msg.Type != "connected" {
@@ -160,11 +183,12 @@ func TestConnectJoinHandshake(t *testing.T) {
 	// First client → c1
 	conn1 := env.dial()
 	writeJSON(t, conn1, Message{
-		Type:     "connect",
-		Name:     "client-a",
-		Sends:    []string{"message"},
-		Receives: []string{"message"},
-		Version:  ProtocolVersion,
+		Type:      "connect",
+		Name:      "client-a",
+		Sends:     []string{"message"},
+		Receives:  []string{"message"},
+		Version:   ProtocolVersion,
+		AuthToken: env.Token,
 	})
 	msg1 := readMsg(t, conn1)
 	if msg1.Type != "connected" || msg1.ID != "c1" {
@@ -181,11 +205,12 @@ func TestConnectJoinHandshake(t *testing.T) {
 	// Second client → c2
 	conn2 := env.dial()
 	writeJSON(t, conn2, Message{
-		Type:     "connect",
-		Name:     "client-b",
-		Sends:    []string{"message"},
-		Receives: []string{"message"},
-		Version:  ProtocolVersion,
+		Type:      "connect",
+		Name:      "client-b",
+		Sends:     []string{"message"},
+		Receives:  []string{"message"},
+		Version:   ProtocolVersion,
+		AuthToken: env.Token,
 	})
 	msg2 := readMsg(t, conn2)
 	if msg2.ID != "c2" {
@@ -195,15 +220,51 @@ func TestConnectJoinHandshake(t *testing.T) {
 	// Third client → c3
 	conn3 := env.dial()
 	writeJSON(t, conn3, Message{
-		Type:     "connect",
-		Name:     "client-c",
-		Sends:    []string{"message"},
-		Receives: []string{"message"},
-		Version:  ProtocolVersion,
+		Type:      "connect",
+		Name:      "client-c",
+		Sends:     []string{"message"},
+		Receives:  []string{"message"},
+		Version:   ProtocolVersion,
+		AuthToken: env.Token,
 	})
 	msg3 := readMsg(t, conn3)
 	if msg3.ID != "c3" {
 		t.Errorf("expected c3, got %s", msg3.ID)
+	}
+}
+
+func TestConnectRequiresKernelClientToken(t *testing.T) {
+	env := newTestEnv(t)
+
+	missing := env.dial()
+	writeJSON(t, missing, Message{
+		Type:    "connect",
+		Name:    "missing-token",
+		Sends:   []string{"message"},
+		Version: ProtocolVersion,
+	})
+	msg := readMsg(t, missing)
+	if msg.Type != "error" {
+		t.Fatalf("expected error for missing token, got %s", msg.Type)
+	}
+	if !strings.Contains(msg.Text, "invalid kernel client token") {
+		t.Fatalf("unexpected missing-token error: %q", msg.Text)
+	}
+
+	wrong := env.dial()
+	writeJSON(t, wrong, Message{
+		Type:      "connect",
+		Name:      "wrong-token",
+		Sends:     []string{"message"},
+		Version:   ProtocolVersion,
+		AuthToken: "bad-token",
+	})
+	msg = readMsg(t, wrong)
+	if msg.Type != "error" {
+		t.Fatalf("expected error for wrong token, got %s", msg.Type)
+	}
+	if !strings.Contains(msg.Text, "invalid kernel client token") {
+		t.Fatalf("unexpected wrong-token error: %q", msg.Text)
 	}
 }
 
@@ -251,6 +312,7 @@ func TestJoinPersistsSessionStateUnderTenantDir(t *testing.T) {
 func TestRemovedKernelBuiltinsNotExposedOrExecutable(t *testing.T) {
 	toolsJSON := json.RawMessage(`[{"name":"echo_tool","description":"echo stdin","params":{"text":{"type":"string","description":"text to echo"}},"required":[]}]`)
 	hub := NewHub(toolsJSON, 3, 5, nil)
+	hub.SetClientAuthToken("test-kernel-token")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := testUpgrader.Upgrade(w, r, nil)
@@ -265,7 +327,7 @@ func TestRemovedKernelBuiltinsNotExposedOrExecutable(t *testing.T) {
 		hub.Shutdown()
 		server.Close()
 	}()
-	env := &testEnv{Hub: hub, Server: server, t: t}
+	env := &testEnv{Hub: hub, Server: server, t: t, Token: "test-kernel-token"}
 
 	conn := env.connectAndJoin("driver", "main", []string{"tool_use"}, []string{"init", "tool_result"})
 	init := readMsg(t, conn)
@@ -441,6 +503,7 @@ func TestReceivesGlobal(t *testing.T) {
 		Receives:       []string{},
 		ReceivesGlobal: []string{"message"},
 		Version:        ProtocolVersion,
+		AuthToken:      env.Token,
 	})
 	msgConnected := readMsg(t, connB)
 	if msgConnected.Type != "connected" {
@@ -1123,11 +1186,12 @@ func TestProtocolVersionInConnectedResponse(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.dial()
 	writeJSON(t, conn, Message{
-		Type:     "connect",
-		Name:     "versioned-client",
-		Sends:    []string{"message"},
-		Receives: []string{"init"},
-		Version:  ProtocolVersion,
+		Type:      "connect",
+		Name:      "versioned-client",
+		Sends:     []string{"message"},
+		Receives:  []string{"init"},
+		Version:   ProtocolVersion,
+		AuthToken: env.Token,
 	})
 	msg := readMsg(t, conn)
 	if msg.Type != "connected" {
@@ -1160,10 +1224,11 @@ func TestUnsupportedProtocolVersionRejected(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.dial()
 	writeJSON(t, conn, Message{
-		Type:    "connect",
-		Name:    "future-client",
-		Sends:   []string{"message"},
-		Version: 999, // future incompatible version
+		Type:      "connect",
+		Name:      "future-client",
+		Sends:     []string{"message"},
+		Version:   999, // future incompatible version
+		AuthToken: env.Token,
 	})
 	msg := readMsg(t, conn)
 	if msg.Type != "error" {

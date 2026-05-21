@@ -23,6 +23,7 @@ type Message struct {
 	// certain messages (like rule_add commands) without joining every session.
 	ReceivesGlobal []string `json:"receives_global,omitempty"`
 	Token          string   `json:"token,omitempty"`
+	AuthToken      string   `json:"auth_token,omitempty"`
 	// Hook fields
 	Hooks   []HookSubscription `json:"hooks,omitempty"`
 	Payload json.RawMessage    `json:"payload,omitempty"`

@@ -124,12 +124,18 @@ Important message types:
 Every kernel client uses the same basic lifecycle:
 
 1. open WebSocket to `TABULA_URL`
-2. send `connect`
+2. send `connect` with `auth_token`
 3. receive `connected`
 4. send `join`
 5. receive `joined`
 6. optionally receive `init`
 7. enter message loop
+
+`tabula serve` writes the kernel client token to
+`$TABULA_HOME/run/kernel-client-token` and exports it as `TABULA_KERNEL_TOKEN`
+for first-party drivers and gateways. `hook_result` messages are tied to the
+subscriber identity that received the hook; another client cannot answer a hook
+by reusing its id.
 
 The shared Python wrapper for low-level clients is
 `tabula_plugin_sdk.kernel_client`. Plugins should use the runtime-owned

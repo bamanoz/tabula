@@ -24,11 +24,27 @@ func NewPolicyEngine(hub *Hub) *PolicyEngine {
 
 // CanConnect validates connect-time policy. Kernel-managed spawn tokens were
 // removed when subagent process ownership moved to plugin-side orchestration.
-func (pe *PolicyEngine) CanConnect(token string) (int, error) {
-	if token != "" {
+func (pe *PolicyEngine) CanConnect(spawnToken string, authToken string) (int, error) {
+	if spawnToken != "" {
 		return 0, &PolicyError{Reason: "spawn tokens are no longer accepted by the kernel"}
 	}
+	if pe == nil || pe.hub == nil || !tokenMatches(pe.hub.clientAuthToken, authToken) {
+		return 0, &PolicyError{Reason: "invalid kernel client token"}
+	}
 	return 0, nil
+}
+
+func (pe *PolicyEngine) CanRespondHook(sender *Client, msg *Message) error {
+	if sender == nil || !sender.IsConnected() {
+		return &PolicyError{Reason: "client not connected"}
+	}
+	if msg == nil || msg.ID == "" {
+		return &PolicyError{Reason: "hook_result missing id"}
+	}
+	if pe == nil || pe.hub == nil || pe.hub.hooks == nil || !pe.hub.hooks.CanHandleResult(sender, msg.ID) {
+		return &PolicyError{Reason: "client not allowed to answer hook"}
+	}
+	return nil
 }
 
 func (pe *PolicyEngine) joinHookPayload(session string, tenantID string, clientName string) []byte {

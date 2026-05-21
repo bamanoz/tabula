@@ -80,6 +80,6 @@ func (h *Hub) dispatchHookExcept(event string, payload json.RawMessage, session 
 	return result, ok
 }
 
-func (h *Hub) handleHookResult(msg *Message) {
-	h.hooks.HandleResult(msg)
+func (h *Hub) handleHookResult(sender *Client, msg *Message) {
+	h.hooks.HandleResult(sender, msg)
 }
