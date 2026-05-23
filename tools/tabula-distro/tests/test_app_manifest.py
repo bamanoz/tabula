@@ -184,6 +184,59 @@ class AppCLITests(unittest.TestCase):
             self.assertIn("missing tenant.toml", payload["issues"])
             self.assertIn("applied app lock is missing", payload["issues"])
 
+    def test_app_commands_discover_workspace_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            _make_distro(root)
+            _write(root / ".tabula" / "local.toml", '[memory]\npath = "/tmp/shared-memory"\n')
+            _write(root / "tabula.app.toml", _manifest("local:./claw"))
+            prev_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(root)
+                code, out, err = self._run(["--home", str(home), "app", "lock"])
+            finally:
+                os.chdir(prev_cwd)
+
+            self.assertEqual(code, 0, err)
+            self.assertIn("wrote app lock", out)
+            self.assertTrue((root / "tabula.app.lock").is_file())
+
+    def test_app_commands_discover_dot_tabula_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            _make_distro(root)
+            _write(root / ".tabula" / "local.toml", '[memory]\npath = "/tmp/shared-memory"\n')
+            _write(root / ".tabula" / "app.toml", _manifest("local:../claw"))
+            prev_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(root)
+                code, out, err = self._run(["--home", str(home), "app", "lock"])
+            finally:
+                os.chdir(prev_cwd)
+
+            self.assertEqual(code, 0, err)
+            self.assertIn("wrote app lock", out)
+            self.assertTrue((root / ".tabula" / "app.lock").is_file())
+
+    def test_app_commands_report_missing_default_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            prev_cwd = Path.cwd()
+            try:
+                import os
+                os.chdir(root)
+                code, _out, err = self._run(["--home", str(home), "app", "lock"])
+            finally:
+                os.chdir(prev_cwd)
+
+            self.assertEqual(code, 1)
+            self.assertIn("expected ./tabula.app.toml or ./.tabula/app.toml", err)
+
     def test_app_audit_reports_runtime_requirements(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

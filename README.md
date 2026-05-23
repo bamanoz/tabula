@@ -96,6 +96,9 @@ tabula-install distro install <local-path-or-github-tree-url>
 
 ```powershell
 irm https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.ps1 | iex
+
+# one-shot install + run from a project with tabula.app.toml
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.ps1))) app run
 ```
 
 Windows support exists, but the main development and test flow is
@@ -112,12 +115,16 @@ bash scripts/install-dev.sh                                        # installs ta
 # then install a distro or run an app manifest:
 tabula-install distro install ../tabula-distrib/claw                       # local checkout
 tabula-install distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=guardian'
-tabula-install app run ./tabula.app.toml --dry-run
+tabula-install app prepare
+tabula-install app run
 
 # local dev flow
-make agent prepare
-make agent run                   # foreground kernel with info logs
-make agent connect
+make agent-prepare
+make agent-run
+make agent-connect
+
+# force-refresh git refs only when needed
+make agent-prepare APP_PREPARE_FLAGS=--update
 
 # installed CLI shortcuts
 tabula-install use code
@@ -379,13 +386,14 @@ On a machine without Tabula installed yet, install Tabula and run the app in one
 command from the project directory:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- app run ./tabula.app.toml
+curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- app run
 ```
 
 If Tabula is already installed:
 
 ```bash
-tabula-install app run ./tabula.app.toml
+tabula-install app prepare
+tabula-install app run
 ```
 
 See `docs/AGENT_APPLICATIONS.md` for examples, local overrides, bindings, and

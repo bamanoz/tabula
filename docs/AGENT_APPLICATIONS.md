@@ -47,14 +47,25 @@ directory binding from `${project_root}` to the app.
 Run it:
 
 ```bash
-tabula-install app run ./tabula.app.toml
+tabula-install app run
 ```
+
+Prepare it without launching the kernel/runtime:
+
+```bash
+tabula-install app prepare
+```
+
+`app prepare` resolves and installs the distro from the manifest, creates the
+tenant metadata, runs the distro materializer in dry-run mode, compiles tenant
+plugin config, writes runtime config, and records bindings. It is the
+installer-native replacement for Makefile-only prepare flows.
 
 On a fresh machine, the release installer can install Tabula and then forward to
 `tabula-install` in the same command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- app run ./tabula.app.toml
+curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- app run
 ```
 
 `tabula-install` is the final installer entrypoint. The older `tabula-distro`
@@ -64,8 +75,11 @@ app workflows.
 Dry-run the plan:
 
 ```bash
-tabula-install app run ./tabula.app.toml --dry-run
+tabula-install app run --dry-run
 ```
+
+By default, app commands look for `./tabula.app.toml` and then
+`./.tabula/app.toml`. Pass a manifest path only for non-standard locations.
 
 ## Local Overrides
 

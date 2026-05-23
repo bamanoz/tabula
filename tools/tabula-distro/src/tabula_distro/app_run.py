@@ -94,6 +94,7 @@ def execute(manifest: AppManifest, home: Path, *, tabula_bin: str = "tabula", ti
     env.setdefault("TABULA_PATH", os.environ.get("PATH", ""))
     env["TABULA_PRESERVE_RUNTIME_CONFIG"] = "1"
     argv = _kernel_launch_argv(tabula_bin, run_plan.runtime_mode)
+    _require_launch_binary(argv[0], tabula_bin=tabula_bin, runtime_mode=run_plan.runtime_mode)
     if foreground:
         os.execvpe(argv[0], argv, env)
         return RunResult(plan=run_plan, started_kernel=True)
@@ -231,6 +232,25 @@ def _tabula_server_bin(tabula_bin: str) -> str:
     if any(sep in tabula_bin for sep in ("/", "\\")):
         return str(Path(tabula_bin).with_name("tabula-runner"))
     return "tabula-runner"
+
+
+def _require_launch_binary(path: str, *, tabula_bin: str, runtime_mode: str) -> None:
+    if any(sep in path for sep in ("/", "\\")):
+        if Path(path).is_file():
+            return
+        if runtime_mode == "managed" and Path(path).name == "tabula-runner":
+            raise AppRunError(
+                f"tabula-runner not found at {path}; reinstall Tabula or run install-dev.sh for this TABULA_HOME"
+            )
+        raise AppRunError(f"launch binary not found at {path}")
+    import shutil
+    if shutil.which(path):
+        return
+    if runtime_mode == "managed":
+        raise AppRunError(
+            f"tabula-runner not found on PATH; reinstall Tabula or pass --tabula-bin pointing to an installed tabula binary"
+        )
+    raise AppRunError(f"launch binary {path!r} not found on PATH")
 
 
 def _health_url(kernel_url: str) -> str:

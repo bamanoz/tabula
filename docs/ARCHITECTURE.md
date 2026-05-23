@@ -460,6 +460,13 @@ After the kernel installer finishes, install a distro yourself:
 tabula-install distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw'
 ```
 
+The release installers can also forward directly into the app-manifest flow for
+projects that already carry `tabula.app.toml`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- app run
+```
+
 ### Source install
 
 `scripts/install-dev.sh` / `scripts/install-dev.ps1`:

@@ -86,6 +86,64 @@ class AppRunTests(unittest.TestCase):
             self.assertIn(str(home / "run" / "runtime-token"), runtime_cfg)
             self.assertIn('tenants = ["claw-tabula"]', runtime_cfg)
 
+    def test_run_uses_installed_tabula_bin_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            _make_distro(root)
+            _write(home / "bin" / "tabula", "#!/bin/sh\n")
+            manifest_path = root / "tabula.app.toml"
+            _write(manifest_path, _manifest(root))
+
+            with mock.patch.object(runmod, "execute", return_value=runmod.RunResult(plan=runmod.RunPlan(
+                app_id="claw-tabula",
+                kernel_id="claw-tabula",
+                kernel_mode="managed",
+                kernel_url="ws://127.0.0.1:65530/ws",
+                runtime_mode="managed",
+                runtime_ids=("local",),
+                execution_backends=("bare",),
+            ))) as execute:
+                code, _out, err = self._run_cli(["--home", str(home), "app", "run", str(manifest_path)])
+
+            self.assertEqual(code, 0, err)
+            self.assertEqual(Path(execute.call_args.kwargs["tabula_bin"]).resolve(), (home / "bin" / "tabula").resolve())
+
+    def test_missing_installed_runner_reports_actionable_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            _make_distro(root)
+            _write(home / "bin" / "tabula", "#!/bin/sh\n")
+            manifest_path = root / "tabula.app.toml"
+            _write(manifest_path, _manifest(root))
+
+            code, _out, err = self._run_cli(["--home", str(home), "app", "run", str(manifest_path)])
+
+            self.assertEqual(code, 1)
+            self.assertIn("tabula-runner not found", err)
+            self.assertIn("reinstall Tabula", err)
+
+    def test_prepare_materializes_without_starting_kernel(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            _make_distro(root)
+            manifest_path = root / "tabula.app.toml"
+            _write(manifest_path, _manifest(root))
+
+            with mock.patch.object(runmod, "execute") as execute:
+                code, out, err = self._run_cli(["--home", str(home), "app", "prepare", str(manifest_path)])
+
+            self.assertEqual(code, 0, err)
+            execute.assert_not_called()
+            self.assertIn("prepared app claw-tabula", out)
+            self.assertIn("run plan: app=claw-tabula", out)
+            self.assertTrue((home / "tenants" / "claw-tabula" / "app.lock.json").is_file())
+            runtime_cfg = (home / "config" / "runtime.toml").read_text(encoding="utf-8")
+            self.assertIn('id = "claw-tabula"', runtime_cfg)
+            self.assertIn(str(home / "tenants" / "claw-tabula" / "plugins"), runtime_cfg)
+
     def test_dry_run_clears_stale_materializer_config_without_contract(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -119,13 +177,16 @@ class AppRunTests(unittest.TestCase):
             manifest = appmod.load(manifest_path, tabula_home=home)
             appmod.materialize_metadata(manifest, appmod.create_lock(manifest, home), home)
             boot_path = root / "claw" / "boot.py"
+            tabula_bin = root / "bin" / "tabula"
+            _write(tabula_bin, "#!/bin/sh\n")
+            _write(root / "bin" / "tabula-runner", "#!/bin/sh\n")
             runmod.write_runtime_config(manifest, home)
             with mock.patch.object(runmod, "kernel_healthy", return_value=False), mock.patch.object(runmod.os, "execvpe") as execvpe:
-                runmod.execute(manifest, home, tabula_bin="/tmp/tabula", foreground=True, boot_path=boot_path)
+                runmod.execute(manifest, home, tabula_bin=str(tabula_bin), foreground=True, boot_path=boot_path)
 
             execvpe.assert_called_once()
             _file, argv, env = execvpe.call_args.args
-            self.assertEqual(argv, ["/tmp/tabula-runner"])
+            self.assertEqual(argv, [str(root / "bin" / "tabula-runner")])
             self.assertEqual(env["TABULA_HOME"], str(home))
             self.assertEqual(env["TABULA_APP_ID"], "claw-tabula")
             self.assertEqual(env["TABULA_TENANT_ID"], "claw-tabula")

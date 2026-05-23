@@ -9,7 +9,7 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- app run ./tabula.app.toml
+#   curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- app run
 #   VERSION=v1.0.0 curl -fsSL ... | bash
 set -euo pipefail
 
@@ -60,12 +60,16 @@ resolve_version() {
   fi
 
   info "Fetching latest release..."
-  VERSION=$(curl -fsSL \
-    "${AUTH_HEADER[@]}" \
-    -H "Accept: application/vnd.github+json" \
-    "https://api.github.com/repos/${REPO}/releases/latest" \
-    | grep '"tag_name"' | head -1 \
-    | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+  local curl_args=(curl -fsSL)
+  if [ ${#AUTH_HEADER[@]} -gt 0 ]; then
+    curl_args+=("${AUTH_HEADER[@]}")
+  fi
+  curl_args+=(-H "Accept: application/vnd.github+json" "https://api.github.com/repos/${REPO}/releases/latest")
+  local release_json
+  if ! release_json=$("${curl_args[@]}"); then
+    die "could not fetch latest release for ${REPO}; set GITHUB_TOKEN for a private repo, set VERSION=vX.Y.Z, or publish a GitHub release"
+  fi
+  VERSION=$(printf '%s' "$release_json" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
 
   [ -n "$VERSION" ] || die "Could not determine latest version"
   info "Latest version: $VERSION"
@@ -130,6 +134,15 @@ save_path_to_env() {
 }
 
 # ── service install ──────────────────────────────────────────────
+
+verify_launchers() {
+  for launcher in tabula-runner tabula-cli; do
+    local path="$BIN_DIR/$launcher"
+    [ -f "$path" ] || die "release payload is missing required launcher: bin/$launcher"
+    chmod +x "$path" || die "could not mark launcher executable: $path"
+  done
+  ok "Launchers installed"
+}
 
 install_service() {
   mkdir -p "$TABULA_HOME/logs"
@@ -248,7 +261,14 @@ main() {
     # Private repo: download via GitHub API
     local api_url="https://api.github.com/repos/${REPO}/releases/tags/${VERSION}"
     local release_json
-    release_json=$(curl -fsSL "${AUTH_HEADER[@]}" -H "Accept: application/vnd.github+json" "$api_url")
+    local curl_args=(curl -fsSL)
+    if [ ${#AUTH_HEADER[@]} -gt 0 ]; then
+      curl_args+=("${AUTH_HEADER[@]}")
+    fi
+    curl_args+=(-H "Accept: application/vnd.github+json" "$api_url")
+    if ! release_json=$("${curl_args[@]}"); then
+      die "could not fetch release ${VERSION} for ${REPO}; check GITHUB_TOKEN or publish the release"
+    fi
 
     download_asset() {
       local name="$1" dest="$2"
@@ -264,7 +284,12 @@ for a in data.get('assets', []):
 ")
       [ -n "$asset_url" ] || die "Asset $name not found in release"
       info "Downloading $name..."
-      curl -fsSL "${AUTH_HEADER[@]}" -H "Accept: application/octet-stream" -L -o "$dest" "$asset_url"
+      local curl_args=(curl -fsSL)
+      if [ ${#AUTH_HEADER[@]} -gt 0 ]; then
+        curl_args+=("${AUTH_HEADER[@]}")
+      fi
+      curl_args+=(-H "Accept: application/octet-stream" -L -o "$dest" "$asset_url")
+      "${curl_args[@]}"
     }
 
     download_asset "$binary_archive" "$tmp/$binary_archive"
@@ -272,10 +297,12 @@ for a in data.get('assets', []):
   else
     # Public repo: direct download
     info "Downloading binary..."
-    curl -fsSL -L --progress-bar -o "$tmp/$binary_archive" "$base_url/$binary_archive"
+    curl -fsSL -L --progress-bar -o "$tmp/$binary_archive" "$base_url/$binary_archive" || \
+      die "could not download $binary_archive from $base_url; set VERSION to a published release"
 
     info "Downloading skills..."
-    curl -fsSL -L --progress-bar -o "$tmp/$skills_archive" "$base_url/$skills_archive"
+    curl -fsSL -L --progress-bar -o "$tmp/$skills_archive" "$base_url/$skills_archive" || \
+      die "could not download $skills_archive from $base_url; the release payload is incomplete"
   fi
 
   # Install
@@ -307,7 +334,7 @@ for a in data.get('assets', []):
   # can enforce `requires.protocol_version` offline.
   "$BIN_DIR/tabula" --protocol > "$TABULA_HOME/PROTOCOL" 2>/dev/null || \
     printf '{"plugin_protocol_min": 1, "plugin_protocol_max": 1}\n' > "$TABULA_HOME/PROTOCOL"
-  chmod +x "$BIN_DIR/tabula-runner" "$BIN_DIR/tabula-cli" 2>/dev/null || true
+  verify_launchers
   ok "Skills and config installed"
 
   # Python
@@ -360,7 +387,7 @@ for a in data.get('assets', []):
   printf '  tabula-install distro install '\''git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw'\''\n'
   printf '  tabula-install distro install /path/to/local/distro\n\n'
   printf 'Or install and run an app manifest in one command:\n'
-  printf '  curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- app run ./tabula.app.toml\n\n'
+  printf '  curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- app run\n\n'
   printf 'Then connect:\n'
   printf '  tabula-cli\n\n'
 }

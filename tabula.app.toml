@@ -3,7 +3,7 @@ id = "code-immune-tabula-dev"
 name = "Code Immune for Tabula Dev"
 
 [distro]
-source = "local:../tabula-distrib/code-immune"
+source = "git+https://github.com/bamanoz/tabula-distrib.git@main#path=code-immune"
 
 [values.workspace]
 path = "${project_root}"

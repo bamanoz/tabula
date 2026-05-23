@@ -180,7 +180,7 @@ def parse(data: dict[str, Any], *, path: Path) -> AppManifest:
     else:
         runtimes = tuple(_parse_runtime(item, index, app_id=app_id) for index, item in enumerate(runtimes_raw))
 
-    bindings = _parse_bindings(data.get("bindings"), app_id=app_id, kernel_id=kernel.id, project_root=str(path.parent))
+    bindings = _parse_bindings(data.get("bindings"), app_id=app_id, kernel_id=kernel.id, project_root=str(_project_root(path)))
     values_raw = data.get("values")
     values = _clone_toml(values_raw) if isinstance(values_raw, dict) else {}
 
@@ -442,13 +442,20 @@ def _expand_manifest_data(data: dict[str, Any], *, path: Path, tabula_home: Path
     app_id = application_raw.get("id")
     if not isinstance(app_id, str) or not app_id.strip():
         raise AppManifestError("application.id is required")
-    local = _read_local(path.parent / ".tabula" / "local.toml")
+    project_root = _project_root(path)
+    local = _read_local(project_root / ".tabula" / "local.toml")
     variables: dict[str, str] = {
-        "project_root": str(path.parent),
+        "project_root": str(project_root),
         "application_id": app_id.strip(),
         "tabula_home": str(tabula_home) if tabula_home is not None else "",
     }
     return _expand_value(data, variables=variables, local=local)
+
+
+def _project_root(path: Path) -> Path:
+    if path.parent.name == ".tabula":
+        return path.parent.parent
+    return path.parent
 
 
 def _read_local(path: Path) -> dict[str, Any]:

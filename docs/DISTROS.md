@@ -265,11 +265,17 @@ For development, clone `tabula-distrib` next to this repo and run
 `bash scripts/install-dev.sh` (installs `tabula` + `tabula-runtime`), then
 `tabula-install distro install ../tabula-distrib/<name>`.
 
-For local development, keep `tabula.app.toml` in the repo root and use
-`make agent prepare`, `make agent run`, and `make agent connect`.
+For app-manifest development, keep `tabula.app.toml` in the workspace root and
+use `tabula-install app prepare` to install/materialize the agent without
+launching it. Then use `tabula-install app run` to start or reuse the configured
+kernel/runtime. If the manifest uses a `git+` distro source, this flow works in
+a fresh workspace without local distro or bundle checkouts. Pass an explicit
+manifest path only when it is not at `./tabula.app.toml` or `./.tabula/app.toml`.
 
-`make agent run` starts the kernel in the foreground with `TABULA_LOG_LEVEL`
-defaulting to `info` for that command.
+The repository Makefile keeps thin development aliases for the same commands:
+`make agent-prepare`, `make agent-run`, and `make agent-connect`. The
+`agent-connect` alias only invokes the installed CLI gateway and is not part of
+the generic app installer contract.
 
 Once a distro has been installed at least once, the installed CLI can reuse its
 saved source directly: `tabula-install distro reinstall <name>`.

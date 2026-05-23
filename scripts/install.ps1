@@ -8,6 +8,7 @@
 #
 # Usage:
 #   irm https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.ps1 | iex
+#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.ps1))) app run
 #   $env:VERSION = "v1.0.0"; irm ... | iex
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +17,7 @@ $Repo = "bamanoz/tabula"
 $TabulaHome = if ($env:TABULA_HOME) { $env:TABULA_HOME } else { Join-Path $HOME ".tabula" }
 $BinDir = Join-Path $TabulaHome "bin"
 $Venv = Join-Path $TabulaHome ".venv"
+$PostInstallArgs = $args
 
 # ── Helpers ──────────────────────────────────────────────────────
 
@@ -31,8 +33,12 @@ function Resolve-Version {
         return $env:VERSION
     }
     Info "Fetching latest release..."
-    $release = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest" `
-        -Headers @{ Accept = "application/vnd.github+json" }
+    try {
+        $release = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest" `
+            -Headers @{ Accept = "application/vnd.github+json" }
+    } catch {
+        Die "could not fetch latest release for $Repo; set GITHUB_TOKEN for a private repo, set VERSION=vX.Y.Z, or publish a GitHub release"
+    }
     if (-not $release.tag_name) { Die "Could not determine latest version" }
     Info "Latest version: $($release.tag_name)"
     return $release.tag_name
@@ -88,6 +94,16 @@ function New-FlatRuntimeSurface {
     # Legacy helper retained for backwards compatibility; no longer invoked
     # because distros are installed via tabula-distro into $TABULA_HOME/distrib.
     New-Item -ItemType Directory -Force -Path $DestDir | Out-Null
+}
+
+function Verify-Launchers {
+    foreach ($launcher in @("tabula-runner.ps1", "tabula-cli.ps1")) {
+        $path = Join-Path $BinDir $launcher
+        if (-not (Test-Path $path)) {
+            Die "release payload is missing required launcher: bin/$launcher"
+        }
+    }
+    Ok "Launchers installed"
 }
 
 # ── Service install ─────────────────────────────────────────────
@@ -148,10 +164,18 @@ New-Item -ItemType Directory -Force -Path $TmpDir | Out-Null
 try {
     # Download
     Info "Downloading binary..."
-    Invoke-WebRequest "$BaseUrl/$BinaryArchive" -OutFile (Join-Path $TmpDir $BinaryArchive)
+    try {
+        Invoke-WebRequest "$BaseUrl/$BinaryArchive" -OutFile (Join-Path $TmpDir $BinaryArchive)
+    } catch {
+        Die "could not download $BinaryArchive from $BaseUrl; set VERSION to a published release"
+    }
 
     Info "Downloading skills..."
-    Invoke-WebRequest "$BaseUrl/$SkillsArchive" -OutFile (Join-Path $TmpDir $SkillsArchive)
+    try {
+        Invoke-WebRequest "$BaseUrl/$SkillsArchive" -OutFile (Join-Path $TmpDir $SkillsArchive)
+    } catch {
+        Die "could not download $SkillsArchive from $BaseUrl; the release payload is incomplete"
+    }
 
     # Install
     Info "Installing to $TabulaHome..."
@@ -225,6 +249,7 @@ try {
             Copy-Item $src -Destination (Join-Path $BinDir $script) -Force
         }
     }
+    Verify-Launchers
 
     # Add to PATH
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -245,8 +270,11 @@ try {
     $env:TABULA_HOME = $TabulaHome
     $env:Path = "$BinDir;$env:Path"
 
-    # Service
-    Install-Service
+    if ($PostInstallArgs.Count -ge 2 -and $PostInstallArgs[0] -eq "app" -and $PostInstallArgs[1] -eq "run") {
+        Info "Skipping default kernel service; app run will start/reuse its configured kernel"
+    } else {
+        Install-Service
+    }
 
     # Env file for API keys
     $EnvFile = Join-Path $TabulaHome ".env"
@@ -257,12 +285,23 @@ try {
     Write-Host ""
     Write-Host "Tabula $Version kernel installed!" -ForegroundColor Green
     Write-Host ""
+
+    if ($PostInstallArgs.Count -gt 0) {
+        $TabulaInstall = Join-Path $BinDir "tabula-install.exe"
+        Info "Running: tabula-install $($PostInstallArgs -join ' ')"
+        & $TabulaInstall @PostInstallArgs
+        exit $LASTEXITCODE
+    }
+
     Write-Host "Add your API key to $EnvFile :"
     Write-Host "  echo ANTHROPIC_API_KEY=sk-... >> $EnvFile"
     Write-Host ""
     Write-Host "Install a distro (required before the kernel can do anything useful):"
     Write-Host "  tabula-install distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw'"
     Write-Host "  tabula-install distro install C:\path\to\local\distro"
+    Write-Host ""
+    Write-Host "Or install and run an app manifest in one command:"
+    Write-Host "  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.ps1))) app run"
     Write-Host ""
     Write-Host "Then connect:"
     Write-Host "  tabula-cli"

@@ -42,6 +42,15 @@ def _source_arg(value: str) -> str:
     return str(p.resolve())
 
 
+def _app_manifest_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "manifest",
+        nargs="?",
+        default=None,
+        help="path to tabula.app.toml (defaults to ./tabula.app.toml, then ./.tabula/app.toml)",
+    )
+
+
 def main(argv: list[str] | None = None, *, prog: str = "tabula-distro") -> int:
     parser = argparse.ArgumentParser(prog=prog, description="Tabula installer")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -60,26 +69,32 @@ def main(argv: list[str] | None = None, *, prog: str = "tabula-distro") -> int:
     app_sub = p_app.add_subparsers(dest="app_cmd", required=True)
 
     p_app_lock = app_sub.add_parser("lock", help="resolve and write an app lockfile")
-    p_app_lock.add_argument("manifest", help="path to tabula.app.toml")
+    _app_manifest_arg(p_app_lock)
     p_app_lock.add_argument("--frozen", action="store_true", help="require existing lockfile; no network access")
     p_app_lock.add_argument("--update", action="store_true", help="refresh resolved app lock data")
     p_app_lock.set_defaults(func=_cmd_app_lock)
 
     p_app_audit = app_sub.add_parser("audit", help="print app manifest resolution summary")
-    p_app_audit.add_argument("manifest", help="path to tabula.app.toml")
+    _app_manifest_arg(p_app_audit)
     p_app_audit.add_argument("--frozen", action="store_true", help="require existing lockfile; no network access")
     p_app_audit.add_argument("--update", action="store_true", help="refresh resolved app lock data for audit")
     p_app_audit.add_argument("--json", action="store_true", help="print JSON output")
     p_app_audit.set_defaults(func=_cmd_app_audit)
 
     p_app_apply = app_sub.add_parser("apply", help="materialize app metadata without launching")
-    p_app_apply.add_argument("manifest", help="path to tabula.app.toml")
+    _app_manifest_arg(p_app_apply)
     p_app_apply.add_argument("--frozen", action="store_true", help="require existing lockfile; no network access")
     p_app_apply.add_argument("--update", action="store_true", help="refresh resolved app lock data")
     p_app_apply.set_defaults(func=_cmd_app_apply)
 
+    p_app_prepare = app_sub.add_parser("prepare", help="install and materialize an app manifest without launching")
+    _app_manifest_arg(p_app_prepare)
+    p_app_prepare.add_argument("--frozen", action="store_true", help="require existing lockfile; no network access")
+    p_app_prepare.add_argument("--update", action="store_true", help="refresh resolved app lock data")
+    p_app_prepare.set_defaults(func=_cmd_app_prepare)
+
     p_app_run = app_sub.add_parser("run", help="apply and launch an app manifest")
-    p_app_run.add_argument("manifest", help="path to tabula.app.toml")
+    _app_manifest_arg(p_app_run)
     p_app_run.add_argument("--frozen", action="store_true", help="require existing lockfile; no network access")
     p_app_run.add_argument("--update", action="store_true", help="refresh resolved app lock data")
     p_app_run.add_argument("--dry-run", action="store_true", help="print launch plan without starting processes")
@@ -393,6 +408,35 @@ def _cmd_app_apply(args: argparse.Namespace, home: Path) -> int:
     return 0
 
 
+def _cmd_app_prepare(args: argparse.Namespace, home: Path) -> int:
+    manifest, lock_path, lock = _resolve_app_lock(args, home)
+    appmod.save_lock(lock_path, lock)
+    tenant_dir = appmod.materialize_metadata(manifest, lock, home)
+    install_result = _install_with_local_alias_overrides(
+        manifest.distro.source,
+        home,
+        base_dir=manifest.path.parent,
+        offline=bool(args.frozen),
+        update=bool(args.update),
+        tenant=manifest.application.id,
+        expose_global_boot=False,
+    )
+    materialized = appmod.run_materializer(manifest, home, lock_path=lock_path, phase="run", dry_run=True)
+    appmod.compile_plugin_configs(home, tenant_dir)
+    registry = bindmod.apply_manifest_bindings(home, manifest.bindings)
+    runmod.write_runtime_config(manifest, home)
+    _ = install_result
+    installmod.touch_reload_trigger(home, tenant=manifest.application.id)
+    print(f"prepared app {manifest.application.id}")
+    print(f"  tenant: {tenant_dir}")
+    print(f"  lock:   {lock_path}")
+    if materialized:
+        print("  materializer: ran")
+    print(f"  bindings: {bindmod.registry_path(home)} ({len(registry.directories)} director{'y' if len(registry.directories) == 1 else 'ies'})")
+    _print_run_plan(runmod.plan(manifest), tenant_dir)
+    return 0
+
+
 def _cmd_app_run(args: argparse.Namespace, home: Path) -> int:
     manifest, lock_path, lock = _resolve_app_lock(args, home)
     appmod.save_lock(lock_path, lock)
@@ -416,12 +460,21 @@ def _cmd_app_run(args: argparse.Namespace, home: Path) -> int:
     _print_run_plan(plan, tenant_dir)
     if args.dry_run:
         return 0
-    result = runmod.execute(manifest, home, tabula_bin=args.tabula_bin, foreground=bool(args.foreground), boot_path=install_result.generation.path / "boot.py")
+    result = runmod.execute(manifest, home, tabula_bin=_resolve_tabula_bin_arg(args.tabula_bin, home), foreground=bool(args.foreground), boot_path=install_result.generation.path / "boot.py")
     if result.started_kernel:
         print(f"started kernel {result.plan.kernel_id}")
     elif result.reused_kernel:
         print(f"reused kernel {result.plan.kernel_id}")
     return 0
+
+
+def _resolve_tabula_bin_arg(value: str, home: Path) -> str:
+    if value != "tabula":
+        return value
+    installed = home / "bin" / "tabula"
+    if installed.is_file():
+        return str(installed)
+    return value
 
 
 def _cmd_app_bindings(args: argparse.Namespace, home: Path) -> int:
@@ -471,7 +524,7 @@ def _cmd_app_unbind(args: argparse.Namespace, home: Path) -> int:
 
 
 def _resolve_app_lock(args: argparse.Namespace, home: Path) -> tuple[appmod.AppManifest, Path, appmod.AppLock]:
-    manifest_path = Path(args.manifest).expanduser().resolve()
+    manifest_path = _resolve_app_manifest_path(args.manifest)
     manifest = appmod.load(manifest_path, tabula_home=home)
     lock_path = appmod.default_lock_path(manifest_path)
     existing = appmod.load_lock(lock_path)
@@ -484,6 +537,21 @@ def _resolve_app_lock(args: argparse.Namespace, home: Path) -> tuple[appmod.AppM
     if existing is not None and not update:
         return manifest, lock_path, existing
     return manifest, lock_path, appmod.create_lock(manifest, home, offline=False, update=update)
+
+
+def _resolve_app_manifest_path(value: str | None) -> Path:
+    if value:
+        path = Path(value).expanduser().resolve()
+        if not path.is_file():
+            raise appmod.AppManifestError(f"app manifest not found: {path}")
+        return path
+    candidates = (Path.cwd() / "tabula.app.toml", Path.cwd() / ".tabula" / "app.toml")
+    for path in candidates:
+        if path.is_file():
+            return path.resolve()
+    raise appmod.AppManifestError(
+        "app manifest not found; expected ./tabula.app.toml or ./.tabula/app.toml, or pass an explicit manifest path"
+    )
 
 
 def _app_audit_json(manifest: appmod.AppManifest, lock_path: Path, lock: appmod.AppLock, home: Path) -> dict:
