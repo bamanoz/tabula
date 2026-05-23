@@ -270,8 +270,8 @@ try {
     $env:TABULA_HOME = $TabulaHome
     $env:Path = "$BinDir;$env:Path"
 
-    if ($PostInstallArgs.Count -ge 2 -and $PostInstallArgs[0] -eq "app" -and $PostInstallArgs[1] -eq "run") {
-        Info "Skipping default kernel service; app run will start/reuse its configured kernel"
+    if ($PostInstallArgs.Count -ge 1 -and $PostInstallArgs[0] -eq "app") {
+        Info "Skipping default kernel service; app command will start/reuse its configured kernel when needed"
     } else {
         Install-Service
     }

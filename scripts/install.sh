@@ -356,8 +356,8 @@ for a in data.get('assets', []):
   # Shell
   configure_shell
 
-  if [ ${#POST_INSTALL_ARGS[@]} -ge 2 ] && [ "${POST_INSTALL_ARGS[0]}" = "app" ] && [ "${POST_INSTALL_ARGS[1]}" = "run" ]; then
-    info "Skipping default kernel service; app run will start/reuse its configured kernel"
+  if [ ${#POST_INSTALL_ARGS[@]} -ge 1 ] && [ "${POST_INSTALL_ARGS[0]}" = "app" ]; then
+    info "Skipping default kernel service; app command will start/reuse its configured kernel when needed"
   else
     # Service
     install_service
