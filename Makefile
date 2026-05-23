@@ -1,10 +1,12 @@
-.PHONY: build test test-unit test-smoke test-e2e test-contract test-go test-go-unit test-go-smoke test-python test-python-unit test-python-smoke test-python-e2e test-python-contract lint vet release-local release-local-dry-run install install-agent agent agent-prepare agent-run agent-connect clean
+.PHONY: build test test-unit test-smoke test-e2e test-contract test-go test-go-unit test-go-smoke test-python test-python-unit test-python-smoke test-python-e2e test-python-contract lint vet release-local release-local-dry-run install install-agent agent agent-prepare agent-run agent-connect agent-install-prepare agent-install-run clean
 
 TABULA_HOME ?= .
 VENV_PYTHON = .venv/bin/python3
 TABULA_INSTALL ?= tabula-install
 DEV_TABULA_HOME ?= $(CURDIR)/.tabula
 APP_PREPARE_FLAGS ?=
+TABULA_REPO ?= bamanoz/tabula
+TABULA_VERSION ?= v0.9.4
 
 PRIMARY_GOAL := $(firstword $(MAKECMDGOALS))
 SECOND_GOAL := $(word 2,$(MAKECMDGOALS))
@@ -123,6 +125,26 @@ agent-run:
 
 agent-connect:
 	TABULA_HOME="$(DEV_TABULA_HOME)" tabula-cli $(if $(SESSION),--session $(SESSION),)
+
+agent-install-prepare:
+	@token="$${GITHUB_TOKEN:-$$(gh auth token 2>/dev/null)}"; \
+	if [ -z "$$token" ]; then printf 'error: GITHUB_TOKEN is empty and gh auth token failed\n' >&2; exit 2; fi; \
+	installer="$$(mktemp -t tabula-install.XXXXXX.sh)"; \
+	trap 'rm -f "$$installer"' EXIT; \
+	curl -fsSL -H "Authorization: Bearer $$token" \
+	  "https://raw.githubusercontent.com/$(TABULA_REPO)/$(TABULA_VERSION)/scripts/install.sh" \
+	  -o "$$installer"; \
+	GITHUB_TOKEN="$$token" bash "$$installer" app prepare
+
+agent-install-run:
+	@token="$${GITHUB_TOKEN:-$$(gh auth token 2>/dev/null)}"; \
+	if [ -z "$$token" ]; then printf 'error: GITHUB_TOKEN is empty and gh auth token failed\n' >&2; exit 2; fi; \
+	installer="$$(mktemp -t tabula-install.XXXXXX.sh)"; \
+	trap 'rm -f "$$installer"' EXIT; \
+	curl -fsSL -H "Authorization: Bearer $$token" \
+	  "https://raw.githubusercontent.com/$(TABULA_REPO)/$(TABULA_VERSION)/scripts/install.sh" \
+	  -o "$$installer"; \
+	GITHUB_TOKEN="$$token" bash "$$installer" app run
 
 # Clean
 

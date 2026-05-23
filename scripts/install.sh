@@ -35,6 +35,10 @@ need() {
   command -v "$1" &>/dev/null || die "required tool not found: $1"
 }
 
+curl_retry() {
+  curl --retry 5 --retry-delay 2 --connect-timeout 30 "$@"
+}
+
 # ── detect platform ─────────────────────────────────────────────
 
 detect_platform() {
@@ -60,7 +64,7 @@ resolve_version() {
   fi
 
   info "Fetching latest release..."
-  local curl_args=(curl -fsSL)
+  local curl_args=(curl_retry -fsSL)
   if [ ${#AUTH_HEADER[@]} -gt 0 ]; then
     curl_args+=("${AUTH_HEADER[@]}")
   fi
@@ -105,7 +109,7 @@ install_python_deps() {
 
   info "Installing Python dependencies..."
   "$VENV/bin/pip" install -q --upgrade pip
-  local curl_args=(curl -fsSL -o "$tmp/requirements-runtime.txt")
+  local curl_args=(curl_retry -fsSL -o "$tmp/requirements-runtime.txt")
   if [ ${#AUTH_HEADER[@]} -gt 0 ]; then
     curl_args+=("${AUTH_HEADER[@]}")
   fi
@@ -266,7 +270,7 @@ main() {
     # Private repo: download via GitHub API
     local api_url="https://api.github.com/repos/${REPO}/releases/tags/${VERSION}"
     local release_json
-    local curl_args=(curl -fsSL)
+    local curl_args=(curl_retry -fsSL)
     if [ ${#AUTH_HEADER[@]} -gt 0 ]; then
       curl_args+=("${AUTH_HEADER[@]}")
     fi
@@ -289,7 +293,7 @@ for a in data.get('assets', []):
 ")
       [ -n "$asset_url" ] || die "Asset $name not found in release"
       info "Downloading $name..."
-      local curl_args=(curl -fsSL)
+      local curl_args=(curl_retry -fsSL)
       if [ ${#AUTH_HEADER[@]} -gt 0 ]; then
         curl_args+=("${AUTH_HEADER[@]}")
       fi
@@ -302,11 +306,11 @@ for a in data.get('assets', []):
   else
     # Public repo: direct download
     info "Downloading binary..."
-    curl -fsSL -L --progress-bar -o "$tmp/$binary_archive" "$base_url/$binary_archive" || \
+    curl_retry -fsSL -L --progress-bar -o "$tmp/$binary_archive" "$base_url/$binary_archive" || \
       die "could not download $binary_archive from $base_url; set VERSION to a published release"
 
     info "Downloading skills..."
-    curl -fsSL -L --progress-bar -o "$tmp/$skills_archive" "$base_url/$skills_archive" || \
+    curl_retry -fsSL -L --progress-bar -o "$tmp/$skills_archive" "$base_url/$skills_archive" || \
       die "could not download $skills_archive from $base_url; the release payload is incomplete"
   fi
 

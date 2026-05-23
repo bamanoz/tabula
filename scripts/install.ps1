@@ -25,6 +25,24 @@ function Info($msg)  { Write-Host "==> $msg" -ForegroundColor Blue }
 function Ok($msg)    { Write-Host "  ✓ $msg" -ForegroundColor Green }
 function Die($msg)   { Write-Host "error: $msg" -ForegroundColor Red; exit 1 }
 
+function Invoke-WithRetry {
+    param(
+        [scriptblock]$Script,
+        [int]$Retries = 5,
+        [int]$DelaySeconds = 2
+    )
+    $attempt = 0
+    while ($true) {
+        try {
+            return & $Script
+        } catch {
+            $attempt += 1
+            if ($attempt -gt $Retries) { throw }
+            Start-Sleep -Seconds $DelaySeconds
+        }
+    }
+}
+
 # ── Resolve version ─────────────────────────────────────────────
 
 function Resolve-Version {
@@ -34,8 +52,8 @@ function Resolve-Version {
     }
     Info "Fetching latest release..."
     try {
-        $release = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest" `
-            -Headers @{ Accept = "application/vnd.github+json" }
+        $release = Invoke-WithRetry { Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest" `
+            -Headers @{ Accept = "application/vnd.github+json" } }
     } catch {
         Die "could not fetch latest release for $Repo; set GITHUB_TOKEN for a private repo, set VERSION=vX.Y.Z, or publish a GitHub release"
     }
@@ -79,7 +97,7 @@ function Install-PythonDeps {
         if ($env:GITHUB_TOKEN) {
             $headers["Authorization"] = "Bearer $env:GITHUB_TOKEN"
         }
-        Invoke-WebRequest $RequirementsUrl -OutFile $RequirementsPath -Headers $headers
+        Invoke-WithRetry { Invoke-WebRequest $RequirementsUrl -OutFile $RequirementsPath -Headers $headers }
         & $Pip install -q -r $RequirementsPath
     } catch {
         & $Pip install -q websocket-client prompt_toolkit rich
@@ -169,14 +187,14 @@ try {
     # Download
     Info "Downloading binary..."
     try {
-        Invoke-WebRequest "$BaseUrl/$BinaryArchive" -OutFile (Join-Path $TmpDir $BinaryArchive)
+        Invoke-WithRetry { Invoke-WebRequest "$BaseUrl/$BinaryArchive" -OutFile (Join-Path $TmpDir $BinaryArchive) }
     } catch {
         Die "could not download $BinaryArchive from $BaseUrl; set VERSION to a published release"
     }
 
     Info "Downloading skills..."
     try {
-        Invoke-WebRequest "$BaseUrl/$SkillsArchive" -OutFile (Join-Path $TmpDir $SkillsArchive)
+        Invoke-WithRetry { Invoke-WebRequest "$BaseUrl/$SkillsArchive" -OutFile (Join-Path $TmpDir $SkillsArchive) }
     } catch {
         Die "could not download $SkillsArchive from $BaseUrl; the release payload is incomplete"
     }
