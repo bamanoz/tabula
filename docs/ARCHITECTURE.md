@@ -467,6 +467,17 @@ projects that already carry `tabula.app.toml`:
 curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- app run
 ```
 
+If GitHub Actions is unavailable, publish the same release artifacts locally
+from a tagged checkout:
+
+```bash
+make release-local-dry-run   # build assets only
+make release-local           # build assets and create/update the GitHub release
+```
+
+`make release-local` requires `gh` authentication and a tag matching `VERSION`
+on `HEAD`, for example `v0.9.3` when `VERSION` is `0.9.3`.
+
 ### Source install
 
 `scripts/install-dev.sh` / `scripts/install-dev.ps1`:

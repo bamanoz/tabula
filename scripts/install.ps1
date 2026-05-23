@@ -75,7 +75,11 @@ function Install-PythonDeps {
     $Pip = Join-Path $Venv "Scripts" "pip.exe"
     & $Pip install -q --upgrade pip
     try {
-        Invoke-WebRequest $RequirementsUrl -OutFile $RequirementsPath
+        $headers = @{}
+        if ($env:GITHUB_TOKEN) {
+            $headers["Authorization"] = "Bearer $env:GITHUB_TOKEN"
+        }
+        Invoke-WebRequest $RequirementsUrl -OutFile $RequirementsPath -Headers $headers
         & $Pip install -q -r $RequirementsPath
     } catch {
         & $Pip install -q websocket-client prompt_toolkit rich

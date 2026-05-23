@@ -105,7 +105,12 @@ install_python_deps() {
 
   info "Installing Python dependencies..."
   "$VENV/bin/pip" install -q --upgrade pip
-  if curl -fsSL -o "$tmp/requirements-runtime.txt" "$requirements_url"; then
+  local curl_args=(curl -fsSL -o "$tmp/requirements-runtime.txt")
+  if [ ${#AUTH_HEADER[@]} -gt 0 ]; then
+    curl_args+=("${AUTH_HEADER[@]}")
+  fi
+  curl_args+=("$requirements_url")
+  if "${curl_args[@]}"; then
     "$VENV/bin/pip" install -q -r "$tmp/requirements-runtime.txt"
   else
     "$VENV/bin/pip" install -q websocket-client prompt_toolkit rich

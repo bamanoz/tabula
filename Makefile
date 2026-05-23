@@ -1,4 +1,4 @@
-.PHONY: build test test-unit test-smoke test-e2e test-contract test-go test-go-unit test-go-smoke test-python test-python-unit test-python-smoke test-python-e2e test-python-contract lint vet install install-agent agent agent-prepare agent-run agent-connect clean
+.PHONY: build test test-unit test-smoke test-e2e test-contract test-go test-go-unit test-go-smoke test-python test-python-unit test-python-smoke test-python-e2e test-python-contract lint vet release-local release-local-dry-run install install-agent agent agent-prepare agent-run agent-connect clean
 
 TABULA_HOME ?= .
 VENV_PYTHON = .venv/bin/python3
@@ -88,6 +88,14 @@ lint-go:
 vet:
 	go vet ./...
 	GOOS=windows go vet ./...
+
+# Release
+
+release-local:
+	scripts/release-local.sh
+
+release-local-dry-run:
+	DRY_RUN=1 scripts/release-local.sh
 
 # Agent
 

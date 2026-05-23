@@ -68,6 +68,19 @@ On a fresh machine, the release installer can install Tabula and then forward to
 curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- app run
 ```
 
+For a private Tabula repository, fetch the installer with an authenticated raw
+request and pass the same token to the installer so it can download release
+assets:
+
+```bash
+token=$(gh auth token)
+curl -fsSL \
+  -H "Authorization: Bearer $token" \
+  https://raw.githubusercontent.com/bamanoz/tabula/v0.9.3/scripts/install.sh \
+  -o /tmp/tabula-install.sh
+GITHUB_TOKEN="$token" bash /tmp/tabula-install.sh app run
+```
+
 `tabula-install` is the final installer entrypoint. The older `tabula-distro`
 entrypoint is the same installer package but should not be used in docs for new
 app workflows.
