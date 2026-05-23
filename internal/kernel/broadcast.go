@@ -1,13 +1,14 @@
 package kernel
 
-import (
-	"encoding/json"
-	"fmt"
-)
+import "fmt"
 
 // broadcastToSession sends a message to all clients in a session that can receive the given type.
 // Also delivers to clients with receives_global for that type (regardless of session).
 func (h *Hub) broadcastToSession(session, msgType string, msg *Message, exclude *Client) {
+	h.broadcastToSessionFrom(session, msgType, msg, nil, exclude)
+}
+
+func (h *Hub) broadcastToSessionFrom(session, msgType string, msg *Message, sender *Client, exclude *Client) {
 	delivered := 0
 	seen := make(map[*Client]bool)
 
@@ -19,7 +20,7 @@ func (h *Hub) broadcastToSession(session, msgType string, msg *Message, exclude 
 		if !c.canReceive(msgType) {
 			continue
 		}
-		c.SendMsg(msg)
+		c.SendMsg(h.prepareRoutedMessage(sender, session, "session", msg))
 		seen[c] = true
 		delivered++
 	}
@@ -32,7 +33,7 @@ func (h *Hub) broadcastToSession(session, msgType string, msg *Message, exclude 
 		if !c.canReceiveGlobal(msgType) {
 			continue
 		}
-		globalMsg := cloneMessage(msg)
+		globalMsg := h.prepareRoutedMessage(sender, session, "global", msg)
 		if globalMsg != nil {
 			if globalMsg.Session == "" {
 				globalMsg.Session = session
@@ -41,9 +42,6 @@ func (h *Hub) broadcastToSession(session, msgType string, msg *Message, exclude 
 				if sess, ok := h.sessions.Get(session); ok {
 					globalMsg.TenantID = sess.TenantID
 				}
-			}
-			if globalMsg.Meta == nil {
-				globalMsg.Meta = json.RawMessage([]byte("{}"))
 			}
 			c.SendMsg(globalMsg)
 		} else {
@@ -56,8 +54,9 @@ func (h *Hub) broadcastToSession(session, msgType string, msg *Message, exclude 
 }
 
 func (h *Hub) sendToolResultForTool(session, toolID, toolName, output string) {
-	h.broadcastToSession(session, string(MsgToolResult), &Message{
-		Type:   string(MsgToolResult),
+	h.broadcastToSession(session, TopicToolResult, &Message{
+		Type:   string(MsgReply),
+		Topic:  TopicToolResult,
 		ID:     toolID,
 		Name:   toolName,
 		Output: output,

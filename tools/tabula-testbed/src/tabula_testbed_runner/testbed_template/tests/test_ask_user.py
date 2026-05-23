@@ -20,8 +20,8 @@ class AskUserInstalled(unittest.TestCase):
             caller.connect_join("testbed-ask-user")
             observer.connect_join(
                 "testbed-ask-user",
-                sends=["message", "tool_use", "status"],
-                receives=["init", "message", "tool_result", "error", "status"],
+                sends=["message.user", "tool.call", "exchange.choose"],
+                receives=["session.init", "message.user", "tool.result", "error", "exchange.choose"],
             )
             caller.wait_tools({"ask_user"}, session="testbed-ask-user")
             pending = caller.call_tool_async(
@@ -30,20 +30,18 @@ class AskUserInstalled(unittest.TestCase):
                 timeout=15,
             )
             msg = observer.wait_for(
-                lambda m: m.get("type") == "status"
-                and isinstance(m.get("meta"), dict)
-                and isinstance(m["meta"].get("ask_request"), dict),
+                lambda m: m.get("type") == "request" and m.get("topic") == "exchange.choose",
                 timeout=10,
             )
-            request = msg["meta"]["ask_request"]
+            request = {"id": msg.get("id", ""), **(msg.get("data") if isinstance(msg.get("data"), dict) else {})}
             self.assertEqual(request["question"], "Continue?")
             self.assertEqual(request["options"], ["yes", "no"])
             observer._send(
                 {
-                    "version": 1,
-                    "type": "status",
-                    "text": "",
-                    "meta": {"ask_response": {"id": request["id"], "choice": "yes", "index": 0}},
+                    "type": "reply",
+                    "topic": "exchange.choose",
+                    "id": request["id"],
+                    "data": {"choice": "yes", "index": 0},
                 }
             )
             result = pending.wait().json()

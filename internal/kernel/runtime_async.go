@@ -27,6 +27,7 @@ func (s hubRuntimeAsyncSink) CatalogUpdated(runtimeID string, update wire.Catalo
 	}
 	if ok {
 		s.hub.syncRuntimeCapability(runtimeID, capability)
+		s.hub.broadcastRuntimeCatalogUpdate(capability)
 	}
 	s.hub.rebuildHookIndex()
 	return nil
@@ -41,7 +42,7 @@ func (s hubRuntimeAsyncSink) HookEventReplied(runtimeID string, reply wire.HookE
 		return err
 	}
 	s.hub.hooks.HandleRuntimeResult(runtimeID, &Message{
-		Type:    string(MsgHookResult),
+		Type:    string(MsgHookReply),
 		ID:      reply.CallID,
 		Action:  action,
 		Payload: reply.Data,
@@ -164,6 +165,32 @@ func (h *Hub) syncRuntimeCapability(runtimeID string, capability runtimeapi.Capa
 			h.toolExec[key] = runtimeDispatch(runtimeID, tenantID, capability.Target, tool.Schema, int(tool.DeadlineMS))
 		}
 	}
+}
+
+func (h *Hub) broadcastRuntimeCatalogUpdate(capability runtimeapi.Capability) {
+	if h == nil || h.sessions == nil || capability.Target.Kind != wire.TargetKindPlugin {
+		return
+	}
+	for _, sess := range h.sessions.All() {
+		if sess == nil || sess.ID == "" || !capabilityVisibleToTenant(capability, sess.TenantID) {
+			continue
+		}
+		tools := h.initToolsJSON(sess.TenantID)
+		meta := h.initMetaJSON(sess.TenantID)
+		msg := h.initMessage(sess.GetInitContext(), tools, meta)
+		for _, client := range h.sessionClients(sess.ID) {
+			if client.canReceive(TopicSessionInit) {
+				client.SendMsg(msg)
+			}
+		}
+	}
+}
+
+func capabilityVisibleToTenant(capability runtimeapi.Capability, tenantID string) bool {
+	if tenantID == "" || len(capability.Tenants) == 0 {
+		return true
+	}
+	return runtimeServesTenant(capability.Tenants, tenantID)
 }
 
 func (h *Hub) removeRuntimeTools(runtimeID string) {

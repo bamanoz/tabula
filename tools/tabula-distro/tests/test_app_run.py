@@ -211,7 +211,7 @@ tenants = ["first-app"]
                 self.sent.append(payload)
 
             def recv(self) -> str:
-                return '{"type":"connected"}'
+                return '{"type":"hello_ack"}'
 
             def close(self) -> None:
                 pass

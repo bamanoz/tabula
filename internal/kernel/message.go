@@ -4,12 +4,14 @@ import "encoding/json"
 
 // Message is the generic JSON message exchanged over WebSocket.
 type Message struct {
-	Version  int             `json:"version,omitempty"`
+	V        int             `json:"v,omitempty"`
 	Type     string          `json:"type"`
 	Name     string          `json:"name,omitempty"`
 	Session  string          `json:"session,omitempty"`
 	TenantID string          `json:"tenant_id,omitempty"`
 	ID       string          `json:"id,omitempty"`
+	Topic    string          `json:"topic,omitempty"`
+	Data     json.RawMessage `json:"data,omitempty"`
 	Text     string          `json:"text,omitempty"`
 	Input    json.RawMessage `json:"input,omitempty"`
 	Output   string          `json:"output,omitempty"`
@@ -54,6 +56,9 @@ func cloneMessage(msg *Message) *Message {
 	if msg.Meta != nil {
 		clone.Meta = append(json.RawMessage(nil), msg.Meta...)
 	}
+	if msg.Data != nil {
+		clone.Data = append(json.RawMessage(nil), msg.Data...)
+	}
 	if msg.Sends != nil {
 		clone.Sends = append([]string(nil), msg.Sends...)
 	}
@@ -67,4 +72,57 @@ func cloneMessage(msg *Message) *Message {
 		clone.Hooks = append([]HookSubscription(nil), msg.Hooks...)
 	}
 	return &clone
+}
+
+func mustMarshalRaw(value any) json.RawMessage {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return raw
+}
+
+func eventText(msg *Message) string {
+	if msg == nil || len(msg.Data) == 0 {
+		return ""
+	}
+	var data struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(msg.Data, &data) != nil {
+		return ""
+	}
+	return data.Text
+}
+
+func messageText(msg *Message) string {
+	if msg == nil || msg.Topic != TopicMessageUser {
+		return ""
+	}
+	return eventText(msg)
+}
+
+func setMessageText(msg *Message, text string) {
+	if msg == nil {
+		return
+	}
+	var data map[string]any
+	if len(msg.Data) > 0 {
+		_ = json.Unmarshal(msg.Data, &data)
+	}
+	if data == nil {
+		data = map[string]any{}
+	}
+	data["text"] = text
+	msg.Data = mustMarshalRaw(data)
+}
+
+func messageCapability(msg *Message) string {
+	if msg == nil {
+		return ""
+	}
+	if (MsgType(msg.Type) == MsgEvent || MsgType(msg.Type) == MsgRequest || MsgType(msg.Type) == MsgReply) && msg.Topic != "" {
+		return msg.Topic
+	}
+	return msg.Type
 }

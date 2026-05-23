@@ -39,7 +39,7 @@ func (pe *PolicyEngine) CanRespondHook(sender *Client, msg *Message) error {
 		return &PolicyError{Reason: "client not connected"}
 	}
 	if msg == nil || msg.ID == "" {
-		return &PolicyError{Reason: "hook_result missing id"}
+		return &PolicyError{Reason: "hook_reply missing id"}
 	}
 	if pe == nil || pe.hub == nil || pe.hub.hooks == nil || !pe.hub.hooks.CanHandleResult(sender, msg.ID) {
 		return &PolicyError{Reason: "client not allowed to answer hook"}
@@ -107,8 +107,12 @@ func (pe *PolicyEngine) CanSend(sender *Client, msg *Message) error {
 	if !sender.IsConnected() {
 		return &PolicyError{Reason: "client not connected"}
 	}
-	if !sender.canSend(msg.Type) {
-		return &PolicyError{Reason: fmt.Sprintf("client not allowed to send %s", msg.Type)}
+	capability := messageCapability(msg)
+	if !sender.canSend(capability) {
+		return &PolicyError{Reason: fmt.Sprintf("client not allowed to send %s", capability)}
+	}
+	if MsgType(msg.Type) == MsgRequest && isExchangeTopic(msg.Topic) && sender.session == "" && msg.Session != "" {
+		return nil
 	}
 	if sender.session == "" {
 		return &PolicyError{Reason: "client not in a session"}
@@ -120,7 +124,7 @@ func (pe *PolicyEngine) CanSend(sender *Client, msg *Message) error {
 // Returns ("", true) if the hook blocks the message.
 func (pe *PolicyEngine) BeforeMessage(sender *Client, msg *Message) (string, bool) {
 	payload, _ := json.Marshal(map[string]string{
-		"text":   msg.Text,
+		"text":   messageText(msg),
 		"sender": sender.name,
 	})
 	result, ok := pe.hub.dispatchHook("before_message", payload, sender.session)
@@ -128,7 +132,7 @@ func (pe *PolicyEngine) BeforeMessage(sender *Client, msg *Message) (string, boo
 		return "", true
 	}
 
-	text := msg.Text
+	text := messageText(msg)
 	var modified struct{ Text string }
 	if json.Unmarshal(result, &modified) == nil && modified.Text != "" {
 		text = modified.Text
@@ -140,7 +144,7 @@ func (pe *PolicyEngine) BeforeMessage(sender *Client, msg *Message) (string, boo
 // Returns (nil, false) if the hook blocks the tool use.
 func (pe *PolicyEngine) CanUseTool(sender *Client, toolName string, toolID string, input json.RawMessage, session string) (json.RawMessage, bool) {
 	hookPayload, _ := json.Marshal(map[string]any{
-		"tool": toolName, "id": toolID, "input": input,
+		"tool": toolName, "id": toolID, "input": input, "tenant_id": pe.hub.sessionTenantID(session),
 	})
 	result, ok := pe.hub.dispatchHookExcept("before_tool_call", hookPayload, session, sender)
 	if !ok {

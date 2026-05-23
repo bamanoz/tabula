@@ -34,7 +34,7 @@ func TestHandleDynamicTool_RuntimeSourceInvokesAttachedRuntime(t *testing.T) {
 		name:     "test",
 		session:  "s1",
 		recvCh:   make(chan *Message, 4),
-		receives: map[string]bool{string(MsgToolResult): true},
+		receives: map[string]bool{TopicToolResult: true},
 		sends:    map[string]bool{},
 		state:    ClientJoined,
 		done:     make(chan struct{}),
@@ -46,7 +46,7 @@ func TestHandleDynamicTool_RuntimeSourceInvokesAttachedRuntime(t *testing.T) {
 
 	hub.tools.handleDynamicTool("s1", "tid-rt", "mcp__echo", json.RawMessage(`{}`))
 	msg := waitForMessage(t, c.recvCh)
-	if msg.Type != string(MsgToolResult) || msg.Output != "ok" {
+	if !isToolResult(msg) || msg.Output != "ok" {
 		t.Fatalf("unexpected runtime tool result: %+v", msg)
 	}
 	recorded := rc.RecordedInvokes()
@@ -172,7 +172,7 @@ func TestRuntimeToolsAreScopedByTenant(t *testing.T) {
 		t.Fatalf("expected tenant init tools to expose fs_read once, alpha=%s beta=%s dispatch=%#v", alphaTools, betaTools, hub.toolExec)
 	}
 
-	alphaClient := &Client{hub: hub, name: "alpha-client", session: "s-alpha", recvCh: make(chan *Message, 4), receives: map[string]bool{string(MsgToolResult): true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	alphaClient := &Client{hub: hub, name: "alpha-client", session: "s-alpha", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
 	if !hub.addClient(alphaClient) {
 		t.Fatal("add alpha client failed")
 	}
@@ -180,7 +180,7 @@ func TestRuntimeToolsAreScopedByTenant(t *testing.T) {
 
 	hub.tools.handleDynamicTool("s-alpha", "tid-alpha", "fs_read", json.RawMessage(`{}`))
 	msg := waitForMessage(t, alphaClient.recvCh)
-	if msg.Type != string(MsgToolResult) || msg.Output != "alpha-ok" {
+	if !isToolResult(msg) || msg.Output != "alpha-ok" {
 		t.Fatalf("unexpected alpha result: %+v", msg)
 	}
 	if len(betaRuntime.RecordedInvokes()) != 0 {
@@ -294,7 +294,7 @@ func TestHandleDynamicTool_FallsBackToTenantDefaultRuntimeForGlobalDispatch(t *t
 	}
 	hub.toolExec["mcp__echo"] = runtimeDispatch("", "*", target, nil, 0)
 
-	c := &Client{hub: hub, name: "test", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{string(MsgToolResult): true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	c := &Client{hub: hub, name: "test", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
 	if !hub.addClient(c) {
 		t.Fatal("addClient failed")
 	}
@@ -302,7 +302,7 @@ func TestHandleDynamicTool_FallsBackToTenantDefaultRuntimeForGlobalDispatch(t *t
 
 	hub.tools.handleDynamicTool("s1", "tid-rt", "mcp__echo", json.RawMessage(`{}`))
 	msg := waitForMessage(t, c.recvCh)
-	if msg.Type != string(MsgToolResult) || msg.Output != "remote" {
+	if !isToolResult(msg) || msg.Output != "remote" {
 		t.Fatalf("unexpected runtime tool result: %+v", msg)
 	}
 	recorded := remote.RecordedInvokes()
@@ -334,7 +334,7 @@ func TestHandleDynamicToolInvokesRuntimeOwningTool(t *testing.T) {
 	}
 	hub.syncRuntimeCapability("remote", wire.Capability{Target: target, Tools: []wire.ToolSpec{{Name: "fs_read"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker})
 
-	c := &Client{hub: hub, name: "test", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{string(MsgToolResult): true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	c := &Client{hub: hub, name: "test", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
 	if !hub.addClient(c) {
 		t.Fatal("addClient failed")
 	}
@@ -342,7 +342,7 @@ func TestHandleDynamicToolInvokesRuntimeOwningTool(t *testing.T) {
 
 	hub.tools.handleDynamicTool("s1", "tid-rt", "fs_read", json.RawMessage(`{}`))
 	msg := waitForMessage(t, c.recvCh)
-	if msg.Type != string(MsgToolResult) || msg.Output != "remote" {
+	if !isToolResult(msg) || msg.Output != "remote" {
 		t.Fatalf("unexpected runtime tool result: %+v", msg)
 	}
 	if len(local.RecordedInvokes()) != 0 {
@@ -364,7 +364,7 @@ func TestHandleDynamicTool_ReturnsTenantForbiddenWhenDefaultRuntimeDisallowed(t 
 	}
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
 	hub.syncRuntimeCapability("remote", wire.Capability{Target: target, Tools: []wire.ToolSpec{{Name: "mcp__echo"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker})
-	c := &Client{hub: hub, name: "test", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{string(MsgToolResult): true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	c := &Client{hub: hub, name: "test", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
 	if !hub.addClient(c) {
 		t.Fatal("addClient failed")
 	}
@@ -372,7 +372,7 @@ func TestHandleDynamicTool_ReturnsTenantForbiddenWhenDefaultRuntimeDisallowed(t 
 
 	hub.tools.handleDynamicTool("s1", "tid-rt", "mcp__echo", json.RawMessage(`{}`))
 	msg := waitForMessage(t, c.recvCh)
-	if msg.Type != string(MsgToolResult) || !strings.Contains(msg.Output, "cannot use runtime") {
+	if !isToolResult(msg) || !strings.Contains(msg.Output, "cannot use runtime") {
 		t.Fatalf("unexpected runtime tool result: %+v", msg)
 	}
 }
@@ -380,7 +380,7 @@ func TestHandleDynamicTool_ReturnsTenantForbiddenWhenDefaultRuntimeDisallowed(t 
 func TestJoinBindsSessionTenantAndRejectsUnknownTenant(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
-	c := &Client{hub: hub, name: "test", recvCh: make(chan *Message, 4), receives: map[string]bool{string(MsgInit): true}, sends: map[string]bool{}, state: ClientProtocolReady, done: make(chan struct{})}
+	c := &Client{hub: hub, name: "test", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicSessionInit: true}, sends: map[string]bool{}, state: ClientProtocolReady, done: make(chan struct{})}
 	if !hub.addClient(c) {
 		t.Fatal("addClient failed")
 	}

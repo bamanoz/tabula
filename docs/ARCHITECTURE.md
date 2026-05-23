@@ -80,9 +80,10 @@ Protocol version:
 
 - Go side: `internal/kernel/protocol.go`
 - Python side: `tabula_plugin_sdk.protocol`
-- current version: `1`
-- Clients **must** declare `version` on `connect`. Mismatched or missing
-  versions are rejected with an `error` message — there is no legacy fallback.
+- current version: `3`
+- Clients **must** declare `v: 3` on every client->kernel frame. The first
+  frame is `hello`. Mismatched or missing versions are rejected with an
+  `error` message — there is no legacy fallback.
 
 ## Versioning
 
@@ -115,25 +116,26 @@ treated as legacy and skip the check.
 
 Important message types:
 
-- client -> kernel: `connect`, `join`, `message`, `tool_use`, `hook_result`,
-  `cancel`
-- kernel -> client: `connected`, `joined`, `member_joined`, `init`,
-  `tool_result`, `hook`, `error`
-- stream path: `stream_start`, `stream_delta`, `stream_end`, `done`
+- client -> kernel: `hello`, `join`, `event`, `request`, `reply`, `hook_reply`
+- common client topics: `message.user`, `tool.call`, `exchange.choose`,
+  `exchange.approve`, `turn.cancel`
+- common kernel topics: `session.init`, `session.member_joined`, `tool.result`,
+  `usage.update`, `turn.done`, `hook`, `error`
+- stream path: `stream.start`, `stream.delta`, `stream.end`
 
 Every kernel client uses the same basic lifecycle:
 
 1. open WebSocket to `TABULA_URL`
-2. send `connect` with `auth_token`
-3. receive `connected`
+2. send `hello` with `data.auth_token`
+3. receive `hello_ack`
 4. send `join`
 5. receive `joined`
-6. optionally receive `init`
+6. optionally receive `event topic=session.init`
 7. enter message loop
 
 `tabula serve` writes the kernel client token to
 `$TABULA_HOME/run/kernel-client-token` and exports it as `TABULA_KERNEL_TOKEN`
-for first-party drivers and gateways. `hook_result` messages are tied to the
+for first-party drivers and gateways. `hook_reply` messages are tied to the
 subscriber identity that received the hook; another client cannot answer a hook
 by reusing its id.
 

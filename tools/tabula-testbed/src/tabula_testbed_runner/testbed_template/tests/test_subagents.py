@@ -91,35 +91,40 @@ class SubagentsPluginSmoke(unittest.TestCase):
         client = websocket.create_connection(self.url, timeout=5)
         try:
             hook.send(json.dumps({
-                "version": 2,
-                "type": "connect",
-                "name": "testbed-slow-before-prompt-build",
-                "sends": ["hook_result"],
-                "receives": ["hook"],
-                "auth_token": kernel_auth_token(),
-                "hooks": [{"event": "before_prompt_build", "priority": 100, "timeout_ms": 2000}],
+                "v": 3,
+                "type": "hello",
+                "data": {
+                    "name": "testbed-slow-before-prompt-build",
+                    "send_topics": ["hook_reply"],
+                    "receive_topics": ["hook"],
+                    "auth_token": kernel_auth_token(),
+                    "hooks": [{"event": "before_prompt_build", "priority": 100, "timeout_ms": 2000}],
+                },
             }))
-            self.assertEqual(json.loads(hook.recv()).get("type"), "connected")
+            self.assertEqual(json.loads(hook.recv()).get("type"), "hello_ack")
 
             client.send(json.dumps({
-                "version": 2,
-                "type": "connect",
-                "name": "testbed-subagent-join-ack",
-                "sends": ["message", "tool_use"],
-                "receives": ["init", "message", "tool_result", "error"],
-                "auth_token": kernel_auth_token(),
+                "v": 3,
+                "type": "hello",
+                "data": {
+                    "name": "testbed-subagent-join-ack",
+                    "send_topics": ["message.user", "tool.call"],
+                    "receive_topics": ["session.init", "message.user", "tool.result", "error"],
+                    "auth_token": kernel_auth_token(),
+                },
             }))
-            self.assertEqual(json.loads(client.recv()).get("type"), "connected")
+            self.assertEqual(json.loads(client.recv()).get("type"), "hello_ack")
 
             started = time.monotonic()
-            client.send(json.dumps({"version": 2, "type": "join", "session": "subagent-testbed-join-ack", "tenant_id": "default"}))
+            client.send(json.dumps({"v": 3, "type": "join", "session": "subagent-testbed-join-ack", "tenant_id": "default"}))
             joined = json.loads(client.recv())
             elapsed = time.monotonic() - started
             self.assertEqual(joined.get("type"), "joined")
             self.assertLess(elapsed, 1.0, f"joined was blocked by before_prompt_build for {elapsed:.3f}s")
 
             init = json.loads(client.recv())
-            self.assertEqual(init.get("type"), "init")
+            self.assertEqual(init.get("type"), "event")
+            self.assertEqual(init.get("topic"), "session.init")
         finally:
             hook.close()
             client.close()
@@ -163,7 +168,7 @@ class SubagentsPluginSmoke(unittest.TestCase):
             allowed = client.call_tool("session_list", {}, timeout=10).json()
             self.assertIn("sessions", allowed)
             blocked = client.call_tool("subagent_list", {}, timeout=10).output
-            self.assertIn("blocked by hook", blocked)
+            self.assertIn("blocked", blocked)
 
     def test_subagents_writes_plugin_owned_state_and_logs(self):
         home = Path(self.tabula_home)
@@ -197,7 +202,7 @@ class SubagentsPluginSmoke(unittest.TestCase):
             waited = client.call_tool("subagent_wait", {"id": "sa-async-history", "timeout": 30}, timeout=35).json()
             self.assertTrue(waited.get("ok"), waited)
             self.assertIn("SECOND", str(waited.get("result", "")))
-            msg = client.recv(type="message", timeout=5)
+            msg = client.recv(type="message.user", timeout=5)
             self.assertEqual(msg.get("id"), "sa-async-history")
             self.assertIn('<subagent_async_result id="sa-async-history"', msg.get("text", ""))
             self.assertEqual(msg.get("meta", {}).get("source"), "subagent")

@@ -22,7 +22,7 @@ func NewToolService(hub *Hub) *ToolService {
 	return &ToolService{hub: hub}
 }
 
-// HandleToolUse routes a tool_use message through the before_tool_call hook
+// HandleToolUse routes a tool.call request through the before_tool_call hook
 // and dispatches the result to a runtime-hosted tool.
 //
 // The kernel does not host builtin LLM tools. Runtime tools are dispatched
@@ -32,20 +32,21 @@ func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 	toolID := msg.ID
 	session := sender.session
 
-	s.hub.Logger.Debug("tool_use", "tool", toolName, "session", session, "id", toolID)
+	s.hub.Logger.Debug("tool.call", "tool", toolName, "session", session, "id", toolID)
 
 	effectiveInput, ok := s.hub.policy.CanUseTool(sender, toolName, toolID, msg.Input, session)
 	if !ok {
-		s.hub.sendToolResultForTool(session, toolID, toolName, "ERROR: blocked by hook")
+		s.hub.sendToolResultForTool(session, toolID, toolName, "ERROR: blocked")
 		return
 	}
 	msg.Input = effectiveInput
-	s.hub.broadcastToSession(session, string(MsgToolUse), &Message{
-		Type:  string(MsgToolUse),
+	s.hub.broadcastToSessionFrom(session, TopicToolCall, &Message{
+		Type:  string(MsgRequest),
+		Topic: TopicToolCall,
 		ID:    toolID,
 		Name:  toolName,
 		Input: msg.Input,
-	}, sender)
+	}, sender, sender)
 
 	s.handleDynamicTool(session, toolID, toolName, msg.Input)
 }

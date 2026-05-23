@@ -53,22 +53,26 @@ class TestbedClient:
         self.close()
 
     def connect(self, *, sends: list[str] | None = None, receives: list[str] | None = None) -> dict[str, Any]:
+        sends = _normalize_capabilities(sends if sends is not None else ["message.user", "tool.call"])
+        receives = _normalize_capabilities(receives if receives is not None else ["session.init", "message.user", "tool.result", "error"])
         self.ws = websocket.create_connection(self.url, timeout=30)
         msg = {
-            "version": 2,
-            "type": "connect",
-            "name": self.name,
-            "sends": sends if sends is not None else ["message", "tool_use"],
-            "receives": receives if receives is not None else ["init", "message", "tool_result", "error"],
-            "auth_token": kernel_auth_token(),
+            "v": 3,
+            "type": "hello",
+            "data": {
+                "name": self.name,
+                "send_topics": sends,
+                "receive_topics": receives,
+                "auth_token": kernel_auth_token(),
+            },
         }
         self.ws.send(json.dumps(msg))
-        return self.recv(type="connected")
+        return self.recv(type="hello_ack")
 
     def join(self, session: str, *, tenant_id: str = "default") -> dict[str, Any]:
-        self._send({"version": 2, "type": "join", "session": session, "tenant_id": tenant_id})
+        self._send({"type": "join", "session": session, "tenant_id": tenant_id})
         self.recv(type="joined")
-        self.init = self.recv(type="init")
+        self.init = self.recv(type="session.init")
         return self.init
 
     def connect_join(self, session: str, *, tenant_id: str = "default", sends: list[str] | None = None, receives: list[str] | None = None) -> dict[str, Any]:
@@ -109,9 +113,9 @@ class TestbedClient:
 
     def call_tool(self, name: str, input: dict[str, Any] | None = None, *, timeout: float = 10) -> ToolResult:
         call_id = f"tb-{uuid.uuid4().hex}"
-        self._send({"version": 2, "type": "tool_use", "id": call_id, "name": name, "input": input or {}})
+        self._send({"type": "request", "topic": "tool.call", "id": call_id, "name": name, "input": input or {}})
         try:
-            msg = self.wait_for(lambda m: m.get("type") == "tool_result" and m.get("id") == call_id, timeout=timeout)
+            msg = self.wait_for(lambda m: m.get("type") == "reply" and m.get("topic") == "tool.result" and m.get("id") == call_id, timeout=timeout)
         except Exception as exc:
             raise TimeoutError(f"timed out waiting for tool_result: tool={name!r} id={call_id!r} client={self.name!r}") from exc
         return ToolResult(name=str(msg.get("name") or name), id=call_id, output=str(msg.get("output") or ""))
@@ -135,7 +139,7 @@ class TestbedClient:
                 self.call_tool(name, {})
 
     def send_message(self, text: str) -> None:
-        self._send({"version": 2, "type": "message", "text": text})
+        self._send({"type": "event", "topic": "message.user", "data": {"text": text}})
 
     def wait_for(self, predicate: Callable[[dict[str, Any]], bool], *, timeout: float = 10) -> dict[str, Any]:
         deadline = time.time() + timeout
@@ -154,7 +158,7 @@ class TestbedClient:
             while True:
                 raw = self.ws.recv()
                 msg = json.loads(raw)
-                if type is None or msg.get("type") == type:
+                if type is None or msg.get("type") == type or _matches_expected_type(msg, type):
                     return msg
         except (TimeoutError, socket.timeout, WebSocketTimeoutException) as exc:
             wanted = f" type={type!r}" if type else ""
@@ -170,6 +174,7 @@ class TestbedClient:
     def _send(self, msg: dict[str, Any]) -> None:
         if self.ws is None:
             raise RuntimeError("client is not connected")
+        msg.setdefault("v", 3)
         self.ws.send(json.dumps(msg))
 
 
@@ -202,3 +207,15 @@ class AsyncToolCall:
         if value is None:
             raise RuntimeError("async tool call finished without a result")
         return value
+
+
+def _matches_expected_type(msg: dict[str, Any], expected: str | None) -> bool:
+    if not expected:
+        return True
+    if msg.get("type") == "event":
+        return msg.get("topic") == expected
+    return False
+
+
+def _normalize_capabilities(items: list[str]) -> list[str]:
+    return list(items)

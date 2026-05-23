@@ -67,10 +67,10 @@ func newTestEnv(t *testing.T) *testEnv {
 
 func TestBroadcastToSessionAnnotatesGlobalReceiversWithSession(t *testing.T) {
 	env := newTestEnv(t)
-	member := addCaptureClient(t, env.Hub, "member", "main", []string{string(MsgStreamDelta)}, nil)
-	global := addCaptureClient(t, env.Hub, "global", "", nil, []string{string(MsgStreamDelta)})
+	member := addCaptureClient(t, env.Hub, "member", "main", []string{TopicStreamDelta}, nil)
+	global := addCaptureClient(t, env.Hub, "global", "", nil, []string{TopicStreamDelta})
 
-	env.Hub.broadcastToSession("main", string(MsgStreamDelta), &Message{Type: string(MsgStreamDelta), Text: "hi"}, nil)
+	env.Hub.broadcastToSession("main", TopicStreamDelta, &Message{Type: string(MsgEvent), Topic: TopicStreamDelta, Data: mustMarshalRaw(map[string]any{"text": "hi"})}, nil)
 
 	memberMsg := waitForMessage(t, member.recvCh)
 	if memberMsg.Session != "" {
@@ -101,23 +101,30 @@ func (e *testEnv) dial() *websocket.Conn {
 	return conn
 }
 
-// connect dials + sends connect + reads connected response.
+// connect dials + sends hello + reads hello_ack response.
 func (e *testEnv) connect(name string, sends, receives []string) *websocket.Conn {
+	conn, _ := e.connectAck(name, sends, receives)
+	return conn
+}
+
+func (e *testEnv) connectAck(name string, sends, receives []string) (*websocket.Conn, Message) {
 	e.t.Helper()
 	conn := e.dial()
 	writeJSON(e.t, conn, Message{
-		Type:      "connect",
-		Name:      name,
-		Sends:     sends,
-		Receives:  receives,
-		Version:   ProtocolVersion,
-		AuthToken: e.Token,
+		V:    ProtocolVersion,
+		Type: string(MsgHello),
+		Data: mustMarshalRaw(map[string]any{
+			"name":           name,
+			"send_topics":    sends,
+			"receive_topics": receives,
+			"auth_token":     e.Token,
+		}),
 	})
 	msg := readMsg(e.t, conn)
-	if msg.Type != "connected" {
-		e.t.Fatalf("expected connected, got %s", msg.Type)
+	if msg.Type != string(MsgHelloAck) {
+		e.t.Fatalf("expected hello_ack, got %s", msg.Type)
 	}
-	return conn
+	return conn, msg
 }
 
 // connectAndJoin dials + connect + join.
@@ -148,6 +155,10 @@ func (e *testEnv) disconnectClient(name string) {
 // writeJSON sends a JSON message on a WS connection.
 func writeJSON(t *testing.T, conn *websocket.Conn, v any) {
 	t.Helper()
+	if msg, ok := v.(Message); ok && msg.V == 0 {
+		msg.V = ProtocolVersion
+		v = msg
+	}
 	if err := conn.WriteJSON(v); err != nil {
 		t.Fatalf("writeJSON failed: %v", err)
 	}
@@ -175,61 +186,96 @@ func readMsgTimeout(t *testing.T, conn *websocket.Conn, d time.Duration) *Messag
 	return &msg
 }
 
+func helloClientID(t *testing.T, msg Message) string {
+	t.Helper()
+	var data struct {
+		ClientID string `json:"client_id"`
+	}
+	if err := json.Unmarshal(msg.Data, &data); err != nil {
+		t.Fatalf("invalid hello_ack data: %v", err)
+	}
+	if data.ClientID == "" {
+		t.Fatalf("hello_ack missing client_id: %+v", msg)
+	}
+	return data.ClientID
+}
+
+func isUserMessage(msg *Message) bool {
+	return msg != nil && msg.Type == string(MsgEvent) && msg.Topic == TopicMessageUser
+}
+
+func isSessionInit(msg *Message) bool {
+	return msg != nil && msg.Type == string(MsgEvent) && msg.Topic == TopicSessionInit
+}
+
+func userMessage(text string) Message {
+	return Message{Type: string(MsgEvent), Topic: TopicMessageUser, Data: mustMarshalRaw(map[string]any{"text": text})}
+}
+
+func toolCall(id, name string, input json.RawMessage) Message {
+	return Message{Type: string(MsgRequest), Topic: TopicToolCall, ID: id, Name: name, Input: input}
+}
+
+func turnDone() Message {
+	return Message{Type: string(MsgEvent), Topic: TopicTurnDone}
+}
+
+func turnCancel() Message {
+	return Message{Type: string(MsgEvent), Topic: TopicTurnCancel}
+}
+
+func isToolResult(msg any) bool {
+	switch m := msg.(type) {
+	case Message:
+		return m.Type == string(MsgReply) && m.Topic == TopicToolResult
+	case *Message:
+		return m != nil && m.Type == string(MsgReply) && m.Topic == TopicToolResult
+	case **Message:
+		return m != nil && *m != nil && (*m).Type == string(MsgReply) && (*m).Topic == TopicToolResult
+	default:
+		return false
+	}
+}
+
+func isToolCall(msg any) bool {
+	switch m := msg.(type) {
+	case Message:
+		return m.Type == string(MsgRequest) && m.Topic == TopicToolCall
+	case *Message:
+		return m != nil && m.Type == string(MsgRequest) && m.Topic == TopicToolCall
+	case **Message:
+		return m != nil && *m != nil && (*m).Type == string(MsgRequest) && (*m).Topic == TopicToolCall
+	default:
+		return false
+	}
+}
+
 // --- Tests ---
 
 func TestConnectJoinHandshake(t *testing.T) {
 	env := newTestEnv(t)
 
 	// First client → c1
-	conn1 := env.dial()
-	writeJSON(t, conn1, Message{
-		Type:      "connect",
-		Name:      "client-a",
-		Sends:     []string{"message"},
-		Receives:  []string{"message"},
-		Version:   ProtocolVersion,
-		AuthToken: env.Token,
-	})
-	msg1 := readMsg(t, conn1)
-	if msg1.Type != "connected" || msg1.ID != "c1" {
-		t.Errorf("expected connected c1, got type=%s id=%s", msg1.Type, msg1.ID)
+	conn1, ack1 := env.connectAck("client-a", []string{TopicMessageUser}, []string{TopicMessageUser})
+	if clientID := helloClientID(t, ack1); clientID != "c1" {
+		t.Errorf("expected c1, got %s", clientID)
 	}
-
-	// Join
 	writeJSON(t, conn1, Message{Type: "join", Session: "main"})
-	join1 := readMsg(t, conn1)
-	if join1.Type != "joined" || join1.Session != "main" {
-		t.Errorf("expected joined main, got type=%s session=%s", join1.Type, join1.Session)
+	msg1 := readMsg(t, conn1)
+	if msg1.Type != "joined" || msg1.Session != "main" {
+		t.Errorf("expected joined main, got type=%s session=%s", msg1.Type, msg1.Session)
 	}
 
-	// Second client → c2
-	conn2 := env.dial()
-	writeJSON(t, conn2, Message{
-		Type:      "connect",
-		Name:      "client-b",
-		Sends:     []string{"message"},
-		Receives:  []string{"message"},
-		Version:   ProtocolVersion,
-		AuthToken: env.Token,
-	})
-	msg2 := readMsg(t, conn2)
-	if msg2.ID != "c2" {
-		t.Errorf("expected c2, got %s", msg2.ID)
+	_, ack2 := env.connectAck("client-b", []string{TopicMessageUser}, []string{TopicMessageUser})
+	clientID := helloClientID(t, ack2)
+	if clientID != "c2" {
+		t.Errorf("expected c2, got %s", clientID)
 	}
 
-	// Third client → c3
-	conn3 := env.dial()
-	writeJSON(t, conn3, Message{
-		Type:      "connect",
-		Name:      "client-c",
-		Sends:     []string{"message"},
-		Receives:  []string{"message"},
-		Version:   ProtocolVersion,
-		AuthToken: env.Token,
-	})
-	msg3 := readMsg(t, conn3)
-	if msg3.ID != "c3" {
-		t.Errorf("expected c3, got %s", msg3.ID)
+	_, ack3 := env.connectAck("client-c", []string{TopicMessageUser}, []string{TopicMessageUser})
+	clientID = helloClientID(t, ack3)
+	if clientID != "c3" {
+		t.Errorf("expected c3, got %s", clientID)
 	}
 }
 
@@ -238,10 +284,12 @@ func TestConnectRequiresKernelClientToken(t *testing.T) {
 
 	missing := env.dial()
 	writeJSON(t, missing, Message{
-		Type:    "connect",
-		Name:    "missing-token",
-		Sends:   []string{"message"},
-		Version: ProtocolVersion,
+		V:    ProtocolVersion,
+		Type: string(MsgHello),
+		Data: mustMarshalRaw(map[string]any{
+			"name":        "missing-token",
+			"send_topics": []string{TopicMessageUser},
+		}),
 	})
 	msg := readMsg(t, missing)
 	if msg.Type != "error" {
@@ -253,11 +301,13 @@ func TestConnectRequiresKernelClientToken(t *testing.T) {
 
 	wrong := env.dial()
 	writeJSON(t, wrong, Message{
-		Type:      "connect",
-		Name:      "wrong-token",
-		Sends:     []string{"message"},
-		Version:   ProtocolVersion,
-		AuthToken: "bad-token",
+		V:    ProtocolVersion,
+		Type: string(MsgHello),
+		Data: mustMarshalRaw(map[string]any{
+			"name":        "wrong-token",
+			"send_topics": []string{TopicMessageUser},
+			"auth_token":  "bad-token",
+		}),
 	})
 	msg = readMsg(t, wrong)
 	if msg.Type != "error" {
@@ -272,10 +322,10 @@ func TestInitOnJoin(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Client that receives init
-	conn := env.connectAndJoin("driver", "main", []string{"message"}, []string{"init", "message"})
+	conn := env.connectAndJoin("driver", "main", []string{TopicMessageUser}, []string{TopicSessionInit, TopicMessageUser})
 	init := readMsg(t, conn)
-	if init.Type != "init" {
-		t.Fatalf("expected init, got %s", init.Type)
+	if init.Type != string(MsgEvent) || init.Topic != TopicSessionInit {
+		t.Fatalf("expected session.init, got %+v", init)
 	}
 	if init.Context != "" {
 		t.Errorf("expected empty init context, got %q", init.Context)
@@ -294,7 +344,7 @@ func TestJoinPersistsSessionStateUnderTenantDir(t *testing.T) {
 	))
 	env.Hub.SetSessionStore(NewDiskSessionStore(home))
 
-	conn := env.connect("driver", []string{"message"}, []string{"init", "message"})
+	conn := env.connect("driver", []string{TopicMessageUser}, []string{TopicSessionInit, TopicMessageUser})
 	writeJSON(t, conn, Message{Type: "join", Session: "tenant-s1", TenantID: "alpha"})
 	if msg := readMsg(t, conn); msg.Type != "joined" || msg.TenantID != "alpha" {
 		t.Fatalf("expected joined alpha, got %+v", msg)
@@ -329,10 +379,10 @@ func TestRemovedKernelBuiltinsNotExposedOrExecutable(t *testing.T) {
 	}()
 	env := &testEnv{Hub: hub, Server: server, t: t, Token: "test-kernel-token"}
 
-	conn := env.connectAndJoin("driver", "main", []string{"tool_use"}, []string{"init", "tool_result"})
+	conn := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicSessionInit, TopicToolResult})
 	init := readMsg(t, conn)
-	if init.Type != "init" {
-		t.Fatalf("expected init, got %s", init.Type)
+	if init.Type != string(MsgEvent) || init.Topic != TopicSessionInit {
+		t.Fatalf("expected session.init, got %+v", init)
 	}
 	for _, removed := range []string{"shell_exec", "process_spawn", "process_kill", "process_list"} {
 		if strings.Contains(string(init.Tools), `"`+removed+`"`) {
@@ -341,9 +391,9 @@ func TestRemovedKernelBuiltinsNotExposedOrExecutable(t *testing.T) {
 	}
 
 	for i, removed := range []string{"shell_exec", "process_spawn", "process_kill", "process_list"} {
-		writeJSON(t, conn, Message{Type: "tool_use", ID: fmt.Sprintf("removed-%d", i), Name: removed, Input: json.RawMessage(`{}`)})
+		writeJSON(t, conn, toolCall(fmt.Sprintf("removed-%d", i), removed, json.RawMessage(`{}`)))
 		result := readMsg(t, conn)
-		if result.Type != "tool_result" {
+		if !isToolResult(&result) {
 			t.Fatalf("%s: expected tool_result, got %s", removed, result.Type)
 		}
 		expected := "unknown tool " + removed
@@ -391,11 +441,47 @@ func TestInitSyncsAttachedRuntimeCapabilities(t *testing.T) {
 	}
 }
 
+func TestRuntimeCatalogUpdateRefreshesJoinedClients(t *testing.T) {
+	env := newTestEnv(t)
+	env.Hub.runtimes = NewRuntimeRegistry()
+	conn := runtimemock.New().WithCapabilities(wire.Capability{
+		Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "mcp"},
+		Tools:  []wire.ToolSpec{{Name: "mcp_call"}},
+		State:  wire.CapabilityStateManifestLoaded,
+		Source: wire.CapabilitySourceManifest,
+	})
+	if err := env.Hub.runtimes.RegisterHello("local", conn, nil, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+
+	driver := env.connectAndJoin("driver", "main", []string{TopicMessageUser}, []string{TopicSessionInit})
+	initial := readMsg(t, driver)
+	if !isSessionInit(&initial) || !strings.Contains(string(initial.Tools), `"mcp_call"`) {
+		t.Fatalf("expected initial mcp_call init tools, got %+v", initial)
+	}
+
+	if err := env.Hub.runtimeAsyncSink().CatalogUpdated("local", wire.CatalogUpdate{
+		Op:       wire.OpCatalogUpdate,
+		Target:   wire.Target{Kind: wire.TargetKindPlugin, ID: "mcp"},
+		Tools:    []wire.ToolSpec{{Name: "mcp_call"}, {Name: "mcp__duckduckgo__search"}},
+		Revision: 2,
+		State:    wire.CapabilityStateReady,
+		Source:   wire.CapabilitySourceWorker,
+	}); err != nil {
+		t.Fatalf("CatalogUpdated: %v", err)
+	}
+
+	updated := readMsg(t, driver)
+	if !isSessionInit(&updated) || !strings.Contains(string(updated.Tools), `"mcp__duckduckgo__search"`) {
+		t.Fatalf("expected refreshed init tools with dynamic MCP tool, got %+v", updated)
+	}
+}
+
 func TestInitNotSentWithoutReceive(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Client without init in receives
-	conn := env.connectAndJoin("gateway", "main", []string{"message"}, []string{"message"})
+	conn := env.connectAndJoin("gateway", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
 
 	// Should NOT receive init — expect timeout
 	msg := readMsgTimeout(t, conn, 200*time.Millisecond)
@@ -408,21 +494,21 @@ func TestMessageRouting(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Client A: sender
-	connA := env.connectAndJoin("sender", "main", []string{"message"}, []string{"message"})
+	connA := env.connectAndJoin("sender", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
 	// Client B: receiver in same session
-	connB := env.connectAndJoin("receiver", "main", []string{"message"}, []string{"message"})
+	connB := env.connectAndJoin("receiver", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
 	// Client C: different session
-	connC := env.connectAndJoin("other-session", "sub-1", []string{"message"}, []string{"message"})
-	// Client D: same session, does NOT receive "message"
-	connD := env.connectAndJoin("no-msg", "main", []string{"message"}, []string{"error"})
+	connC := env.connectAndJoin("other-session", "sub-1", []string{TopicMessageUser}, []string{TopicMessageUser})
+	// Client D: same session, does NOT receive TopicMessageUser
+	connD := env.connectAndJoin("no-msg", "main", []string{TopicMessageUser}, []string{"error"})
 
 	// A sends message
-	writeJSON(t, connA, Message{Type: "message", Text: "hello"})
+	writeJSON(t, connA, userMessage("hello"))
 	time.Sleep(50 * time.Millisecond)
 
 	// B should receive
 	msgB := readMsgTimeout(t, connB, time.Second)
-	if msgB == nil || msgB.Type != "message" || msgB.Text != "hello" {
+	if !isUserMessage(msgB) || messageText(msgB) != "hello" {
 		t.Errorf("B: expected message 'hello', got %+v", msgB)
 	}
 
@@ -449,17 +535,19 @@ func TestCrossSessionRouting(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Client in "main" session
-	connMain := env.connectAndJoin("main-client", "main", []string{"message"}, []string{"message"})
+	connMain := env.connectAndJoin("main-client", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
 	// Client in "sub-1" session
-	connSub := env.connectAndJoin("sub-client", "sub-1", []string{"message"}, []string{"message"})
+	connSub := env.connectAndJoin("sub-client", "sub-1", []string{TopicMessageUser}, []string{TopicMessageUser})
 
 	// Sub sends message with explicit session="main"
-	writeJSON(t, connSub, Message{Type: "message", Session: "main", Text: "result from sub"})
+	crossSessionMessage := userMessage("result from sub")
+	crossSessionMessage.Session = "main"
+	writeJSON(t, connSub, crossSessionMessage)
 	time.Sleep(50 * time.Millisecond)
 
 	// Main should receive it
 	msg := readMsgTimeout(t, connMain, time.Second)
-	if msg == nil || msg.Text != "result from sub" {
+	if !isUserMessage(msg) || messageText(msg) != "result from sub" {
 		t.Errorf("main: expected 'result from sub', got %+v", msg)
 	}
 
@@ -473,13 +561,13 @@ func TestCrossSessionRouting(t *testing.T) {
 func TestSendsValidation(t *testing.T) {
 	env := newTestEnv(t)
 
-	// Client that can only send "message"
-	connSender := env.connectAndJoin("limited", "main", []string{"message"}, []string{"message"})
+	// Client that can only send TopicMessageUser
+	connSender := env.connectAndJoin("limited", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
 	// Receiver in same session
-	connRecv := env.connectAndJoin("recv", "main", []string{"message"}, []string{"stream_delta", "message"})
+	connRecv := env.connectAndJoin("recv", "main", []string{TopicMessageUser}, []string{TopicStreamDelta, TopicMessageUser})
 
-	// Try to send stream_delta (not in sends list) — should be ignored
-	writeJSON(t, connSender, Message{Type: "stream_delta", Text: "hacked"})
+	// Try to send stream.delta (not in sends list) — should be ignored
+	writeJSON(t, connSender, Message{Type: string(MsgEvent), Topic: TopicStreamDelta, Data: mustMarshalRaw(map[string]any{"text": "hacked"})})
 	time.Sleep(50 * time.Millisecond)
 
 	msg := readMsgTimeout(t, connRecv, 200*time.Millisecond)
@@ -492,34 +580,36 @@ func TestReceivesGlobal(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Client A: joined to "main" session, sends messages
-	connA := env.connectAndJoin("sender", "main", []string{"message"}, []string{"message"})
+	connA := env.connectAndJoin("sender", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
 
-	// Client B: NOT joined to any session, but has receives_global: ["message"]
+	// Client B: NOT joined to any session, but has receives_global: [TopicMessageUser]
 	connB := env.dial()
 	writeJSON(t, connB, Message{
-		Type:           "connect",
-		Name:           "global-listener",
-		Sends:          []string{},
-		Receives:       []string{},
-		ReceivesGlobal: []string{"message"},
-		Version:        ProtocolVersion,
-		AuthToken:      env.Token,
+		V:    ProtocolVersion,
+		Type: string(MsgHello),
+		Data: mustMarshalRaw(map[string]any{
+			"name":           "global-listener",
+			"send_topics":    []string{},
+			"receive_topics": []string{},
+			"global_topics":  []string{TopicMessageUser},
+			"auth_token":     env.Token,
+		}),
 	})
 	msgConnected := readMsg(t, connB)
-	if msgConnected.Type != "connected" {
-		t.Fatalf("expected connected, got %s", msgConnected.Type)
+	if msgConnected.Type != string(MsgHelloAck) {
+		t.Fatalf("expected hello_ack, got %s", msgConnected.Type)
 	}
 
 	// Client C: NOT joined, no receives_global — should NOT receive
-	connC := env.connect("no-global", []string{}, []string{"message"})
+	connC := env.connect("no-global", []string{}, []string{TopicMessageUser})
 
 	// A sends message to its session ("main")
-	writeJSON(t, connA, Message{Type: "message", Text: "hello global"})
+	writeJSON(t, connA, userMessage("hello global"))
 	time.Sleep(50 * time.Millisecond)
 
 	// B (receives_global) should receive it even though not in session
 	msgB := readMsgTimeout(t, connB, time.Second)
-	if msgB == nil || msgB.Type != "message" || msgB.Text != "hello global" {
+	if !isUserMessage(msgB) || messageText(msgB) != "hello global" {
 		t.Errorf("B: expected message 'hello global', got %+v", msgB)
 	}
 
@@ -530,14 +620,116 @@ func TestReceivesGlobal(t *testing.T) {
 	}
 }
 
+func TestRoutedMessagesOverwriteKernelMeta(t *testing.T) {
+	env := newTestEnv(t)
+	sender := env.connectAndJoin("sender", "main", []string{TopicMessageUser}, []string{})
+	receiver := env.connectAndJoin("receiver", "main", []string{}, []string{TopicMessageUser})
+
+	msg := userMessage("hello")
+	msg.Meta = mustMarshalRaw(map[string]any{
+		"kernel": map[string]any{"sender": map[string]any{"id": "spoof"}},
+		"user":   map[string]any{"source": "test"},
+	})
+	writeJSON(t, sender, msg)
+
+	routed := readMsg(t, receiver)
+	if !isUserMessage(&routed) || messageText(&routed) != "hello" {
+		t.Fatalf("expected routed message, got %+v", routed)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(routed.Meta, &meta); err != nil {
+		t.Fatalf("invalid routed meta: %v", err)
+	}
+	user, ok := meta["user"].(map[string]any)
+	if !ok || user["source"] != "test" {
+		t.Fatalf("expected user meta to be preserved, got %+v", meta)
+	}
+	kernelMeta, ok := meta["kernel"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected kernel meta, got %+v", meta)
+	}
+	senderMeta, ok := kernelMeta["sender"].(map[string]any)
+	if !ok || senderMeta["name"] != "sender" || senderMeta["id"] == "spoof" {
+		t.Fatalf("expected authenticated sender meta, got %+v", kernelMeta["sender"])
+	}
+	route, ok := kernelMeta["route"].(map[string]any)
+	if !ok || route["scope"] != "session" || route["session"] != "main" || route["tenant_id"] != tenant.DefaultID {
+		t.Fatalf("expected session route meta, got %+v", kernelMeta["route"])
+	}
+}
+
+func TestExchangeReplyRequiresChosenResponder(t *testing.T) {
+	testExchangeReplyRequiresChosenResponder(t, TopicExchangeChoose)
+	testExchangeReplyRequiresChosenResponder(t, TopicExchangeApprove)
+}
+
+func TestExchangeApproveHelperReachesTenantSessionResponder(t *testing.T) {
+	hub := NewHub(nil, 3, 5, nil)
+	hub.sessions.GetOrCreate("s1").TenantID = "tenant-a"
+	responder := addCaptureClient(t, hub, "responder", "s1", []string{TopicExchangeApprove}, nil)
+	help := addCaptureClient(t, hub, "helper", "s1", []string{TopicExchangeApprove}, nil)
+	responder.sends[TopicExchangeApprove] = true
+	help.sends[TopicExchangeApprove] = true
+
+	hub.handleExchangeRequest(help, &Message{Type: string(MsgRequest), Topic: TopicExchangeApprove, ID: "approve-1", Session: "s1", TenantID: "tenant-a"})
+
+	request := waitForMessage(t, responder.recvCh)
+	if request.Type != string(MsgRequest) || request.Topic != TopicExchangeApprove || request.ID != "approve-1" {
+		t.Fatalf("expected approval request to responder, got %+v", request)
+	}
+	hub.handleExchangeReply(responder, &Message{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: "approve-1", Data: mustMarshalRaw(map[string]any{"choice": "allow once", "index": 0})})
+	reply := waitForMessage(t, help.recvCh)
+	if reply.Type != string(MsgReply) || reply.Topic != TopicExchangeApprove || reply.ID != "approve-1" {
+		t.Fatalf("expected approval reply to helper, got %+v", reply)
+	}
+}
+
+func testExchangeReplyRequiresChosenResponder(t *testing.T, topic string) {
+	hub := NewHub(nil, 3, 5, nil)
+	requester := addCaptureClient(t, hub, "requester", "main", []string{topic}, []string{topic, string(MsgError)})
+	responder := addCaptureClient(t, hub, "responder", "main", []string{topic}, []string{topic, string(MsgError)})
+	attacker := addCaptureClient(t, hub, "attacker", "main", []string{string(MsgError)}, []string{string(MsgError)})
+	requester.sends[topic] = true
+	responder.sends[topic] = true
+	attacker.sends[topic] = true
+
+	hub.HandleMessage(requester, &Message{
+		V:     ProtocolVersion,
+		Type:  string(MsgRequest),
+		Topic: topic,
+		ID:    "ex-1",
+		Data:  mustMarshalRaw(map[string]any{"question": "Allow?", "options": []string{"yes", "no"}}),
+	})
+
+	req := waitForMessage(t, responder.recvCh)
+	if req.Type != string(MsgRequest) || req.Topic != topic || req.ID != "ex-1" {
+		t.Fatalf("expected exchange request for responder, got %+v", req)
+	}
+	if msg := readCaptureMessageTimeout(attacker.recvCh, 100*time.Millisecond); msg != nil {
+		t.Fatalf("attacker should not receive exchange request, got %+v", msg)
+	}
+
+	hub.HandleMessage(attacker, &Message{V: ProtocolVersion, Type: string(MsgReply), Topic: topic, ID: "ex-1", Data: mustMarshalRaw(map[string]any{"choice": "yes"})})
+	_ = readCaptureMessageTimeout(attacker.recvCh, 100*time.Millisecond) // spoof rejection is allowed but not required by callers.
+	if msg := readCaptureMessageTimeout(requester.recvCh, 100*time.Millisecond); msg != nil {
+		t.Fatalf("requester should not receive spoofed reply, got %+v", msg)
+	}
+
+	hub.HandleMessage(responder, &Message{V: ProtocolVersion, Type: string(MsgReply), Topic: topic, ID: "ex-1", Data: mustMarshalRaw(map[string]any{"choice": "yes", "index": 0})})
+	reply := waitForMessage(t, requester.recvCh)
+	if reply.Type != string(MsgReply) || reply.Topic != topic || reply.ID != "ex-1" {
+		t.Fatalf("expected exchange reply for requester, got %+v", reply)
+	}
+}
+
 func TestNotConnected(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Dial raw WS, don't send connect — send message directly
 	conn := env.dial()
-	connRecv := env.connectAndJoin("recv", "main", []string{"message"}, []string{"message"})
+	connRecv := env.connectAndJoin("recv", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
 
-	writeJSON(t, conn, Message{Type: "message", Text: "sneaky"})
+	writeJSON(t, conn, userMessage("sneaky"))
 	time.Sleep(50 * time.Millisecond)
 
 	msg := readMsgTimeout(t, connRecv, 200*time.Millisecond)
@@ -550,10 +742,10 @@ func TestNotJoined(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Connect but don't join
-	connSender := env.connect("no-join", []string{"message"}, []string{"message"})
-	connRecv := env.connectAndJoin("recv", "main", []string{"message"}, []string{"message"})
+	connSender := env.connect("no-join", []string{TopicMessageUser}, []string{TopicMessageUser})
+	connRecv := env.connectAndJoin("recv", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
 
-	writeJSON(t, connSender, Message{Type: "message", Text: "no session"})
+	writeJSON(t, connSender, userMessage("no session"))
 	time.Sleep(50 * time.Millisecond)
 
 	msg := readMsgTimeout(t, connRecv, 200*time.Millisecond)
@@ -565,19 +757,14 @@ func TestNotJoined(t *testing.T) {
 func TestExecBasic(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.connectAndJoin("driver", "main",
-		[]string{"tool_use"},
-		[]string{"init", "tool_result"})
+		[]string{TopicToolCall},
+		[]string{TopicSessionInit, TopicToolResult})
 	readMsg(t, conn) // init
 
-	writeJSON(t, conn, Message{
-		Type:  "tool_use",
-		ID:    "t1",
-		Name:  testShellToolName,
-		Input: json.RawMessage(`{"command":"echo hello"}`),
-	})
+	writeJSON(t, conn, toolCall("t1", testShellToolName, json.RawMessage(`{"command":"echo hello"}`)))
 
 	msg := readMsg(t, conn)
-	if msg.Type != "tool_result" || msg.ID != "t1" {
+	if !isToolResult(&msg) || msg.ID != "t1" {
 		t.Fatalf("expected tool_result t1, got type=%s id=%s", msg.Type, msg.ID)
 	}
 	if msg.Output != "hello" {
@@ -588,16 +775,11 @@ func TestExecBasic(t *testing.T) {
 func TestExecErrorExit(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.connectAndJoin("driver", "main",
-		[]string{"tool_use"},
-		[]string{"init", "tool_result"})
+		[]string{TopicToolCall},
+		[]string{TopicSessionInit, TopicToolResult})
 	readMsg(t, conn) // init
 
-	writeJSON(t, conn, Message{
-		Type:  "tool_use",
-		ID:    "t2",
-		Name:  testShellToolName,
-		Input: json.RawMessage(`{"command":"exit 1"}`),
-	})
+	writeJSON(t, conn, toolCall("t2", testShellToolName, json.RawMessage(`{"command":"exit 1"}`)))
 
 	msg := readMsg(t, conn)
 	if !strings.Contains(msg.Output, "exit code 1") {
@@ -608,17 +790,12 @@ func TestExecErrorExit(t *testing.T) {
 func TestExecOutputTruncation(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.connectAndJoin("driver", "main",
-		[]string{"tool_use"},
-		[]string{"init", "tool_result"})
+		[]string{TopicToolCall},
+		[]string{TopicSessionInit, TopicToolResult})
 	readMsg(t, conn) // init
 
 	// Generate >16KB of output
-	writeJSON(t, conn, Message{
-		Type:  "tool_use",
-		ID:    "t3",
-		Name:  testShellToolName,
-		Input: json.RawMessage(`{"command":"python3 -c \"print('A'*32768)\""}`),
-	})
+	writeJSON(t, conn, toolCall("t3", testShellToolName, json.RawMessage(`{"command":"python3 -c \"print('A'*32768)\""}`)))
 
 	msg := readMsg(t, conn)
 	if len(msg.Output) > maxExecOutput+100 { // some slack for trimming
@@ -632,18 +809,13 @@ func TestExecOutputTruncation(t *testing.T) {
 func TestExecStderrMerged(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.connectAndJoin("driver", "main",
-		[]string{"tool_use"},
-		[]string{"init", "tool_result"})
+		[]string{TopicToolCall},
+		[]string{TopicSessionInit, TopicToolResult})
 	readMsg(t, conn) // init
 
 	// The kernel wraps as: sh -c "COMMAND 2>&1"
 	// Use a program that writes to stderr natively
-	writeJSON(t, conn, Message{
-		Type:  "tool_use",
-		ID:    "t4",
-		Name:  testShellToolName,
-		Input: json.RawMessage(`{"command":"python3 -c \"import sys; sys.stderr.write('stderr_text\\n')\""}`),
-	})
+	writeJSON(t, conn, toolCall("t4", testShellToolName, json.RawMessage(`{"command":"python3 -c \"import sys; sys.stderr.write('stderr_text\\n')\""}`)))
 
 	msg := readMsg(t, conn)
 	if !strings.Contains(msg.Output, "stderr_text") {
@@ -656,30 +828,20 @@ func TestExecAsyncNonBlocking(t *testing.T) {
 
 	// Two clients in different sessions, each running EXEC simultaneously
 	conn1 := env.connectAndJoin("driver-1", "sess-1",
-		[]string{"tool_use"},
-		[]string{"init", "tool_result"})
+		[]string{TopicToolCall},
+		[]string{TopicSessionInit, TopicToolResult})
 	readMsg(t, conn1) // init
 
 	conn2 := env.connectAndJoin("driver-2", "sess-2",
-		[]string{"tool_use"},
-		[]string{"init", "tool_result"})
+		[]string{TopicToolCall},
+		[]string{TopicSessionInit, TopicToolResult})
 	readMsg(t, conn2) // init
 
 	start := time.Now()
 
 	// Fire both EXEC at the same time (sleep 0.5s each)
-	writeJSON(t, conn1, Message{
-		Type:  "tool_use",
-		ID:    "e1",
-		Name:  testShellToolName,
-		Input: json.RawMessage(`{"command":"sleep 0.5 && echo done1"}`),
-	})
-	writeJSON(t, conn2, Message{
-		Type:  "tool_use",
-		ID:    "e2",
-		Name:  testShellToolName,
-		Input: json.RawMessage(`{"command":"sleep 0.5 && echo done2"}`),
-	})
+	writeJSON(t, conn1, toolCall("e1", testShellToolName, json.RawMessage(`{"command":"sleep 0.5 && echo done1"}`)))
+	writeJSON(t, conn2, toolCall("e2", testShellToolName, json.RawMessage(`{"command":"sleep 0.5 && echo done2"}`)))
 
 	msg1 := readMsg(t, conn1)
 	msg2 := readMsg(t, conn2)
@@ -700,16 +862,11 @@ func TestExecAsyncNonBlocking(t *testing.T) {
 func TestUnknownTool(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.connectAndJoin("driver", "main",
-		[]string{"tool_use"},
-		[]string{"init", "tool_result"})
+		[]string{TopicToolCall},
+		[]string{TopicSessionInit, TopicToolResult})
 	readMsg(t, conn) // init
 
-	writeJSON(t, conn, Message{
-		Type:  "tool_use",
-		ID:    "u1",
-		Name:  "UNKNOWN",
-		Input: json.RawMessage(`{}`),
-	})
+	writeJSON(t, conn, toolCall("u1", "UNKNOWN", json.RawMessage(`{}`)))
 	msg := readMsg(t, conn)
 	if !strings.Contains(msg.Output, "unknown tool UNKNOWN") {
 		t.Errorf("expected unknown tool error, got %q", msg.Output)
@@ -719,17 +876,12 @@ func TestUnknownTool(t *testing.T) {
 func TestInvalidExecCommand(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.connectAndJoin("driver", "main",
-		[]string{"tool_use"},
-		[]string{"init", "tool_result"})
+		[]string{TopicToolCall},
+		[]string{TopicSessionInit, TopicToolResult})
 	readMsg(t, conn) // init
 
 	// Missing command field
-	writeJSON(t, conn, Message{
-		Type:  "tool_use",
-		ID:    "x1",
-		Name:  testShellToolName,
-		Input: json.RawMessage(`{}`),
-	})
+	writeJSON(t, conn, toolCall("x1", testShellToolName, json.RawMessage(`{}`)))
 	msg := readMsg(t, conn)
 	if !strings.Contains(msg.Output, "ERROR") {
 		t.Errorf("expected ERROR, got %q", msg.Output)
@@ -739,20 +891,20 @@ func TestInvalidExecCommand(t *testing.T) {
 func TestMultipleClientsInSession(t *testing.T) {
 	env := newTestEnv(t)
 
-	sender := env.connectAndJoin("sender", "main", []string{"message"}, []string{"message"})
-	recv1 := env.connectAndJoin("recv1", "main", []string{"message"}, []string{"message"})
-	recv2 := env.connectAndJoin("recv2", "main", []string{"message"}, []string{"message"})
+	sender := env.connectAndJoin("sender", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
+	recv1 := env.connectAndJoin("recv1", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
+	recv2 := env.connectAndJoin("recv2", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
 
-	writeJSON(t, sender, Message{Type: "message", Text: "broadcast"})
+	writeJSON(t, sender, userMessage("broadcast"))
 	time.Sleep(50 * time.Millisecond)
 
 	// Both receivers get the message
 	m1 := readMsgTimeout(t, recv1, time.Second)
 	m2 := readMsgTimeout(t, recv2, time.Second)
-	if m1 == nil || m1.Text != "broadcast" {
+	if !isUserMessage(m1) || messageText(m1) != "broadcast" {
 		t.Errorf("recv1: expected 'broadcast', got %+v", m1)
 	}
-	if m2 == nil || m2.Text != "broadcast" {
+	if !isUserMessage(m2) || messageText(m2) != "broadcast" {
 		t.Errorf("recv2: expected 'broadcast', got %+v", m2)
 	}
 
@@ -766,21 +918,21 @@ func TestMultipleClientsInSession(t *testing.T) {
 func TestClientDisconnect(t *testing.T) {
 	env := newTestEnv(t)
 
-	conn1 := env.connectAndJoin("will-disconnect", "main", []string{"message"}, []string{"message"})
-	conn2 := env.connectAndJoin("stays", "main", []string{"message"}, []string{"message"})
-	conn3 := env.connectAndJoin("sender", "main", []string{"message"}, []string{"message"})
+	conn1 := env.connectAndJoin("will-disconnect", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
+	conn2 := env.connectAndJoin("stays", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
+	conn3 := env.connectAndJoin("sender", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
 
 	// Disconnect conn1
 	conn1.Close()
 	time.Sleep(100 * time.Millisecond)
 
 	// Sending message after disconnect should not panic
-	writeJSON(t, conn3, Message{Type: "message", Text: "after disconnect"})
+	writeJSON(t, conn3, userMessage("after disconnect"))
 	time.Sleep(50 * time.Millisecond)
 
 	// conn2 should still receive
 	msg := readMsgTimeout(t, conn2, time.Second)
-	if msg == nil || msg.Text != "after disconnect" {
+	if !isUserMessage(msg) || messageText(msg) != "after disconnect" {
 		t.Errorf("conn2: expected 'after disconnect', got %+v", msg)
 	}
 }
@@ -789,16 +941,16 @@ func TestSlowClientDropsMessages(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Create a "slow" client that never reads
-	slowConn := env.connectAndJoin("slow", "main", []string{"message"}, []string{"message"})
-	sender := env.connectAndJoin("sender", "main", []string{"message"}, []string{"message"})
-	fast := env.connectAndJoin("fast", "main", []string{"message"}, []string{"message"})
+	slowConn := env.connectAndJoin("slow", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
+	sender := env.connectAndJoin("sender", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
+	fast := env.connectAndJoin("fast", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
 
 	// Stop reading from slow client (simulate slow consumer)
 	// Just flood messages — sendCh is 64 deep, so 100 should overflow
 	_ = slowConn // prevent GC
 
 	for i := 0; i < 100; i++ {
-		writeJSON(t, sender, Message{Type: "message", Text: fmt.Sprintf("msg-%d", i)})
+		writeJSON(t, sender, userMessage(fmt.Sprintf("msg-%d", i)))
 	}
 	time.Sleep(100 * time.Millisecond)
 
@@ -827,7 +979,7 @@ func TestConcurrentMessages(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		c := env.connectAndJoin(
 			fmt.Sprintf("client-%d", i), "main",
-			[]string{"message"}, []string{"message"},
+			[]string{TopicMessageUser}, []string{TopicMessageUser},
 		)
 		clients = append(clients, c)
 	}
@@ -838,7 +990,7 @@ func TestConcurrentMessages(t *testing.T) {
 		wg.Add(1)
 		go func(idx int, conn *websocket.Conn) {
 			defer wg.Done()
-			writeJSON(t, conn, Message{Type: "message", Text: fmt.Sprintf("hello from %d", idx)})
+			writeJSON(t, conn, userMessage(fmt.Sprintf("hello from %d", idx)))
 		}(i, c)
 	}
 	wg.Wait()
@@ -863,15 +1015,15 @@ func TestConcurrentMessages(t *testing.T) {
 func TestSessionBusyQueuesConcurrentRootMessagesAndDispatchesAfterDone(t *testing.T) {
 	env := newTestEnv(t)
 	gateway := env.connectAndJoin("gateway", "main",
-		[]string{"message", "cancel"},
+		[]string{TopicMessageUser, TopicTurnCancel},
 		[]string{"error"})
 	driver := env.connectAndJoin("driver", "main",
-		[]string{"done"},
-		[]string{"message", "cancel"})
+		[]string{TopicTurnDone},
+		[]string{TopicMessageUser, TopicTurnCancel})
 
-	writeJSON(t, gateway, Message{Type: "message", Text: "first"})
+	writeJSON(t, gateway, userMessage("first"))
 	first := readMsg(t, driver)
-	if first.Type != "message" || first.Text != "first" {
+	if !isUserMessage(&first) || messageText(&first) != "first" {
 		t.Fatalf("expected first turn message, got %+v", first)
 	}
 
@@ -883,16 +1035,16 @@ func TestSessionBusyQueuesConcurrentRootMessagesAndDispatchesAfterDone(t *testin
 		t.Fatal("session should be busy after first root message")
 	}
 
-	writeJSON(t, gateway, Message{Type: "cancel"})
+	writeJSON(t, gateway, turnCancel())
 	cancel := readMsg(t, driver)
-	if cancel.Type != "cancel" {
+	if cancel.Type != string(MsgEvent) || cancel.Topic != TopicTurnCancel {
 		t.Fatalf("expected cancel to reach driver, got %+v", cancel)
 	}
 	if !sess.CancelRequested() {
 		t.Fatal("session should remember cancel request while turn is inflight")
 	}
 
-	writeJSON(t, gateway, Message{Type: "message", Text: "second"})
+	writeJSON(t, gateway, userMessage("second"))
 	if errMsg := readMsgTimeout(t, gateway, 100*time.Millisecond); errMsg != nil {
 		t.Fatalf("expected queued message without busy error, got %+v", errMsg)
 	}
@@ -900,9 +1052,9 @@ func TestSessionBusyQueuesConcurrentRootMessagesAndDispatchesAfterDone(t *testin
 		t.Fatalf("pending input count = %d, want 1", got)
 	}
 
-	writeJSON(t, driver, Message{Type: "done"})
+	writeJSON(t, driver, turnDone())
 	second := readMsg(t, driver)
-	if second.Type != "message" || second.Text != "second" {
+	if !isUserMessage(&second) || messageText(&second) != "second" {
 		t.Fatalf("expected queued second message after done, got %+v", second)
 	}
 	if !sess.IsBusy() {
@@ -915,54 +1067,77 @@ func TestSessionBusyQueuesConcurrentRootMessagesAndDispatchesAfterDone(t *testin
 		t.Fatalf("pending input count = %d, want 0", got)
 	}
 
-	writeJSON(t, driver, Message{Type: "done"})
+	writeJSON(t, driver, turnDone())
 	time.Sleep(50 * time.Millisecond)
 	if sess.IsBusy() {
 		t.Fatal("session should stop being busy after queued turn done")
 	}
 
-	writeJSON(t, gateway, Message{Type: "message", Text: "third"})
+	writeJSON(t, gateway, userMessage("third"))
 	third := readMsg(t, driver)
-	if third.Type != "message" || third.Text != "third" {
+	if !isUserMessage(&third) || messageText(&third) != "third" {
 		t.Fatalf("expected turn to resume after done, got %+v", third)
+	}
+}
+
+func TestTurnCancelUsesExplicitTargetSession(t *testing.T) {
+	env := newTestEnv(t)
+	gateway := env.connectAndJoin("gateway", "main", []string{TopicTurnCancel}, []string{"error"})
+	driver := env.connectAndJoin("driver", "other", []string{TopicTurnDone}, []string{TopicTurnCancel})
+
+	cancel := turnCancel()
+	cancel.Session = "other"
+	writeJSON(t, gateway, cancel)
+
+	routed := readMsg(t, driver)
+	if routed.Type != string(MsgEvent) || routed.Topic != TopicTurnCancel {
+		t.Fatalf("expected explicit-session cancel to reach other driver, got %+v", routed)
 	}
 }
 
 func TestQueuedMessagesPreserveEnvelope(t *testing.T) {
 	env := newTestEnv(t)
 	gateway := env.connectAndJoin("gateway", "main",
-		[]string{"message"},
+		[]string{TopicMessageUser},
 		[]string{"error"})
 	driver := env.connectAndJoin("driver", "main",
-		[]string{"done"},
-		[]string{"message"})
+		[]string{TopicTurnDone},
+		[]string{TopicMessageUser})
 
-	writeJSON(t, gateway, Message{Type: "message", Text: "first"})
+	writeJSON(t, gateway, userMessage("first"))
 	_ = readMsg(t, driver)
 
 	meta := json.RawMessage(`{"source":"timer","timer_id":"timer-1"}`)
-	writeJSON(t, gateway, Message{Type: "message", ID: "timer-1", Text: "queued", Meta: meta})
-	writeJSON(t, driver, Message{Type: "done"})
+	queuedInput := userMessage("queued")
+	queuedInput.ID = "timer-1"
+	queuedInput.Meta = meta
+	writeJSON(t, gateway, queuedInput)
+	writeJSON(t, driver, turnDone())
 
 	queued := readMsg(t, driver)
-	if queued.ID != "timer-1" || queued.Text != "queued" || string(queued.Meta) != string(meta) {
+	if queued.ID != "timer-1" || !isUserMessage(&queued) || messageText(&queued) != "queued" {
 		t.Fatalf("queued message envelope not preserved: %+v meta=%s", queued, string(queued.Meta))
+	}
+	var gotMeta map[string]any
+	if err := json.Unmarshal(queued.Meta, &gotMeta); err != nil {
+		t.Fatalf("queued message meta is invalid: %v", err)
+	}
+	if gotMeta["source"] != "timer" || gotMeta["timer_id"] != "timer-1" {
+		t.Fatalf("queued message user meta not preserved: %+v", gotMeta)
+	}
+	if _, ok := gotMeta["kernel"].(map[string]any); !ok {
+		t.Fatalf("queued message missing kernel meta: %+v", gotMeta)
 	}
 }
 
 func TestExecWithSpecialCharacters(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.connectAndJoin("driver", "main",
-		[]string{"tool_use"},
-		[]string{"init", "tool_result"})
+		[]string{TopicToolCall},
+		[]string{TopicSessionInit, TopicToolResult})
 	readMsg(t, conn) // init
 
-	writeJSON(t, conn, Message{
-		Type:  "tool_use",
-		ID:    "t5",
-		Name:  testShellToolName,
-		Input: json.RawMessage(`{"command":"echo 'hello world'"}`),
-	})
+	writeJSON(t, conn, toolCall("t5", testShellToolName, json.RawMessage(`{"command":"echo 'hello world'"}`)))
 
 	msg := readMsg(t, conn)
 	if msg.Output != "hello world" {
@@ -975,23 +1150,18 @@ func TestToolResultRoutedToCorrectSession(t *testing.T) {
 
 	// Session A
 	connA := env.connectAndJoin("driver-a", "sess-a",
-		[]string{"tool_use"},
-		[]string{"init", "tool_result"})
+		[]string{TopicToolCall},
+		[]string{TopicSessionInit, TopicToolResult})
 	readMsg(t, connA) // init
 
 	// Session B
 	connB := env.connectAndJoin("driver-b", "sess-b",
-		[]string{"tool_use"},
-		[]string{"init", "tool_result"})
+		[]string{TopicToolCall},
+		[]string{TopicSessionInit, TopicToolResult})
 	readMsg(t, connB) // init
 
 	// EXEC from session A
-	writeJSON(t, connA, Message{
-		Type:  "tool_use",
-		ID:    "ta1",
-		Name:  testShellToolName,
-		Input: json.RawMessage(`{"command":"echo from_a"}`),
-	})
+	writeJSON(t, connA, toolCall("ta1", testShellToolName, json.RawMessage(`{"command":"echo from_a"}`)))
 
 	// A should receive result
 	msgA := readMsg(t, connA)
@@ -1012,7 +1182,7 @@ func TestGoroutineLeaks(t *testing.T) {
 	env := newTestEnv(t)
 	for i := 0; i < 5; i++ {
 		c := env.connectAndJoin(fmt.Sprintf("c%d", i), "main",
-			[]string{"message"}, []string{"message"})
+			[]string{TopicMessageUser}, []string{TopicMessageUser})
 		c.Close()
 	}
 	time.Sleep(500 * time.Millisecond)
@@ -1028,32 +1198,27 @@ func TestGoroutineLeaks(t *testing.T) {
 	}
 }
 
-// TestParallelToolUseSameSession simulates the LLM sending multiple tool_use
+// TestParallelToolUseSameSession simulates the LLM sending multiple tool.call
 // requests from a single session in quick succession (batch tool calls).
 // All results must come back with correct IDs and none should be lost.
 func TestParallelToolUseSameSession(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.connectAndJoin("driver", "main",
-		[]string{"tool_use"},
-		[]string{"init", "tool_result"})
+		[]string{TopicToolCall},
+		[]string{TopicSessionInit, TopicToolResult})
 	readMsg(t, conn) // init
 
 	n := 5
-	// Fire N EXEC tool_use requests as fast as possible (simulates batch from LLM)
+	// Fire N EXEC tool.call requests as fast as possible (simulates batch from LLM)
 	for i := range n {
-		writeJSON(t, conn, Message{
-			Type:  "tool_use",
-			ID:    fmt.Sprintf("batch-%d", i),
-			Name:  testShellToolName,
-			Input: json.RawMessage(fmt.Sprintf(`{"command":"sleep 0.3 && echo result-%d"}`, i)),
-		})
+		writeJSON(t, conn, toolCall(fmt.Sprintf("batch-%d", i), testShellToolName, json.RawMessage(fmt.Sprintf(`{"command":"sleep 0.3 && echo result-%d"}`, i))))
 	}
 
 	// Collect all N results
 	results := make(map[string]string) // id → output
 	for range n {
 		msg := readMsg(t, conn)
-		if msg.Type != "tool_result" {
+		if !isToolResult(&msg) {
 			t.Fatalf("expected tool_result, got %s", msg.Type)
 		}
 		results[msg.ID] = msg.Output
@@ -1077,8 +1242,8 @@ func TestParallelToolUseSameSession(t *testing.T) {
 func TestLongRunningExecBatch(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.connectAndJoin("driver", "main",
-		[]string{"tool_use"},
-		[]string{"init", "tool_result"})
+		[]string{TopicToolCall},
+		[]string{TopicSessionInit, TopicToolResult})
 	readMsg(t, conn) // init
 
 	n := 4
@@ -1086,12 +1251,7 @@ func TestLongRunningExecBatch(t *testing.T) {
 
 	// Fire N slow EXEC commands (each sleeps 0.5s)
 	for i := range n {
-		writeJSON(t, conn, Message{
-			Type:  "tool_use",
-			ID:    fmt.Sprintf("slow-%d", i),
-			Name:  testShellToolName,
-			Input: json.RawMessage(fmt.Sprintf(`{"command":"sleep 0.5 && echo done-%d"}`, i)),
-		})
+		writeJSON(t, conn, toolCall(fmt.Sprintf("slow-%d", i), testShellToolName, json.RawMessage(fmt.Sprintf(`{"command":"sleep 0.5 && echo done-%d"}`, i))))
 	}
 
 	// Collect all results
@@ -1124,22 +1284,16 @@ func TestToolResultsNotLeakedAcrossSessions(t *testing.T) {
 	env := newTestEnv(t)
 
 	connA := env.connectAndJoin("driver-a", "sess-a",
-		[]string{"tool_use"}, []string{"init", "tool_result"})
+		[]string{TopicToolCall}, []string{TopicSessionInit, TopicToolResult})
 	readMsg(t, connA) // init
 
 	connB := env.connectAndJoin("driver-b", "sess-b",
-		[]string{"tool_use"}, []string{"init", "tool_result"})
+		[]string{TopicToolCall}, []string{TopicSessionInit, TopicToolResult})
 	readMsg(t, connB) // init
 
 	// Both sessions fire EXEC at the same time
-	writeJSON(t, connA, Message{
-		Type: "tool_use", ID: "a1", Name: testShellToolName,
-		Input: json.RawMessage(`{"command":"sleep 0.2 && echo from-a"}`),
-	})
-	writeJSON(t, connB, Message{
-		Type: "tool_use", ID: "b1", Name: testShellToolName,
-		Input: json.RawMessage(`{"command":"sleep 0.2 && echo from-b"}`),
-	})
+	writeJSON(t, connA, toolCall("a1", testShellToolName, json.RawMessage(`{"command":"sleep 0.2 && echo from-a"}`)))
+	writeJSON(t, connB, toolCall("b1", testShellToolName, json.RawMessage(`{"command":"sleep 0.2 && echo from-b"}`)))
 
 	// Each session should get exactly one result, with the correct content
 	msgA := readMsg(t, connA)
@@ -1184,21 +1338,12 @@ func TestMaxClients(t *testing.T) {
 
 func TestProtocolVersionInConnectedResponse(t *testing.T) {
 	env := newTestEnv(t)
-	conn := env.dial()
-	writeJSON(t, conn, Message{
-		Type:      "connect",
-		Name:      "versioned-client",
-		Sends:     []string{"message"},
-		Receives:  []string{"init"},
-		Version:   ProtocolVersion,
-		AuthToken: env.Token,
-	})
-	msg := readMsg(t, conn)
-	if msg.Type != "connected" {
-		t.Fatalf("expected connected, got %s", msg.Type)
+	_, msg := env.connectAck("versioned-client", []string{TopicMessageUser}, []string{TopicSessionInit})
+	if msg.Type != string(MsgHelloAck) {
+		t.Fatalf("expected hello_ack, got %s", msg.Type)
 	}
-	if msg.Version != ProtocolVersion {
-		t.Errorf("expected version %d, got %d", ProtocolVersion, msg.Version)
+	if msg.V != ProtocolVersion {
+		t.Errorf("expected version %d, got %d", ProtocolVersion, msg.V)
 	}
 }
 
@@ -1206,10 +1351,12 @@ func TestLegacyClientRejected(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.dial()
 	// Version 0 (omitted) — must be rejected; clients must declare PROTOCOL_VERSION.
-	writeJSON(t, conn, Message{
-		Type:  "connect",
-		Name:  "legacy-client",
-		Sends: []string{"message"},
+	writeRawJSON(t, conn, map[string]any{
+		"type": string(MsgHello),
+		"data": map[string]any{
+			"name":        "legacy-client",
+			"send_topics": []string{TopicMessageUser},
+		},
 	})
 	msg := readMsg(t, conn)
 	if msg.Type != "error" {
@@ -1220,15 +1367,24 @@ func TestLegacyClientRejected(t *testing.T) {
 	}
 }
 
+func writeRawJSON(t *testing.T, conn *websocket.Conn, v any) {
+	t.Helper()
+	if err := conn.WriteJSON(v); err != nil {
+		t.Fatalf("writeJSON failed: %v", err)
+	}
+}
+
 func TestUnsupportedProtocolVersionRejected(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.dial()
 	writeJSON(t, conn, Message{
-		Type:      "connect",
-		Name:      "future-client",
-		Sends:     []string{"message"},
-		Version:   999, // future incompatible version
-		AuthToken: env.Token,
+		V:    999, // future incompatible version
+		Type: string(MsgHello),
+		Data: mustMarshalRaw(map[string]any{
+			"name":        "future-client",
+			"send_topics": []string{TopicMessageUser},
+			"auth_token":  env.Token,
+		}),
 	})
 	msg := readMsg(t, conn)
 	if msg.Type != "error" {
@@ -1249,10 +1405,10 @@ func TestValidateMessageMissingType(t *testing.T) {
 	}
 }
 
-func TestValidateConnectMissingName(t *testing.T) {
-	err := validateMessage(&Message{Type: "connect"})
+func TestValidateHelloMissingName(t *testing.T) {
+	err := validateMessage(&Message{V: ProtocolVersion, Type: string(MsgHello), Data: mustMarshalRaw(map[string]any{})})
 	if err == nil {
-		t.Fatal("expected error for connect without name")
+		t.Fatal("expected error for hello without name")
 	}
 	if !strings.Contains(err.Error(), "missing name") {
 		t.Errorf("unexpected error: %v", err)
@@ -1260,7 +1416,7 @@ func TestValidateConnectMissingName(t *testing.T) {
 }
 
 func TestValidateJoinMissingSession(t *testing.T) {
-	err := validateMessage(&Message{Type: "join"})
+	err := validateMessage(&Message{V: ProtocolVersion, Type: "join"})
 	if err == nil {
 		t.Fatal("expected error for join without session")
 	}
@@ -1269,36 +1425,36 @@ func TestValidateJoinMissingSession(t *testing.T) {
 	}
 }
 
-func TestValidateToolUseMissingFields(t *testing.T) {
-	err := validateMessage(&Message{Type: "tool_use"})
+func TestValidateToolCallMissingFields(t *testing.T) {
+	err := validateMessage(&Message{V: ProtocolVersion, Type: string(MsgRequest), Topic: TopicToolCall})
 	if err == nil {
-		t.Fatal("expected error for tool_use without id/name")
+		t.Fatal("expected error for tool.call without id/name")
 	}
 	if !strings.Contains(err.Error(), "missing id") {
 		t.Errorf("unexpected error: %v", err)
 	}
 
-	err = validateMessage(&Message{Type: "tool_use", ID: "t1"})
+	err = validateMessage(&Message{V: ProtocolVersion, Type: string(MsgRequest), Topic: TopicToolCall, ID: "t1"})
 	if err == nil {
-		t.Fatal("expected error for tool_use without name")
+		t.Fatal("expected error for tool.call without name")
 	}
 	if !strings.Contains(err.Error(), "missing name") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
 
-func TestValidateHookResultMissingFields(t *testing.T) {
-	err := validateMessage(&Message{Type: "hook_result"})
+func TestValidateHookReplyMissingFields(t *testing.T) {
+	err := validateMessage(&Message{V: ProtocolVersion, Type: "hook_reply"})
 	if err == nil {
-		t.Fatal("expected error for hook_result without id/action")
+		t.Fatal("expected error for hook_reply without id/action")
 	}
 	if !strings.Contains(err.Error(), "missing id") {
 		t.Errorf("unexpected error: %v", err)
 	}
 
-	err = validateMessage(&Message{Type: "hook_result", ID: "h1"})
+	err = validateMessage(&Message{V: ProtocolVersion, Type: "hook_reply", ID: "h1"})
 	if err == nil {
-		t.Fatal("expected error for hook_result without action")
+		t.Fatal("expected error for hook_reply without action")
 	}
 	if !strings.Contains(err.Error(), "missing action") {
 		t.Errorf("unexpected error: %v", err)
@@ -1307,13 +1463,13 @@ func TestValidateHookResultMissingFields(t *testing.T) {
 
 func TestValidateValidMessages(t *testing.T) {
 	valid := []*Message{
-		{Type: "connect", Name: "test", Sends: []string{"message"}},
-		{Type: "join", Session: "main"},
-		{Type: "message", Text: "hello"},
-		{Type: "tool_use", ID: "t1", Name: "shell_exec"},
-		{Type: "hook_result", ID: "h1", Action: "pass"},
-		{Type: "done"},
-		{Type: "cancel"},
+		{V: ProtocolVersion, Type: string(MsgHello), Data: mustMarshalRaw(map[string]any{"name": "test", "send_topics": []string{TopicMessageUser}})},
+		{V: ProtocolVersion, Type: "join", Session: "main"},
+		{V: ProtocolVersion, Type: string(MsgEvent), Topic: TopicMessageUser, Data: mustMarshalRaw(map[string]any{"text": "hello"})},
+		{V: ProtocolVersion, Type: string(MsgRequest), Topic: TopicToolCall, ID: "t1", Name: "shell_exec"},
+		{V: ProtocolVersion, Type: "hook_reply", ID: "h1", Action: "pass"},
+		{V: ProtocolVersion, Type: string(MsgEvent), Topic: TopicTurnDone},
+		{V: ProtocolVersion, Type: string(MsgEvent), Topic: TopicTurnCancel},
 	}
 	for _, msg := range valid {
 		if err := validateMessage(msg); err != nil {

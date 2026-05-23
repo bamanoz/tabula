@@ -99,7 +99,7 @@ func (r *RuntimeRegistry) RegisterHello(runtimeID string, conn runtimeapi.Runtim
 	if len(tenantsServed) > 0 && len(tenantsServed[0]) > 0 {
 		tenants = append([]string(nil), tenantsServed[0]...)
 	}
-	attachment := &RuntimeAttachment{ID: runtimeID, Attached: true, PID: pid, ConnectedAt: time.Now().UTC(), TenantsServed: tenants, Capabilities: append([]runtimeapi.Capability(nil), capabilities...), conn: conn, targetStatus: make(map[string]runtimeTargetStatus)}
+	attachment := &RuntimeAttachment{ID: runtimeID, Attached: true, PID: pid, ConnectedAt: time.Now().UTC(), TenantsServed: tenants, Capabilities: normalizeRuntimeCapabilities(capabilities, tenants), conn: conn, targetStatus: make(map[string]runtimeTargetStatus)}
 	if closer, ok := conn.(interface{ Done() <-chan struct{} }); ok {
 		attachment.done = closer.Done()
 	}
@@ -281,10 +281,11 @@ func (r *RuntimeRegistry) ApplyCatalogUpdate(runtimeID string, update wire.Catal
 	if attachment == nil || !attachment.Attached {
 		return runtimeapi.Capability{}, false, fmt.Errorf("runtime %q is not attached", runtimeID)
 	}
-	attachment.TenantsServed = mergeRuntimeTenants(attachment.TenantsServed, update.Tenants)
+	updateTenants := normalizedCapabilityTenants(update.Tenants, attachment.TenantsServed)
+	attachment.TenantsServed = mergeRuntimeTenants(attachment.TenantsServed, updateTenants)
 	capability := runtimeapi.Capability{
 		Target:   update.Target,
-		Tenants:  append([]string(nil), update.Tenants...),
+		Tenants:  updateTenants,
 		Tools:    append([]wire.ToolSpec(nil), update.Tools...),
 		Hooks:    append([]wire.HookSpec(nil), update.Hooks...),
 		Revision: update.Revision,
@@ -296,7 +297,10 @@ func (r *RuntimeRegistry) ApplyCatalogUpdate(runtimeID string, update wire.Catal
 	}
 	replaced := false
 	for i := range attachment.Capabilities {
-		if sameRuntimeCapability(attachment.Capabilities[i], update.Target, update.Tenants) {
+		if sameRuntimeCapability(attachment.Capabilities[i], update.Target, updateTenants) {
+			if capabilityRevisionStale(attachment.Capabilities[i].Revision, update.Revision) {
+				return attachment.Capabilities[i], false, nil
+			}
 			attachment.Capabilities[i] = capability
 			replaced = true
 			break
@@ -310,6 +314,13 @@ func (r *RuntimeRegistry) ApplyCatalogUpdate(runtimeID string, update wire.Catal
 	status.Message = runtimeCapabilityDiagnostic(update.State)
 	attachment.targetStatus[runtimeTargetKey(update.Target)] = status
 	return capability, true, nil
+}
+
+func capabilityRevisionStale(current, next int64) bool {
+	if current <= 0 || next <= 0 {
+		return false
+	}
+	return next < current
 }
 
 func (r *RuntimeRegistry) ApplyLifecycleNotice(runtimeID string, notice wire.LifecycleNotice) (runtimeapi.Capability, bool, error) {
@@ -430,6 +441,28 @@ func sameRuntimeTarget(left, right wire.Target) bool {
 
 func sameRuntimeCapability(left runtimeapi.Capability, target wire.Target, tenants []string) bool {
 	return sameRuntimeTarget(left.Target, target) && sameTenantSet(left.Tenants, tenants)
+}
+
+func normalizedCapabilityTenants(updateTenants, servedTenants []string) []string {
+	if len(updateTenants) > 0 {
+		return append([]string(nil), updateTenants...)
+	}
+	if len(servedTenants) > 0 {
+		return append([]string(nil), servedTenants...)
+	}
+	return []string{"*"}
+}
+
+func normalizeRuntimeCapabilities(capabilities []runtimeapi.Capability, servedTenants []string) []runtimeapi.Capability {
+	if len(capabilities) == 0 {
+		return nil
+	}
+	items := make([]runtimeapi.Capability, 0, len(capabilities))
+	for _, capability := range capabilities {
+		capability.Tenants = normalizedCapabilityTenants(capability.Tenants, servedTenants)
+		items = append(items, capability)
+	}
+	return items
 }
 
 func sameTenantSet(left, right []string) bool {

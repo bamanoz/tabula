@@ -17,17 +17,19 @@ func (e *testEnv) connectHook(name string, hooks []HookSubscription) *websocket.
 	e.t.Helper()
 	conn := e.dial()
 	writeJSON(e.t, conn, Message{
-		Type:      "connect",
-		Name:      name,
-		Sends:     []string{"hook_result"},
-		Receives:  []string{"hook"},
-		Hooks:     hooks,
-		Version:   ProtocolVersion,
-		AuthToken: e.Token,
+		V:    ProtocolVersion,
+		Type: string(MsgHello),
+		Data: mustMarshalRaw(map[string]any{
+			"name":           name,
+			"send_topics":    []string{"hook_reply"},
+			"receive_topics": []string{"hook"},
+			"hooks":          hooks,
+			"auth_token":     e.Token,
+		}),
 	})
 	msg := readMsg(e.t, conn)
-	if msg.Type != "connected" {
-		e.t.Fatalf("expected connected, got %s", msg.Type)
+	if msg.Type != string(MsgHelloAck) {
+		e.t.Fatalf("expected hello_ack, got %+v", msg)
 	}
 	return conn
 }
@@ -43,23 +45,23 @@ func TestHookVoid_FireAndForget(t *testing.T) {
 	})
 
 	// Gateway + driver
-	gw := env.connectAndJoin("gw", "s1", []string{"message"}, []string{"done"})
-	drv := env.connectAndJoin("drv", "s1", []string{"done"}, []string{"message"})
+	gw := env.connectAndJoin("gw", "s1", []string{TopicMessageUser}, []string{TopicTurnDone})
+	drv := env.connectAndJoin("drv", "s1", []string{TopicTurnDone}, []string{TopicMessageUser})
 
 	// Gateway sends message
-	writeJSON(t, gw, Message{Type: "message", Text: "hello"})
+	writeJSON(t, gw, userMessage("hello"))
 	// Driver receives message
 	msg := readMsg(t, drv)
-	if msg.Type != "message" || msg.Text != "hello" {
-		t.Fatalf("driver expected message/hello, got %s/%s", msg.Type, msg.Text)
+	if !isUserMessage(&msg) || messageText(&msg) != "hello" {
+		t.Fatalf("driver expected message/hello, got %+v", msg)
 	}
 
 	// Driver sends done
-	writeJSON(t, drv, Message{Type: "done"})
+	writeJSON(t, drv, turnDone())
 	// Gateway receives done
 	msg = readMsg(t, gw)
-	if msg.Type != "done" {
-		t.Fatalf("gw expected done, got %s", msg.Type)
+	if msg.Type != string(MsgEvent) || msg.Topic != TopicTurnDone {
+		t.Fatalf("gw expected turn.done, got %+v", msg)
 	}
 
 	// Hook subscriber should receive after_message hook
@@ -68,7 +70,7 @@ func TestHookVoid_FireAndForget(t *testing.T) {
 		t.Fatal("hook subscriber did not receive after_message hook")
 	}
 	if hookMsg.Type != "hook" {
-		t.Fatalf("expected hook, got %s", hookMsg.Type)
+		t.Fatalf("expected hook, got %+v", hookMsg)
 	}
 	if hookMsg.Name != "after_message" {
 		t.Fatalf("expected event after_message, got %s", hookMsg.Name)
@@ -84,7 +86,7 @@ func TestHookVoid_SessionStart(t *testing.T) {
 	})
 
 	// Client joins session — hook receives session_start synchronously
-	conn := env.connect("cli", []string{"message"}, []string{})
+	conn := env.connect("cli", []string{TopicMessageUser}, []string{})
 
 	go func() {
 		writeJSON(t, conn, Message{Type: "join", Session: "s1"})
@@ -106,14 +108,14 @@ func TestHookVoid_SessionStart(t *testing.T) {
 
 	// Respond with pass so join completes
 	writeJSON(t, hook, Message{
-		Type:   "hook_result",
+		Type:   "hook_reply",
 		ID:     hookMsg.ID,
 		Action: "pass",
 	})
 
 	joined := readMsg(t, conn)
 	if joined.Type != "joined" {
-		t.Fatalf("expected joined, got %s", joined.Type)
+		t.Fatalf("expected joined, got %+v", joined)
 	}
 }
 
@@ -122,28 +124,28 @@ func TestHookVoid_SessionJoinFiresOnEveryJoin(t *testing.T) {
 
 	hook := env.connectHook("logger", []HookSubscription{{Event: "session_join", Priority: 0}})
 
-	first := env.connect("cli-1", []string{"message"}, []string{})
+	first := env.connect("cli-1", []string{TopicMessageUser}, []string{})
 	go func() {
 		writeJSON(t, first, Message{Type: "join", Session: "s1"})
 	}()
 
 	joinOne := readMsg(t, first)
 	if joinOne.Type != "joined" {
-		t.Fatalf("expected joined, got %s", joinOne.Type)
+		t.Fatalf("expected joined, got %+v", joinOne)
 	}
 	joinHookOne := readMsg(t, hook)
 	if joinHookOne.Type != "hook" || joinHookOne.Name != "session_join" {
 		t.Fatalf("expected hook/session_join, got %s/%s", joinHookOne.Type, joinHookOne.Name)
 	}
 
-	second := env.connect("cli-2", []string{"message"}, []string{})
+	second := env.connect("cli-2", []string{TopicMessageUser}, []string{})
 	go func() {
 		writeJSON(t, second, Message{Type: "join", Session: "s1"})
 	}()
 
 	joinTwo := readMsg(t, second)
 	if joinTwo.Type != "joined" {
-		t.Fatalf("expected joined, got %s", joinTwo.Type)
+		t.Fatalf("expected joined, got %+v", joinTwo)
 	}
 	joinHookTwo := readMsg(t, hook)
 	if joinHookTwo.Type != "hook" || joinHookTwo.Name != "session_join" {
@@ -158,7 +160,7 @@ func TestHookSessionStartCanBlockJoin(t *testing.T) {
 		{Event: "session_start", Priority: 100},
 	})
 
-	conn := env.connect("cli", []string{"message"}, []string{"init", "error"})
+	conn := env.connect("cli", []string{TopicMessageUser}, []string{TopicSessionInit, "error"})
 
 	go func() {
 		writeJSON(t, conn, Message{Type: "join", Session: "s1"})
@@ -170,7 +172,7 @@ func TestHookSessionStartCanBlockJoin(t *testing.T) {
 	}
 
 	writeJSON(t, hook, Message{
-		Type:   "hook_result",
+		Type:   "hook_reply",
 		ID:     hookMsg.ID,
 		Action: "block",
 		Reason: "denied",
@@ -179,26 +181,26 @@ func TestHookSessionStartCanBlockJoin(t *testing.T) {
 	// Blocked join sends only error, not joined+error.
 	errMsg := readMsg(t, conn)
 	if errMsg.Type != "error" {
-		t.Fatalf("expected error, got %s", errMsg.Type)
+		t.Fatalf("expected error, got %+v", errMsg)
 	}
-	if !strings.Contains(errMsg.Text, "session blocked by hook") {
+	if !strings.Contains(errMsg.Text, "session blocked") {
 		t.Fatalf("unexpected error text: %q", errMsg.Text)
 	}
 
 	noInit := readMsgTimeout(t, conn, 300*time.Millisecond)
 	if noInit != nil {
-		t.Fatalf("expected no init after blocked session start, got %s", noInit.Type)
+		t.Fatalf("expected no init after blocked session start, got %+v", noInit)
 	}
 }
 
-func TestHookResultRequiresSubscriberIdentity(t *testing.T) {
+func TestHookReplyRequiresSubscriberIdentity(t *testing.T) {
 	env := newTestEnv(t)
 
 	hook := env.connectHook("guard", []HookSubscription{
 		{Event: "session_start", Priority: 100},
 	})
-	attacker := env.connect("attacker", []string{"hook_result"}, []string{})
-	conn := env.connect("cli", []string{"message"}, []string{"init"})
+	attacker := env.connect("attacker", []string{"hook_reply"}, []string{})
+	conn := env.connect("cli", []string{TopicMessageUser}, []string{TopicSessionInit})
 
 	go func() {
 		writeJSON(t, conn, Message{Type: "join", Session: "s1"})
@@ -213,14 +215,14 @@ func TestHookResultRequiresSubscriberIdentity(t *testing.T) {
 		t.Fatalf("expected hook/session_start, got %s/%s", hookMsg.Type, hookMsg.Name)
 	}
 
-	writeJSON(t, attacker, Message{Type: "hook_result", ID: hookMsg.ID, Action: "pass"})
+	writeJSON(t, attacker, Message{Type: "hook_reply", ID: hookMsg.ID, Action: "pass"})
 	select {
 	case msg := <-joinedCh:
-		t.Fatalf("wrong-client hook_result completed join with %s", msg.Type)
+		t.Fatalf("wrong-client hook_reply completed join with %+v", msg)
 	case <-time.After(200 * time.Millisecond):
 	}
 
-	writeJSON(t, hook, Message{Type: "hook_result", ID: hookMsg.ID, Action: "pass"})
+	writeJSON(t, hook, Message{Type: "hook_reply", ID: hookMsg.ID, Action: "pass"})
 	var joined Message
 	select {
 	case joined = <-joinedCh:
@@ -228,7 +230,7 @@ func TestHookResultRequiresSubscriberIdentity(t *testing.T) {
 		t.Fatal("timed out waiting for joined after intended subscriber response")
 	}
 	if joined.Type != "joined" {
-		t.Fatalf("expected joined after intended subscriber response, got %s", joined.Type)
+		t.Fatalf("expected joined after intended subscriber response, got %+v", joined)
 	}
 }
 
@@ -239,7 +241,7 @@ func TestHookSessionStartCanInjectInitContext(t *testing.T) {
 		{Event: "session_start", Priority: 100},
 	})
 
-	conn := env.connect("cli", []string{"message"}, []string{"init"})
+	conn := env.connect("cli", []string{TopicMessageUser}, []string{TopicSessionInit})
 
 	go func() {
 		writeJSON(t, conn, Message{Type: "join", Session: "s1"})
@@ -251,7 +253,7 @@ func TestHookSessionStartCanInjectInitContext(t *testing.T) {
 	}
 
 	writeJSON(t, hook, Message{
-		Type:    "hook_result",
+		Type:    "hook_reply",
 		ID:      hookMsg.ID,
 		Action:  "modify",
 		Payload: json.RawMessage(`{"context":"extra join context"}`),
@@ -259,29 +261,29 @@ func TestHookSessionStartCanInjectInitContext(t *testing.T) {
 
 	joined := readMsg(t, conn)
 	if joined.Type != "joined" {
-		t.Fatalf("expected joined, got %s", joined.Type)
+		t.Fatalf("expected joined, got %+v", joined)
 	}
 
 	init := readMsg(t, conn)
-	if init.Type != "init" {
-		t.Fatalf("expected init, got %s", init.Type)
+	if !isSessionInit(&init) {
+		t.Fatalf("expected session.init, got %+v", init)
 	}
 	if init.Context != "extra join context" {
 		t.Fatalf("expected init context, got %q", init.Context)
 	}
 
-	second := env.connect("cli-2", []string{"message"}, []string{"init"})
+	second := env.connect("cli-2", []string{TopicMessageUser}, []string{TopicSessionInit})
 	go func() {
 		writeJSON(t, second, Message{Type: "join", Session: "s1"})
 	}()
 
 	joinedSecond := readMsg(t, second)
 	if joinedSecond.Type != "joined" {
-		t.Fatalf("expected joined, got %s", joinedSecond.Type)
+		t.Fatalf("expected joined, got %+v", joinedSecond)
 	}
 	initSecond := readMsg(t, second)
-	if initSecond.Type != "init" {
-		t.Fatalf("expected init, got %s", initSecond.Type)
+	if !isSessionInit(&initSecond) {
+		t.Fatalf("expected session.init, got %+v", initSecond)
 	}
 	if initSecond.Context != "extra join context" {
 		t.Fatalf("expected persisted init context, got %q", initSecond.Context)
@@ -307,7 +309,7 @@ func TestHookSessionStart_ConcatenatesContextAcrossHooks(t *testing.T) {
 		{Event: "session_start", Priority: 10},
 	})
 
-	conn := env.connect("cli", []string{"message"}, []string{"init"})
+	conn := env.connect("cli", []string{TopicMessageUser}, []string{TopicSessionInit})
 
 	go func() {
 		writeJSON(t, conn, Message{Type: "join", Session: "s1"})
@@ -315,7 +317,7 @@ func TestHookSessionStart_ConcatenatesContextAcrossHooks(t *testing.T) {
 
 	h1 := readMsg(t, hookHigh)
 	writeJSON(t, hookHigh, Message{
-		Type:    "hook_result",
+		Type:    "hook_reply",
 		ID:      h1.ID,
 		Action:  "modify",
 		Payload: json.RawMessage(`{"context":"FIRST"}`),
@@ -323,7 +325,7 @@ func TestHookSessionStart_ConcatenatesContextAcrossHooks(t *testing.T) {
 
 	h2 := readMsg(t, hookLow)
 	writeJSON(t, hookLow, Message{
-		Type:    "hook_result",
+		Type:    "hook_reply",
 		ID:      h2.ID,
 		Action:  "modify",
 		Payload: json.RawMessage(`{"context":"SECOND"}`),
@@ -331,8 +333,8 @@ func TestHookSessionStart_ConcatenatesContextAcrossHooks(t *testing.T) {
 
 	_ = readMsg(t, conn) // joined
 	init := readMsg(t, conn)
-	if init.Type != "init" {
-		t.Fatalf("expected init, got %s", init.Type)
+	if !isSessionInit(&init) {
+		t.Fatalf("expected session.init, got %+v", init)
 	}
 	if !strings.Contains(init.Context, "FIRST") || !strings.Contains(init.Context, "SECOND") {
 		t.Fatalf("expected concatenated context with FIRST and SECOND, got %q", init.Context)
@@ -345,21 +347,21 @@ func TestHookBeforePromptBuild_AppendsContextPerJoin(t *testing.T) {
 	startHook := env.connectHook("start", []HookSubscription{{Event: "session_start", Priority: 100}})
 	promptHook := env.connectHook("prompt", []HookSubscription{{Event: "before_prompt_build", Priority: 100}})
 
-	conn := env.connect("cli", []string{"message"}, []string{"init"})
+	conn := env.connect("cli", []string{TopicMessageUser}, []string{TopicSessionInit})
 	go func() {
 		writeJSON(t, conn, Message{Type: "join", Session: "s1"})
 	}()
 
 	startMsg := readMsg(t, startHook)
 	writeJSON(t, startHook, Message{
-		Type:    "hook_result",
+		Type:    "hook_reply",
 		ID:      startMsg.ID,
 		Action:  "modify",
 		Payload: json.RawMessage(`{"context":"BASE"}`),
 	})
 	promptMsg := readMsg(t, promptHook)
 	writeJSON(t, promptHook, Message{
-		Type:    "hook_result",
+		Type:    "hook_reply",
 		ID:      promptMsg.ID,
 		Action:  "modify",
 		Payload: json.RawMessage(`{"context":"PROMPT"}`),
@@ -367,21 +369,21 @@ func TestHookBeforePromptBuild_AppendsContextPerJoin(t *testing.T) {
 
 	_ = readMsg(t, conn) // joined
 	init := readMsg(t, conn)
-	if init.Type != "init" {
-		t.Fatalf("expected init, got %s", init.Type)
+	if !isSessionInit(&init) {
+		t.Fatalf("expected session.init, got %+v", init)
 	}
 	if init.Context != "BASE\n\nPROMPT" {
 		t.Fatalf("expected base + prompt context, got %q", init.Context)
 	}
 
-	second := env.connect("cli-2", []string{"message"}, []string{"init"})
+	second := env.connect("cli-2", []string{TopicMessageUser}, []string{TopicSessionInit})
 	go func() {
 		writeJSON(t, second, Message{Type: "join", Session: "s1"})
 	}()
 
 	secondPromptMsg := readMsg(t, promptHook)
 	writeJSON(t, promptHook, Message{
-		Type:    "hook_result",
+		Type:    "hook_reply",
 		ID:      secondPromptMsg.ID,
 		Action:  "modify",
 		Payload: json.RawMessage(`{"context":"PROMPT"}`),
@@ -389,8 +391,8 @@ func TestHookBeforePromptBuild_AppendsContextPerJoin(t *testing.T) {
 
 	_ = readMsg(t, second) // joined
 	initSecond := readMsg(t, second)
-	if initSecond.Type != "init" {
-		t.Fatalf("expected init, got %s", initSecond.Type)
+	if !isSessionInit(&initSecond) {
+		t.Fatalf("expected session.init, got %+v", initSecond)
 	}
 	if initSecond.Context != "BASE\n\nPROMPT" {
 		t.Fatalf("expected base + prompt context on second join, got %q", initSecond.Context)
@@ -408,12 +410,12 @@ func TestHookModifying_PassThrough(t *testing.T) {
 		{Event: "before_message", Priority: 10},
 	})
 
-	gw := env.connectAndJoin("gw", "s1", []string{"message"}, []string{})
-	drv := env.connectAndJoin("drv", "s1", []string{}, []string{"message"})
+	gw := env.connectAndJoin("gw", "s1", []string{TopicMessageUser}, []string{})
+	drv := env.connectAndJoin("drv", "s1", []string{}, []string{TopicMessageUser})
 
 	// Send message — hook will receive before_message
 	go func() {
-		writeJSON(t, gw, Message{Type: "message", Text: "hello"})
+		writeJSON(t, gw, userMessage("hello"))
 	}()
 
 	// Hook receives before_message
@@ -424,15 +426,15 @@ func TestHookModifying_PassThrough(t *testing.T) {
 
 	// Respond with pass
 	writeJSON(t, hook, Message{
-		Type:   "hook_result",
+		Type:   "hook_reply",
 		ID:     hookMsg.ID,
 		Action: "pass",
 	})
 
 	// Driver should receive original message
 	msg := readMsg(t, drv)
-	if msg.Type != "message" || msg.Text != "hello" {
-		t.Fatalf("driver expected message/hello, got %s/%s", msg.Type, msg.Text)
+	if !isUserMessage(&msg) || messageText(&msg) != "hello" {
+		t.Fatalf("driver expected message/hello, got %+v", msg)
 	}
 }
 
@@ -443,18 +445,18 @@ func TestHookModifying_ModifyText(t *testing.T) {
 		{Event: "before_message", Priority: 10},
 	})
 
-	gw := env.connectAndJoin("gw", "s1", []string{"message"}, []string{})
-	drv := env.connectAndJoin("drv", "s1", []string{}, []string{"message"})
+	gw := env.connectAndJoin("gw", "s1", []string{TopicMessageUser}, []string{})
+	drv := env.connectAndJoin("drv", "s1", []string{}, []string{TopicMessageUser})
 
 	go func() {
-		writeJSON(t, gw, Message{Type: "message", Text: "rm -rf /"})
+		writeJSON(t, gw, userMessage("rm -rf /"))
 	}()
 
 	hookMsg := readMsg(t, hook)
 
 	// Modify the text
 	writeJSON(t, hook, Message{
-		Type:    "hook_result",
+		Type:    "hook_reply",
 		ID:      hookMsg.ID,
 		Action:  "modify",
 		Payload: json.RawMessage(`{"text":"[filtered]"}`),
@@ -462,8 +464,8 @@ func TestHookModifying_ModifyText(t *testing.T) {
 
 	// Driver should receive modified message
 	msg := readMsg(t, drv)
-	if msg.Type != "message" || msg.Text != "[filtered]" {
-		t.Fatalf("driver expected message/[filtered], got %s/%s", msg.Type, msg.Text)
+	if !isUserMessage(&msg) || messageText(&msg) != "[filtered]" {
+		t.Fatalf("driver expected message/[filtered], got %+v", msg)
 	}
 }
 
@@ -474,18 +476,18 @@ func TestHookModifying_Block(t *testing.T) {
 		{Event: "before_message", Priority: 10},
 	})
 
-	gw := env.connectAndJoin("gw", "s1", []string{"message"}, []string{"error"})
-	drv := env.connectAndJoin("drv", "s1", []string{}, []string{"message"})
+	gw := env.connectAndJoin("gw", "s1", []string{TopicMessageUser}, []string{"error"})
+	drv := env.connectAndJoin("drv", "s1", []string{}, []string{TopicMessageUser})
 
 	go func() {
-		writeJSON(t, gw, Message{Type: "message", Text: "evil"})
+		writeJSON(t, gw, userMessage("evil"))
 	}()
 
 	hookMsg := readMsg(t, hook)
 
 	// Block the message
 	writeJSON(t, hook, Message{
-		Type:   "hook_result",
+		Type:   "hook_reply",
 		ID:     hookMsg.ID,
 		Action: "block",
 		Reason: "dangerous",
@@ -494,13 +496,13 @@ func TestHookModifying_Block(t *testing.T) {
 	// Gateway should receive error
 	msg := readMsg(t, gw)
 	if msg.Type != "error" {
-		t.Fatalf("gw expected error, got %s", msg.Type)
+		t.Fatalf("gw expected error, got %+v", msg)
 	}
 
 	// Driver should NOT receive anything
 	noMsg := readMsgTimeout(t, drv, 500*time.Millisecond)
 	if noMsg != nil {
-		t.Fatalf("driver should not receive message, got %s", noMsg.Type)
+		t.Fatalf("driver should not receive message, got %+v", noMsg)
 	}
 }
 
@@ -512,18 +514,18 @@ func TestHookModifying_Timeout(t *testing.T) {
 		{Event: "before_message", Priority: 10},
 	})
 
-	gw := env.connectAndJoin("gw", "s1", []string{"message"}, []string{})
-	drv := env.connectAndJoin("drv", "s1", []string{}, []string{"message"})
+	gw := env.connectAndJoin("gw", "s1", []string{TopicMessageUser}, []string{})
+	drv := env.connectAndJoin("drv", "s1", []string{}, []string{TopicMessageUser})
 
-	writeJSON(t, gw, Message{Type: "message", Text: "hello"})
+	writeJSON(t, gw, userMessage("hello"))
 
 	// Should still deliver after timeout (treated as pass)
 	msg := readMsgTimeout(t, drv, 10*time.Second)
 	if msg == nil {
 		t.Fatal("message should have been delivered after hook timeout")
 	}
-	if msg.Text != "hello" {
-		t.Fatalf("expected hello, got %s", msg.Text)
+	if messageText(msg) != "hello" {
+		t.Fatalf("expected hello, got %+v", msg)
 	}
 }
 
@@ -541,17 +543,17 @@ func TestHookModifying_PriorityOrder(t *testing.T) {
 		{Event: "before_message", Priority: 10},
 	})
 
-	gw := env.connectAndJoin("gw", "s1", []string{"message"}, []string{})
-	drv := env.connectAndJoin("drv", "s1", []string{}, []string{"message"})
+	gw := env.connectAndJoin("gw", "s1", []string{TopicMessageUser}, []string{})
+	drv := env.connectAndJoin("drv", "s1", []string{}, []string{TopicMessageUser})
 
 	go func() {
-		writeJSON(t, gw, Message{Type: "message", Text: "msg"})
+		writeJSON(t, gw, userMessage("msg"))
 	}()
 
 	// High priority hook fires first
 	h1 := readMsg(t, hookHigh)
 	writeJSON(t, hookHigh, Message{
-		Type:    "hook_result",
+		Type:    "hook_reply",
 		ID:      h1.ID,
 		Action:  "modify",
 		Payload: json.RawMessage(`{"text":"msg+high"}`),
@@ -568,7 +570,7 @@ func TestHookModifying_PriorityOrder(t *testing.T) {
 	}
 
 	writeJSON(t, hookLow, Message{
-		Type:    "hook_result",
+		Type:    "hook_reply",
 		ID:      h2.ID,
 		Action:  "modify",
 		Payload: json.RawMessage(`{"text":"msg+high+low"}`),
@@ -576,8 +578,8 @@ func TestHookModifying_PriorityOrder(t *testing.T) {
 
 	// Driver gets final result
 	msg := readMsg(t, drv)
-	if msg.Text != "msg+high+low" {
-		t.Fatalf("expected msg+high+low, got %s", msg.Text)
+	if messageText(&msg) != "msg+high+low" {
+		t.Fatalf("expected msg+high+low, got %+v", msg)
 	}
 }
 
@@ -587,13 +589,13 @@ func TestHookNone_MessagePassesThrough(t *testing.T) {
 	env := newTestEnv(t)
 
 	// No hook subscribers — message should pass through immediately
-	gw := env.connectAndJoin("gw", "s1", []string{"message"}, []string{})
-	drv := env.connectAndJoin("drv", "s1", []string{}, []string{"message"})
+	gw := env.connectAndJoin("gw", "s1", []string{TopicMessageUser}, []string{})
+	drv := env.connectAndJoin("drv", "s1", []string{}, []string{TopicMessageUser})
 
-	writeJSON(t, gw, Message{Type: "message", Text: "hello"})
+	writeJSON(t, gw, userMessage("hello"))
 	msg := readMsg(t, drv)
-	if msg.Type != "message" || msg.Text != "hello" {
-		t.Fatalf("expected message/hello, got %s/%s", msg.Type, msg.Text)
+	if !isUserMessage(&msg) || messageText(&msg) != "hello" {
+		t.Fatalf("expected message/hello, got %+v", msg)
 	}
 }
 
@@ -635,14 +637,15 @@ func TestBeforeToolCallHookFiresForDynamicSkillTool(t *testing.T) {
 	})
 
 	drv := env.connectAndJoin("driver", "main",
-		[]string{"tool_use"},
-		[]string{"tool_result"},
+		[]string{TopicToolCall},
+		[]string{TopicToolResult},
 	)
 
 	// Send dynamic plugin tool_use
 	go func() {
 		writeJSON(t, drv, Message{
-			Type:  "tool_use",
+			Type:  string(MsgRequest),
+			Topic: TopicToolCall,
 			Name:  "echo_tool",
 			ID:    "t1",
 			Input: json.RawMessage(`{"text":"hi"}`),
@@ -663,16 +666,16 @@ func TestBeforeToolCallHookFiresForDynamicSkillTool(t *testing.T) {
 		t.Fatalf("unmarshal hook tool: %v", err)
 	}
 	if tool != "echo_tool" {
-		t.Fatalf("expected tool echo_tool, got %s", tool)
+		t.Fatalf("expected tool echo_tool, got %+v", tool)
 	}
 
 	// Pass through
-	writeJSON(t, hook, Message{Type: "hook_result", ID: hookMsg.ID, Action: "pass"})
+	writeJSON(t, hook, Message{Type: "hook_reply", ID: hookMsg.ID, Action: "pass"})
 
 	// Should get tool_result
 	result := readMsg(t, drv)
-	if result.Type != "tool_result" {
-		t.Fatalf("expected tool_result, got %s", result.Type)
+	if !isToolResult(result) {
+		t.Fatalf("expected tool_result, got %+v", result)
 	}
 }
 
@@ -684,14 +687,15 @@ func TestBeforeToolCallHookFiresForSkillTool(t *testing.T) {
 	})
 
 	drv := env.connectAndJoin("driver", "main",
-		[]string{"tool_use"},
-		[]string{"tool_result"},
+		[]string{TopicToolCall},
+		[]string{TopicToolResult},
 	)
 
 	// Send plugin tool_use
 	go func() {
 		writeJSON(t, drv, Message{
-			Type:  "tool_use",
+			Type:  string(MsgRequest),
+			Topic: TopicToolCall,
 			Name:  "echo_tool",
 			ID:    "t2",
 			Input: json.RawMessage(`{"text":"hello"}`),
@@ -712,15 +716,15 @@ func TestBeforeToolCallHookFiresForSkillTool(t *testing.T) {
 		t.Fatalf("unmarshal hook tool: %v", err)
 	}
 	if tool != "echo_tool" {
-		t.Fatalf("expected tool echo_tool, got %s", tool)
+		t.Fatalf("expected tool echo_tool, got %+v", tool)
 	}
 
-	writeJSON(t, hook, Message{Type: "hook_result", ID: hookMsg.ID, Action: "pass"})
+	writeJSON(t, hook, Message{Type: "hook_reply", ID: hookMsg.ID, Action: "pass"})
 
 	// Should get tool_result
 	result := readMsg(t, drv)
-	if result.Type != "tool_result" {
-		t.Fatalf("expected tool_result, got %s", result.Type)
+	if !isToolResult(result) {
+		t.Fatalf("expected tool_result, got %+v", result)
 	}
 }
 
@@ -732,13 +736,14 @@ func TestBeforeToolCallHookCanBlockDynamicSkillTool(t *testing.T) {
 	})
 
 	drv := env.connectAndJoin("driver", "main",
-		[]string{"tool_use"},
-		[]string{"tool_result"},
+		[]string{TopicToolCall},
+		[]string{TopicToolResult},
 	)
 
 	go func() {
 		writeJSON(t, drv, Message{
-			Type:  "tool_use",
+			Type:  string(MsgRequest),
+			Topic: TopicToolCall,
 			Name:  "echo_tool",
 			ID:    "t3",
 			Input: json.RawMessage(`{"text":"should-not-run"}`),
@@ -747,7 +752,7 @@ func TestBeforeToolCallHookCanBlockDynamicSkillTool(t *testing.T) {
 
 	hookMsg := readMsg(t, hook)
 	writeJSON(t, hook, Message{
-		Type:   "hook_result",
+		Type:   "hook_reply",
 		ID:     hookMsg.ID,
 		Action: "block",
 		Reason: "denied",
@@ -755,11 +760,11 @@ func TestBeforeToolCallHookCanBlockDynamicSkillTool(t *testing.T) {
 
 	// Driver should get error in tool_result
 	result := readMsg(t, drv)
-	if result.Type != "tool_result" {
-		t.Fatalf("expected tool_result, got %s", result.Type)
+	if !isToolResult(result) {
+		t.Fatalf("expected tool_result, got %+v", result)
 	}
-	if !strings.Contains(result.Output, "blocked by hook") {
-		t.Fatalf("expected 'blocked by hook' in output, got %s", result.Output)
+	if !strings.Contains(result.Output, "blocked") {
+		t.Fatalf("expected 'blocked' in output, got %s", result.Output)
 	}
 }
 
@@ -771,13 +776,14 @@ func TestBeforeToolCallHookCanBlockSkillTool(t *testing.T) {
 	})
 
 	drv := env.connectAndJoin("driver", "main",
-		[]string{"tool_use"},
-		[]string{"tool_result"},
+		[]string{TopicToolCall},
+		[]string{TopicToolResult},
 	)
 
 	go func() {
 		writeJSON(t, drv, Message{
-			Type:  "tool_use",
+			Type:  string(MsgRequest),
+			Topic: TopicToolCall,
 			Name:  "echo_tool",
 			ID:    "t4",
 			Input: json.RawMessage(`{"text":"hello"}`),
@@ -786,18 +792,18 @@ func TestBeforeToolCallHookCanBlockSkillTool(t *testing.T) {
 
 	hookMsg := readMsg(t, hook)
 	writeJSON(t, hook, Message{
-		Type:   "hook_result",
+		Type:   "hook_reply",
 		ID:     hookMsg.ID,
 		Action: "block",
 		Reason: "denied",
 	})
 
 	result := readMsg(t, drv)
-	if result.Type != "tool_result" {
-		t.Fatalf("expected tool_result, got %s", result.Type)
+	if !isToolResult(&result) {
+		t.Fatalf("expected tool_result, got %+v", result)
 	}
-	if !strings.Contains(result.Output, "blocked by hook") {
-		t.Fatalf("expected 'blocked by hook' in output, got %s", result.Output)
+	if !strings.Contains(result.Output, "blocked") {
+		t.Fatalf("expected 'blocked' in output, got %s", result.Output)
 	}
 }
 
@@ -812,13 +818,14 @@ func TestSecurityHookTimeoutBlocksToolCall(t *testing.T) {
 	})
 
 	drv := env.connectAndJoin("driver", "main",
-		[]string{"tool_use"},
-		[]string{"tool_result"},
+		[]string{TopicToolCall},
+		[]string{TopicToolResult},
 	)
 
 	go func() {
 		writeJSON(t, drv, Message{
-			Type:  "tool_use",
+			Type:  string(MsgRequest),
+			Topic: TopicToolCall,
 			Name:  "echo_tool",
 			ID:    "t1",
 			Input: json.RawMessage(`{"text":"hello"}`),
@@ -830,11 +837,11 @@ func TestSecurityHookTimeoutBlocksToolCall(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected a result after hook timeout")
 	}
-	if result.Type != "tool_result" {
-		t.Fatalf("expected tool_result, got %s", result.Type)
+	if !isToolResult(&result) {
+		t.Fatalf("expected tool_result, got %+v", result)
 	}
-	if !strings.Contains(result.Output, "blocked by hook") {
-		t.Fatalf("expected 'blocked by hook' for timed-out security hook, got %s", result.Output)
+	if !strings.Contains(result.Output, "blocked") {
+		t.Fatalf("expected 'blocked' for timed-out security hook, got %s", result.Output)
 	}
 }
 
@@ -847,7 +854,7 @@ func TestDomainHookTimeoutPassesThrough(t *testing.T) {
 	})
 
 	// Join should still complete after timeout (fail-open for domain hooks)
-	conn := env.connect("cli", []string{"message"}, []string{"init"})
+	conn := env.connect("cli", []string{TopicMessageUser}, []string{TopicSessionInit})
 	go func() {
 		writeJSON(t, conn, Message{Type: "join", Session: "s1"})
 	}()
@@ -857,6 +864,6 @@ func TestDomainHookTimeoutPassesThrough(t *testing.T) {
 		t.Fatal("expected joined after hook timeout")
 	}
 	if joined.Type != "joined" {
-		t.Fatalf("expected joined, got %s", joined.Type)
+		t.Fatalf("expected joined, got %+v", joined)
 	}
 }

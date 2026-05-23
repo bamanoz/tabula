@@ -49,7 +49,7 @@ class TimerSkillSmoke(unittest.TestCase):
                 "session": "testbed-timer",
             }).json()
             self.assertTrue(started["ok"], started)
-            msg = receiver.recv(type="message", timeout=10)
+            msg = receiver.recv(type="message.user", timeout=10)
             self.assertEqual(msg.get("id"), "testbed-timer-fire")
             self.assertIn('<timer id="testbed-timer-fire"', msg.get("text", ""))
             self.assertIn("timer scheduled hello", msg.get("text", ""))
@@ -72,7 +72,7 @@ class TimerSkillSmoke(unittest.TestCase):
             }).json()
             self.assertTrue(started["ok"], started)
             self.assertEqual(started["session"], "testbed-timer-current")
-            msg = receiver.recv(type="message", timeout=10)
+            msg = receiver.recv(type="message.user", timeout=10)
             self.assertEqual(msg.get("id"), "testbed-timer-current")
             self.assertIn('<timer id="testbed-timer-current"', msg.get("text", ""))
             self.assertIn("timer current session hello", msg.get("text", ""))

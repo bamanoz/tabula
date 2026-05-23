@@ -99,7 +99,7 @@ func stdioCmd(args []string, stderr io.Writer) int {
 	}
 	manifestStore.SetTabulaHome(os.Getenv("TABULA_HOME"))
 	logger := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	workerPool := pool.New(kernelCfg.ID, manifestStore, bare.New(), pool.Options{ColdWorkersPerTenantMax: cfg.Pool.ColdWorkersPerTenantMax, ColdWorkersByTenant: coldWorkerTenantOverrides(cfg.Pool.Tenants), AllowedTenants: kernelCfg.Tenants, TabulaHome: os.Getenv("TABULA_HOME")})
+	workerPool := pool.New(kernelCfg.ID, manifestStore, bare.New(), pool.Options{ColdWorkersPerTenantMax: cfg.Pool.ColdWorkersPerTenantMax, ColdWorkersByTenant: coldWorkerTenantOverrides(cfg.Pool.Tenants), AllowedTenants: kernelCfg.Tenants, TabulaHome: os.Getenv("TABULA_HOME"), KernelURL: os.Getenv("TABULA_URL")})
 	workerPool.SetLogger(logger)
 	defer workerPool.Close()
 	conn := stdio.NewConn(os.Stdin, os.Stdout)
@@ -166,6 +166,7 @@ func startCmd(args []string, stderr io.Writer) int {
 		ColdWorkersByTenant:     coldWorkerTenantOverrides(cfg.Pool.Tenants),
 		AllowedTenants:          kernelCfg.Tenants,
 		TabulaHome:              os.Getenv("TABULA_HOME"),
+		KernelURL:               os.Getenv("TABULA_URL"),
 	})
 	workerPool.SetLogger(logger)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

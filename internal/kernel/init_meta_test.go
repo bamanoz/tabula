@@ -7,11 +7,11 @@ import (
 
 func TestInitMessage_NoBootMeta_OmitsMeta(t *testing.T) {
 	env := newTestEnv(t)
-	conn := env.connectAndJoin("c", "main", []string{"message"}, []string{"init"})
+	conn := env.connectAndJoin("c", "main", []string{TopicMessageUser}, []string{TopicSessionInit})
 
 	msg := readMsg(t, conn)
-	if msg.Type != "init" {
-		t.Fatalf("expected init, got %s", msg.Type)
+	if !isSessionInit(&msg) {
+		t.Fatalf("expected session.init, got %+v", msg)
 	}
 	if len(msg.Meta) != 0 {
 		t.Fatalf("expected empty meta when boot meta unset, got %s", string(msg.Meta))
@@ -22,11 +22,11 @@ func TestInitMessage_ForwardsBootMeta(t *testing.T) {
 	env := newTestEnv(t)
 	env.Hub.SetInitMeta(json.RawMessage(`{"agents":[{"name":"build"}],"default_agent":"build"}`))
 
-	conn := env.connectAndJoin("c", "main", []string{"message"}, []string{"init"})
+	conn := env.connectAndJoin("c", "main", []string{TopicMessageUser}, []string{TopicSessionInit})
 
 	msg := readMsg(t, conn)
-	if msg.Type != "init" {
-		t.Fatalf("expected init, got %s", msg.Type)
+	if !isSessionInit(&msg) {
+		t.Fatalf("expected session.init, got %+v", msg)
 	}
 	if len(msg.Meta) == 0 {
 		t.Fatalf("expected meta to be populated")

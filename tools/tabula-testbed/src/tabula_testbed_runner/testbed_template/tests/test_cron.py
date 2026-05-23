@@ -65,7 +65,7 @@ class CronPluginSmoke(unittest.TestCase):
                 env=env,
                 check=True,
             )
-            msg = receiver.recv(type="message", timeout=10)
+            msg = receiver.recv(type="message.user", timeout=10)
             self.assertEqual(msg.get("id"), "testbed-cron-fire")
             self.assertIn('<cron_job id="testbed-cron-fire"', msg.get("text", ""))
             self.assertIn("scheduled hello", msg.get("text", ""))

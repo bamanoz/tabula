@@ -39,13 +39,13 @@ func TestHubRuntimeAsyncSinkRedactsStructuredPluginLogFields(t *testing.T) {
 }
 
 func TestBusMessagePreservesMessageEnvelopeFields(t *testing.T) {
-	msg := busMessage(string(MsgMessage), "sess-1", json.RawMessage(`{"id":"msg-1","text":"hello","meta":{"source":"sessions"}}`))
+	msg := busMessage(TopicMessageUser, "sess-1", json.RawMessage(`{"id":"msg-1","text":"hello","meta":{"source":"sessions"}}`))
 
 	if msg.ID != "msg-1" {
 		t.Fatalf("ID = %q, want msg-1", msg.ID)
 	}
-	if msg.Text != "hello" {
-		t.Fatalf("Text = %q, want hello", msg.Text)
+	if messageText(msg) != "hello" {
+		t.Fatalf("Text = %q, want hello", messageText(msg))
 	}
 	var meta map[string]string
 	if err := json.Unmarshal(msg.Meta, &meta); err != nil {

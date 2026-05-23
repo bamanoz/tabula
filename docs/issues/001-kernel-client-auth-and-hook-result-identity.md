@@ -1,4 +1,4 @@
-# Kernel Client Auth And Hook Result Identity
+# Kernel Client Auth And Hook Reply Identity
 
 Priority: Critical
 
@@ -10,7 +10,7 @@ Repos: `tabula`, `tabula-bundles`, `tabula-distrib`
 
 Kernel `/ws` accepts protocol clients without authentication. A client can
 self-declare `sends`, `receives`, `receives_global`, and hook subscriptions.
-Also, `hook_result` bypasses normal send/session policy and is matched only by
+Also, `hook_reply` bypasses normal send/session policy and is matched only by
 hook id, not by the subscriber that received the hook.
 
 ## Evidence
@@ -20,7 +20,7 @@ hook id, not by the subscriber that received the hook.
   capabilities.
 - `internal/kernel/policy.go`: `CanConnect` rejects old non-empty spawn tokens
   but otherwise allows connection.
-- `internal/kernel/message_router.go`: `hook_result` is handled before
+- `internal/kernel/message_router.go`: `hook_reply` is handled before
   `policy.CanSend`.
 - `internal/kernel/hook_engine.go`: pending hooks are `id -> chan`, with no
   responder identity.
@@ -40,17 +40,17 @@ security semantics.
 - Track connection identity/capability source instead of trusting arbitrary
   self-declared capabilities from untrusted clients.
 - Change pending hooks to store responder identity, event, session, and tenant.
-- Accept `hook_result` only from the exact subscriber that received the hook.
-- Route `hook_result` through a dedicated policy check rather than bypassing all
+- Accept `hook_reply` only from the exact subscriber that received the hook.
+- Route `hook_reply` through a dedicated policy check rather than bypassing all
   checks.
 
 ## Acceptance Criteria
 
 - A remote/non-authorized client cannot complete `connect` on `/ws`.
-- A client that did not receive a hook cannot satisfy its `hook_result`.
+- A client that did not receive a hook cannot satisfy its `hook_reply`.
 - Existing trusted gateway/plugin flows still work.
-- Tests cover unauthorized connect, wrong-client `hook_result`, and valid
-  subscriber `hook_result`.
+- Tests cover unauthorized connect, wrong-client `hook_reply`, and valid
+  subscriber `hook_reply`.
 - Security docs describe the kernel client auth model.
 
 ## Implementation Notes
@@ -58,5 +58,5 @@ security semantics.
 - Kernel clients now authenticate with `auth_token` in `connect`.
 - `tabula serve` writes `$TABULA_HOME/run/kernel-client-token` and exports
   `TABULA_KERNEL_TOKEN` to child processes.
-- `hook_result` is accepted only from the WebSocket client or runtime hook
+- `hook_reply` is accepted only from the WebSocket client or runtime hook
   subscriber that received the hook.

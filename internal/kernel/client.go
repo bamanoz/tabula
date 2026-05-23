@@ -130,6 +130,9 @@ func (c *Client) canReceiveGlobal(msgType string) bool {
 
 // SendMsg marshals and queues a message for sending.
 func (c *Client) SendMsg(msg *Message) {
+	if msg != nil && msg.V == 0 {
+		msg.V = ProtocolVersion
+	}
 	if c.recvCh != nil {
 		// Internal client: send directly to receive channel.
 		select {

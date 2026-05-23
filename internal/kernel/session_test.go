@@ -141,8 +141,8 @@ func TestSessionRegistryAll(t *testing.T) {
 func TestSessionEndEmittedOnLastClientLeave(t *testing.T) {
 	env := newTestEnv(t)
 
-	env.connectAndJoin("alice", "s1", []string{"message"}, []string{})
-	env.connectAndJoin("bob", "s1", []string{"message"}, []string{})
+	env.connectAndJoin("alice", "s1", []string{TopicMessageUser}, []string{})
+	env.connectAndJoin("bob", "s1", []string{TopicMessageUser}, []string{})
 
 	// Session should exist with 2 clients
 	sess, ok := env.Hub.sessions.Get("s1")

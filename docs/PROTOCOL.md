@@ -3,7 +3,7 @@
 Tabula speaks two distinct wire protocols:
 
 1. **WebSocket protocol** — kernel ↔ client (gateways, TUIs, drivers).
-2. **Plugin stdio protocol** — kernel ↔ plugin subprocess (NDJSON over stdin/stdout).
+2. **Runtime worker protocol** — `tabula-runtime` ↔ plugin worker (NDJSON over stdin/stdout).
 
 This document is the authoritative reference for both. If wire behavior
 disagrees with this file, treat it as a bug in the code or in this file —
@@ -20,10 +20,12 @@ Companion code:
 
 ### Versioning
 
-Single integer `ProtocolVersion` (`internal/kernel/protocol.go`). The kernel
-advertises its version in every `connected` message. Clients send their
-version in `connect`. Mismatch is **rejected**: the kernel replies with an
-error message and closes the socket.
+Single integer `ProtocolVersion` (`internal/kernel/protocol.go`). Current
+version: `3`.
+
+Clients must send `v: 3` in every client->kernel frame. The first frame must be
+`hello`, and successful handshake returns `hello_ack`. Mismatch is rejected with
+an `error` frame.
 
 There is **no negotiation** on this channel. Any breaking change bumps the
 integer; any client that does not match exactly is rejected. This is
@@ -38,7 +40,7 @@ intentional: the WS surface is small, the client population is in-tree
   otherwise.
 - Changing semantics of an existing field → **bump**.
 
-Current version: `2`.
+Canonical examples live in `docs/KERNEL_PROTOCOL_EXAMPLES.md`.
 
 ### Message envelope
 
@@ -50,19 +52,20 @@ Unknown fields on incoming messages are tolerated (forward compatibility).
 Unknown `type` values are rejected with an error message but do not close
 the socket.
 
-### Kernel client `connect`
+### Kernel client `hello`
 
-Kernel WebSocket clients must send protocol version `2` and authenticate in the
-first `connect` frame:
+Kernel WebSocket clients must authenticate in the first `hello` frame:
 
 ```json
 {
-  "version": 2,
-  "type": "connect",
-  "name": "gateway-cli-main",
-  "auth_token": "ktk_...",
-  "sends": ["message", "status"],
-  "receives": ["init", "message", "error"]
+  "v": 3,
+  "type": "hello",
+  "data": {
+    "name": "gateway-cli-main",
+    "auth_token": "ktk_...",
+    "send_topics": ["message.user", "turn.cancel"],
+    "receive_topics": ["session.init", "stream.delta", "turn.done", "error"]
+  }
 }
 ```
 
@@ -70,7 +73,20 @@ first `connect` frame:
 `TABULA_KERNEL_TOKEN`. The old `token` field is not a client auth field; non-empty
 values are rejected because kernel-managed spawn tokens were removed.
 
-`hook_result` frames are valid only for the client or runtime subscriber that
+After `hello_ack`, clients join with `join` and then exchange domain messages as
+`event`, `request`, and `reply` frames. Important topics include:
+
+- `message.user`
+- `session.init`
+- `session.member_joined`
+- `stream.start`, `stream.delta`, `stream.end`
+- `reasoning.start`, `reasoning.delta`, `reasoning.end`
+- `tool.call`, `tool.result`
+- `exchange.choose`, `exchange.approve`
+- `usage.update`
+- `turn.done`, `turn.cancel`
+
+`hook_reply` frames are valid only for the client or runtime subscriber that
 received the matching `hook` frame.
 
 ---

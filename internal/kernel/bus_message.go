@@ -8,9 +8,11 @@ func busMessage(msgType, session string, payload json.RawMessage) *Message {
 		Session: session,
 		Payload: payload,
 	}
-	if msgType != string(MsgMessage) || len(payload) == 0 {
+	if msgType != TopicMessageUser || len(payload) == 0 {
 		return msg
 	}
+	msg.Type = string(MsgEvent)
+	msg.Topic = TopicMessageUser
 	var body struct {
 		ID   string          `json:"id"`
 		Text string          `json:"text"`
@@ -23,7 +25,7 @@ func busMessage(msgType, session string, payload json.RawMessage) *Message {
 		msg.ID = body.ID
 	}
 	if body.Text != "" {
-		msg.Text = body.Text
+		setMessageText(msg, body.Text)
 	}
 	if len(body.Meta) > 0 {
 		msg.Meta = body.Meta

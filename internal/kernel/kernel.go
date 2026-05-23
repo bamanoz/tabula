@@ -27,6 +27,8 @@ type Hub struct {
 	// attached Runtime API targets.
 	toolExec        map[string]toolDispatch
 	toolExecMu      sync.RWMutex
+	exchanges       map[string]pendingExchange
+	exchangesMu     sync.Mutex
 	runtimeBusy     map[string]int
 	runtimeBusyMu   sync.RWMutex
 	toolsJSON       json.RawMessage
@@ -73,6 +75,7 @@ func NewHub(toolsJSON json.RawMessage, _ int, _ int, logger *slog.Logger) *Hub {
 		runtimes:        NewRuntimeRegistry(),
 		tenants:         tenant.NewMemoryStore(tenant.Tenant{ID: tenant.DefaultID, CreatedAt: time.Now().UTC()}),
 		toolExec:        make(map[string]toolDispatch),
+		exchanges:       make(map[string]pendingExchange),
 		runtimeBusy:     make(map[string]int),
 		tenantInitMeta:  map[string]json.RawMessage{},
 		toolsJSON:       toolsJSON,
@@ -149,6 +152,7 @@ func (h *Hub) Unregister(c *Client) {
 	if len(c.hooks) > 0 {
 		h.rebuildHookIndex()
 	}
+	h.cancelExchangesForClient(c)
 	h.onClientDisconnect(c)
 	h.Logger.Info("client disconnected", "name", c.name, "id", c.id)
 }
@@ -162,7 +166,7 @@ func (h *Hub) onClientDisconnect(c *Client) {
 	if !ok {
 		return
 	}
-	if sess.IsBusy() && c.canSend(string(MsgDone)) {
+	if sess.IsBusy() && c.canSend(TopicTurnDone) {
 		sess.EndTurn()
 	}
 	sess.RemoveClient(c.name)
@@ -179,7 +183,7 @@ func (h *Hub) onClientDisconnect(c *Client) {
 // Called from the client's readPump goroutine.
 func (h *Hub) HandleMessage(sender *Client, msg *Message) {
 	switch MsgType(msg.Type) {
-	case MsgConnect:
+	case MsgHello:
 		h.handleConnect(sender, msg)
 	case MsgJoin:
 		h.handleJoin(sender, msg)

@@ -34,6 +34,7 @@ type Options struct {
 	ColdWorkersByTenant     map[string]int
 	AllowedTenants          []string
 	TabulaHome              string
+	KernelURL               string
 }
 
 // Pool lazily spawns and reuses warm workers.
@@ -83,6 +84,7 @@ func New(kernelID string, store *manifest.Store, pol policy.PluginExecPolicy, op
 		resolved.ColdWorkersByTenant = cloneTenantLimits(opts[0].ColdWorkersByTenant)
 		resolved.AllowedTenants = append([]string(nil), opts[0].AllowedTenants...)
 		resolved.TabulaHome = strings.TrimSpace(opts[0].TabulaHome)
+		resolved.KernelURL = strings.TrimSpace(opts[0].KernelURL)
 	}
 	p := &Pool{kernelID: kernelID, store: store, policy: pol, opts: resolved, entries: map[key]*entry{}, coldTenants: map[string]*coldTenantState{}, targets: map[string]wire.Capability{}, async: make(chan any, 128), logger: slog.Default()}
 	p.resetTargets(nil)
@@ -517,6 +519,7 @@ func (p *Pool) spawnEnv(tenantID string) map[string]string {
 	return map[string]string{
 		"TABULA_HOME":       p.opts.TabulaHome,
 		"TABULA_TENANT_DIR": filepath.Join(p.opts.TabulaHome, "tenants", tenantID),
+		"TABULA_URL":        p.opts.KernelURL,
 	}
 }
 

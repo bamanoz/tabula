@@ -569,7 +569,7 @@ def list_suites(specs: dict[str, SuiteSpec]) -> None:
         print(f"  manifest: {spec.manifest}")
 
 
-def wait_for_kernel(python: Path, url: str) -> None:
+def wait_for_kernel(python: Path, url: str, env: dict[str, str]) -> None:
     code = r'''
 import json
 import os
@@ -580,21 +580,27 @@ import websocket
 
 url = sys.argv[1]
 tabula_home = os.environ.get("TABULA_HOME", "").strip()
-token = os.environ.get("TABULA_KERNEL_TOKEN", "").strip()
-if not token and tabula_home:
-    try:
-        token = (Path(tabula_home) / "run" / "kernel-client-token").read_text(encoding="utf-8").strip()
-    except OSError:
-        token = ""
+env_token = os.environ.get("TABULA_KERNEL_TOKEN", "").strip()
+
+def kernel_token():
+    if tabula_home:
+        try:
+            token = (Path(tabula_home) / "run" / "kernel-client-token").read_text(encoding="utf-8").strip()
+            if token:
+                return token
+        except OSError:
+            pass
+    return env_token
+
 deadline = time.time() + 20
 last = None
 while time.time() < deadline:
     try:
         ws = websocket.create_connection(url, timeout=1)
-        ws.send(json.dumps({"type": "connect", "name": "testbed-isolated-ready", "sends": [], "receives": [], "version": 2, "auth_token": token}))
+        ws.send(json.dumps({"v": 3, "type": "hello", "data": {"name": "testbed-isolated-ready", "send_topics": [], "receive_topics": [], "auth_token": kernel_token()}}))
         msg = json.loads(ws.recv())
         ws.close()
-        if msg.get("type") == "connected":
+        if msg.get("type") == "hello_ack":
             sys.exit(0)
         last = RuntimeError(str(msg))
     except Exception as exc:
@@ -603,7 +609,7 @@ while time.time() < deadline:
 print(f"kernel did not become ready at {url}: {last}", file=sys.stderr)
 sys.exit(1)
 '''
-    run([str(python), "-c", code, url])
+    run([str(python), "-c", code, url], env=env)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -749,7 +755,7 @@ def main(argv: list[str] | None = None) -> int:
         kernel = subprocess.Popen([str(bin_dir / "tabula-runner")], env=env, stdout=out, stderr=err)
 
         log("==> Waiting for isolated kernel")
-        wait_for_kernel(python, kernel_url)
+        wait_for_kernel(python, kernel_url, env)
 
         log("==> Verifying runtime sidecar layout")
         verify_runtime_sidecar_layout(home, bin_dir, logs_dir)

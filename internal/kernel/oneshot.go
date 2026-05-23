@@ -38,12 +38,14 @@ func (h *Hub) RunOneShot(cfg OneShotConfig) (string, error) {
 
 	// Connect.
 	connectMsg := &Message{
-		Type:      string(MsgConnect),
-		Version:   ProtocolVersion,
-		Name:      "oneshot",
-		Sends:     []string{string(MsgMessage), string(MsgDone)},
-		Receives:  []string{string(MsgMessage), string(MsgStreamStart), string(MsgStreamDelta), string(MsgStreamEnd), string(MsgDone), string(MsgError)},
-		AuthToken: h.clientAuthToken,
+		V:    ProtocolVersion,
+		Type: string(MsgHello),
+		Data: mustMarshalRaw(map[string]any{
+			"name":           "oneshot",
+			"send_topics":    []string{TopicMessageUser, TopicTurnDone},
+			"receive_topics": []string{TopicMessageUser, TopicStreamStart, TopicStreamDelta, TopicStreamEnd, TopicTurnDone, string(MsgError)},
+			"auth_token":     h.clientAuthToken,
+		}),
 	}
 	plan := h.buildConnectPlan(c, connectMsg)
 	h.applyConnectPlan(c, plan)
@@ -62,8 +64,9 @@ func (h *Hub) RunOneShot(cfg OneShotConfig) (string, error) {
 	deadline := time.Now().Add(cfg.Timeout)
 	h.Logger.Info("oneshot: sending prompt", "session", cfg.Session, "prompt_len", len(cfg.Prompt))
 	h.HandleMessage(c, &Message{
-		Type:    string(MsgMessage),
-		Text:    cfg.Prompt,
+		Type:    string(MsgEvent),
+		Topic:   TopicMessageUser,
+		Data:    mustMarshalRaw(map[string]any{"text": cfg.Prompt}),
 		Session: cfg.Session,
 	})
 	h.Logger.Info("oneshot: prompt dispatched, waiting for response")
@@ -74,7 +77,7 @@ func (h *Hub) RunOneShot(cfg OneShotConfig) (string, error) {
 }
 
 // collectResponse reads from recvCh, accumulating text until done/error/timeout.
-// Messages that aren't stream_delta/message/done/error are silently skipped.
+// Messages that aren't stream.delta/message.user/done/error are silently skipped.
 func (h *Hub) collectResponse(recvCh chan *Message, first *Message, sb *strings.Builder, deadline time.Time) (string, error) {
 	msg := first
 	for {
@@ -97,19 +100,22 @@ func (h *Hub) collectResponse(recvCh chan *Message, first *Message, sb *strings.
 		}
 
 		switch msg.Type {
-		case string(MsgStreamDelta):
-			if msg.Text != "" {
-				sb.WriteString(msg.Text)
-			}
-		case string(MsgMessage):
-			if msg.Text != "" {
-				if sb.Len() > 0 {
-					sb.WriteString("\n")
+		case string(MsgEvent):
+			switch msg.Topic {
+			case TopicStreamDelta:
+				if eventText(msg) != "" {
+					sb.WriteString(eventText(msg))
 				}
-				sb.WriteString(msg.Text)
+			case TopicMessageUser:
+				if messageText(msg) != "" {
+					if sb.Len() > 0 {
+						sb.WriteString("\n")
+					}
+					sb.WriteString(messageText(msg))
+				}
+			case TopicTurnDone:
+				return strings.TrimSpace(sb.String()), nil
 			}
-		case string(MsgDone):
-			return strings.TrimSpace(sb.String()), nil
 		case string(MsgError):
 			return "", fmt.Errorf("driver error: %s", msg.Text)
 		default:

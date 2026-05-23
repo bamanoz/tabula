@@ -82,11 +82,13 @@ class ApprovalFlowInstalled(unittest.TestCase):
 
         workspace = home / "data" / "testbed" / "approvals-workspace"
         workspace.mkdir(parents=True, exist_ok=True)
+        self.write_driver_config(home)
         self.write_exec_config(home, workspace)
         self.write_permissions_config(home)
-        approvals_cfg = home / "config" / "plugins" / "hook-approvals" / "config.toml"
+        approvals_cfg = self.approvals_config_path(home)
         approvals_cfg.parent.mkdir(parents=True, exist_ok=True)
         approvals_cfg.unlink(missing_ok=True)
+        (home / "config" / "plugins" / "hook-approvals" / "config.toml").unlink(missing_ok=True)
 
         stub_dir = home / "data" / "testbed" / "fake-openai-approvals"
         stub_dir.mkdir(parents=True, exist_ok=True)
@@ -132,8 +134,8 @@ class ApprovalFlowInstalled(unittest.TestCase):
         while time.time() < deadline:
             client.close()
             client.connect(
-                sends=["message", "tool_use", "status"],
-                receives=["init", "message", "tool_result", "error", "status", "stream_start", "stream_delta", "stream_end", "done", "tool_use"],
+                sends=["message.user", "tool.call", "exchange.approve"],
+                receives=["session.init", "message.user", "tool.result", "error", "usage.update", "stream.start", "stream.delta", "stream.end", "turn.done", "tool.call", "exchange.approve"],
             )
             client.join(session)
             last_tools = {tool.get("name") for tool in client.tools() if tool.get("name")}
@@ -146,36 +148,35 @@ class ApprovalFlowInstalled(unittest.TestCase):
     def run_turn(self, client: TestbedClient, text: str, *, approval_choice: str | None, approval_delay: float = 0.0, timeout: float = 20) -> dict[str, object]:
         client.send_message(text)
         deadline = time.time() + timeout
-        ask_request = None
+        exchange_request = None
         chunks: list[str] = []
         while time.time() < deadline:
             msg = client.recv(timeout=max(0.1, deadline - time.time()))
             msg_type = msg.get("type")
-            if msg_type == "status":
-                meta = msg.get("meta") if isinstance(msg.get("meta"), dict) else {}
-                candidate = meta.get("ask_request") if isinstance(meta, dict) else None
-                if isinstance(candidate, dict):
-                    if approval_choice is None:
-                        raise AssertionError(f"unexpected approval request: {candidate}")
-                    ask_request = candidate
-                    options = candidate.get("options") if isinstance(candidate.get("options"), list) else []
-                    self.assertIn(approval_choice, options)
-                    if approval_delay > 0:
-                        time.sleep(approval_delay)
-                    client._send({
-                        "version": 1,
-                        "type": "status",
-                        "text": "",
-                        "meta": {"ask_response": {"id": candidate.get("id", ""), "choice": approval_choice, "index": options.index(approval_choice)}},
-                    })
+            if msg_type == "request" and msg.get("topic") == "exchange.approve":
+                candidate = {"id": msg.get("id", ""), **(msg.get("data") if isinstance(msg.get("data"), dict) else {})}
+                if approval_choice is None:
+                    raise AssertionError(f"unexpected approval request: {candidate}")
+                exchange_request = candidate
+                options = candidate.get("options") if isinstance(candidate.get("options"), list) else []
+                self.assertIn(approval_choice, options)
+                if approval_delay > 0:
+                    time.sleep(approval_delay)
+                client._send({
+                    "type": "reply",
+                    "topic": "exchange.approve",
+                    "id": candidate.get("id", ""),
+                    "data": {"choice": approval_choice, "index": options.index(approval_choice)},
+                })
                 continue
-            if msg_type == "stream_delta":
-                chunks.append(str(msg.get("text") or ""))
+            if msg_type == "event" and msg.get("topic") == "stream.delta":
+                data = msg.get("data") if isinstance(msg.get("data"), dict) else {}
+                chunks.append(str(data.get("text") or ""))
                 continue
             if msg_type == "error":
                 raise AssertionError(f"kernel error during turn: {msg}")
-            if msg_type == "done":
-                return {"text": "".join(chunks), "ask": ask_request}
+            if msg_type == "event" and msg.get("topic") == "turn.done":
+                return {"text": "".join(chunks), "ask": exchange_request}
         raise AssertionError(f"timed out waiting for turn completion after {text!r}")
 
     def start_driver(self, session: str, stub_dir: Path) -> tuple[subprocess.Popen[bytes], object, Path]:
@@ -228,6 +229,20 @@ class ApprovalFlowInstalled(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def write_driver_config(self, home: Path) -> None:
+        path = home / "config" / "global.toml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            '[clients.driver]\n'
+            'provider = "openai"\n\n'
+            '[clients.driver.providers.openai]\n'
+            'type = "openai"\n'
+            'api_key = "test-key"\n'
+            'base_url = "https://example.invalid/v1"\n'
+            'default_model = "o3"\n',
+            encoding="utf-8",
+        )
+
     def write_permissions_config(self, home: Path) -> None:
         path = home / "config" / "plugins" / "hook-permissions" / "config.toml"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -239,6 +254,9 @@ class ApprovalFlowInstalled(unittest.TestCase):
             'effect = "ask"\n',
             encoding="utf-8",
         )
+
+    def approvals_config_path(self, home: Path) -> Path:
+        return home / "tenants" / "default" / "config" / "plugins" / "hook-approvals" / "config.toml"
 
     def format_driver_log(self, log_path: Path) -> str:
         if not log_path.is_file():

@@ -23,6 +23,15 @@ func waitForMessage(t *testing.T, ch <-chan *Message) *Message {
 	}
 }
 
+func readCaptureMessageTimeout(ch <-chan *Message, d time.Duration) *Message {
+	select {
+	case msg := <-ch:
+		return msg
+	case <-time.After(d):
+		return nil
+	}
+}
+
 func addCaptureClient(t *testing.T, hub *Hub, name, session string, receives, receivesGlobal []string) *Client {
 	t.Helper()
 	client := &Client{

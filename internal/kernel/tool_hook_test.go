@@ -20,13 +20,14 @@ func TestBeforeToolCallHookCanModifyToolInput(t *testing.T) {
 	})
 
 	drv := env.connectAndJoin("driver", "main",
-		[]string{"tool_use"},
-		[]string{"tool_result"},
+		[]string{TopicToolCall},
+		[]string{TopicToolResult},
 	)
 
 	go func() {
 		writeJSON(t, drv, Message{
-			Type:  "tool_use",
+			Type:  string(MsgRequest),
+			Topic: TopicToolCall,
 			Name:  "echo_tool",
 			ID:    "t-modify",
 			Input: json.RawMessage(`{"text":"original"}`),
@@ -39,7 +40,7 @@ func TestBeforeToolCallHookCanModifyToolInput(t *testing.T) {
 	}
 
 	writeJSON(t, hook, Message{
-		Type:   "hook_result",
+		Type:   "hook_reply",
 		ID:     hookMsg.ID,
 		Action: "modify",
 		Payload: json.RawMessage(`{
@@ -50,7 +51,7 @@ func TestBeforeToolCallHookCanModifyToolInput(t *testing.T) {
 	})
 
 	result := readMsg(t, drv)
-	if result.Type != "tool_result" {
+	if !isToolResult(&result) {
 		t.Fatalf("expected tool_result, got %s", result.Type)
 	}
 	if !strings.Contains(result.Output, "rewritten") || strings.Contains(result.Output, "original") {
@@ -73,13 +74,14 @@ func TestBeforeToolCallHook_InfiniteTimeout_RepliesAfterDelay(t *testing.T) {
 	})
 
 	drv := env.connectAndJoin("driver", "main",
-		[]string{"tool_use"},
-		[]string{"tool_result"},
+		[]string{TopicToolCall},
+		[]string{TopicToolResult},
 	)
 
 	go func() {
 		writeJSON(t, drv, Message{
-			Type:  "tool_use",
+			Type:  string(MsgRequest),
+			Topic: TopicToolCall,
 			Name:  "echo_tool",
 			ID:    "t-wait",
 			Input: json.RawMessage(`{"text":"ok"}`),
@@ -95,13 +97,13 @@ func TestBeforeToolCallHook_InfiniteTimeout_RepliesAfterDelay(t *testing.T) {
 	time.Sleep(6 * time.Second)
 
 	writeJSON(t, hook, Message{
-		Type:   "hook_result",
+		Type:   "hook_reply",
 		ID:     hookMsg.ID,
 		Action: "pass",
 	})
 
 	result := readMsgTimeout(t, drv, 10*time.Second)
-	if result == nil || result.Type != "tool_result" {
+	if !isToolResult(result) {
 		t.Fatalf("expected tool_result after late approval, got %v", result)
 	}
 	if !strings.Contains(result.Output, "ok") {
@@ -125,13 +127,14 @@ func TestBeforeToolCallHook_InfiniteTimeout_DisconnectBlocks(t *testing.T) {
 	})
 
 	drv := env.connectAndJoin("driver", "main",
-		[]string{"tool_use"},
-		[]string{"tool_result"},
+		[]string{TopicToolCall},
+		[]string{TopicToolResult},
 	)
 
 	go func() {
 		writeJSON(t, drv, Message{
-			Type:  "tool_use",
+			Type:  string(MsgRequest),
+			Topic: TopicToolCall,
 			Name:  "echo_tool",
 			ID:    "t-disco",
 			Input: json.RawMessage(`{"text":"should-not-run"}`),
@@ -147,13 +150,13 @@ func TestBeforeToolCallHook_InfiniteTimeout_DisconnectBlocks(t *testing.T) {
 
 	result := readMsgTimeout(t, drv, 5*time.Second)
 	if result == nil {
-		t.Fatal("driver should receive tool_result with blocked-by-hook error")
+		t.Fatal("driver should receive tool_result with blocked error")
 	}
-	if result.Type != "tool_result" {
+	if !isToolResult(result) {
 		t.Fatalf("expected tool_result, got %s", result.Type)
 	}
-	if !strings.Contains(result.Output, "blocked by hook") {
-		t.Fatalf("expected blocked-by-hook output, got %q", result.Output)
+	if !strings.Contains(result.Output, "blocked") {
+		t.Fatalf("expected blocked output, got %q", result.Output)
 	}
 }
 
@@ -165,21 +168,23 @@ func TestBeforeToolCallHookSkipsSenderHookSubscription(t *testing.T) {
 	env := newTestEnvWithSkillTool(t)
 	infinite := 0
 
-	// The same client both subscribes to before_tool_call and sends a tool_use.
+	// The same client both subscribes to before_tool_call and sends a tool.call.
 	// Dispatching a synchronous hook back to it would deadlock because its
-	// readPump is currently handling this tool_use.
+	// readPump is currently handling this tool.call.
 	client := env.dial()
 	writeJSON(t, client, Message{
-		Type:      "connect",
-		Name:      "gateway-self-hook",
-		Sends:     []string{"tool_use", "hook_result"},
-		Receives:  []string{"tool_result", "hook"},
-		Hooks:     []HookSubscription{{Event: "before_tool_call", Priority: 10, TimeoutMs: &infinite}},
-		Version:   ProtocolVersion,
-		AuthToken: env.Token,
+		V:    ProtocolVersion,
+		Type: string(MsgHello),
+		Data: mustMarshalRaw(map[string]any{
+			"name":           "gateway-self-hook",
+			"send_topics":    []string{TopicToolCall, "hook_reply"},
+			"receive_topics": []string{TopicToolResult, "hook"},
+			"hooks":          []HookSubscription{{Event: "before_tool_call", Priority: 10, TimeoutMs: &infinite}},
+			"auth_token":     env.Token,
+		}),
 	})
-	if msg := readMsg(t, client); msg.Type != "connected" {
-		t.Fatalf("expected connected, got %s", msg.Type)
+	if msg := readMsg(t, client); msg.Type != string(MsgHelloAck) {
+		t.Fatalf("expected hello_ack, got %s", msg.Type)
 	}
 	writeJSON(t, client, Message{Type: "join", Session: "main"})
 	if msg := readMsg(t, client); msg.Type != "joined" {
@@ -187,7 +192,8 @@ func TestBeforeToolCallHookSkipsSenderHookSubscription(t *testing.T) {
 	}
 
 	writeJSON(t, client, Message{
-		Type:  "tool_use",
+		Type:  string(MsgRequest),
+		Topic: TopicToolCall,
 		Name:  "echo_tool",
 		ID:    "self-hook",
 		Input: json.RawMessage(`{"text":"ok"}`),
@@ -200,7 +206,7 @@ func TestBeforeToolCallHookSkipsSenderHookSubscription(t *testing.T) {
 	if result.Type == "hook" {
 		t.Fatalf("sender should not receive its own synchronous hook")
 	}
-	if result.Type != "tool_result" || !strings.Contains(result.Output, "ok") {
+	if !isToolResult(result) || !strings.Contains(result.Output, "ok") {
 		t.Fatalf("expected ok tool_result, got %+v", result)
 	}
 }

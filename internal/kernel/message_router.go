@@ -1,9 +1,9 @@
 package kernel
 
 func (h *Hub) handleSessionMessage(sender *Client, msg *Message) {
-	if MsgType(msg.Type) == MsgHookResult {
+	if MsgType(msg.Type) == MsgHookReply {
 		if err := h.policy.CanRespondHook(sender, msg); err != nil {
-			h.Logger.Warn("policy denied hook_result", "reason", err.Error(), "client", sender.name)
+			h.Logger.Warn("policy denied hook_reply", "reason", err.Error(), "client", sender.name)
 			return
 		}
 		h.handleHookResult(sender, msg)
@@ -17,12 +17,32 @@ func (h *Hub) handleSessionMessage(sender *Client, msg *Message) {
 	h.touchSessionActivity(h.targetSession(sender, msg))
 
 	switch MsgType(msg.Type) {
-	case MsgToolUse:
+	case MsgRequest:
+		if isExchangeTopic(msg.Topic) {
+			h.handleExchangeRequest(sender, msg)
+			return
+		}
+		if msg.Topic != TopicToolCall {
+			h.forwardSessionMessage(sender, msg)
+			return
+		}
 		h.handleToolUse(sender, msg)
-	case MsgCancel:
-		h.handleCancel(sender.session)
-	case MsgMessage:
-		h.handleUserMessage(sender, msg)
+	case MsgReply:
+		if isExchangeTopic(msg.Topic) {
+			h.handleExchangeReply(sender, msg)
+			return
+		}
+		h.forwardSessionMessage(sender, msg)
+	case MsgEvent:
+		if msg.Topic == TopicMessageUser {
+			h.handleUserMessage(sender, msg)
+			return
+		}
+		if msg.Topic == TopicTurnCancel {
+			h.handleCancel(h.targetSession(sender, msg))
+			return
+		}
+		h.forwardSessionMessage(sender, msg)
 	default:
 		h.forwardSessionMessage(sender, msg)
 	}
@@ -51,17 +71,17 @@ func (h *Hub) buildMessagePlan(sender *Client, msg *Message) messagePlan {
 // applyMessagePlan executes the side effects of message processing.
 func (h *Hub) applyMessagePlan(sender *Client, msg *Message, plan messagePlan) {
 	if plan.blocked {
-		sender.SendMsg(&Message{Type: string(MsgError), Text: "message blocked by hook"})
+		sender.SendMsg(&Message{Type: string(MsgError), Text: "message blocked"})
 		return
 	}
 
-	msg.Text = plan.text
-	h.broadcastToSession(plan.targetSession, msg.Type, msg, sender)
+	setMessageText(msg, plan.text)
+	h.broadcastToSessionFrom(plan.targetSession, messageCapability(msg), msg, sender, sender)
 }
 
 func (h *Hub) queueMessagePlan(sender *Client, msg *Message, plan messagePlan) bool {
 	if plan.blocked {
-		sender.SendMsg(&Message{Type: string(MsgError), Text: "message blocked by hook"})
+		sender.SendMsg(&Message{Type: string(MsgError), Text: "message blocked"})
 		return true
 	}
 	sess, ok := h.sessions.Get(plan.targetSession)
@@ -69,7 +89,7 @@ func (h *Hub) queueMessagePlan(sender *Client, msg *Message, plan messagePlan) b
 		return false
 	}
 	queued := cloneMessage(msg)
-	queued.Text = plan.text
+	setMessageText(queued, plan.text)
 	return sess.EnqueueInput(queued, sender)
 }
 
@@ -90,15 +110,15 @@ func (h *Hub) handleUserMessage(sender *Client, msg *Message) {
 
 func (h *Hub) forwardSessionMessage(sender *Client, msg *Message) {
 	target := h.targetSession(sender, msg)
-	h.broadcastToSession(target, msg.Type, msg, sender)
-	switch MsgType(msg.Type) {
-	case MsgDone:
+	h.broadcastToSessionFrom(target, messageCapability(msg), msg, sender, sender)
+	switch {
+	case msg.Type == string(MsgEvent) && msg.Topic == TopicTurnDone:
 		queued, ok := h.completeSessionTurn(target)
 		h.emitAfterMessage(target, sender)
 		if ok {
 			h.dispatchQueuedInput(target, queued)
 		}
-	case MsgError:
+	case MsgType(msg.Type) == MsgError:
 		queued, ok := h.completeSessionTurn(target)
 		if ok {
 			h.dispatchQueuedInput(target, queued)
@@ -125,7 +145,7 @@ func (h *Hub) shouldStartSessionTurn(sender *Client, session string) bool {
 		if client == sender {
 			continue
 		}
-		if client.canReceive(string(MsgMessage)) && client.canSend(string(MsgDone)) {
+		if client.canReceive(TopicMessageUser) && client.canSend(TopicTurnDone) {
 			return true
 		}
 	}
@@ -158,5 +178,5 @@ func (h *Hub) dispatchQueuedInput(session string, input queuedInput) {
 	if input.message == nil {
 		return
 	}
-	h.broadcastToSession(session, input.message.Type, input.message, input.exclude)
+	h.broadcastToSession(session, messageCapability(input.message), input.message, input.exclude)
 }

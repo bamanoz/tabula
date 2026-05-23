@@ -37,7 +37,8 @@ func (h *Hub) buildJoinPlan(c *Client, session, tenantID string) joinPlan {
 			TenantID: tenantID,
 		},
 		memberJoined: &Message{
-			Type:    string(MsgMemberJoined),
+			Type:    string(MsgEvent),
+			Topic:   TopicSessionMemberJoined,
 			Name:    c.name,
 			Session: session,
 		},
@@ -63,7 +64,7 @@ func (h *Hub) applyJoinPlan(c *Client, plan joinPlan) {
 	c.SendMsg(plan.joined)
 	h.Logger.Info("client joined session", "name", c.name, "session", plan.session)
 
-	h.broadcastToSession(plan.session, string(MsgMemberJoined), plan.memberJoined, c)
+	h.broadcastToSession(plan.session, TopicSessionMemberJoined, plan.memberJoined, c)
 
 	if init := h.buildInitAfterJoin(c, plan); init != nil {
 		c.SendMsg(init)
@@ -93,7 +94,7 @@ func (h *Hub) finalizeJoinPlan(c *Client, plan *joinPlan) {
 			if blocked {
 				sess.RemoveClient(c.name)
 				h.sessions.Remove(plan.session)
-				plan.blockedReason = "session blocked by hook"
+				plan.blockedReason = "session blocked"
 				return
 			}
 			sess.SetInitContext(context)
@@ -104,7 +105,7 @@ func (h *Hub) finalizeJoinPlan(c *Client, plan *joinPlan) {
 	} else {
 		context, blocked := h.policy.StartSession(plan.session, plan.tenantID, c.name)
 		if blocked {
-			plan.blockedReason = "session blocked by hook"
+			plan.blockedReason = "session blocked"
 			return
 		}
 		plan.context = context
@@ -113,7 +114,7 @@ func (h *Hub) finalizeJoinPlan(c *Client, plan *joinPlan) {
 }
 
 func (h *Hub) buildInitAfterJoin(c *Client, plan joinPlan) *Message {
-	if !c.canReceive(string(MsgInit)) {
+	if !c.canReceive(TopicSessionInit) {
 		return nil
 	}
 	tools := h.initToolsJSON(plan.tenantID)
@@ -124,7 +125,8 @@ func (h *Hub) buildInitAfterJoin(c *Client, plan joinPlan) *Message {
 
 func (h *Hub) initMessage(context string, tools json.RawMessage, meta json.RawMessage) *Message {
 	msg := &Message{
-		Type:    string(MsgInit),
+		Type:    string(MsgEvent),
+		Topic:   TopicSessionInit,
 		Context: context,
 		Tools:   tools,
 	}
@@ -186,33 +188,6 @@ func (h *Hub) initToolsJSON(tenantID ...string) json.RawMessage {
 		tools = appendInitTool(tools, seen, toolName, entry.Schema)
 	}
 	h.toolExecMu.RUnlock()
-	if h.runtimes != nil {
-		for _, attachment := range h.runtimes.Snapshot() {
-			if !attachment.Attached {
-				continue
-			}
-			if resolvedTenantID != "" && !runtimeServesTenant(attachment.TenantsServed, resolvedTenantID) {
-				continue
-			}
-			if resolvedTenantID != "" && !h.runtimeAllowedForTenant(resolvedTenantID, attachment.ID) {
-				continue
-			}
-			for _, capability := range attachment.Capabilities {
-				if capability.Target.Kind != wire.TargetKindPlugin {
-					continue
-				}
-				if resolvedTenantID != "" && len(capability.Tenants) > 0 && !runtimeServesTenant(capability.Tenants, resolvedTenantID) {
-					continue
-				}
-				if capability.State != wire.CapabilityStateReady && capability.State != wire.CapabilityStateManifestLoaded && capability.State != wire.CapabilityStateInitializing {
-					continue
-				}
-				for _, tool := range capability.Tools {
-					tools = appendInitTool(tools, seen, tool.Name, tool.Schema)
-				}
-			}
-		}
-	}
 	raw, err := json.Marshal(tools)
 	if err != nil {
 		return h.toolsJSON

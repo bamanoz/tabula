@@ -14,6 +14,7 @@ type connectPlan struct {
 	hooks          []HookSubscription
 	depth          int
 	clientID       int
+	requestID      string
 	errorMsg       string
 	connectedMsg   *Message
 }
@@ -22,21 +23,26 @@ type connectPlan struct {
 // validates protocol version, spawn token, computes the next client ID.
 // No state mutations or messages are sent during this phase.
 func (h *Hub) buildConnectPlan(c *Client, msg *Message) connectPlan {
+	data, err := decodeHelloData(msg)
+	if err != nil {
+		return connectPlan{errorMsg: err.Error()}
+	}
 	plan := connectPlan{
-		name:           msg.Name,
-		sends:          msg.Sends,
-		receives:       msg.Receives,
-		receivesGlobal: msg.ReceivesGlobal,
-		hooks:          msg.Hooks,
+		name:           data.Name,
+		sends:          data.SendTopics,
+		receives:       data.ReceiveTopics,
+		receivesGlobal: data.GlobalTopics,
+		hooks:          data.Hooks,
+		requestID:      msg.ID,
 	}
 
 	// Protocol version must match exactly. Version 0 is no longer accepted —
 	// clients must declare PROTOCOL_VERSION on connect.
-	if msg.Version != ProtocolVersion {
-		return connectPlan{errorMsg: fmt.Sprintf("unsupported protocol version %d (kernel expects %d)", msg.Version, ProtocolVersion)}
+	if msg.V != ProtocolVersion {
+		return connectPlan{errorMsg: fmt.Sprintf("unsupported protocol version %d (kernel expects %d)", msg.V, ProtocolVersion)}
 	}
 
-	depth, err := h.policy.CanConnect(msg.Token, msg.AuthToken)
+	depth, err := h.policy.CanConnect("", data.AuthToken)
 	if err != nil {
 		return connectPlan{errorMsg: err.Error()}
 	}
@@ -45,10 +51,15 @@ func (h *Hub) buildConnectPlan(c *Client, msg *Message) connectPlan {
 	// Compute the next ID without mutating the client.
 	id := h.nextClientID()
 	plan.clientID = id
+	ackData, _ := json.Marshal(map[string]any{
+		"client_id":       fmt.Sprintf("c%d", id),
+		"server_protocol": ProtocolVersion,
+	})
 	plan.connectedMsg = &Message{
-		Type:    string(MsgConnected),
-		Version: ProtocolVersion,
-		ID:      fmt.Sprintf("c%d", id),
+		V:    ProtocolVersion,
+		Type: string(MsgHelloAck),
+		ID:   plan.requestID,
+		Data: ackData,
 	}
 
 	return plan
@@ -60,6 +71,7 @@ func (h *Hub) applyConnectPlan(c *Client, plan connectPlan) {
 	if plan.errorMsg != "" {
 		h.Logger.Warn("client connect rejected", "from", plan.name, "reason", plan.errorMsg)
 		c.SendMsg(&Message{
+			V:    ProtocolVersion,
 			Type: string(MsgError),
 			Text: plan.errorMsg,
 		})
@@ -96,19 +108,12 @@ func (h *Hub) handleCancel(session string) {
 		return
 	}
 	sess, ok := h.sessions.Get(session)
-	if !ok || !sess.RequestCancel() {
-		return
+	if ok && sess.RequestCancel() {
+		h.persistSessionState(session)
 	}
-	h.persistSessionState(session)
 	payload, _ := json.Marshal(map[string]string{"session": session})
 	h.dispatchHook("cancel", payload, session)
-	h.broadcastToSession(session, string(MsgCancel), &Message{Type: string(MsgCancel)}, nil)
-	h.forEachProcess(func(pid int, proc *SpawnedProcess) {
-		if proc.Alive && proc.Session == session {
-			h.Logger.Debug("sending SIGINT", "pid", pid)
-			proc.Signal()
-		}
-	})
+	h.broadcastToSession(session, TopicTurnCancel, &Message{Type: string(MsgEvent), Topic: TopicTurnCancel}, nil)
 }
 
 func makeCapabilitySet(items []string) map[string]bool {
