@@ -34,7 +34,7 @@ func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 
 	s.hub.Logger.Debug("tool.call", "tool", toolName, "session", session, "id", toolID)
 
-	effectiveInput, ok := s.hub.policy.CanUseTool(sender, toolName, toolID, msg.Input, session)
+	effectiveInput, ok := s.hub.policy.CanUseTool(sender, toolName, toolID, msg.Input, msg.Meta, session)
 	if !ok {
 		s.hub.sendToolResultForTool(session, toolID, toolName, "ERROR: blocked")
 		return
@@ -46,6 +46,7 @@ func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 		ID:    toolID,
 		Name:  toolName,
 		Input: msg.Input,
+		Meta:  msg.Meta,
 	}, sender, sender)
 
 	s.handleDynamicTool(session, toolID, toolName, msg.Input)

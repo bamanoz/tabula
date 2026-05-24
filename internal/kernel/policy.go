@@ -142,9 +142,9 @@ func (pe *PolicyEngine) BeforeMessage(sender *Client, msg *Message) (string, boo
 
 // CanUseTool runs the before_tool_call hook and returns (result, ok).
 // Returns (nil, false) if the hook blocks the tool use.
-func (pe *PolicyEngine) CanUseTool(sender *Client, toolName string, toolID string, input json.RawMessage, session string) (json.RawMessage, bool) {
+func (pe *PolicyEngine) CanUseTool(sender *Client, toolName string, toolID string, input json.RawMessage, meta json.RawMessage, session string) (json.RawMessage, bool) {
 	hookPayload, _ := json.Marshal(map[string]any{
-		"tool": toolName, "id": toolID, "input": input, "tenant_id": pe.hub.sessionTenantID(session),
+		"tool": toolName, "id": toolID, "input": input, "meta": meta, "tenant_id": pe.hub.sessionTenantID(session),
 	})
 	result, ok := pe.hub.dispatchHookExcept("before_tool_call", hookPayload, session, sender)
 	if !ok {

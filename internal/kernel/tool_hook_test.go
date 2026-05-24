@@ -59,6 +59,43 @@ func TestBeforeToolCallHookCanModifyToolInput(t *testing.T) {
 	}
 }
 
+func TestBeforeToolCallHookReceivesToolMeta(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	env := newTestEnvWithSkillTool(t)
+	hook := env.connectHook("perm", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
+	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
+
+	go func() {
+		writeJSON(t, drv, Message{
+			Type:  string(MsgRequest),
+			Topic: TopicToolCall,
+			Name:  "echo_tool",
+			ID:    "t-meta",
+			Input: json.RawMessage(`{"text":"ok"}`),
+			Meta:  json.RawMessage(`{"actor":"agent/immune-plan"}`),
+		})
+	}()
+
+	hookMsg := readMsg(t, hook)
+	var payload struct {
+		Meta map[string]string `json:"meta"`
+	}
+	if err := json.Unmarshal(hookMsg.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal hook payload: %v", err)
+	}
+	if payload.Meta["actor"] != "agent/immune-plan" {
+		t.Fatalf("expected actor meta in hook payload, got %+v", payload.Meta)
+	}
+	writeJSON(t, hook, Message{Type: "hook_reply", ID: hookMsg.ID, Action: "pass"})
+	result := readMsg(t, drv)
+	if !isToolResult(&result) {
+		t.Fatalf("expected tool_result, got %s", result.Type)
+	}
+}
+
 // Interactive approval-style hook: timeout_ms=0 means wait until the
 // subscriber replies. The hook reply gates the tool execution.
 func TestBeforeToolCallHook_InfiniteTimeout_RepliesAfterDelay(t *testing.T) {
