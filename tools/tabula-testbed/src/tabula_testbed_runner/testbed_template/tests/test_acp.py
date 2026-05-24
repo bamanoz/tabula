@@ -47,12 +47,12 @@ class _Completions:
         user_messages = [message for message in messages if message.get("role") == "user"]
         tool_messages = [message for message in messages if message.get("role") == "tool"]
         last_user = str(user_messages[-1].get("content") if user_messages else "")
-        if "__ASK_USER__" in last_user and len(tool_messages) < len(user_messages):
+        if "__QUESTION__" in last_user and len(tool_messages) < len(user_messages):
             return _Stream([
                 _chunk(tool_call={
                     "id": f"call-{len(user_messages)}",
-                    "name": "ask_user",
-                    "arguments": json.dumps({"question": "Continue?", "options": ["yes", "no"]}),
+                    "name": "question",
+                    "arguments": json.dumps({"questions": [{"question": "Continue?", "options": [{"label": "yes"}, {"label": "no"}]}]}),
                 })
             ])
         if "__USE_TOOL__" in last_user and len(tool_messages) < len(user_messages):
@@ -241,7 +241,7 @@ class ACPGatewayInstalled(unittest.TestCase):
                 "session/prompt",
                 {
                     "sessionId": session_id,
-                    "prompt": [{"type": "text", "text": "__ASK_USER__ approval turn"}],
+                    "prompt": [{"type": "text", "text": "__QUESTION__ approval turn"}],
                 },
             )
             self.assertEqual(ask_result.get("stopReason"), "end_turn")
@@ -258,7 +258,7 @@ class ACPGatewayInstalled(unittest.TestCase):
             self.assert_history_contains(session_id, '"provider": "openai"')
             self.assert_history_contains(session_id, '"model": "o3-mini"')
             self.assert_history_contains(session_id, "__USE_TOOL__ first turn")
-            self.assert_history_contains(session_id, "__ASK_USER__ approval turn")
+            self.assert_history_contains(session_id, "__QUESTION__ approval turn")
 
             client.close()
 

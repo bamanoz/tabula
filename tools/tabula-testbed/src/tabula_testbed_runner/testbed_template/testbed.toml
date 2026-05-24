@@ -147,10 +147,10 @@ set = "empty"
 components = ["base:hook-approvals", "code:git", "code:review"]
 tests = ["tests/test_code.py"]
 
-[suites.ask-user]
+[suites.question]
 set = "empty"
-components = ["base:ask-user"]
-tests = ["tests/test_ask_user.py"]
+components = ["base:question"]
+tests = ["tests/test_question.py"]
 
 [suites.todo]
 set = "empty"
@@ -184,7 +184,7 @@ tests = ["tests/test_compaction.py"]
 
 [suites.acp]
 set = "empty"
-components = ["base:ask-user", "base:hook-approvals", "base:hook-permissions", "drivers:driver", "gateways:gateway-acp", "workspace:exec"]
+components = ["base:question", "base:hook-approvals", "base:hook-permissions", "drivers:driver", "gateways:gateway-acp", "workspace:exec"]
 tests = ["tests/test_acp.py"]
 
 [suites.runtime-wss-loopback]
