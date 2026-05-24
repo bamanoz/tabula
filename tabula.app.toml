@@ -7,10 +7,6 @@ source = "local:../tabula-distrib/code-immune"
 
 [values.workspace]
 path = "${project_root}"
-extra_roots = [
-  "${project_root}/../tabula-bundles",
-  "${project_root}/../tabula-distrib",
-]
 
 [values.prompt]
 project_files = ["AGENTS.md"]
@@ -18,9 +14,3 @@ create_missing_project_files = false
 
 [[bindings.directory]]
 root = "${project_root}"
-
-[[bindings.directory]]
-root = "${project_root}/../tabula-bundles"
-
-[[bindings.directory]]
-root = "${project_root}/../tabula-distrib"
