@@ -27,9 +27,11 @@ func (s hubRuntimeAsyncSink) CatalogUpdated(runtimeID string, update wire.Catalo
 	}
 	if ok {
 		s.hub.syncRuntimeCapability(runtimeID, capability)
-		s.hub.broadcastRuntimeCatalogUpdate(capability)
 	}
 	s.hub.rebuildHookIndex()
+	if ok {
+		go s.hub.broadcastRuntimeCatalogUpdate(capability)
+	}
 	return nil
 }
 
