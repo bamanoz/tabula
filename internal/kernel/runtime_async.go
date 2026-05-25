@@ -177,9 +177,10 @@ func (h *Hub) broadcastRuntimeCatalogUpdate(capability runtimeapi.Capability) {
 		}
 		tools := h.initToolsJSON(sess.TenantID)
 		meta := h.initMetaJSON(sess.TenantID)
-		msg := h.initMessage(sess.GetInitContext(), tools, meta)
 		for _, client := range h.sessionClients(sess.ID) {
 			if client.canReceive(TopicSessionInit) {
+				context := h.policy.BeforePromptBuild(sess.ID, sess.TenantID, client.name, sess.GetInitContext(), tools, meta)
+				msg := h.initMessage(context, tools, meta)
 				client.SendMsg(msg)
 			}
 		}
