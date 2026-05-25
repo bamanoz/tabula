@@ -170,3 +170,25 @@ func TestSessionEndEmittedOnLastClientLeave(t *testing.T) {
 		t.Fatal("session s1 should be removed after last client leaves")
 	}
 }
+
+func TestClientRejoinLeavesPreviousSession(t *testing.T) {
+	env := newTestEnv(t)
+	conn := env.connectAndJoin("alice", "s1", []string{TopicMessageUser}, []string{})
+
+	writeJSON(t, conn, Message{Type: "join", Session: "s2"})
+	msg := readMsg(t, conn)
+	if msg.Type != "joined" || msg.Session != "s2" {
+		t.Fatalf("expected joined s2, got %+v", msg)
+	}
+
+	if s1, ok := env.Hub.sessions.Get("s1"); ok && s1.ClientCount() != 0 {
+		t.Fatalf("expected rejoin to remove old session client, got %d", s1.ClientCount())
+	}
+	s2, ok := env.Hub.sessions.Get("s2")
+	if !ok {
+		t.Fatal("session s2 should exist")
+	}
+	if s2.ClientCount() != 1 {
+		t.Fatalf("expected one client in s2, got %d", s2.ClientCount())
+	}
+}

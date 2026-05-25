@@ -57,6 +57,7 @@ func (h *Hub) applyJoinPlan(c *Client, plan joinPlan) {
 		return
 	}
 
+	h.leaveCurrentSession(c, plan.session)
 	h.persistSessionState(plan.session)
 	h.assignClientSession(c, plan.session)
 	c.MarkJoined()
@@ -72,6 +73,24 @@ func (h *Hub) applyJoinPlan(c *Client, plan joinPlan) {
 	}
 
 	h.policy.SessionJoin(plan.session, plan.tenantID, c.name)
+}
+
+func (h *Hub) leaveCurrentSession(c *Client, nextSession string) {
+	if h.sessions == nil || c.session == "" || c.session == nextSession {
+		return
+	}
+	sess, ok := h.sessions.Get(c.session)
+	if !ok {
+		return
+	}
+	sess.RemoveClient(c.name)
+	if sess.ClientCount() == 0 {
+		h.deleteSessionState(c.session, sess.TenantID)
+		h.emitSessionEnd(c.session)
+		h.sessions.Remove(c.session)
+		return
+	}
+	h.persistSessionState(c.session)
 }
 
 func (h *Hub) finalizeJoinPlan(c *Client, plan *joinPlan) {
