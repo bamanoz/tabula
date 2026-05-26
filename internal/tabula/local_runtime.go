@@ -50,6 +50,9 @@ func writeLocalRuntimeConfig(tabulaHome string, entries []bootPluginEntry) error
 }
 
 func localRuntimeSocketPath(tabulaHome string) string {
+	if override := strings.TrimSpace(os.Getenv("TABULA_RUNTIME_SOCKET_PATH")); override != "" {
+		return override
+	}
 	path := filepath.Join(tabulaHome, "run", "runtime.sock")
 	if len(path) <= 100 {
 		return path

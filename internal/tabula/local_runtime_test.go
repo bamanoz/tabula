@@ -153,6 +153,15 @@ func TestLocalRuntimeSocketPathUsesShortTempPathForLongHome(t *testing.T) {
 	}
 }
 
+func TestLocalRuntimeSocketPathUsesEnvOverride(t *testing.T) {
+	override := filepath.Join(t.TempDir(), "runtime.sock")
+	t.Setenv("TABULA_RUNTIME_SOCKET_PATH", override)
+
+	if got := localRuntimeSocketPath(t.TempDir()); got != override {
+		t.Fatalf("socket path = %q, want %q", got, override)
+	}
+}
+
 func TestLocalRuntimePluginPaths_DefaultsWhenNoEntries(t *testing.T) {
 	tabulaHome := t.TempDir()
 	got, err := localRuntimePluginPaths(tabulaHome, nil)

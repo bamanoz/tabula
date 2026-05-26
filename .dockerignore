@@ -1,0 +1,16 @@
+.git
+.claude
+.opencode
+.playwright-mcp
+.tabula
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.cache
+dist
+build
+*.egg-info
+node_modules
+tabula.app.lock
+.env

@@ -1,0 +1,19 @@
+services:
+  tabula:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tabula-agent:local
+    init: true
+    ports:
+      - "18089:8089"
+      - "18765:8765"
+    environment:
+      TABULA_HOME: /workspace/.tabula
+      TABULA_WORKSPACE: /workspace
+      TABULA_APP_MANIFEST: /workspace/tabula.app.toml
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - .:/workspace
+      - ../tabula-distrib:/tabula-distrib:ro
+      - ../tabula-bundles:/tabula-bundles:ro
