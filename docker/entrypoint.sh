@@ -4,10 +4,42 @@ set -euo pipefail
 TABULA_WORKSPACE="${TABULA_WORKSPACE:-/workspace}"
 TABULA_HOME="${TABULA_HOME:-$TABULA_WORKSPACE/.tabula}"
 TABULA_APP_MANIFEST="${TABULA_APP_MANIFEST:-$TABULA_WORKSPACE/tabula.app.toml}"
+TABULA_UID="${TABULA_UID:-1000}"
+TABULA_GID="${TABULA_GID:-1000}"
+
+if [ "$(id -u)" = "0" ]; then
+  if [ "$(id -g tabula)" != "$TABULA_GID" ] && ! getent group "$TABULA_GID" >/dev/null; then
+    groupmod -g "$TABULA_GID" tabula
+  fi
+  if [ "$(id -u tabula)" != "$TABULA_UID" ]; then
+    usermod -u "$TABULA_UID" -g "$TABULA_GID" tabula
+  elif [ "$(id -g tabula)" != "$TABULA_GID" ]; then
+    usermod -g "$TABULA_GID" tabula
+  fi
+  mkdir -p "$TABULA_HOME" "$TABULA_WORKSPACE" /tmp/tabula-home
+  chown tabula:tabula "$TABULA_HOME" "$TABULA_WORKSPACE" /tmp/tabula-home 2>/dev/null || true
+  exec gosu tabula "$0" "$@"
+fi
+
 export TABULA_HOME TABULA_WORKSPACE TABULA_APP_MANIFEST
 export PATH="$TABULA_HOME/bin:$TABULA_HOME/.venv/bin:$PATH"
 export HOME="/tmp/tabula-home"
+export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/tabula-known-hosts}"
 mkdir -p "$HOME"
+
+configure_git_auth() {
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/" || true
+    return
+  fi
+  if [ -d /host-ssh ]; then
+    mkdir -p "$HOME/.ssh"
+    ln -sf /host-ssh/config "$HOME/.ssh/config" 2>/dev/null || true
+    ln -sf /host-ssh/id_rsa "$HOME/.ssh/id_rsa" 2>/dev/null || true
+    ln -sf /host-ssh/id_rsa.pub "$HOME/.ssh/id_rsa.pub" 2>/dev/null || true
+  fi
+  git config --global url."ssh://git@github.com/".insteadOf "https://github.com/" || true
+}
 
 app_id_from_manifest() {
   "$TABULA_HOME/.venv/bin/python3" - "$TABULA_APP_MANIFEST" <<'PY'
@@ -110,6 +142,7 @@ EOF
 }
 
 prepare_runtime() {
+  configure_git_auth
   if [ ! -f "$TABULA_APP_MANIFEST" ]; then
     echo "error: app manifest not found: $TABULA_APP_MANIFEST" >&2
     echo "mount a repository with tabula.app.toml at $TABULA_WORKSPACE or set TABULA_APP_MANIFEST" >&2

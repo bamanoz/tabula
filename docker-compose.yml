@@ -12,8 +12,11 @@ services:
       TABULA_HOME: /workspace/.tabula
       TABULA_WORKSPACE: /workspace
       TABULA_APP_MANIFEST: /workspace/tabula.app.toml
-    user: "${UID:-1000}:${GID:-1000}"
+      TABULA_UID: ${UID:-1000}
+      TABULA_GID: ${GID:-1000}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     volumes:
       - .:/workspace
       - ../tabula-distrib:/tabula-distrib:ro
       - ../tabula-bundles:/tabula-bundles:ro
+      - ~/.ssh:/host-ssh:ro
