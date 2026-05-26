@@ -141,6 +141,25 @@ EOF
   export TABULA_PRESERVE_RUNTIME_CONFIG=1
 }
 
+export_app_boot_env() {
+  local app_id distro_name boot_path
+  app_id="$(app_id_from_manifest)"
+  distro_name="$($TABULA_HOME/.venv/bin/python3 - "$TABULA_HOME/tenants/$app_id/app.lock.json" <<'PY'
+import json, sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text())
+lock = data.get('lock') if isinstance(data.get('lock'), dict) else {}
+print(lock.get('distro') or data.get('name') or 'active')
+PY
+)"
+  boot_path="$TABULA_HOME/distrib/$distro_name/current/boot.py"
+  export TABULA_APP_ID="$app_id"
+  export TABULA_TENANT_ID="$app_id"
+  export TABULA_TENANT_DIR="$TABULA_HOME/tenants/$app_id"
+  export TABULA_BOOT_PATH="$boot_path"
+  export TABULA_BOOT="$TABULA_HOME/.venv/bin/python3 $boot_path"
+}
+
 prepare_runtime() {
   configure_git_auth
   if [ ! -f "$TABULA_APP_MANIFEST" ]; then
@@ -156,6 +175,7 @@ prepare_runtime() {
   "$TABULA_HOME/bin/tabula-install" app prepare "$TABULA_APP_MANIFEST" --update
   write_docker_runtime_config
   write_docker_gateway_config
+  export_app_boot_env
   git config --global --add safe.directory "$TABULA_WORKSPACE" || true
 }
 
