@@ -75,8 +75,8 @@ install_tabula() {
   cp /opt/src/tabula/bin/tabula-runner "$TABULA_HOME/bin/tabula-runner"
   cp /opt/src/tabula/bin/tabula-cli "$TABULA_HOME/bin/tabula-cli"
   chmod +x "$TABULA_HOME/bin/tabula" "$TABULA_HOME/bin/tabula-runtime" "$TABULA_HOME/bin/tabula-runner" "$TABULA_HOME/bin/tabula-cli"
-  ln -sf "$TABULA_HOME/.venv/bin/tabula-install" "$TABULA_HOME/bin/tabula-install"
-  ln -sf "$TABULA_HOME/.venv/bin/tabula-distro" "$TABULA_HOME/bin/tabula-distro"
+  ln -sf "../.venv/bin/tabula-install" "$TABULA_HOME/bin/tabula-install"
+  ln -sf "../.venv/bin/tabula-distro" "$TABULA_HOME/bin/tabula-distro"
   cat /opt/src/tabula/VERSION > "$TABULA_HOME/VERSION"
   "$TABULA_HOME/bin/tabula" --protocol > "$TABULA_HOME/PROTOCOL"
 }
