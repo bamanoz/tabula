@@ -1,6 +1,10 @@
 package kernel
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/bamanoz/tabula/internal/tenant"
+)
 
 type ClientRegistry struct {
 	mu           sync.RWMutex
@@ -45,9 +49,13 @@ func (r *ClientRegistry) Configure(c *Client, name string, sends, receives, rece
 	return c.id
 }
 
-func (r *ClientRegistry) AssignSession(c *Client, session string) {
+func (r *ClientRegistry) AssignSession(c *Client, tenantID, session string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if tenantID == "" {
+		tenantID = tenant.DefaultID
+	}
+	c.tenantID = tenantID
 	c.session = session
 }
 
@@ -61,12 +69,18 @@ func (r *ClientRegistry) All() []*Client {
 	return clients
 }
 
-func (r *ClientRegistry) InSession(session string) []*Client {
+func (r *ClientRegistry) InSession(tenantID, session string) []*Client {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	if tenantID == "" {
+		tenantID = tenant.DefaultID
+	}
 	clients := make([]*Client, 0)
 	for c := range r.clients {
 		if !c.IsConnected() || c.session == "" {
+			continue
+		}
+		if c.tenantID != tenantID {
 			continue
 		}
 		if session != "" && c.session != session {

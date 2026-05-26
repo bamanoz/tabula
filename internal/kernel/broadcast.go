@@ -4,16 +4,19 @@ import "fmt"
 
 // broadcastToSession sends a message to all clients in a session that can receive the given type.
 // Also delivers to clients with receives_global for that type (regardless of session).
-func (h *Hub) broadcastToSession(session, msgType string, msg *Message, exclude *Client) {
-	h.broadcastToSessionFrom(session, msgType, msg, nil, exclude)
+func (h *Hub) broadcastToSession(tenantID, session, msgType string, msg *Message, exclude *Client) {
+	h.broadcastToSessionFrom(tenantID, session, msgType, msg, nil, exclude)
 }
 
-func (h *Hub) broadcastToSessionFrom(session, msgType string, msg *Message, sender *Client, exclude *Client) {
+func (h *Hub) broadcastToSessionFrom(tenantID, session, msgType string, msg *Message, sender *Client, exclude *Client) {
 	delivered := 0
 	seen := make(map[*Client]bool)
+	if tenantID == "" && sender != nil {
+		tenantID = sender.tenantID
+	}
 
 	// Session members
-	for _, c := range h.sessionClients(session) {
+	for _, c := range h.sessionClients(tenantID, session) {
 		if c == exclude {
 			continue
 		}
@@ -39,7 +42,7 @@ func (h *Hub) broadcastToSessionFrom(session, msgType string, msg *Message, send
 				globalMsg.Session = session
 			}
 			if globalMsg.TenantID == "" {
-				if sess, ok := h.sessions.Get(session); ok {
+				if sess, ok := h.sessions.Get(session, tenantID); ok {
 					globalMsg.TenantID = sess.TenantID
 				}
 			}
@@ -53,8 +56,8 @@ func (h *Hub) broadcastToSessionFrom(session, msgType string, msg *Message, send
 	h.Logger.Debug("broadcast", "type", msgType, "session", session, "delivered", delivered)
 }
 
-func (h *Hub) sendToolResultForTool(session, toolID, toolName, output string) {
-	h.broadcastToSession(session, TopicToolResult, &Message{
+func (h *Hub) sendToolResultForTool(tenantID, session, toolID, toolName, output string) {
+	h.broadcastToSession(tenantID, session, TopicToolResult, &Message{
 		Type:   string(MsgReply),
 		Topic:  TopicToolResult,
 		ID:     toolID,
@@ -69,11 +72,12 @@ func (h *Hub) broadcastProcessError(session string, pid int, command string, exi
 	if session == "" {
 		return
 	}
-	h.broadcastToSession(session, string(MsgError), &Message{
+	tenantID := h.sessionTenantID("", session)
+	h.broadcastToSession(tenantID, session, string(MsgError), &Message{
 		Type: string(MsgError),
 		Text: fmt.Sprintf("process %d crashed (exit %d)", pid, exitCode),
 	}, nil)
-	if queued, ok := h.completeSessionTurn(session); ok {
-		h.dispatchQueuedInput(session, queued)
+	if queued, ok := h.completeSessionTurn(tenantID, session); ok {
+		h.dispatchQueuedInput(tenantID, session, queued)
 	}
 }

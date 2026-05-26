@@ -538,6 +538,8 @@ type PluginSend struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 	// SessionID optionally scopes the send to one session.
 	SessionID string `json:"session_id,omitempty"`
+	// TenantID optionally scopes the send to one tenant/app. Empty means default.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // PluginLog is a runtime-originated structured plugin log record.

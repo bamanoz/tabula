@@ -60,11 +60,11 @@ func (h *Hub) rebuildHookIndex() {
 // dispatchHook is the single entry point for all hook dispatch.
 // It validates the event, logs the dispatch, and delegates to the hook engine.
 // Returns (payload, true) on success, (nil, false) if blocked.
-func (h *Hub) dispatchHook(event string, payload json.RawMessage, session string) (json.RawMessage, bool) {
-	return h.dispatchHookExcept(event, payload, session, nil)
+func (h *Hub) dispatchHook(event string, payload json.RawMessage, tenantID, session string) (json.RawMessage, bool) {
+	return h.dispatchHookExcept(event, payload, tenantID, session, nil)
 }
 
-func (h *Hub) dispatchHookExcept(event string, payload json.RawMessage, session string, exclude HookSubscriber) (json.RawMessage, bool) {
+func (h *Hub) dispatchHookExcept(event string, payload json.RawMessage, tenantID, session string, exclude HookSubscriber) (json.RawMessage, bool) {
 	def, known := HookEvents[event]
 	if !known {
 		h.Logger.Warn("unknown hook event", "event", event)
@@ -72,7 +72,7 @@ func (h *Hub) dispatchHookExcept(event string, payload json.RawMessage, session 
 	}
 
 	h.Logger.Debug("dispatching hook", "event", event, "type", def.Type, "session", session)
-	result, ok := h.hooks.DispatchExcept(event, payload, session, exclude)
+	result, ok := h.hooks.DispatchExcept(event, payload, tenantID, session, exclude)
 
 	if !ok {
 		h.Logger.Info("hook blocked event", "event", event)

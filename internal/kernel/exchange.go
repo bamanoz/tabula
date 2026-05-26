@@ -5,6 +5,7 @@ import "fmt"
 type pendingExchange struct {
 	requester *Client
 	responder *Client
+	tenantID  string
 	session   string
 	topic     string
 }
@@ -15,14 +16,16 @@ func (h *Hub) handleExchangeRequest(sender *Client, msg *Message) {
 		return
 	}
 	session := h.targetSession(sender, msg)
-	responder := h.pickExchangeResponder(sender, session, msg.Topic)
+	tenantID := h.targetTenant(sender, msg)
+	responder := h.pickExchangeResponder(sender, tenantID, session, msg.Topic)
 	if responder == nil {
 		sender.SendMsg(&Message{Type: string(MsgError), Text: fmt.Sprintf("no responder for %s", msg.Topic)})
 		return
 	}
 	h.exchangesMu.Lock()
-	h.exchanges[msg.ID] = pendingExchange{requester: sender, responder: responder, session: session, topic: msg.Topic}
+	h.exchanges[msg.ID] = pendingExchange{requester: sender, responder: responder, tenantID: tenantID, session: session, topic: msg.Topic}
 	h.exchangesMu.Unlock()
+	msg.TenantID = tenantID
 	responder.SendMsg(h.prepareRoutedMessage(sender, session, "exchange", msg))
 }
 
@@ -40,11 +43,12 @@ func (h *Hub) handleExchangeReply(sender *Client, msg *Message) {
 	if pending.requester == nil || !pending.requester.IsConnected() {
 		return
 	}
+	msg.TenantID = pending.tenantID
 	pending.requester.SendMsg(h.prepareRoutedMessage(sender, pending.session, "exchange", msg))
 }
 
-func (h *Hub) pickExchangeResponder(sender *Client, session string, topic string) *Client {
-	for _, c := range h.sessionClients(session) {
+func (h *Hub) pickExchangeResponder(sender *Client, tenantID, session string, topic string) *Client {
+	for _, c := range h.sessionClients(tenantID, session) {
 		if c == sender || !c.IsConnected() || !c.canReceive(topic) || !c.canSend(topic) {
 			continue
 		}
@@ -52,6 +56,9 @@ func (h *Hub) pickExchangeResponder(sender *Client, session string, topic string
 	}
 	for _, c := range h.allClients() {
 		if c == sender || !c.IsConnected() || !c.canReceiveGlobal(topic) || !c.canSend(topic) {
+			continue
+		}
+		if c.tenantID != "" && c.tenantID != tenantID {
 			continue
 		}
 		return c

@@ -70,7 +70,7 @@ func TestBroadcastToSessionAnnotatesGlobalReceiversWithSession(t *testing.T) {
 	member := addCaptureClient(t, env.Hub, "member", "main", []string{TopicStreamDelta}, nil)
 	global := addCaptureClient(t, env.Hub, "global", "", nil, []string{TopicStreamDelta})
 
-	env.Hub.broadcastToSession("main", TopicStreamDelta, &Message{Type: string(MsgEvent), Topic: TopicStreamDelta, Data: mustMarshalRaw(map[string]any{"text": "hi"})}, nil)
+	env.Hub.broadcastToSession("default", "main", TopicStreamDelta, &Message{Type: string(MsgEvent), Topic: TopicStreamDelta, Data: mustMarshalRaw(map[string]any{"text": "hi"})}, nil)
 
 	memberMsg := waitForMessage(t, member.recvCh)
 	if memberMsg.Session != "" {
@@ -129,9 +129,13 @@ func (e *testEnv) connectAck(name string, sends, receives []string) (*websocket.
 
 // connectAndJoin dials + connect + join.
 func (e *testEnv) connectAndJoin(name, session string, sends, receives []string) *websocket.Conn {
+	return e.connectAndJoinTenant(name, tenant.DefaultID, session, sends, receives)
+}
+
+func (e *testEnv) connectAndJoinTenant(name, tenantID, session string, sends, receives []string) *websocket.Conn {
 	e.t.Helper()
 	conn := e.connect(name, sends, receives)
-	writeJSON(e.t, conn, Message{Type: "join", Session: session})
+	writeJSON(e.t, conn, Message{Type: "join", TenantID: tenantID, Session: session})
 	msg := readMsg(e.t, conn)
 	if msg.Type != "joined" {
 		e.t.Fatalf("expected joined, got %s", msg.Type)
@@ -665,9 +669,9 @@ func TestExchangeReplyRequiresChosenResponder(t *testing.T) {
 
 func TestExchangeApproveHelperReachesTenantSessionResponder(t *testing.T) {
 	hub := NewHub(nil, 3, 5, nil)
-	hub.sessions.GetOrCreate("s1").TenantID = "tenant-a"
-	responder := addCaptureClient(t, hub, "responder", "s1", []string{TopicExchangeApprove}, nil)
-	help := addCaptureClient(t, hub, "helper", "s1", []string{TopicExchangeApprove}, nil)
+	hub.sessions.GetOrCreate("s1", "tenant-a")
+	responder := addTenantCaptureClient(t, hub, "tenant-a", "responder", "s1", []string{TopicExchangeApprove}, nil)
+	help := addTenantCaptureClient(t, hub, "tenant-a", "helper", "s1", []string{TopicExchangeApprove}, nil)
 	responder.sends[TopicExchangeApprove] = true
 	help.sends[TopicExchangeApprove] = true
 
@@ -681,6 +685,50 @@ func TestExchangeApproveHelperReachesTenantSessionResponder(t *testing.T) {
 	reply := waitForMessage(t, help.recvCh)
 	if reply.Type != string(MsgReply) || reply.Topic != TopicExchangeApprove || reply.ID != "approve-1" {
 		t.Fatalf("expected approval reply to helper, got %+v", reply)
+	}
+}
+
+func TestTenantSessionsWithSameIDAreIsolated(t *testing.T) {
+	env := newTestEnv(t)
+	env.Hub.SetTenantStore(tenant.NewMemoryStore(
+		tenant.Tenant{ID: "alpha", CreatedAt: time.Now()},
+		tenant.Tenant{ID: "beta", CreatedAt: time.Now()},
+	))
+
+	alphaSender := env.connectAndJoinTenant("alpha-sender", "alpha", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
+	alphaReceiver := env.connectAndJoinTenant("alpha-receiver", "alpha", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
+	betaReceiver := env.connectAndJoinTenant("beta-receiver", "beta", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
+
+	alphaSession, ok := env.Hub.sessions.Get("main", "alpha")
+	if !ok {
+		t.Fatal("expected alpha/main session")
+	}
+	betaSession, ok := env.Hub.sessions.Get("main", "beta")
+	if !ok {
+		t.Fatal("expected beta/main session")
+	}
+	if alphaSession == betaSession {
+		t.Fatal("expected distinct live session objects per tenant")
+	}
+
+	writeJSON(t, alphaSender, Message{Type: string(MsgEvent), Topic: TopicMessageUser, Data: mustMarshalRaw(map[string]any{"text": "hello alpha"})})
+	received := readMsg(t, alphaReceiver)
+	if eventText(&received) != "hello alpha" {
+		t.Fatalf("expected alpha receiver to get tenant message, got %+v", received)
+	}
+	if msg := readMsgTimeout(t, betaReceiver, 200*time.Millisecond); msg != nil {
+		t.Fatalf("beta tenant received alpha message: %+v", msg)
+	}
+
+	var snapshot map[string]snapshotSessionInfo
+	if err := json.Unmarshal(env.Hub.SnapshotSessions(), &snapshot); err != nil {
+		t.Fatalf("invalid snapshot: %v", err)
+	}
+	if _, ok := snapshot["alpha/main"]; !ok {
+		t.Fatalf("snapshot missing alpha/main: %#v", snapshot)
+	}
+	if _, ok := snapshot["beta/main"]; !ok {
+		t.Fatalf("snapshot missing beta/main: %#v", snapshot)
 	}
 }
 
@@ -1027,7 +1075,7 @@ func TestSessionBusyQueuesConcurrentRootMessagesAndDispatchesAfterDone(t *testin
 		t.Fatalf("expected first turn message, got %+v", first)
 	}
 
-	sess, ok := env.Hub.sessions.Get("main")
+	sess, ok := env.Hub.sessions.Get("main", "default")
 	if !ok {
 		t.Fatal("session main should exist")
 	}

@@ -920,7 +920,7 @@ func runCmd(args []string, build BuildInfo) int {
 	go func() {
 		deadline := time.Now().Add(30 * time.Second)
 		for time.Now().Before(deadline) {
-			sess, ok := hub.GetSession("main")
+			sess, ok := hub.GetSession("main", tenant.DefaultID)
 			if ok && sess.ClientCount() >= 1 {
 				clientReady <- true
 				return

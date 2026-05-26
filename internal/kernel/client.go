@@ -24,6 +24,7 @@ type Client struct {
 	hub            *Hub
 	conn           *websocket.Conn
 	name           string
+	tenantID       string
 	session        string
 	id             int
 	depth          int
@@ -110,6 +111,8 @@ func (c *Client) Name() string { return c.name }
 // Session returns the client's session id (empty for global subscribers).
 // Implements HookSubscriber.
 func (c *Client) Session() string { return c.session }
+
+func (c *Client) TenantID() string { return c.tenantID }
 
 // Hooks returns the client's hook subscriptions. Implements HookSubscriber.
 func (c *Client) Hooks() []HookSubscription { return c.hooks }

@@ -10,8 +10,8 @@ func (h *Hub) removeClient(c *Client) {
 	h.clients.Remove(c)
 }
 
-func (h *Hub) assignClientSession(c *Client, session string) {
-	h.clients.AssignSession(c, session)
+func (h *Hub) assignClientSession(c *Client, tenantID, session string) {
+	h.clients.AssignSession(c, tenantID, session)
 }
 
 func (h *Hub) configureClient(c *Client, name string, sends, receives, receivesGlobal []string, hooks []HookSubscription, depth int) int {

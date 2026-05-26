@@ -14,7 +14,7 @@ import (
 func TestSnapshotSessionsUsesRecordedPID(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 
-	sess := hub.sessions.GetOrCreate("s1")
+	sess := hub.sessions.GetOrCreate("s1", "default")
 	sess.AddClient("driver")
 
 	cmd := exec.Command("sleep", "60")
@@ -34,7 +34,7 @@ func TestSnapshotSessionsUsesRecordedPID(t *testing.T) {
 		t.Fatalf("SnapshotSessions returned invalid JSON: %v", err)
 	}
 
-	session, ok := snapshot["s1"]
+	session, ok := snapshot["default/s1"]
 	if !ok {
 		t.Fatal("expected session s1 in snapshot")
 	}

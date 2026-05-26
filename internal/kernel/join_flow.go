@@ -57,15 +57,15 @@ func (h *Hub) applyJoinPlan(c *Client, plan joinPlan) {
 		return
 	}
 
-	h.leaveCurrentSession(c, plan.session)
-	h.persistSessionState(plan.session)
-	h.assignClientSession(c, plan.session)
+	h.leaveCurrentSession(c, plan.tenantID, plan.session)
+	h.persistSessionState(plan.tenantID, plan.session)
+	h.assignClientSession(c, plan.tenantID, plan.session)
 	c.MarkJoined()
 
 	c.SendMsg(plan.joined)
 	h.Logger.Info("client joined session", "name", c.name, "session", plan.session)
 
-	h.broadcastToSession(plan.session, TopicSessionMemberJoined, plan.memberJoined, c)
+	h.broadcastToSession(plan.tenantID, plan.session, TopicSessionMemberJoined, plan.memberJoined, c)
 
 	if init := h.buildInitAfterJoin(c, plan); init != nil {
 		c.SendMsg(init)
@@ -75,22 +75,22 @@ func (h *Hub) applyJoinPlan(c *Client, plan joinPlan) {
 	h.policy.SessionJoin(plan.session, plan.tenantID, c.name)
 }
 
-func (h *Hub) leaveCurrentSession(c *Client, nextSession string) {
-	if h.sessions == nil || c.session == "" || c.session == nextSession {
+func (h *Hub) leaveCurrentSession(c *Client, nextTenantID, nextSession string) {
+	if h.sessions == nil || c.session == "" || (c.session == nextSession && c.tenantID == nextTenantID) {
 		return
 	}
-	sess, ok := h.sessions.Get(c.session)
+	sess, ok := h.sessions.Get(c.session, c.tenantID)
 	if !ok {
 		return
 	}
 	sess.RemoveClient(c.name)
 	if sess.ClientCount() == 0 {
 		h.deleteSessionState(c.session, sess.TenantID)
-		h.emitSessionEnd(c.session)
-		h.sessions.Remove(c.session)
+		h.emitSessionEnd(sess.TenantID, c.session)
+		h.sessions.Remove(c.session, sess.TenantID)
 		return
 	}
-	h.persistSessionState(c.session)
+	h.persistSessionState(sess.TenantID, c.session)
 }
 
 func (h *Hub) finalizeJoinPlan(c *Client, plan *joinPlan) {
@@ -106,13 +106,13 @@ func (h *Hub) finalizeJoinPlan(c *Client, plan *joinPlan) {
 		}
 	}
 	if h.sessions != nil {
-		sess, created := h.sessions.GetOrCreateTenantStatus(plan.session, plan.tenantID)
+		sess, created := h.sessions.GetOrCreateStatus(plan.session, plan.tenantID)
 		sess.AddClient(c.name)
 		if created {
 			context, blocked := h.policy.StartSession(plan.session, plan.tenantID, c.name)
 			if blocked {
 				sess.RemoveClient(c.name)
-				h.sessions.Remove(plan.session)
+				h.sessions.Remove(plan.session, plan.tenantID)
 				plan.blockedReason = "session blocked"
 				return
 			}

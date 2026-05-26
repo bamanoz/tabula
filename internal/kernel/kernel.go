@@ -129,7 +129,10 @@ func (h *Hub) SetTenantStore(store tenant.Store) {
 	h.tenants = store
 }
 
-func (h *Hub) sessionTenantID(session string) string {
+func (h *Hub) sessionTenantID(tenantID, session string) string {
+	if tenantID != "" {
+		return tenantID
+	}
 	if h == nil || h.sessions == nil {
 		return tenant.DefaultID
 	}
@@ -162,7 +165,7 @@ func (h *Hub) onClientDisconnect(c *Client) {
 	if h.sessions == nil || c.session == "" {
 		return
 	}
-	sess, ok := h.sessions.Get(c.session)
+	sess, ok := h.sessions.Get(c.session, c.tenantID)
 	if !ok {
 		return
 	}
@@ -172,11 +175,11 @@ func (h *Hub) onClientDisconnect(c *Client) {
 	sess.RemoveClient(c.name)
 	if sess.ClientCount() == 0 {
 		h.deleteSessionState(c.session, sess.TenantID)
-		h.emitSessionEnd(c.session)
-		h.sessions.Remove(c.session)
+		h.emitSessionEnd(sess.TenantID, c.session)
+		h.sessions.Remove(c.session, sess.TenantID)
 		return
 	}
-	h.persistSessionState(c.session)
+	h.persistSessionState(sess.TenantID, c.session)
 }
 
 // HandleMessage processes an incoming message from a client.
@@ -208,6 +211,6 @@ func (h *Hub) Shutdown() {
 }
 
 // GetSession returns a session by ID, or nil if not found.
-func (h *Hub) GetSession(id string) (*Session, bool) {
-	return h.sessions.Get(id)
+func (h *Hub) GetSession(id, tenantID string) (*Session, bool) {
+	return h.sessions.Get(id, tenantID)
 }

@@ -2,6 +2,8 @@ package kernel
 
 import (
 	"encoding/json"
+
+	"github.com/bamanoz/tabula/internal/tenant"
 )
 
 func (h *Hub) targetSession(sender *Client, msg *Message) string {
@@ -11,8 +13,18 @@ func (h *Hub) targetSession(sender *Client, msg *Message) string {
 	return sender.session
 }
 
-func (h *Hub) sessionClients(session string) []*Client {
-	return h.clients.InSession(session)
+func (h *Hub) targetTenant(sender *Client, msg *Message) string {
+	if msg.TenantID != "" {
+		return msg.TenantID
+	}
+	if sender.tenantID != "" {
+		return sender.tenantID
+	}
+	return tenant.DefaultID
+}
+
+func (h *Hub) sessionClients(tenantID, session string) []*Client {
+	return h.clients.InSession(tenantID, session)
 }
 
 func (h *Hub) allClients() []*Client {
@@ -55,21 +67,23 @@ func (h *Hub) sessionProcesses(session string) []*SpawnedProcess {
 	return processes
 }
 
-func (h *Hub) emitAfterMessage(session string, sender *Client) {
+func (h *Hub) emitAfterMessage(tenantID, session string, sender *Client) {
 	payload, _ := json.Marshal(map[string]string{
-		"session": session,
-		"sender":  sender.name,
-		"type":    "done",
+		"session":   session,
+		"tenant_id": tenantID,
+		"sender":    sender.name,
+		"type":      "done",
 	})
-	h.dispatchHook("after_message", payload, session)
+	h.dispatchHook("after_message", payload, tenantID, session)
 }
 
-func (h *Hub) emitAfterToolCall(session, toolID string, payload map[string]string) {
+func (h *Hub) emitAfterToolCall(tenantID, session, toolID string, payload map[string]string) {
+	payload["tenant_id"] = tenantID
 	hookPayload, _ := json.Marshal(payload)
-	h.dispatchHook("after_tool_call", hookPayload, session)
+	h.dispatchHook("after_tool_call", hookPayload, tenantID, session)
 }
 
-func (h *Hub) emitSessionEnd(session string) {
-	payload, _ := json.Marshal(map[string]string{"session": session})
-	h.dispatchHook("session_end", payload, session)
+func (h *Hub) emitSessionEnd(tenantID, session string) {
+	payload, _ := json.Marshal(map[string]string{"session": session, "tenant_id": tenantID})
+	h.dispatchHook("session_end", payload, tenantID, session)
 }

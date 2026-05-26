@@ -58,33 +58,33 @@ func TestBusMessagePreservesMessageEnvelopeFields(t *testing.T) {
 }
 
 func TestRuntimeCatalogUpdateRebuildsPromptContext(t *testing.T) {
- 	env := newTestEnv(t)
- 	driver := env.connectAndJoin("driver", "s1", []string{}, []string{TopicSessionInit})
- 	_ = readMsg(t, driver) // initial init
+	env := newTestEnv(t)
+	driver := env.connectAndJoin("driver", "s1", []string{}, []string{TopicSessionInit})
+	_ = readMsg(t, driver) // initial init
 
- 	promptHook := env.connectHook("prompt", []HookSubscription{{Event: "before_prompt_build", Priority: 100}})
+	promptHook := env.connectHook("prompt", []HookSubscription{{Event: "before_prompt_build", Priority: 100}})
 
 	go env.Hub.broadcastRuntimeCatalogUpdate(runtimeapi.Capability{
- 		Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"},
- 		Tools:  []wire.ToolSpec{{Name: "fs_read"}},
- 		State:  wire.CapabilityStateReady,
- 	})
+		Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"},
+		Tools:  []wire.ToolSpec{{Name: "fs_read"}},
+		State:  wire.CapabilityStateReady,
+	})
 
- 	promptMsg := readMsg(t, promptHook)
- 	writeJSON(t, promptHook, Message{
- 		Type:    "hook_reply",
- 		ID:      promptMsg.ID,
- 		Action:  "modify",
- 		Payload: json.RawMessage(`{"context":"fresh filesystem roots"}`),
- 	})
+	promptMsg := readMsg(t, promptHook)
+	writeJSON(t, promptHook, Message{
+		Type:    "hook_reply",
+		ID:      promptMsg.ID,
+		Action:  "modify",
+		Payload: json.RawMessage(`{"context":"fresh filesystem roots"}`),
+	})
 
- 	init := readMsg(t, driver)
- 	if !isSessionInit(&init) {
- 		t.Fatalf("expected session.init, got %+v", init)
- 	}
- 	if init.Context != "fresh filesystem roots" {
- 		t.Fatalf("expected fresh prompt context, got %q", init.Context)
- 	}
+	init := readMsg(t, driver)
+	if !isSessionInit(&init) {
+		t.Fatalf("expected session.init, got %+v", init)
+	}
+	if init.Context != "fresh filesystem roots" {
+		t.Fatalf("expected fresh prompt context, got %q", init.Context)
+	}
 }
 
 func TestSnapshotRuntimesSanitizesRuntimeDiagnostics(t *testing.T) {

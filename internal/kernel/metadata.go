@@ -14,14 +14,18 @@ func (h *Hub) prepareRoutedMessage(sender *Client, session string, scope string,
 	if routed.V == 0 {
 		routed.V = ProtocolVersion
 	}
-	routed.Meta = withKernelMeta(routed.Meta, h.kernelMeta(sender, session, scope, nil))
+	tenantID := routed.TenantID
+	if tenantID == "" && sender != nil {
+		tenantID = sender.tenantID
+	}
+	routed.Meta = withKernelMeta(routed.Meta, h.kernelMeta(sender, tenantID, session, scope, nil))
 	return routed
 }
 
-func (h *Hub) kernelMeta(sender *Client, session string, scope string, recipient *Client) map[string]any {
+func (h *Hub) kernelMeta(sender *Client, tenantID, session string, scope string, recipient *Client) map[string]any {
 	meta := map[string]any{
 		"sender":      kernelClientMeta(sender),
-		"route":       kernelRouteMeta(scope, session, h.sessionTenantID(session)),
+		"route":       kernelRouteMeta(scope, session, h.sessionTenantID(tenantID, session)),
 		"received_at": time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	if recipient != nil {

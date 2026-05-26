@@ -73,17 +73,17 @@ func TestSessionTurnLifecycle(t *testing.T) {
 func TestSessionRegistryGetOrCreate(t *testing.T) {
 	r := NewSessionRegistry()
 
-	s1 := r.GetOrCreate("s1")
+	s1 := r.GetOrCreate("s1", "default")
 	if s1.ID != "s1" || s1.State != SessionIdle {
 		t.Fatalf("expected new idle session s1, got %s/%s", s1.ID, s1.State)
 	}
 
-	s2 := r.GetOrCreate("s1")
+	s2 := r.GetOrCreate("s1", "default")
 	if s1 != s2 {
 		t.Fatal("GetOrCreate should return same instance for existing session")
 	}
 
-	s3 := r.GetOrCreate("s2")
+	s3 := r.GetOrCreate("s2", "default")
 	if s3.ID != "s2" {
 		t.Fatalf("expected new session s2, got %s", s3.ID)
 	}
@@ -91,14 +91,14 @@ func TestSessionRegistryGetOrCreate(t *testing.T) {
 
 func TestSessionRegistryGet(t *testing.T) {
 	r := NewSessionRegistry()
-	r.GetOrCreate("s1")
+	r.GetOrCreate("s1", "default")
 
-	s, ok := r.Get("s1")
+	s, ok := r.Get("s1", "default")
 	if !ok || s.ID != "s1" {
 		t.Fatal("should find existing session")
 	}
 
-	_, ok = r.Get("missing")
+	_, ok = r.Get("missing", "default")
 	if ok {
 		t.Fatal("should not find missing session")
 	}
@@ -106,12 +106,12 @@ func TestSessionRegistryGet(t *testing.T) {
 
 func TestSessionRegistryRemove(t *testing.T) {
 	r := NewSessionRegistry()
-	s := r.GetOrCreate("s1")
+	s := r.GetOrCreate("s1", "default")
 	s.AddClient("alice")
 
-	r.Remove("s1")
+	r.Remove("s1", "default")
 
-	_, ok := r.Get("s1")
+	_, ok := r.Get("s1", "default")
 	if ok {
 		t.Fatal("session should be removed from registry")
 	}
@@ -123,15 +123,15 @@ func TestSessionRegistryRemove(t *testing.T) {
 
 func TestSessionRegistryAll(t *testing.T) {
 	r := NewSessionRegistry()
-	r.GetOrCreate("s1")
-	r.GetOrCreate("s2")
+	r.GetOrCreate("s1", "default")
+	r.GetOrCreate("s2", "default")
 
 	all := r.All()
 	if len(all) != 2 {
 		t.Fatalf("expected 2 sessions, got %d", len(all))
 	}
 
-	r.Remove("s1")
+	r.Remove("s1", "default")
 	all = r.All()
 	if len(all) != 1 {
 		t.Fatalf("expected 1 session after removal, got %d", len(all))
@@ -145,7 +145,7 @@ func TestSessionEndEmittedOnLastClientLeave(t *testing.T) {
 	env.connectAndJoin("bob", "s1", []string{TopicMessageUser}, []string{})
 
 	// Session should exist with 2 clients
-	sess, ok := env.Hub.sessions.Get("s1")
+	sess, ok := env.Hub.sessions.Get("s1", "default")
 	if !ok {
 		t.Fatal("session s1 should exist")
 	}
@@ -155,7 +155,7 @@ func TestSessionEndEmittedOnLastClientLeave(t *testing.T) {
 
 	// Disconnect alice — session should still exist
 	env.disconnectClient("alice")
-	sess, ok = env.Hub.sessions.Get("s1")
+	sess, ok = env.Hub.sessions.Get("s1", "default")
 	if !ok {
 		t.Fatal("session s1 should still exist after first client leaves")
 	}
@@ -165,7 +165,7 @@ func TestSessionEndEmittedOnLastClientLeave(t *testing.T) {
 
 	// Disconnect bob — session should be removed and session_end emitted
 	env.disconnectClient("bob")
-	_, ok = env.Hub.sessions.Get("s1")
+	_, ok = env.Hub.sessions.Get("s1", "default")
 	if ok {
 		t.Fatal("session s1 should be removed after last client leaves")
 	}
@@ -181,10 +181,10 @@ func TestClientRejoinLeavesPreviousSession(t *testing.T) {
 		t.Fatalf("expected joined s2, got %+v", msg)
 	}
 
-	if s1, ok := env.Hub.sessions.Get("s1"); ok && s1.ClientCount() != 0 {
+	if s1, ok := env.Hub.sessions.Get("s1", "default"); ok && s1.ClientCount() != 0 {
 		t.Fatalf("expected rejoin to remove old session client, got %d", s1.ClientCount())
 	}
-	s2, ok := env.Hub.sessions.Get("s2")
+	s2, ok := env.Hub.sessions.Get("s2", "default")
 	if !ok {
 		t.Fatal("session s2 should exist")
 	}

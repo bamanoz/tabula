@@ -14,7 +14,8 @@ func (h *Hub) handleSessionMessage(sender *Client, msg *Message) {
 		return
 	}
 
-	h.touchSessionActivity(h.targetSession(sender, msg))
+	tenantID := h.targetTenant(sender, msg)
+	h.touchSessionActivity(tenantID, h.targetSession(sender, msg))
 
 	switch MsgType(msg.Type) {
 	case MsgRequest:
@@ -39,7 +40,7 @@ func (h *Hub) handleSessionMessage(sender *Client, msg *Message) {
 			return
 		}
 		if msg.Topic == TopicTurnCancel {
-			h.handleCancel(h.targetSession(sender, msg))
+			h.handleCancel(tenantID, h.targetSession(sender, msg))
 			return
 		}
 		h.forwardSessionMessage(sender, msg)
@@ -50,6 +51,7 @@ func (h *Hub) handleSessionMessage(sender *Client, msg *Message) {
 
 // messagePlan holds the result of message processing computation.
 type messagePlan struct {
+	tenantID      string
 	targetSession string
 	blocked       bool
 	text          string
@@ -63,6 +65,7 @@ func (h *Hub) buildMessagePlan(sender *Client, msg *Message) messagePlan {
 	}
 
 	return messagePlan{
+		tenantID:      h.targetTenant(sender, msg),
 		targetSession: h.targetSession(sender, msg),
 		text:          text,
 	}
@@ -76,7 +79,7 @@ func (h *Hub) applyMessagePlan(sender *Client, msg *Message, plan messagePlan) {
 	}
 
 	setMessageText(msg, plan.text)
-	h.broadcastToSessionFrom(plan.targetSession, messageCapability(msg), msg, sender, sender)
+	h.broadcastToSessionFrom(plan.tenantID, plan.targetSession, messageCapability(msg), msg, sender, sender)
 }
 
 func (h *Hub) queueMessagePlan(sender *Client, msg *Message, plan messagePlan) bool {
@@ -84,7 +87,7 @@ func (h *Hub) queueMessagePlan(sender *Client, msg *Message, plan messagePlan) b
 		sender.SendMsg(&Message{Type: string(MsgError), Text: "message blocked"})
 		return true
 	}
-	sess, ok := h.sessions.Get(plan.targetSession)
+	sess, ok := h.sessions.Get(plan.targetSession, plan.tenantID)
 	if !ok {
 		return false
 	}
@@ -95,10 +98,10 @@ func (h *Hub) queueMessagePlan(sender *Client, msg *Message, plan messagePlan) b
 
 func (h *Hub) handleUserMessage(sender *Client, msg *Message) {
 	plan := h.buildMessagePlan(sender, msg)
-	if !plan.blocked && h.shouldStartSessionTurn(sender, plan.targetSession) {
-		if !h.tryBeginSessionTurn(plan.targetSession) {
+	if !plan.blocked && h.shouldStartSessionTurn(sender, plan.tenantID, plan.targetSession) {
+		if !h.tryBeginSessionTurn(plan.tenantID, plan.targetSession) {
 			if h.queueMessagePlan(sender, msg, plan) {
-				h.persistSessionState(plan.targetSession)
+				h.persistSessionState(plan.tenantID, plan.targetSession)
 				return
 			}
 			sender.SendMsg(&Message{Type: string(MsgError), Text: "session input queue full"})
@@ -110,38 +113,39 @@ func (h *Hub) handleUserMessage(sender *Client, msg *Message) {
 
 func (h *Hub) forwardSessionMessage(sender *Client, msg *Message) {
 	target := h.targetSession(sender, msg)
-	h.broadcastToSessionFrom(target, messageCapability(msg), msg, sender, sender)
+	tenantID := h.targetTenant(sender, msg)
+	h.broadcastToSessionFrom(tenantID, target, messageCapability(msg), msg, sender, sender)
 	switch {
 	case msg.Type == string(MsgEvent) && msg.Topic == TopicTurnDone:
-		queued, ok := h.completeSessionTurn(target)
-		h.emitAfterMessage(target, sender)
+		queued, ok := h.completeSessionTurn(tenantID, target)
+		h.emitAfterMessage(tenantID, target, sender)
 		if ok {
-			h.dispatchQueuedInput(target, queued)
+			h.dispatchQueuedInput(tenantID, target, queued)
 		}
 	case MsgType(msg.Type) == MsgError:
-		queued, ok := h.completeSessionTurn(target)
+		queued, ok := h.completeSessionTurn(tenantID, target)
 		if ok {
-			h.dispatchQueuedInput(target, queued)
+			h.dispatchQueuedInput(tenantID, target, queued)
 		}
 	}
 }
 
-func (h *Hub) touchSessionActivity(session string) {
+func (h *Hub) touchSessionActivity(tenantID, session string) {
 	if session == "" {
 		return
 	}
-	sess, ok := h.sessions.Get(session)
+	sess, ok := h.sessions.Get(session, tenantID)
 	if !ok {
 		return
 	}
 	sess.Touch()
 }
 
-func (h *Hub) shouldStartSessionTurn(sender *Client, session string) bool {
+func (h *Hub) shouldStartSessionTurn(sender *Client, tenantID, session string) bool {
 	if session == "" || sender.depth != 0 {
 		return false
 	}
-	for _, client := range h.sessionClients(session) {
+	for _, client := range h.sessionClients(tenantID, session) {
 		if client == sender {
 			continue
 		}
@@ -152,31 +156,31 @@ func (h *Hub) shouldStartSessionTurn(sender *Client, session string) bool {
 	return false
 }
 
-func (h *Hub) tryBeginSessionTurn(session string) bool {
-	sess, ok := h.sessions.Get(session)
+func (h *Hub) tryBeginSessionTurn(tenantID, session string) bool {
+	sess, ok := h.sessions.Get(session, tenantID)
 	if !ok {
 		return false
 	}
 	ok = sess.BeginTurn()
 	if ok {
-		h.persistSessionState(session)
+		h.persistSessionState(tenantID, session)
 	}
 	return ok
 }
 
-func (h *Hub) completeSessionTurn(session string) (queuedInput, bool) {
-	sess, ok := h.sessions.Get(session)
+func (h *Hub) completeSessionTurn(tenantID, session string) (queuedInput, bool) {
+	sess, ok := h.sessions.Get(session, tenantID)
 	if !ok {
 		return queuedInput{}, false
 	}
 	queued, hasQueued := sess.CompleteTurn()
-	h.persistSessionState(session)
+	h.persistSessionState(tenantID, session)
 	return queued, hasQueued
 }
 
-func (h *Hub) dispatchQueuedInput(session string, input queuedInput) {
+func (h *Hub) dispatchQueuedInput(tenantID, session string, input queuedInput) {
 	if input.message == nil {
 		return
 	}
-	h.broadcastToSession(session, messageCapability(input.message), input.message, input.exclude)
+	h.broadcastToSession(tenantID, session, messageCapability(input.message), input.message, input.exclude)
 }

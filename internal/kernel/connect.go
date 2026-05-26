@@ -103,17 +103,17 @@ func (h *Hub) handleJoin(c *Client, msg *Message) {
 	h.applyJoinPlan(c, plan)
 }
 
-func (h *Hub) handleCancel(session string) {
+func (h *Hub) handleCancel(tenantID, session string) {
 	if session == "" {
 		return
 	}
-	sess, ok := h.sessions.Get(session)
+	sess, ok := h.sessions.Get(session, tenantID)
 	if ok && sess.RequestCancel() {
-		h.persistSessionState(session)
+		h.persistSessionState(tenantID, session)
 	}
-	payload, _ := json.Marshal(map[string]string{"session": session})
-	h.dispatchHook("cancel", payload, session)
-	h.broadcastToSession(session, TopicTurnCancel, &Message{Type: string(MsgEvent), Topic: TopicTurnCancel}, nil)
+	payload, _ := json.Marshal(map[string]string{"session": session, "tenant_id": tenantID})
+	h.dispatchHook("cancel", payload, tenantID, session)
+	h.broadcastToSession(tenantID, session, TopicTurnCancel, &Message{Type: string(MsgEvent), Topic: TopicTurnCancel}, nil)
 }
 
 func makeCapabilitySet(items []string) map[string]bool {

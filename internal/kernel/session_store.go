@@ -86,11 +86,11 @@ func (h *Hub) SetSessionStore(store SessionStore) {
 	h.sessionStore = store
 }
 
-func (h *Hub) persistSessionState(session string) {
+func (h *Hub) persistSessionState(tenantID, session string) {
 	if h == nil || h.sessionStore == nil || h.sessions == nil || session == "" {
 		return
 	}
-	sess, ok := h.sessions.Get(session)
+	sess, ok := h.sessions.Get(session, tenantID)
 	if !ok {
 		return
 	}

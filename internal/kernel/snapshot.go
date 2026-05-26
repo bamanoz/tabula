@@ -76,7 +76,7 @@ func (h *Hub) SnapshotSessions() []byte {
 			Processes:       []snapshotProcessInfo{},
 		}
 		sess.mu.RUnlock()
-		for _, c := range h.sessionClients(sess.ID) {
+		for _, c := range h.sessionClients(sess.TenantID, sess.ID) {
 			info.Clients = append(info.Clients, c.name)
 		}
 		for _, proc := range h.sessionProcesses(sess.ID) {
@@ -86,7 +86,11 @@ func (h *Hub) SnapshotSessions() []byte {
 				Alive:   proc.Alive,
 			})
 		}
-		sessions[sess.ID] = info
+		key := sess.ID
+		if sess.TenantID != "" {
+			key = sess.TenantID + "/" + sess.ID
+		}
+		sessions[key] = info
 	}
 
 	data, _ := json.Marshal(sessions)

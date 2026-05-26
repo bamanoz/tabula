@@ -10,6 +10,7 @@ import (
 	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
 	"github.com/bamanoz/tabula/internal/shell"
+	"github.com/bamanoz/tabula/internal/tenant"
 )
 
 func waitForMessage(t *testing.T, ch <-chan *Message) *Message {
@@ -33,10 +34,18 @@ func readCaptureMessageTimeout(ch <-chan *Message, d time.Duration) *Message {
 }
 
 func addCaptureClient(t *testing.T, hub *Hub, name, session string, receives, receivesGlobal []string) *Client {
+	return addTenantCaptureClient(t, hub, tenant.DefaultID, name, session, receives, receivesGlobal)
+}
+
+func addTenantCaptureClient(t *testing.T, hub *Hub, tenantID, name, session string, receives, receivesGlobal []string) *Client {
 	t.Helper()
+	if tenantID == "" {
+		tenantID = tenant.DefaultID
+	}
 	client := &Client{
 		hub:            hub,
 		name:           name,
+		tenantID:       tenantID,
 		session:        session,
 		recvCh:         make(chan *Message, 8),
 		receives:       map[string]bool{},
@@ -55,7 +64,7 @@ func addCaptureClient(t *testing.T, hub *Hub, name, session string, receives, re
 		t.Fatal("addClient failed")
 	}
 	if session != "" {
-		hub.sessions.GetOrCreate(session).AddClient(name)
+		hub.sessions.GetOrCreate(session, tenantID).AddClient(name)
 	}
 	return client
 }

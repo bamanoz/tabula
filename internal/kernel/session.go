@@ -189,66 +189,75 @@ func (s *Session) CancelRequested() bool {
 // SessionRegistry manages session lifecycle and metadata.
 type SessionRegistry struct {
 	mu       sync.RWMutex
-	sessions map[string]*Session
+	sessions map[sessionKey]*Session
+}
+
+type sessionKey struct {
+	tenantID string
+	id       string
 }
 
 func NewSessionRegistry() *SessionRegistry {
 	return &SessionRegistry{
-		sessions: make(map[string]*Session),
+		sessions: make(map[sessionKey]*Session),
 	}
 }
 
-// GetOrCreate returns an existing session or creates a new one.
-func (r *SessionRegistry) GetOrCreate(id string) *Session {
-	return r.GetOrCreateTenant(id, tenant.DefaultID)
+func sessionRegistryKey(id, tenantID string) sessionKey {
+	if tenantID == "" {
+		tenantID = tenant.DefaultID
+	}
+	return sessionKey{tenantID: tenantID, id: id}
 }
 
-// GetOrCreateTenant returns an existing session or creates one bound to tenantID.
-func (r *SessionRegistry) GetOrCreateTenant(id, tenantID string) *Session {
-	s, _ := r.GetOrCreateTenantStatus(id, tenantID)
+// GetOrCreate returns an existing session or creates one bound to tenantID.
+func (r *SessionRegistry) GetOrCreate(id, tenantID string) *Session {
+	s, _ := r.GetOrCreateStatus(id, tenantID)
 	return s
 }
 
-// GetOrCreateTenantStatus returns an existing session or creates one bound to
-// tenantID, along with a flag reporting whether it was newly created.
-func (r *SessionRegistry) GetOrCreateTenantStatus(id, tenantID string) (*Session, bool) {
+// GetOrCreateStatus returns an existing session or creates one bound to tenantID,
+// along with a flag reporting whether it was newly created.
+func (r *SessionRegistry) GetOrCreateStatus(id, tenantID string) (*Session, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if s, ok := r.sessions[id]; ok {
+	key := sessionRegistryKey(id, tenantID)
+	if s, ok := r.sessions[key]; ok {
 		return s, false
 	}
-	s := newSession(id, tenantID)
-	r.sessions[id] = s
+	s := newSession(id, key.tenantID)
+	r.sessions[key] = s
 	return s, true
 }
 
 // Get returns a session by ID, or nil if not found.
-func (r *SessionRegistry) Get(id string) (*Session, bool) {
+func (r *SessionRegistry) Get(id, tenantID string) (*Session, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	s, ok := r.sessions[id]
+	s, ok := r.sessions[sessionRegistryKey(id, tenantID)]
 	return s, ok
 }
 
 // Exists checks if a session exists without creating it.
-func (r *SessionRegistry) Exists(id string) bool {
+func (r *SessionRegistry) Exists(id, tenantID string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	_, ok := r.sessions[id]
+	_, ok := r.sessions[sessionRegistryKey(id, tenantID)]
 	return ok
 }
 
 // Remove marks a session as closing and removes it.
-func (r *SessionRegistry) Remove(id string) {
+func (r *SessionRegistry) Remove(id, tenantID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if s, ok := r.sessions[id]; ok {
+	key := sessionRegistryKey(id, tenantID)
+	if s, ok := r.sessions[key]; ok {
 		s.State = SessionClosing
 		s.inflightTurn = false
 		s.cancelRequested = false
 		s.touchLocked()
 	}
-	delete(r.sessions, id)
+	delete(r.sessions, key)
 }
 
 // All returns all sessions.
@@ -265,8 +274,18 @@ func (r *SessionRegistry) All() []*Session {
 func (r *SessionRegistry) TenantID(id string) string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if s, ok := r.sessions[id]; ok && s.TenantID != "" {
-		return s.TenantID
+	found := ""
+	for key, sess := range r.sessions {
+		if key.id != id {
+			continue
+		}
+		if found != "" && found != sess.TenantID {
+			return tenant.DefaultID
+		}
+		found = sess.TenantID
 	}
-	return tenant.DefaultID
+	if found == "" {
+		return tenant.DefaultID
+	}
+	return found
 }

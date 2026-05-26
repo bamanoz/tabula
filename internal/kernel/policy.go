@@ -60,7 +60,7 @@ func (pe *PolicyEngine) joinHookPayload(session string, tenantID string, clientN
 // returns (context, blocked). Returns ("", true) if the hook blocks startup.
 func (pe *PolicyEngine) StartSession(session string, tenantID string, clientName string) (string, bool) {
 	hookPayload := pe.joinHookPayload(session, tenantID, clientName)
-	result, ok := pe.hub.dispatchHook("session_start", hookPayload, session)
+	result, ok := pe.hub.dispatchHook("session_start", hookPayload, tenantID, session)
 	if !ok {
 		return "", true
 	}
@@ -75,7 +75,7 @@ func (pe *PolicyEngine) StartSession(session string, tenantID string, clientName
 // SessionJoin emits a non-blocking observability event for every successful
 // join, including joins to existing sessions.
 func (pe *PolicyEngine) SessionJoin(session string, tenantID string, clientName string) {
-	pe.hub.dispatchHook("session_join", pe.joinHookPayload(session, tenantID, clientName), session)
+	pe.hub.dispatchHook("session_join", pe.joinHookPayload(session, tenantID, clientName), tenantID, session)
 }
 
 // BeforePromptBuild lets plugins contribute prompt-build context for init-capable
@@ -89,7 +89,7 @@ func (pe *PolicyEngine) BeforePromptBuild(session string, tenantID string, clien
 		"tools":     tools,
 		"meta":      meta,
 	})
-	result, ok := pe.hub.dispatchHook("before_prompt_build", hookPayload, session)
+	result, ok := pe.hub.dispatchHook("before_prompt_build", hookPayload, tenantID, session)
 	if !ok {
 		return context
 	}
@@ -127,7 +127,7 @@ func (pe *PolicyEngine) BeforeMessage(sender *Client, msg *Message) (string, boo
 		"text":   messageText(msg),
 		"sender": sender.name,
 	})
-	result, ok := pe.hub.dispatchHook("before_message", payload, sender.session)
+	result, ok := pe.hub.dispatchHook("before_message", payload, sender.tenantID, sender.session)
 	if !ok {
 		return "", true
 	}
@@ -144,9 +144,9 @@ func (pe *PolicyEngine) BeforeMessage(sender *Client, msg *Message) (string, boo
 // Returns (nil, false) if the hook blocks the tool use.
 func (pe *PolicyEngine) CanUseTool(sender *Client, toolName string, toolID string, input json.RawMessage, meta json.RawMessage, session string) (json.RawMessage, bool) {
 	hookPayload, _ := json.Marshal(map[string]any{
-		"tool": toolName, "id": toolID, "input": input, "meta": meta, "tenant_id": pe.hub.sessionTenantID(session),
+		"tool": toolName, "id": toolID, "input": input, "meta": meta, "tenant_id": sender.tenantID,
 	})
-	result, ok := pe.hub.dispatchHookExcept("before_tool_call", hookPayload, session, sender)
+	result, ok := pe.hub.dispatchHookExcept("before_tool_call", hookPayload, sender.tenantID, session, sender)
 	if !ok {
 		return nil, false
 	}

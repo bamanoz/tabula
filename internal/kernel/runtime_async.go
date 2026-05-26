@@ -63,7 +63,11 @@ func (s hubRuntimeAsyncSink) PluginSent(runtimeID string, send wire.PluginSend) 
 	if send.Type == "" {
 		return fmt.Errorf("plugin_send type is required")
 	}
-	s.hub.broadcastToSession(send.SessionID, send.Type, busMessage(send.Type, send.SessionID, send.Payload), nil)
+	tenantID := send.TenantID
+	if tenantID == "" {
+		tenantID = s.hub.sessionTenantID("", send.SessionID)
+	}
+	s.hub.broadcastToSession(tenantID, send.SessionID, send.Type, busMessage(send.Type, send.SessionID, send.Payload), nil)
 	return nil
 }
 
@@ -179,7 +183,7 @@ func (h *Hub) broadcastRuntimeCatalogUpdate(capability runtimeapi.Capability) {
 		}
 		tools := h.initToolsJSON(sess.TenantID)
 		meta := h.initMetaJSON(sess.TenantID)
-		for _, client := range h.sessionClients(sess.ID) {
+		for _, client := range h.sessionClients(sess.TenantID, sess.ID) {
 			if client.canReceive(TopicSessionInit) {
 				context := h.policy.BeforePromptBuild(sess.ID, sess.TenantID, client.name, sess.GetInitContext(), tools, meta)
 				msg := h.initMessage(context, tools, meta)

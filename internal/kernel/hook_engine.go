@@ -43,7 +43,7 @@ type HookEngine struct {
 	index          map[string][]hookEntry
 	pending        map[string]pendingHook
 	logger         *slog.Logger
-	sessionTenants func(string) string
+	sessionTenants func(string, string) string
 }
 
 func NewHookEngine(logger *slog.Logger) *HookEngine {
@@ -57,7 +57,7 @@ func NewHookEngine(logger *slog.Logger) *HookEngine {
 	}
 }
 
-func (e *HookEngine) SetSessionTenantResolver(resolve func(string) string) {
+func (e *HookEngine) SetSessionTenantResolver(resolve func(string, string) string) {
 	if e == nil {
 		return
 	}
@@ -87,18 +87,18 @@ func (e *HookEngine) RebuildIndex(subs []HookSubscriber) {
 	e.mu.Unlock()
 }
 
-func (e *HookEngine) Dispatch(event string, payload json.RawMessage, session string) (json.RawMessage, bool) {
-	return e.DispatchExcept(event, payload, session, nil)
+func (e *HookEngine) Dispatch(event string, payload json.RawMessage, tenantID, session string) (json.RawMessage, bool) {
+	return e.DispatchExcept(event, payload, tenantID, session, nil)
 }
 
-func (e *HookEngine) DispatchExcept(event string, payload json.RawMessage, session string, exclude HookSubscriber) (json.RawMessage, bool) {
+func (e *HookEngine) DispatchExcept(event string, payload json.RawMessage, tenantID, session string, exclude HookSubscriber) (json.RawMessage, bool) {
 	entries := e.entries(event)
 	if len(entries) == 0 {
 		return payload, true
 	}
 
 	// Inject session into payload so observers can correlate events.
-	payload = e.injectSession(payload, session)
+	payload = e.injectSession(payload, tenantID, session)
 
 	var relevant []hookEntry
 	for _, entry := range entries {
@@ -126,12 +126,12 @@ func (e *HookEngine) DispatchExcept(event string, payload json.RawMessage, sessi
 
 	switch def.Strategy {
 	case strategyVoid:
-		e.dispatchVoid(event, payload, session, relevant)
+		e.dispatchVoid(event, payload, tenantID, session, relevant)
 		return payload, true
 	case strategyModifying:
-		return e.dispatchModifying(event, payload, session, relevant, def.Type == HookSecurity)
+		return e.dispatchModifying(event, payload, tenantID, session, relevant, def.Type == HookSecurity)
 	case strategyClaiming:
-		return e.dispatchClaiming(event, payload, session, relevant)
+		return e.dispatchClaiming(event, payload, tenantID, session, relevant)
 	default:
 		return payload, true
 	}
@@ -180,30 +180,33 @@ func (e *HookEngine) deliverResult(pending pendingHook, msg *Message) {
 	}
 }
 
-func (e *HookEngine) sessionTenantID(session string) string {
+func (e *HookEngine) sessionTenantID(tenantID, session string) string {
+	if tenantID != "" {
+		return tenantID
+	}
 	if e != nil && e.sessionTenants != nil {
-		return e.sessionTenants(session)
+		return e.sessionTenants(tenantID, session)
 	}
 	return ""
 }
 
-func (e *HookEngine) dispatchVoid(event string, payload json.RawMessage, session string, entries []hookEntry) {
+func (e *HookEngine) dispatchVoid(event string, payload json.RawMessage, tenantID, session string, entries []hookEntry) {
 	for _, entry := range entries {
 		entry.sub.SendMsg(&Message{
 			Type:     "hook",
 			ID:       generateHookID(),
 			Name:     event,
 			Session:  session,
-			TenantID: e.sessionTenantID(session),
+			TenantID: e.sessionTenantID(tenantID, session),
 			Payload:  payload,
 		})
 	}
 }
 
-func (e *HookEngine) dispatchModifying(event string, payload json.RawMessage, session string, entries []hookEntry, secure bool) (json.RawMessage, bool) {
+func (e *HookEngine) dispatchModifying(event string, payload json.RawMessage, tenantID, session string, entries []hookEntry, secure bool) (json.RawMessage, bool) {
 	current := payload
 	for _, entry := range entries {
-		result := e.sendAndWait(entry, event, current, session)
+		result := e.sendAndWait(entry, event, current, tenantID, session)
 		if result == nil {
 			if secure {
 				e.logger.Info("security hook timeout, blocking", "event", event, "client", entry.sub.Name())
@@ -272,9 +275,9 @@ func contextAdditiveHookEvent(event string) bool {
 	}
 }
 
-func (e *HookEngine) dispatchClaiming(event string, payload json.RawMessage, session string, entries []hookEntry) (json.RawMessage, bool) {
+func (e *HookEngine) dispatchClaiming(event string, payload json.RawMessage, tenantID, session string, entries []hookEntry) (json.RawMessage, bool) {
 	for _, entry := range entries {
-		result := e.sendAndWait(entry, event, payload, session)
+		result := e.sendAndWait(entry, event, payload, tenantID, session)
 		if result == nil {
 			continue
 		}
@@ -288,7 +291,7 @@ func (e *HookEngine) dispatchClaiming(event string, payload json.RawMessage, ses
 	return payload, true
 }
 
-func (e *HookEngine) sendAndWait(entry hookEntry, event string, payload json.RawMessage, session string) *HookResult {
+func (e *HookEngine) sendAndWait(entry hookEntry, event string, payload json.RawMessage, tenantID, session string) *HookResult {
 	s := entry.sub
 	id := generateHookID()
 	ch := make(chan *HookResult, 1)
@@ -299,7 +302,7 @@ func (e *HookEngine) sendAndWait(entry hookEntry, event string, payload json.Raw
 		ID:       id,
 		Name:     event,
 		Session:  session,
-		TenantID: e.sessionTenantID(session),
+		TenantID: e.sessionTenantID(tenantID, session),
 		Payload:  payload,
 	})
 
@@ -332,8 +335,8 @@ func (e *HookEngine) sendAndWait(entry hookEntry, event string, payload json.Raw
 	return result
 }
 
-func (e *HookEngine) injectSession(payload json.RawMessage, session string) json.RawMessage {
-	tenantID := e.sessionTenantID(session)
+func (e *HookEngine) injectSession(payload json.RawMessage, tenantID, session string) json.RawMessage {
+	tenantID = e.sessionTenantID(tenantID, session)
 	if session == "" && tenantID == "" {
 		return payload
 	}
