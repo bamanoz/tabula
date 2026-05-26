@@ -30,15 +30,20 @@ load_tabula_env() {
 
 load_tabula_env
 
+TABULA_VENV="${TABULA_VENV:-$TABULA_HOME/.venv}"
+if [ ! -x "$TABULA_VENV/bin/python3" ]; then
+  TABULA_VENV="$TABULA_HOME/.venv"
+fi
+
 export TABULA_HOME
 if [ -z "${TABULA_BOOT:-}" ]; then
   BOOT_FILE="$TABULA_HOME/boot.py"
   if [ ! -f "$BOOT_FILE" ]; then
     BOOT_FILE="$TABULA_HOME/distrib/active/boot.py"
   fi
-  export TABULA_BOOT="\"$TABULA_HOME/.venv/bin/python3\" \"$BOOT_FILE\""
+  export TABULA_BOOT="\"$TABULA_VENV/bin/python3\" \"$BOOT_FILE\""
 fi
-export TABULA_PATH="${TABULA_PATH:-$TABULA_HOME/.venv/bin:$TABULA_HOME/bin:$PATH}"
+export TABULA_PATH="${TABULA_PATH:-$TABULA_VENV/bin:$TABULA_HOME/bin:$PATH}"
 export PATH="$TABULA_HOME/bin:$PATH"
 
 RUNTIME_MODE="external"
@@ -125,7 +130,7 @@ wait_for_file() {
 }
 
 runtime_socket_path() {
-  "$TABULA_HOME/.venv/bin/python3" - "$TABULA_HOME/config/runtime.toml" <<'PY'
+  "$TABULA_VENV/bin/python3" - "$TABULA_HOME/config/runtime.toml" <<'PY'
 import sys
 import tomllib
 from pathlib import Path

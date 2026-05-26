@@ -140,6 +140,30 @@ func TestRuntimeCommandUsesInstalledPythonWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestRuntimeCommandPrefersTabulaVenv(t *testing.T) {
+	home := t.TempDir()
+	venv := filepath.Join(t.TempDir(), "host-venv")
+	homePython := filepath.Join(home, ".venv", "bin", "python3")
+	venvPython := filepath.Join(venv, "bin", "python3")
+	if err := os.MkdirAll(filepath.Dir(homePython), 0o755); err != nil {
+		t.Fatalf("mkdir home python dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(venvPython), 0o755); err != nil {
+		t.Fatalf("mkdir venv python dir: %v", err)
+	}
+	if err := os.WriteFile(homePython, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write home python: %v", err)
+	}
+	if err := os.WriteFile(venvPython, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write venv python: %v", err)
+	}
+	t.Setenv("TABULA_HOME", home)
+	t.Setenv("TABULA_VENV", venv)
+	if got := New().runtimeCommand("python"); got != venvPython {
+		t.Fatalf("runtimeCommand(python) = %q, want %q", got, venvPython)
+	}
+}
+
 func TestWorkerRoutesAsyncFramesWithoutBreakingCallResult(t *testing.T) {
 	req := testSpawnReq(t, policy.SpawnModeWarm)
 	worker, err := New().Spawn(context.Background(), req)

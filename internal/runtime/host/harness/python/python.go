@@ -35,10 +35,21 @@ func New(req policy.SpawnReq) (policy.Worker, error) {
 }
 
 func preferredPython(tabulaHome string) string {
+	if path := preferredPythonAt(os.Getenv("TABULA_VENV")); path != "" {
+		return path
+	}
 	if strings.TrimSpace(tabulaHome) == "" {
 		return ""
 	}
-	path := filepath.Join(tabulaHome, ".venv", "bin", "python3")
+	return preferredPythonAt(filepath.Join(tabulaHome, ".venv"))
+}
+
+func preferredPythonAt(venv string) string {
+	venv = strings.TrimSpace(venv)
+	if venv == "" {
+		return ""
+	}
+	path := filepath.Join(venv, "bin", "python3")
 	if info, err := os.Stat(path); err == nil && !info.IsDir() {
 		return path
 	}

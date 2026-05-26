@@ -22,7 +22,11 @@ if [ "$(id -u)" = "0" ]; then
 fi
 
 export TABULA_HOME TABULA_WORKSPACE TABULA_APP_MANIFEST
-export PATH="$TABULA_HOME/bin:$TABULA_HOME/.venv/bin:$PATH"
+export TABULA_VENV="${TABULA_VENV:-$TABULA_HOME/.venv}"
+if [ ! -x "$TABULA_VENV/bin/python3" ]; then
+  TABULA_VENV="$TABULA_HOME/.venv"
+fi
+export PATH="$TABULA_HOME/bin:$TABULA_VENV/bin:$PATH"
 export HOME="/tmp/tabula-home"
 export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/tabula-known-hosts}"
 mkdir -p "$HOME"
@@ -42,7 +46,7 @@ configure_git_auth() {
 }
 
 app_id_from_manifest() {
-  "$TABULA_HOME/.venv/bin/python3" - "$TABULA_APP_MANIFEST" <<'PY'
+  "$TABULA_VENV/bin/python3" - "$TABULA_APP_MANIFEST" <<'PY'
 import sys, tomllib
 from pathlib import Path
 with Path(sys.argv[1]).open('rb') as f:
@@ -58,25 +62,25 @@ install_tabula() {
     cp /opt/src/tabula/config/global.toml "$TABULA_HOME/config/global.toml"
   fi
   cp -R /opt/src/tabula/service/. "$TABULA_HOME/service/" 2>/dev/null || true
-  if [ -d "$TABULA_HOME/.venv" ] && { ! "$TABULA_HOME/.venv/bin/python" -c 'import sys; print(sys.version)' >/dev/null 2>&1 || ! "$TABULA_HOME/.venv/bin/pip" --version >/dev/null 2>&1; }; then
-    rm -rf "$TABULA_HOME/.venv"
+  if [ -d "$TABULA_VENV" ] && { ! "$TABULA_VENV/bin/python" -c 'import sys; print(sys.version)' >/dev/null 2>&1 || ! "$TABULA_VENV/bin/pip" --version >/dev/null 2>&1; }; then
+    rm -rf "$TABULA_VENV"
   fi
-  if [ ! -d "$TABULA_HOME/.venv" ]; then
-    python -m venv "$TABULA_HOME/.venv"
+  if [ ! -d "$TABULA_VENV" ]; then
+    python -m venv "$TABULA_VENV"
   fi
-  "$TABULA_HOME/.venv/bin/pip" install -q --upgrade pip
-  "$TABULA_HOME/.venv/bin/pip" install -q --upgrade setuptools wheel
-  "$TABULA_HOME/.venv/bin/pip" install -q -r /opt/src/tabula/scripts/requirements-dev.txt
+  "$TABULA_VENV/bin/pip" install -q --upgrade pip
+  "$TABULA_VENV/bin/pip" install -q --upgrade setuptools wheel
+  "$TABULA_VENV/bin/pip" install -q -r /opt/src/tabula/scripts/requirements-dev.txt
   rm -rf /tmp/tabula-distro-src
   cp -R /opt/src/tabula/tools/tabula-distro /tmp/tabula-distro-src
-  "$TABULA_HOME/.venv/bin/pip" install -q --no-build-isolation /tmp/tabula-distro-src
+  "$TABULA_VENV/bin/pip" install -q --no-build-isolation /tmp/tabula-distro-src
   cp /usr/local/bin/tabula "$TABULA_HOME/bin/tabula"
   cp /usr/local/bin/tabula-runtime "$TABULA_HOME/bin/tabula-runtime"
   cp /opt/src/tabula/bin/tabula-runner "$TABULA_HOME/bin/tabula-runner"
   cp /opt/src/tabula/bin/tabula-cli "$TABULA_HOME/bin/tabula-cli"
   chmod +x "$TABULA_HOME/bin/tabula" "$TABULA_HOME/bin/tabula-runtime" "$TABULA_HOME/bin/tabula-runner" "$TABULA_HOME/bin/tabula-cli"
-  ln -sf "../.venv/bin/tabula-install" "$TABULA_HOME/bin/tabula-install"
-  ln -sf "../.venv/bin/tabula-distro" "$TABULA_HOME/bin/tabula-distro"
+  ln -sf "$TABULA_VENV/bin/tabula-install" "$TABULA_HOME/bin/tabula-install"
+  ln -sf "$TABULA_VENV/bin/tabula-distro" "$TABULA_HOME/bin/tabula-distro"
   cat /opt/src/tabula/VERSION > "$TABULA_HOME/VERSION"
   "$TABULA_HOME/bin/tabula" --protocol > "$TABULA_HOME/PROTOCOL"
 }
@@ -144,7 +148,7 @@ EOF
 export_app_boot_env() {
   local app_id distro_name boot_path
   app_id="$(app_id_from_manifest)"
-  distro_name="$($TABULA_HOME/.venv/bin/python3 - "$TABULA_HOME/tenants/$app_id/app.lock.json" <<'PY'
+  distro_name="$($TABULA_VENV/bin/python3 - "$TABULA_HOME/tenants/$app_id/app.lock.json" <<'PY'
 import json, sys
 from pathlib import Path
 data = json.loads(Path(sys.argv[1]).read_text())
@@ -157,7 +161,7 @@ PY
   export TABULA_TENANT_ID="$app_id"
   export TABULA_TENANT_DIR="$TABULA_HOME/tenants/$app_id"
   export TABULA_BOOT_PATH="$boot_path"
-  export TABULA_BOOT="$TABULA_HOME/.venv/bin/python3 $boot_path"
+  export TABULA_BOOT="$TABULA_VENV/bin/python3 $boot_path"
 }
 
 prepare_runtime() {

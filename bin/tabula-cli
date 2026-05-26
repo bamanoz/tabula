@@ -34,10 +34,14 @@ load_tabula_env() {
 
 load_tabula_env
 
-VENV_PYTHON="$TABULA_HOME/.venv/bin/python3"
+TABULA_VENV="${TABULA_VENV:-$TABULA_HOME/.venv}"
+if [ ! -x "$TABULA_VENV/bin/python3" ]; then
+  TABULA_VENV="$TABULA_HOME/.venv"
+fi
+VENV_PYTHON="$TABULA_VENV/bin/python3"
 
 if [ ! -f "$VENV_PYTHON" ]; then
-  echo "error: venv not found at $TABULA_HOME/.venv" >&2
+  echo "error: venv not found at $TABULA_VENV" >&2
   echo "Run install.sh first." >&2
   exit 1
 fi

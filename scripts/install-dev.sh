@@ -30,6 +30,11 @@ BIN_DIR="$TABULA_HOME/bin"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV="$TABULA_HOME/.venv"
+if [ -z "${TABULA_VENV:-}" ]; then
+  VENV="$TABULA_HOME/.venv-$(uname -s)-$(uname -m)"
+else
+  VENV="$TABULA_VENV"
+fi
 
 echo "==> Stopping any running tabula kernel/runtime"
 pkill -f "$TABULA_HOME/bin/tabula serve" 2>/dev/null || true
@@ -49,6 +54,10 @@ fi
 rsync -a --delete "$REPO_ROOT/service/" "$TABULA_HOME/service/"
 
 # Python venv with dependencies
+if [ -d "$VENV" ] && { ! "$VENV/bin/python" -c 'import sys; print(sys.version)' >/dev/null 2>&1 || ! "$VENV/bin/pip" --version >/dev/null 2>&1; }; then
+  echo "==> Recreating invalid Python venv"
+  rm -rf "$VENV"
+fi
 if [ ! -d "$VENV" ]; then
   echo "==> Creating Python venv"
   python3 -m venv "$VENV"
@@ -57,6 +66,12 @@ fi
 "$VENV/bin/pip" install -q -r "$SCRIPT_DIR/requirements-dev.txt"
 "$VENV/bin/pip" install -q -e "$REPO_ROOT/tools/tabula-distro"
 echo "    Python dependencies installed"
+
+# Record the local platform venv for host-side launch scripts. Docker falls
+# back to $TABULA_HOME/.venv when this path does not exist inside the container.
+if [ ! -f "$TABULA_HOME/.env" ] || ! grep -qF 'TABULA_VENV=' "$TABULA_HOME/.env"; then
+  printf 'TABULA_VENV=%s\n' "$VENV" >> "$TABULA_HOME/.env"
+fi
 
 # Go binaries
 echo "==> Building Go binaries"
@@ -99,6 +114,7 @@ fi
 PATH_LINE="export PATH=\"$TABULA_HOME/bin:\$PATH\""
 HOME_LINE="export TABULA_HOME=\"$TABULA_HOME\""
 TABULA_PATH_VALUE="$TABULA_HOME/.venv/bin:$TABULA_HOME/bin:$PATH"
+TABULA_PATH_VALUE="$VENV/bin:$TABULA_HOME/bin:$PATH"
 TABULA_PATH_LINE="export TABULA_PATH=\"$TABULA_PATH_VALUE\""
 
 if [ -n "$SHELL_RC" ]; then

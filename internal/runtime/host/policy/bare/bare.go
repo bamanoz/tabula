@@ -177,11 +177,22 @@ func (p *Policy) runtimeCommand(runtime string) string {
 }
 
 func installedPython(tabulaHome string) string {
+	if path := installedPythonAt(os.Getenv("TABULA_VENV")); path != "" {
+		return path
+	}
 	tabulaHome = strings.TrimSpace(tabulaHome)
 	if tabulaHome == "" {
 		return ""
 	}
-	path := filepath.Join(tabulaHome, ".venv", "bin", "python3")
+	return installedPythonAt(filepath.Join(tabulaHome, ".venv"))
+}
+
+func installedPythonAt(venv string) string {
+	venv = strings.TrimSpace(venv)
+	if venv == "" {
+		return ""
+	}
+	path := filepath.Join(venv, "bin", "python3")
 	if info, err := os.Stat(path); err == nil && !info.IsDir() {
 		return path
 	}
