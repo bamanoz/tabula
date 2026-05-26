@@ -92,6 +92,8 @@ needs_install() {
   if [ ! -x "$TABULA_HOME/bin/tabula-install" ] || [ ! -x "$TABULA_HOME/bin/tabula-runner" ]; then
     return 0
   fi
+  "$TABULA_HOME/bin/tabula" --version >/dev/null 2>&1 || return 0
+  "$TABULA_HOME/bin/tabula-runtime" --version >/dev/null 2>&1 || return 0
   "$TABULA_HOME/bin/tabula-runner" --version >/dev/null 2>&1 || return 0
   return 1
 }

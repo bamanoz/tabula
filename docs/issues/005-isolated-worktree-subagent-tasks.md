@@ -22,14 +22,14 @@ kernel.
 
 ## Acceptance criteria
 
-- [ ] A subagent spawn option can request an isolated worktree.
-- [ ] The worktree is created under a deterministic Tabula-managed location or a
+- [x] A subagent spawn option can request an isolated worktree.
+- [x] The worktree is created under a deterministic Tabula-managed location or a
       documented workspace-local location.
-- [ ] The child session's fs and exec tools use the isolated workspace root.
-- [ ] The child prompt includes a bounded notice about parent path translation
+- [x] The child session's fs and exec tools use the isolated workspace root.
+- [x] The child prompt includes a bounded notice about parent path translation
       and stale inherited context.
-- [ ] Task metadata records the worktree path and keep/cleanup state.
-- [ ] Tests verify that a child edit does not modify the parent workspace.
+- [x] Task metadata records the worktree path and keep/cleanup state.
+- [x] Tests verify that a child edit does not modify the parent workspace.
 
 ## Blocked by
 

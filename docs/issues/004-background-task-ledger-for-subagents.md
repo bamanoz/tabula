@@ -20,14 +20,14 @@ This should build on the existing subagents plugin rather than replacing it.
 
 ## Acceptance criteria
 
-- [ ] Spawning an async subagent creates a task ledger entry linked to the owner
+- [x] Spawning an async subagent creates a task ledger entry linked to the owner
       session.
-- [ ] `list`, `wait`, and `kill` style operations read and update task state
+- [x] `list`, `wait`, and `kill` style operations read and update task state
       through the task model.
-- [ ] Completion writes a durable result reference and emits a notification to
+- [x] Completion writes a durable result reference and emits a notification to
       the parent session.
-- [ ] A resumed parent session can inspect completed and running task records.
-- [ ] Tests cover spawn, progress update, completion, cancellation, and resume.
+- [x] A resumed parent session can inspect completed and running task records.
+- [x] Tests cover spawn, progress update, completion, cancellation, and resume.
 
 ## Blocked by
 

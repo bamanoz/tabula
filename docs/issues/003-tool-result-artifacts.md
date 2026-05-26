@@ -22,15 +22,15 @@ This should work for at least one high-volume tool path, such as `exec_*`,
 
 ## Acceptance criteria
 
-- [ ] Large tool results are written under session state with deterministic
+- [x] Large tool results are written under session state with deterministic
       metadata and safe filenames.
-- [ ] The provider-visible tool result contains a bounded preview and an artifact
+- [x] The provider-visible tool result contains a bounded preview and an artifact
       reference instead of the full output.
-- [ ] A tool can read a referenced artifact back into the conversation on demand.
-- [ ] Resume preserves artifact references and does not inline the full output.
-- [ ] Compaction treats artifact previews as compactable while preserving the
+- [x] A tool can read a referenced artifact back into the conversation on demand.
+- [x] Resume preserves artifact references and does not inline the full output.
+- [x] Compaction treats artifact previews as compactable while preserving the
       artifact metadata.
-- [ ] Tests cover large output persistence, preview truncation, artifact readback,
+- [x] Tests cover large output persistence, preview truncation, artifact readback,
       and resume.
 
 ## Blocked by
