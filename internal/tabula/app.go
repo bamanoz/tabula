@@ -25,6 +25,7 @@ import (
 	"github.com/bamanoz/tabula/internal/logging"
 	runtimeauth "github.com/bamanoz/tabula/internal/runtime/auth"
 	runtimecodec "github.com/bamanoz/tabula/internal/runtime/codec"
+	"github.com/bamanoz/tabula/internal/runtime/paths"
 	"github.com/bamanoz/tabula/internal/runtime/transport/unixsock"
 	"github.com/bamanoz/tabula/internal/runtime/transport/wss"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
@@ -199,6 +200,8 @@ func Run(args []string, build BuildInfo) int {
 		return tenantCmd(args[1:])
 	case "runtime":
 		return runtimeCmd(args[1:])
+	case "distro":
+		return distroCmd(args[1:])
 	case "serve":
 		serveOpts, code := parseServeFlags(args[1:])
 		if code != 0 {
@@ -220,7 +223,7 @@ func Run(args []string, build BuildInfo) int {
 			return 0
 		}
 		// No subcommand — print usage.
-		fmt.Fprintf(os.Stderr, "Usage: tabula <command>\n\nCommands:\n  serve    Start the kernel WebSocket server (default)\n  run      One-shot prompt → response\n  status   Show kernel/runtime/tenant status\n  tenant   Manage tenants\n  runtime  Manage runtimes\n\nServe flags:\n  --runtime-mode external|disabled\n\nFlags:\n  --version    Show version\n  --protocol   Show kernel plugin protocol range (JSON)\n")
+		fmt.Fprintf(os.Stderr, "Usage: tabula <command>\n\nCommands:\n  serve    Start the kernel WebSocket server (default)\n  run      One-shot prompt → response\n  status   Show kernel/runtime/tenant status\n  tenant   Manage tenants\n  runtime  Manage runtimes\n  distro   Manage distro trust\n\nServe flags:\n  --runtime-mode external|disabled\n\nFlags:\n  --version    Show version\n  --protocol   Show kernel plugin protocol range (JSON)\n")
 		return 1
 	}
 
@@ -277,15 +280,7 @@ func parseLocalRuntimeMode(value string) (localRuntimeMode, error) {
 // serveCmd handles "tabula serve" — persistent WebSocket server.
 func serveCmd(build BuildInfo, opts serveOptions) int {
 	// Resolve TABULA_HOME
-	tabulaHome := os.Getenv("TABULA_HOME")
-	if tabulaHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error: cannot determine home directory")
-			return 1
-		}
-		tabulaHome = filepath.Join(home, ".tabula")
-	}
+	tabulaHome := paths.Home()
 
 	// Load .env before reading any other configuration.
 	loadEnvFile(filepath.Join(tabulaHome, ".env"))
@@ -293,7 +288,7 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 	// Setup structured logging
 	logFile := os.Getenv("TABULA_LOG_FILE")
 	if logFile == "" {
-		logFile = filepath.Join(tabulaHome, "logs", "kernel.log")
+		logFile = filepath.Join(paths.LogsDir(), "kernel.log")
 	}
 	logger := logging.Setup(logging.Config{
 		ConsoleLevel: os.Getenv("TABULA_LOG_LEVEL"),
@@ -327,6 +322,24 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 		fmt.Fprintln(os.Stderr, "error: no boot command specified (set TABULA_BOOT env var)")
 		return 1
 	}
+
+	// Plugin layout is owned by runtime.toml (installer-written). Fail
+	// fast if it is missing so the operator gets a clear message rather
+	// than an obscure "no plugins" downstream error.
+	if err := ensureRuntimeConfigExists(tabulaHome); err != nil {
+		fmt.Fprintf(os.Stderr, "error: runtime config not ready: %v\n", err)
+		return 1
+	}
+
+	// Trust check runs before any boot execution. boot.py is arbitrary
+	// Python so an untrusted distro must not be invoked unconditionally.
+	// The active distro and its source tree come from runtime.toml; see
+	// internal/runtime/trust and docs/issues/refactoring/007-*.md.
+	if err := enforceDistroTrust(tabulaHome); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
 	slog.Info("running boot", "command", bootCmd)
 
 	// Run boot script → get config
@@ -730,22 +743,14 @@ func runCmd(args []string, build BuildInfo) int {
 	}
 
 	// Resolve TABULA_HOME (same as server mode).
-	tabulaHome := os.Getenv("TABULA_HOME")
-	if tabulaHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error: cannot determine home directory")
-			return 1
-		}
-		tabulaHome = filepath.Join(home, ".tabula")
-	}
+	tabulaHome := paths.Home()
 
 	loadEnvFile(filepath.Join(tabulaHome, ".env"))
 
 	// Setup logging.
 	logFile := os.Getenv("TABULA_LOG_FILE")
 	if logFile == "" {
-		logFile = filepath.Join(tabulaHome, "logs", "kernel.log")
+		logFile = filepath.Join(paths.LogsDir(), "kernel.log")
 	}
 	logger := logging.Setup(logging.Config{
 		ConsoleLevel: os.Getenv("TABULA_LOG_LEVEL"),
@@ -777,15 +782,24 @@ func runCmd(args []string, build BuildInfo) int {
 		fmt.Fprintln(os.Stderr, "error: no boot command specified (set TABULA_BOOT env var)")
 		return 1
 	}
+
+	if err := ensureRuntimeConfigExists(tabulaHome); err != nil {
+		fmt.Fprintf(os.Stderr, "error: runtime config not ready: %v\n", err)
+		return 1
+	}
+
+	// Trust check runs before any boot execution. See serveCmd above for
+	// rationale.
+	if err := enforceDistroTrust(tabulaHome); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
 	slog.Info("running boot", "command", bootCmd)
 
 	bootConfig, err := runBoot(bootCmd)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: boot failed: %v\n", err)
-		return 1
-	}
-	if err := writeLocalRuntimeConfig(tabulaHome, bootConfig.Plugins); err != nil {
-		fmt.Fprintf(os.Stderr, "error: runtime config setup failed: %v\n", err)
 		return 1
 	}
 
@@ -1104,10 +1118,16 @@ func loadEnvFile(path string) {
 }
 
 // BootConfig holds the parsed output of the boot script.
+//
+// Boot emits behavior only (URL, prompt metadata, runtime endpoints).
+// Plugin layout lives in $TABULA_HOME/config/runtime.toml and is owned by
+// the installer (`tabula-install` / `tabula-distro`). Distros may continue
+// to emit `plugins[]` in their boot JSON — the installer reads it during
+// `tabula-install` to compile `plugin_dirs` — but the kernel ignores that
+// field at runtime.
 type BootConfig struct {
 	URL              string                `json:"url"`
 	Skills           json.RawMessage       `json:"skills"`
-	Plugins          []bootPluginEntry     `json:"plugins"`
 	Meta             json.RawMessage       `json:"meta"`
 	RuntimeEndpoints *bootRuntimeEndpoints `json:"runtime_endpoints,omitempty"`
 }
@@ -1125,11 +1145,6 @@ type bootRuntimeWSSEndpoint struct {
 	KeyFile    string   `json:"key_file"`
 	ClientCA   string   `json:"client_ca"`
 	ClientAuth string   `json:"client_auth"`
-}
-
-type bootPluginEntry struct {
-	ManifestPath string         `json:"manifest_path"`
-	Config       map[string]any `json:"config"`
 }
 
 // runBoot executes the boot command and parses its JSON output.

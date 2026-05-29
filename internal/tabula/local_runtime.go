@@ -3,13 +3,13 @@ package tabula
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -17,36 +17,78 @@ import (
 	"github.com/bamanoz/tabula/internal/kernel"
 	runtimeauth "github.com/bamanoz/tabula/internal/runtime/auth"
 	runtimeconfig "github.com/bamanoz/tabula/internal/runtime/host/config"
+	"github.com/bamanoz/tabula/internal/runtime/trust"
 )
 
 const localRuntimeAttachTimeout = 10 * time.Second
 
-func writeLocalRuntimeConfig(tabulaHome string, entries []bootPluginEntry) error {
+// ensureRuntimeConfigExists verifies that the installer has produced
+// $TABULA_HOME/config/runtime.toml. Plugin layout (plugin_dirs, skill_dirs,
+// kernel block) is owned by the installer (`tabula-install` /
+// `tabula-distro`); the kernel reads it as-is. If the file is missing we
+// fail fast with an explicit message instructing the user to install a
+// distro first — see docs/issues/refactoring/004-runtime-toml-as-plugin-source-of-truth.md.
+func ensureRuntimeConfigExists(tabulaHome string) error {
 	tabulaHome = strings.TrimSpace(tabulaHome)
 	if tabulaHome == "" {
 		return fmt.Errorf("TABULA_HOME is required")
 	}
-	pluginDirs, err := localRuntimePluginPaths(tabulaHome, entries)
-	if err != nil {
-		return err
-	}
 	path := filepath.Join(tabulaHome, "config", "runtime.toml")
-	if strings.TrimSpace(os.Getenv("TABULA_PRESERVE_RUNTIME_CONFIG")) == "1" {
-		if _, err := runtimeconfig.Load(path); err == nil {
-			return nil
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("%s is missing; run `tabula-install <distro>` first", path)
 		}
+		return fmt.Errorf("stat runtime config %s: %w", path, err)
 	}
-	tenants := []string{"*"}
-	return runtimeconfig.Save(path, runtimeconfig.Config{
-		Kernels: []runtimeconfig.Kernel{{
-			ID:        runtimeauth.DefaultKernelID,
-			URL:       "unix://" + localRuntimeSocketPath(tabulaHome),
-			TokenFile: runtimeauth.RuntimeTokenPath(tabulaHome),
-			Tenants:   tenants,
-		}},
-		PluginDirs: pluginDirs,
-		SkillDirs:  []string{filepath.Join(tabulaHome, "skills")},
-	})
+	if info.IsDir() {
+		return fmt.Errorf("%s is a directory, expected a file", path)
+	}
+	return nil
+}
+
+// enforceDistroTrust verifies that the active distro's source tree matches
+// the user-approved SHA in $TABULA_HOME/state/trust.json before any boot
+// script is executed.
+//
+// The active distro id and directory come from the `[distro]` table the
+// installer writes into $TABULA_HOME/config/runtime.toml. If the table is
+// missing we skip the check (legacy installs without the field will be
+// auto-migrated by tabula-install on next run); the env override
+// TABULA_TRUST_SKIP=1 short-circuits for tests and emergency recovery.
+//
+// On mismatch or missing record, returns a structured error whose message
+// tells the operator exactly which command to run.
+func enforceDistroTrust(tabulaHome string) error {
+	if os.Getenv("TABULA_TRUST_SKIP") == "1" {
+		return nil
+	}
+	tabulaHome = strings.TrimSpace(tabulaHome)
+	if tabulaHome == "" {
+		return fmt.Errorf("trust: TABULA_HOME is required")
+	}
+	cfgPath := filepath.Join(tabulaHome, "config", "runtime.toml")
+	cfg, err := runtimeconfig.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("trust: load runtime config: %w", err)
+	}
+	if cfg.Distro.Active == "" || cfg.Distro.Dir == "" {
+		// Legacy install: runtime.toml predates issue 007. The next
+		// `tabula-install` run will populate the field and the auto-trust
+		// migration shim will write the trust record. Until then, run
+		// without enforcement so we do not strand users who upgraded
+		// `tabula` before re-running the installer.
+		return nil
+	}
+	dbPath := filepath.Join(tabulaHome, "state", "trust.json")
+	if err := trust.Check(dbPath, cfg.Distro.Active, cfg.Distro.Dir); err != nil {
+		var ce *trust.CheckError
+		if errors.As(err, &ce) {
+			return ce
+		}
+		return fmt.Errorf("trust: %w", err)
+	}
+	return nil
 }
 
 func localRuntimeSocketPath(tabulaHome string) string {
@@ -59,35 +101,6 @@ func localRuntimeSocketPath(tabulaHome string) string {
 	}
 	sum := sha256.Sum256([]byte(tabulaHome))
 	return filepath.Join(os.TempDir(), "tabula-rt-"+hex.EncodeToString(sum[:8]), "runtime.sock")
-}
-
-func localRuntimePluginPaths(tabulaHome string, entries []bootPluginEntry) ([]string, error) {
-	if len(entries) == 0 {
-		return []string{filepath.Join(tabulaHome, "plugins")}, nil
-	}
-	seen := make(map[string]struct{}, len(entries))
-	paths := make([]string, 0, len(entries))
-	for i, entry := range entries {
-		manifestPath := strings.TrimSpace(entry.ManifestPath)
-		if manifestPath == "" {
-			return nil, fmt.Errorf("boot plugin entry %d manifest_path is required", i)
-		}
-		abs, err := filepath.Abs(manifestPath)
-		if err != nil {
-			return nil, fmt.Errorf("resolve boot plugin entry %d manifest path %q: %w", i, manifestPath, err)
-		}
-		abs = filepath.Clean(abs)
-		if _, ok := seen[abs]; ok {
-			continue
-		}
-		seen[abs] = struct{}{}
-		paths = append(paths, abs)
-	}
-	if len(paths) == 0 {
-		return []string{filepath.Join(tabulaHome, "plugins")}, nil
-	}
-	sort.Strings(paths)
-	return paths, nil
 }
 
 func resolveLocalRuntimeBinary(tabulaPath string, lookPath func(string) (string, error)) (string, error) {

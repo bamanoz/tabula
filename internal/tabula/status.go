@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bamanoz/tabula/internal/runtime/paths"
 	"github.com/bamanoz/tabula/internal/tenant"
 )
 
@@ -131,14 +132,7 @@ func statusCmd(args []string) int {
 }
 
 func resolveTabulaHome() (string, error) {
-	if tabulaHome := strings.TrimSpace(os.Getenv("TABULA_HOME")); tabulaHome != "" {
-		return tabulaHome, nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("cannot determine home directory")
-	}
-	return filepath.Join(home, ".tabula"), nil
+	return paths.Home(), nil
 }
 
 func buildStatus(ctx context.Context, tabulaHome string, client *http.Client) (statusDocument, error) {

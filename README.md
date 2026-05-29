@@ -193,11 +193,14 @@ $TABULA_HOME/
 ├── templates/      -> distrib/active/current/templates
 ├── skills/         # distro skills + bundle skills
 ├── plugins/        # distro plugins + bundle plugins
-├── config/global.toml
+├── config/
+│   ├── global.toml
+│   └── runtime.toml  # plugin_dirs, skill_dirs, [[kernel]], [pool] — installer-owned
 ├── secrets.json
-├── .env
+├── .env            # loaded by the kernel; boot inherits via os.environ
 ├── data/
 ├── logs/
+├── run/            # reload.touch, runtime sockets, tokens
 ├── bin/
 └── .venv/
 ```
@@ -210,6 +213,11 @@ still stage temporary legacy support directories for compatibility; don't treat
 those as the long-term authoring surface.
 Files like `IDENTITY.md`, `SOUL.md`, `AGENTS.md` under `templates/` are the
 agent's personality — edit them, or let the agent edit them.
+
+Plugin layout lives in `config/runtime.toml`. The installer writes it from the
+distro boot output during `tabula-install`; the running kernel reads the file
+directly and reloads through `run/reload.touch` without re-running boot. See
+[`docs/DISTRO_CONFIG.md`](docs/DISTRO_CONFIG.md) for the contract.
 
 ## Distros
 
@@ -268,11 +276,23 @@ More about what each distro contains lives in the
 | `tabula-runner`                                     | Start the kernel plus local runtime wrapper  |
 | `tabula-cli`                                        | Connect to a running kernel                  |
 | `tabula-install distro install <path-or-uri>`       | Install or switch the active distro          |
+| `tabula-install distro install … --trust`           | Install and approve in one step              |
+| `tabula distro trust [<id>]`                        | Approve the active distro's boot tree        |
+| `tabula distro trust --list`                        | Show the trust DB                            |
+| `tabula distro untrust <id>`                        | Revoke a trust record                        |
 | `tabula serve`                                      | Low-level kernel entrypoint                  |
 | `tabula run --prompt "..."`                         | One-shot prompt → response                   |
 
 `tabula-runner` is the product wrapper. `tabula serve` is the low-level kernel
 entrypoint and does not supervise a local runtime process.
+
+The kernel refuses to execute a distro's `boot.py` until the user has
+approved its SHA. After `tabula-install distro install`, either pass
+`--trust` to approve in the same step or run `tabula distro trust`
+separately. The first install after this feature lands auto-trusts the
+active distro (one-shot cold-start migration); subsequent installs do
+not. See [`docs/distro-config.md`](docs/distro-config.md) §Trust DB for
+details. `TABULA_TRUST_SKIP=1` bypasses the check in emergencies.
 
 Direct `tabula serve` and `tabula run` need `TABULA_BOOT`:
 

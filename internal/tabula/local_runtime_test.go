@@ -14,130 +14,51 @@ import (
 	"time"
 
 	runtimeauth "github.com/bamanoz/tabula/internal/runtime/auth"
-	runtimeconfig "github.com/bamanoz/tabula/internal/runtime/host/config"
 )
 
-func TestWriteLocalRuntimeConfig_RoundTrip(t *testing.T) {
+func TestEnsureRuntimeConfigExists_PassesWhenFilePresent(t *testing.T) {
 	tabulaHome := t.TempDir()
-	first := filepath.Join(tabulaHome, "plugins", "alpha", "plugin.toml")
-	second := filepath.Join(tabulaHome, "plugins", "beta", "plugin.toml")
-	for _, path := range []string{first, second} {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("mkdir plugin dir: %v", err)
-		}
-		if err := os.WriteFile(path, []byte("id = \"stub\"\n"), 0o644); err != nil {
-			t.Fatalf("write plugin manifest stub: %v", err)
-		}
-	}
-
-	if err := writeLocalRuntimeConfig(tabulaHome, []bootPluginEntry{{ManifestPath: second}, {ManifestPath: first}, {ManifestPath: second}}); err != nil {
-		t.Fatalf("writeLocalRuntimeConfig: %v", err)
-	}
-
 	configPath := filepath.Join(tabulaHome, "config", "runtime.toml")
-	cfg, err := runtimeconfig.Load(configPath)
-	if err != nil {
-		t.Fatalf("runtimeconfig.Load: %v", err)
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config: %v", err)
 	}
-	kernelCfg, err := cfg.SingleKernel()
-	if err != nil {
-		t.Fatalf("cfg.SingleKernel: %v", err)
+	if err := os.WriteFile(configPath, []byte("plugin_dirs = []\n"), 0o644); err != nil {
+		t.Fatalf("seed runtime.toml: %v", err)
 	}
-	if kernelCfg.ID != runtimeauth.DefaultKernelID {
-		t.Fatalf("expected kernel id %q, got %q", runtimeauth.DefaultKernelID, kernelCfg.ID)
-	}
-	if kernelCfg.URL != "unix://"+localRuntimeSocketPath(tabulaHome) {
-		t.Fatalf("unexpected runtime url: %q", kernelCfg.URL)
-	}
-	if kernelCfg.TokenFile != runtimeauth.RuntimeTokenPath(tabulaHome) {
-		t.Fatalf("unexpected token file: %q", kernelCfg.TokenFile)
-	}
-	if want := []string{"*"}; !reflect.DeepEqual(kernelCfg.Tenants, want) {
-		t.Fatalf("expected kernel tenants %v, got %v", want, kernelCfg.Tenants)
-	}
-	if want := []string{first, second}; !reflect.DeepEqual(cfg.PluginDirs, want) {
-		t.Fatalf("expected plugin dirs %v, got %v", want, cfg.PluginDirs)
-	}
-	if want := []string{filepath.Join(tabulaHome, "skills")}; !reflect.DeepEqual(cfg.SkillDirs, want) {
-		t.Fatalf("expected skill dirs %v, got %v", want, cfg.SkillDirs)
+	if err := ensureRuntimeConfigExists(tabulaHome); err != nil {
+		t.Fatalf("ensureRuntimeConfigExists: %v", err)
 	}
 }
 
-func TestWriteLocalRuntimeConfig_ResetsExistingTenantAllowlistByDefault(t *testing.T) {
+func TestEnsureRuntimeConfigExists_FailsWhenMissing(t *testing.T) {
 	tabulaHome := t.TempDir()
-	configPath := filepath.Join(tabulaHome, "config", "runtime.toml")
-	if err := runtimeconfig.Save(configPath, runtimeconfig.Config{
-		Kernels: []runtimeconfig.Kernel{{
-			ID:        runtimeauth.DefaultKernelID,
-			URL:       "unix:///tmp/old-runtime.sock",
-			TokenFile: "/tmp/old-runtime-token",
-			Tenants:   []string{"alpha"},
-		}},
-		PluginDirs: []string{"/tmp/old-plugin.toml"},
-		SkillDirs:  []string{"/tmp/old-skills"},
-	}); err != nil {
-		t.Fatalf("seed runtime config: %v", err)
+	err := ensureRuntimeConfigExists(tabulaHome)
+	if err == nil {
+		t.Fatal("expected error when runtime.toml is missing")
 	}
-
-	manifestPath := filepath.Join(tabulaHome, "plugins", "alpha", "plugin.toml")
-	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
-		t.Fatalf("mkdir plugin dir: %v", err)
-	}
-	if err := os.WriteFile(manifestPath, []byte("id = \"stub\"\n"), 0o644); err != nil {
-		t.Fatalf("write plugin manifest stub: %v", err)
-	}
-
-	if err := writeLocalRuntimeConfig(tabulaHome, []bootPluginEntry{{ManifestPath: manifestPath}}); err != nil {
-		t.Fatalf("writeLocalRuntimeConfig: %v", err)
-	}
-
-	cfg, err := runtimeconfig.Load(configPath)
-	if err != nil {
-		t.Fatalf("runtimeconfig.Load: %v", err)
-	}
-	kernelCfg, err := cfg.SingleKernel()
-	if err != nil {
-		t.Fatalf("cfg.SingleKernel: %v", err)
-	}
-	if want := []string{"*"}; !reflect.DeepEqual(kernelCfg.Tenants, want) {
-		t.Fatalf("expected reset kernel tenants %v, got %v", want, kernelCfg.Tenants)
+	if !strings.Contains(err.Error(), "tabula-install") {
+		t.Fatalf("error must guide the user to run the installer: %v", err)
 	}
 }
 
-func TestWriteLocalRuntimeConfig_PreservesExistingRuntimeConfigWhenRequested(t *testing.T) {
-	t.Setenv("TABULA_PRESERVE_RUNTIME_CONFIG", "1")
+func TestEnsureRuntimeConfigExists_FailsWhenPathIsDirectory(t *testing.T) {
 	tabulaHome := t.TempDir()
 	configPath := filepath.Join(tabulaHome, "config", "runtime.toml")
-	if err := runtimeconfig.Save(configPath, runtimeconfig.Config{
-		Kernels: []runtimeconfig.Kernel{{
-			ID:        runtimeauth.DefaultKernelID,
-			URL:       "unix:///tmp/runtime.sock",
-			TokenFile: "/tmp/runtime.token",
-			Tenants:   []string{"claw-tabula"},
-		}},
-		PluginDirs: []string{filepath.Join(tabulaHome, "tenants", "claw-tabula", "plugins")},
-		SkillDirs:  []string{filepath.Join(tabulaHome, "tenants", "claw-tabula", "skills")},
-	}); err != nil {
-		t.Fatalf("seed runtime config: %v", err)
+	if err := os.MkdirAll(configPath, 0o755); err != nil {
+		t.Fatalf("mkdir runtime.toml as dir: %v", err)
 	}
-	manifestPath := filepath.Join(tabulaHome, "plugins", "global", "plugin.toml")
-	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
-		t.Fatalf("mkdir plugin dir: %v", err)
+	err := ensureRuntimeConfigExists(tabulaHome)
+	if err == nil {
+		t.Fatal("expected error when runtime.toml is a directory")
 	}
-	if err := os.WriteFile(manifestPath, []byte("id = \"global\"\n"), 0o644); err != nil {
-		t.Fatalf("write plugin manifest: %v", err)
+	if !strings.Contains(err.Error(), "directory") {
+		t.Fatalf("unexpected error: %v", err)
 	}
+}
 
-	if err := writeLocalRuntimeConfig(tabulaHome, []bootPluginEntry{{ManifestPath: manifestPath}}); err != nil {
-		t.Fatalf("writeLocalRuntimeConfig: %v", err)
-	}
-
-	cfg, err := runtimeconfig.Load(configPath)
-	if err != nil {
-		t.Fatalf("runtimeconfig.Load: %v", err)
-	}
-	if want := []string{filepath.Join(tabulaHome, "tenants", "claw-tabula", "plugins")}; !reflect.DeepEqual(cfg.PluginDirs, want) {
-		t.Fatalf("plugin dirs = %#v, want %#v", cfg.PluginDirs, want)
+func TestEnsureRuntimeConfigExists_RejectsBlankHome(t *testing.T) {
+	if err := ensureRuntimeConfigExists("   "); err == nil {
+		t.Fatal("expected error for blank TABULA_HOME")
 	}
 }
 
@@ -159,25 +80,6 @@ func TestLocalRuntimeSocketPathUsesEnvOverride(t *testing.T) {
 
 	if got := localRuntimeSocketPath(t.TempDir()); got != override {
 		t.Fatalf("socket path = %q, want %q", got, override)
-	}
-}
-
-func TestLocalRuntimePluginPaths_DefaultsWhenNoEntries(t *testing.T) {
-	tabulaHome := t.TempDir()
-	got, err := localRuntimePluginPaths(tabulaHome, nil)
-	if err != nil {
-		t.Fatalf("localRuntimePluginPaths: %v", err)
-	}
-	want := []string{filepath.Join(tabulaHome, "plugins")}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("expected default plugin path %v, got %v", want, got)
-	}
-}
-
-func TestLocalRuntimePluginPaths_RejectsBlankManifestPath(t *testing.T) {
-	_, err := localRuntimePluginPaths(t.TempDir(), []bootPluginEntry{{ManifestPath: "  "}})
-	if err == nil {
-		t.Fatal("expected blank manifest path error")
 	}
 }
 

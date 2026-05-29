@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -239,6 +241,62 @@ tenants = ["first-app"]
             runtime_cfg = (home / "config" / "runtime.toml").read_text(encoding="utf-8")
             self.assertIn('/tabula-rt-', runtime_cfg)
             self.assertIn('/runtime.sock', runtime_cfg)
+
+    def test_runner_sets_app_env_from_single_tenant_runtime_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            bin_dir = home / "bin"
+            venv_dir = home / ".venv" / "bin"
+            run_dir = home / "run"
+            config_dir = home / "config"
+            bin_dir.mkdir(parents=True)
+            venv_dir.mkdir(parents=True)
+            run_dir.mkdir(parents=True)
+            config_dir.mkdir(parents=True)
+            _write(home / ".env", f"TABULA_VENV={home / '.venv'}\n")
+            _write(config_dir / "runtime.toml", f'''
+plugin_dirs = []
+skill_dirs = []
+
+[[tenant]]
+id = "claw-tabula"
+plugin_dirs = ["{home / 'tenants' / 'claw-tabula' / 'plugins'}"]
+skill_dirs = ["{home / 'tenants' / 'claw-tabula' / 'skills'}"]
+
+[[kernel]]
+id = "main"
+url = "unix://{run_dir / 'runtime.sock'}"
+token_file = "{run_dir / 'runtime-token'}"
+tenants = ["claw-tabula"]
+''')
+            _write(venv_dir / "python3", "#!/bin/sh\nexec python3 \"$@\"\n")
+            os.chmod(venv_dir / "python3", 0o755)
+            _write(home / "boot.py", "# boot\n")
+            _write(bin_dir / "tabula-runtime", "#!/bin/sh\nexit 0\n")
+            os.chmod(bin_dir / "tabula-runtime", 0o755)
+            _write(bin_dir / "tabula", f'''#!/bin/sh
+printf '%s\n' "$TABULA_APP_ID" > "{root / 'app-id.txt'}"
+printf '%s\n' "$TABULA_TENANT_ID" > "{root / 'tenant-id.txt'}"
+printf '%s\n' "$TABULA_TENANT_DIR" > "{root / 'tenant-dir.txt'}"
+touch "{config_dir / 'runtime.toml'}" "{run_dir / 'runtime-token'}" "{run_dir / 'runtime.sock'}"
+exit 0
+''')
+            os.chmod(bin_dir / "tabula", 0o755)
+
+            result = subprocess.run(
+                [str(Path(__file__).parents[3] / "bin" / "tabula-runner")],
+                env={**os.environ, "TABULA_HOME": str(home)},
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((root / "app-id.txt").read_text(encoding="utf-8").strip(), "claw-tabula")
+            self.assertEqual((root / "tenant-id.txt").read_text(encoding="utf-8").strip(), "claw-tabula")
+            self.assertEqual((root / "tenant-dir.txt").read_text(encoding="utf-8").strip(), str(home / "tenants" / "claw-tabula"))
 
     def test_managed_non_bare_backend_not_supported_yet(self):
         with tempfile.TemporaryDirectory() as tmp:

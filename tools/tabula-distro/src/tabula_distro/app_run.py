@@ -16,6 +16,10 @@ from urllib.error import URLError
 from urllib.parse import urlparse, urlunparse
 from urllib.request import urlopen
 
+import tomlkit
+
+from tabula_plugin_sdk import toml_io
+
 from .app_manifest import AppManifest, RuntimeTopology
 
 
@@ -267,32 +271,43 @@ def _internal_url(kernel_url: str, path: str) -> str:
 
 def write_runtime_config(manifest: AppManifest, home: Path) -> Path:
     path = home / "config" / "runtime.toml"
-    path.parent.mkdir(parents=True, exist_ok=True)
     tenant = manifest.application.id
     tenant_dir = home / "tenants" / tenant
     tenants = _merged_runtime_tenants(path, tenant, tenant_dir)
     tenant_ids = list(tenants)
     runtime_sock = _runtime_socket_path(home)
-    payload = "\n".join([
-        "plugin_dirs = []",
-        "skill_dirs = []",
-        "",
-        *[line for tenant_id, dirs in tenants.items() for line in (
-            "[[tenant]]",
-            f"id = {json.dumps(tenant_id)}",
-            f"plugin_dirs = [{', '.join(json.dumps(item) for item in dirs['plugin_dirs'])}]",
-            f"skill_dirs = [{', '.join(json.dumps(item) for item in dirs['skill_dirs'])}]",
-            "",
-        )],
-        "[[kernel]]",
-        'id = "main"',
-        f"url = {json.dumps('unix://' + str(runtime_sock))}",
-        f"token_file = {json.dumps(str(home / 'run' / 'runtime-token'))}",
-        f"tenants = [{', '.join(json.dumps(item) for item in tenant_ids)}]",
-        "",
-    ])
-    path.write_text(payload, encoding="utf-8")
+
+    doc = toml_io.load(path)
+    doc["plugin_dirs"] = _string_array([])
+    doc["skill_dirs"] = _string_array([])
+
+    tenant_aot = tomlkit.aot()
+    for tenant_id, dirs in tenants.items():
+        entry = tomlkit.table()
+        entry["id"] = tenant_id
+        entry["plugin_dirs"] = _string_array(dirs["plugin_dirs"])
+        entry["skill_dirs"] = _string_array(dirs["skill_dirs"])
+        tenant_aot.append(entry)
+    doc["tenant"] = tenant_aot
+
+    kernel_aot = tomlkit.aot()
+    kernel = tomlkit.table()
+    kernel["id"] = "main"
+    kernel["url"] = "unix://" + str(runtime_sock)
+    kernel["token_file"] = str(home / "run" / "runtime-token")
+    kernel["tenants"] = _string_array(tenant_ids)
+    kernel_aot.append(kernel)
+    doc["kernel"] = kernel_aot
+
+    toml_io.dump(path, doc)
     return path
+
+
+def _string_array(values: list[str]) -> tomlkit.items.Array:
+    array = tomlkit.array()
+    for value in values:
+        array.append(value)
+    return array
 
 
 def _runtime_socket_path(home: Path) -> Path:

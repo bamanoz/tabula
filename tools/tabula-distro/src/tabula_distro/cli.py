@@ -9,6 +9,8 @@ import sys
 from collections.abc import Iterator
 from pathlib import Path
 
+from tabula_plugin_sdk import paths
+
 from . import __version__
 from . import app_bindings as bindmod
 from . import app_manifest as appmod
@@ -20,10 +22,11 @@ from . import lock as lockmod
 from . import requirements as reqmod
 from . import runtime_config as runtimecfg
 from . import sources as srcmod
+from . import trust as trustmod
 
 
 def _default_home() -> Path:
-    return Path(os.environ.get("TABULA_HOME", os.path.expanduser("~/.tabula")))
+    return paths.tabula_home()
 
 
 def _source_arg(value: str) -> str:
@@ -146,6 +149,8 @@ def _add_distro_commands(sub: argparse._SubParsersAction[argparse.ArgumentParser
     p_install.add_argument("--tenant", default="",
                            help="refresh runtime surface only for the named tenant")
     p_install.add_argument("--keep-generations", type=int, default=5)
+    p_install.add_argument("--trust", action="store_true",
+                           help="record this install in the trust DB so the kernel will boot it")
     p_install.set_defaults(func=_cmd_install)
 
     p_update = sub.add_parser("update", help="update pinned sources (alias for install --update)")
@@ -195,7 +200,7 @@ def _cmd_install(args: argparse.Namespace, home: Path) -> int:
         tenant=args.tenant or None,
         keep_generations=args.keep_generations,
     )
-    if not _sync_runtime_config_for_active_distro(home, result.generation.path / "boot.py"):
+    if not _sync_runtime_config_for_active_distro(home, result.generation.path / "boot.py", trust=bool(args.trust)):
         return 1
     _print_summary(home, result.lock.distro, result.generation, result.lock, changed=result.changed)
     return 0
@@ -881,11 +886,29 @@ def _local_distro_dir(source: str, *, base_dir: Path | None = None) -> Path | No
     return path
 
 
-def _sync_runtime_config_for_active_distro(home: Path, boot_path: Path) -> bool:
+def _sync_runtime_config_for_active_distro(home: Path, boot_path: Path, *, trust: bool = False) -> bool:
     try:
         runtimecfg.sync_for_distro(home, boot_path)
     except runtimecfg.RuntimeConfigError as exc:
         print(f"tabula-distro: runtime config sync failed: {exc}", file=sys.stderr)
+        return False
+    # Trust hook. After runtime.toml is in place we know which distro is
+    # active and where its source tree lives, so we can either explicitly
+    # approve it (--trust) or run the one-shot cold-start migration shim.
+    # See docs/issues/refactoring/007-distro-boot-trust-db.md § Migration.
+    try:
+        meta = runtimecfg.distro_metadata(home, boot_path.expanduser().resolve())
+        distro_id = meta["active"]
+        distro_dir = Path(meta["dir"])
+        if trust:
+            trustmod.approve(home, distro_id, distro_dir, trusted_by="installer")
+            print(f"tabula-distro: trusted distro {distro_id}")
+        else:
+            record = trustmod.auto_trust_cold_start(home, distro_id, distro_dir)
+            if record is not None:
+                print(f"tabula-distro: auto-trusted distro {distro_id} (cold-start migration)")
+    except trustmod.TrustError as exc:
+        print(f"tabula-distro: trust update failed: {exc}", file=sys.stderr)
         return False
     return True
 

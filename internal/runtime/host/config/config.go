@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/bamanoz/tabula/internal/runtime/paths"
 )
 
 // Config is the runtime-side configuration file. The list-of-tables shape is
@@ -20,6 +22,16 @@ type Config struct {
 	SkillDirs  []string `toml:"skill_dirs"`
 	Tenants    []Tenant `toml:"tenant"`
 	Pool       Pool     `toml:"pool"`
+	Distro     Distro   `toml:"distro"`
+}
+
+// Distro records which distro the installer activated and where its source
+// tree lives on disk. The kernel uses these fields to locate the boot script
+// for the trust check (see internal/runtime/trust). The installer writes
+// them; the kernel only reads them.
+type Distro struct {
+	Active string `toml:"active"`
+	Dir    string `toml:"dir"`
 }
 
 type Tenant struct {
@@ -52,15 +64,7 @@ type Kernel struct {
 // DefaultPath returns $TABULA_HOME/config/runtime.toml. The caller is expected
 // to use this only when no explicit --config path was provided.
 func DefaultPath() (string, error) {
-	home := strings.TrimSpace(os.Getenv("TABULA_HOME"))
-	if home == "" {
-		userHome, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("cannot determine home directory: %w", err)
-		}
-		home = filepath.Join(userHome, ".tabula")
-	}
-	return filepath.Join(home, "config", "runtime.toml"), nil
+	return paths.RuntimeConfigFile(), nil
 }
 
 // Load reads and validates a runtime.toml file.
@@ -165,11 +169,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	if len(c.PluginDirs) == 0 {
-		home, err := tabulaHome()
-		if err != nil {
-			return err
-		}
-		c.PluginDirs = []string{filepath.Join(home, "plugins")}
+		c.PluginDirs = []string{paths.PluginsDir()}
 	}
 	for i := range c.PluginDirs {
 		c.PluginDirs[i] = os.ExpandEnv(strings.TrimSpace(c.PluginDirs[i]))
@@ -221,19 +221,12 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("pool.tenants.%s.cold_workers_max must be >= 0", tenantID)
 		}
 	}
+	c.Distro.Active = strings.TrimSpace(c.Distro.Active)
+	c.Distro.Dir = os.ExpandEnv(strings.TrimSpace(c.Distro.Dir))
+	if (c.Distro.Active == "") != (c.Distro.Dir == "") {
+		return fmt.Errorf("distro.active and distro.dir must be set together")
+	}
 	return nil
-}
-
-func tabulaHome() (string, error) {
-	home := strings.TrimSpace(os.Getenv("TABULA_HOME"))
-	if home != "" {
-		return home, nil
-	}
-	userHome, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("cannot determine home directory: %w", err)
-	}
-	return filepath.Join(userHome, ".tabula"), nil
 }
 
 // SingleKernel returns the sole kernel entry supported by M2-02.
