@@ -29,6 +29,7 @@ const (
 
 const (
 	TopicMessageUser         = "message.user"
+	TopicKernelSessions      = "kernel.sessions.snapshot"
 	TopicStreamStart         = "stream.start"
 	TopicStreamDelta         = "stream.delta"
 	TopicStreamEnd           = "stream.end"
@@ -146,6 +147,7 @@ type helloData struct {
 	ReceiveTopics []string           `json:"receive_topics,omitempty"`
 	GlobalTopics  []string           `json:"global_topics,omitempty"`
 	Hooks         []HookSubscription `json:"hooks,omitempty"`
+	Meta          json.RawMessage    `json:"meta,omitempty"`
 }
 
 func decodeHelloData(msg *Message) (helloData, error) {

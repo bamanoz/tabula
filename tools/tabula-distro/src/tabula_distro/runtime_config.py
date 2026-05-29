@@ -6,6 +6,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import tomlkit
+
+from tabula_plugin_sdk import toml_io
+
 
 class RuntimeConfigError(RuntimeError):
     pass
@@ -36,29 +40,73 @@ def sync_for_distro(home: Path, boot_path: Path) -> Path:
     except json.JSONDecodeError as exc:
         raise RuntimeConfigError(f"cannot parse boot output: {exc}") from exc
     plugin_dirs = _plugin_dirs(home, payload)
-    return write(home, plugin_dirs)
+    distro = distro_metadata(home, boot_path)
+    return write(home, plugin_dirs, distro=distro)
 
 
-def write(home: Path, plugin_dirs: list[str]) -> Path:
+def write(home: Path, plugin_dirs: list[str], *, distro: dict[str, str] | None = None) -> Path:
+    """Write runtime.toml for the active distro.
+
+    Re-runs of this function preserve any user comments and unknown keys the
+    user added to the file. Only the keys we own (``plugin_dirs``,
+    ``skill_dirs``, the ``[[kernel]]`` entry, ``[pool]``, and ``[distro]``)
+    are authoritative — they are overwritten to match the install state.
+    """
     path = home / "config" / "runtime.toml"
-    path.parent.mkdir(parents=True, exist_ok=True)
     runtime_sock = _runtime_socket_path(home)
-    payload = "\n".join([
-        f"plugin_dirs = [{', '.join(json.dumps(item) for item in plugin_dirs)}]",
-        f"skill_dirs = [{json.dumps(str(home / 'skills'))}]",
-        "",
-        "[[kernel]]",
-        'id = "main"',
-        f"url = {json.dumps('unix://' + str(runtime_sock))}",
-        f"token_file = {json.dumps(str(home / 'run' / 'runtime-token'))}",
-        'tenants = ["*"]',
-        "",
-        "[pool]",
-        "cold_workers_per_tenant_max = 16",
-        "",
-    ])
-    path.write_text(payload, encoding="utf-8")
+    doc = toml_io.load(path)
+
+    doc["plugin_dirs"] = _string_array(plugin_dirs)
+    doc["skill_dirs"] = _string_array([str(home / "skills")])
+
+    kernels = tomlkit.aot()
+    kernel = tomlkit.table()
+    kernel["id"] = "main"
+    kernel["url"] = "unix://" + str(runtime_sock)
+    kernel["token_file"] = str(home / "run" / "runtime-token")
+    kernel["tenants"] = _string_array(["*"])
+    kernels.append(kernel)
+    doc["kernel"] = kernels
+
+    toml_io.merge_defaults(doc, {"pool": {"cold_workers_per_tenant_max": 16}})
+
+    if distro is not None:
+        # The trust check (kernel-side) reads these two keys. Active is a
+        # human-readable id ("code-immune") and dir points at the distro
+        # source tree the SHA is computed over. Both come from the
+        # installer because only it knows which generation is active.
+        distro_table = tomlkit.table()
+        distro_table["active"] = distro["active"]
+        distro_table["dir"] = distro["dir"]
+        doc["distro"] = distro_table
+
+    toml_io.dump(path, doc)
     return path
+
+
+def distro_metadata(home: Path, boot_path: Path) -> dict[str, str]:
+    """Resolve distro id and source directory from a boot.py path.
+
+    The installer lays out boot scripts at
+    ``$TABULA_HOME/distrib/<distro>/generations/<gen>/boot.py``. We trust the
+    parent directory of ``boot.py`` as the distro source tree (it contains
+    ``boot.py``, ``distro.toml``, ``application/``, etc) and lift the distro
+    id from two levels up.
+    """
+    distro_dir = boot_path.parent
+    parent = distro_dir.parent
+    if parent.name == "generations":
+        active = parent.parent.name
+    else:
+        active = parent.name
+    return {"active": active, "dir": str(distro_dir)}
+
+
+def _string_array(values: list[str]) -> tomlkit.items.Array:
+    array = tomlkit.array()
+    for value in values:
+        array.append(value)
+    return array
 
 
 def _plugin_dirs(home: Path, payload: object) -> list[str]:

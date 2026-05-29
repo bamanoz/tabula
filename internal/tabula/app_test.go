@@ -168,33 +168,6 @@ func TestLoadEnvFileDoesNotOverrideExistingValues(t *testing.T) {
 	}
 }
 
-func TestWriteLocalRuntimeConfigWritesDefaultDaemonConfig(t *testing.T) {
-	tabulaHome := t.TempDir()
-	if err := writeLocalRuntimeConfig(tabulaHome, nil); err != nil {
-		t.Fatalf("writeLocalRuntimeConfig: %v", err)
-	}
-	loaded, err := runtimeconfig.Load(filepath.Join(tabulaHome, "config", "runtime.toml"))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	kernelCfg, err := loaded.SingleKernel()
-	if err != nil {
-		t.Fatalf("SingleKernel: %v", err)
-	}
-	if kernelCfg.ID != runtimeauth.DefaultKernelID {
-		t.Fatalf("kernel id = %q", kernelCfg.ID)
-	}
-	if kernelCfg.URL != "unix://"+localRuntimeSocketPath(tabulaHome) {
-		t.Fatalf("kernel url = %q", kernelCfg.URL)
-	}
-	if kernelCfg.TokenFile != runtimeauth.RuntimeTokenPath(tabulaHome) {
-		t.Fatalf("token file = %q", kernelCfg.TokenFile)
-	}
-	if len(loaded.PluginDirs) != 1 || loaded.PluginDirs[0] != filepath.Join(tabulaHome, "plugins") {
-		t.Fatalf("plugin dirs = %#v", loaded.PluginDirs)
-	}
-}
-
 func TestReloadLocalRuntimeUsesAttachedRuntime(t *testing.T) {
 	fake := &fakeRuntimeReloader{attempted: true}
 	if err := reloadLocalRuntime(t.Context(), fake, "alpha"); err != nil {

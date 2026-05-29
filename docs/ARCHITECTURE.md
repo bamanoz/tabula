@@ -164,16 +164,56 @@ endpoints, and accepts runtime attachments. The local product wrapper
 `tabula-runner` is what launches `tabula serve` plus a sibling `tabula-runtime`
 process for the default local stack.
 
+### `.env` loading
+
+The kernel is the **single canonical loader** of `$TABULA_HOME/.env`. Before
+running the boot command, `tabula serve` reads the file with `loadEnvFile` and
+populates `os.Environ()` for every key that is not already set in the shell
+environment. The boot subprocess and every downstream worker inherit those
+values through normal process inheritance.
+
+Precedence is fixed:
+
+1. Shell environment (highest — never overridden by the file).
+2. `$TABULA_HOME/.env` (file values, applied with `setdefault` semantics).
+
+Distro boot scripts must read only `os.environ`. They must not load `.env`
+themselves; doing so would either no-op (the kernel already loaded it) or
+violate the precedence rule by re-applying file values after the shell.
+
 ### Boot output
 
 The boot script emits one JSON object with fields like:
 
 - `url` — kernel WebSocket URL
 - `skills` — reserved legacy field; current distros leave it empty
-- `plugins` — plugin manifest paths for long-lived runtime components
+- `plugins` — plugin manifest paths consumed **by the installer only**
+  (`tabula-install` / `tabula-distro`) when it compiles
+  `$TABULA_HOME/config/runtime.toml`. The running kernel ignores this field.
 - `meta` — opaque client-facing metadata forwarded on `init.meta`
 
 Claw and guardian use the same contract, but generate different payloads.
+
+### Plugin discovery
+
+Boot emits **behavior**. `$TABULA_HOME/config/runtime.toml` defines **layout**.
+Plugin loading goes through `runtime.toml` only.
+
+- `tabula-install <distro>` runs `boot.py` once, reads `plugins[]` from its
+  JSON, and writes `plugin_dirs` (plus `skill_dirs`, `[[kernel]]`, `[pool]`)
+  into `runtime.toml` via the `tomlkit`-based writer. User comments and
+  unknown keys in the file are preserved.
+- `tabula serve` runs `boot.py` to get behavior (URL, prompts, meta), then
+  verifies `runtime.toml` exists. It fails fast with an explicit
+  "run `tabula-install <distro>` first" message when the file is missing.
+- `tabula-runtime` reads `runtime.toml` and loads plugins from `plugin_dirs`.
+- After `tabula-install --update` the installer atomically updates
+  `$TABULA_HOME/run/reload.touch`. The kernel polls that file and triggers a
+  plugin reload through `runtime.toml` — boot is **not** re-executed.
+
+To add or remove a plugin without going through the installer, edit
+`runtime.toml` directly and `touch run/reload.touch`. The kernel picks up the
+new layout on the next reload tick.
 
 ### Claw boot
 
@@ -182,7 +222,6 @@ repo) is the more dynamic boot implementation.
 
 It does the following:
 
-- loads `.env`
 - scans the flat `skills/` and `plugins/` runtime surfaces recursively
 - reads `SKILL.md` frontmatter for skills and `plugin.toml` for plugins
 - builds the system prompt from templates and project files
@@ -200,6 +239,46 @@ It builds a fixed runtime around distro-owned prompts plus installed plugins.
 
 Guardian is a good example of a distro with the same kernel contract but a
 completely different runtime philosophy.
+
+### Distro trust
+
+Boot scripts are arbitrary Python that runs unconditionally on kernel start.
+To stop a tampered or unreviewed distro from executing, the kernel gates boot
+on an explicit trust record.
+
+- **Where it lives.** `$TABULA_HOME/state/trust.json` — a small JSON DB owned
+  by the user. Entry shape: `boot_sha256`, `trusted_at`, `trusted_by`.
+- **What gets hashed.** Every `*.py` file plus the top-level `distro.toml`,
+  recursively, in deterministic sorted order. Excluded: `__pycache__`,
+  hidden directories (`.git`, `.venv`, …), symlinks, non-regular files, and
+  any nested `distro.toml`. Markdown, prompts, and templates are excluded
+  because they are inert from a code-execution standpoint.
+- **When it runs.** `tabula serve` and `tabula run` call `trust.Check`
+  before `runBoot`. The kernel reads the active distro id and source dir
+  from `runtime.toml`'s `[distro]` table; legacy installs without that
+  table fall through without a check (one-shot grace period during the
+  migration window).
+- **Failure modes.** `ErrNotTrusted` (no entry) and `ErrSHAMismatch`
+  (entry exists but the tree changed). Both messages tell the operator
+  exactly how to re-trust.
+- **Operator surface.** `tabula distro trust [<id>] [--yes]` reviews the
+  computed SHA and writes an approval. `tabula distro trust --list` prints
+  the DB as JSON. `tabula distro untrust <id>` revokes. The CLI refuses to
+  trust a distro that does not match `runtime.toml`'s active entry.
+- **Installer side.** `tabula-install distro install --trust …` approves
+  the install in the same invocation. Without `--trust`, the installer
+  runs a one-shot **cold-start migration shim**: on the very first install
+  after the trust feature lands it auto-trusts the active distro and drops
+  `state/trust.meta.json` (with `migrated_at`) so the shim can be removed
+  cleanly. Subsequent installs do not auto-trust — the user must approve
+  explicitly.
+- **Cross-language hash pin.** The kernel hash lives in
+  `internal/runtime/trust/HashDir`; the installer's identical
+  implementation lives in `tabula_distro.trust.hash_dir`. Both sides pin
+  the same digest of a shared fixture (`05c8091020bb…`) so silent drift
+  between sides is caught in CI before it can corrupt a user's trust DB.
+- **Emergency override.** `TABULA_TRUST_SKIP=1` bypasses the check, for
+  recovery situations where the user accepts the risk explicitly.
 
 ## Repository layout
 
@@ -330,6 +409,30 @@ Equivalent global config:
 transport = "stdio"
 command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 ```
+
+### Introspection
+
+`tabula config inspect` is the read-only static view of the installed runtime
+surface. It reads `$TABULA_HOME/config/runtime.toml`, resolved path locations,
+tenant plugin catalogs, plugin manifests, and optional plugin config overlays.
+It does not execute distro boot. JSON output is available with
+`--format=json`; the schema is beta until Tabula v1.0.
+
+`tabula config inspect --plugin <id>` includes the effective plugin config from:
+
+1. `$TABULA_HOME/config/global.toml` under `[plugins.<plugin-id>]`
+2. `$TABULA_HOME/config/plugins/<plugin-id>/config.toml`
+3. `$TABULA_HOME/tenants/<tenant>/config/plugins/<plugin-id>/defaults.toml`
+4. `$TABULA_HOME/tenants/<tenant>/config/plugins/<plugin-id>/config.toml`
+5. `$TABULA_HOME/tenants/<tenant>/config/plugins/<plugin-id>/overrides.toml`
+
+Secret-like keys such as `token`, `password`, `api_key`, and `client_secret` are
+printed as `<redacted>`.
+
+`tabula health` walks the same runtime plugin catalog. Plugins that expose a
+zero-argument `health` tool are called through the runtime worker protocol;
+plugins without that tool are reported as `skipped`. It does not start a kernel
+session or run an LLM driver.
 
 Plugins talk to `tabula-runtime` over stdio NDJSON worker frames. The runtime
 attaches to the kernel over the Runtime API and forwards `init`, tool calls,

@@ -24,6 +24,7 @@ type Client struct {
 	hub            *Hub
 	conn           *websocket.Conn
 	name           string
+	meta           json.RawMessage
 	tenantID       string
 	session        string
 	id             int

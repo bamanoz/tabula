@@ -23,7 +23,11 @@ func TestSnapshotSessionsUsesRecordedPID(t *testing.T) {
 	raw := hub.SnapshotSessions()
 
 	var snapshot map[string]struct {
-		Clients   []string `json:"clients"`
+		Clients []struct {
+			ID   string          `json:"id"`
+			Name string          `json:"name"`
+			Meta json.RawMessage `json:"meta"`
+		} `json:"clients"`
 		Processes []struct {
 			PID     int    `json:"pid"`
 			Command string `json:"command"`
@@ -48,6 +52,52 @@ func TestSnapshotSessionsUsesRecordedPID(t *testing.T) {
 		t.Fatalf("expected command sleep 60, got %q", session.Processes[0].Command)
 	}
 }
+
+func TestSnapshotSessionsIncludesClientMeta(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	client := &Client{name: "driver", id: 7, tenantID: "tenant", session: "s1", meta: json.RawMessage(`{"tabula.role":"driver"}`), state: ClientJoined}
+	if !hub.addClient(client) {
+		t.Fatal("add client")
+	}
+	hub.sessions.GetOrCreate("s1", "tenant").AddClient("driver")
+
+	var snapshot map[string]struct {
+		Clients []struct {
+			ID   string          `json:"id"`
+			Name string          `json:"name"`
+			Meta json.RawMessage `json:"meta"`
+		} `json:"clients"`
+	}
+	if err := json.Unmarshal(hub.SnapshotSessions(), &snapshot); err != nil {
+		t.Fatalf("SnapshotSessions returned invalid JSON: %v", err)
+	}
+	clients := snapshot["tenant/s1"].Clients
+	if len(clients) != 1 || clients[0].ID != "c7" || clients[0].Name != "driver" || string(clients[0].Meta) != `{"tabula.role":"driver"}` {
+		t.Fatalf("unexpected clients: %+v", clients)
+	}
+}
+
+func TestKernelSessionsSnapshotRequest(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	client := &Client{name: "requester", id: 1, sends: map[string]bool{string(MsgRequest): true}, receives: map[string]bool{string(MsgReply): true}, state: ClientJoined, recvCh: make(chan *Message, 1), done: make(chan struct{})}
+	hub.sessions.GetOrCreate("s1", "tenant")
+
+	hub.handleSessionMessage(client, &Message{Type: string(MsgRequest), Topic: TopicKernelSessions, ID: "sessions-1"})
+
+	select {
+	case msg := <-client.recvCh:
+		if msg.Type != string(MsgReply) || msg.Topic != TopicKernelSessions || msg.ID != "sessions-1" {
+			t.Fatalf("unexpected reply: %+v", msg)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(msg.Data, &payload); err != nil || payload["tenant/s1"] == nil {
+			t.Fatalf("unexpected snapshot payload: %s err=%v", string(msg.Data), err)
+		}
+	default:
+		t.Fatal("expected snapshot reply")
+	}
+}
+
 func TestSnapshotRuntimesSanitizesDetachedLastError(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.runtimes = NewRuntimeRegistry()

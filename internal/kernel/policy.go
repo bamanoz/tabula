@@ -108,6 +108,9 @@ func (pe *PolicyEngine) CanSend(sender *Client, msg *Message) error {
 		return &PolicyError{Reason: "client not connected"}
 	}
 	capability := messageCapability(msg)
+	if capability == TopicKernelSessions {
+		return nil
+	}
 	if !sender.canSend(capability) {
 		return &PolicyError{Reason: fmt.Sprintf("client not allowed to send %s", capability)}
 	}

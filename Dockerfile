@@ -26,6 +26,10 @@ COPY --from=builder /tmp/tabula-runtime /usr/local/bin/tabula-runtime
 
 RUN chmod +x /opt/src/tabula/docker/entrypoint.sh \
   && rm -rf /opt/src/tabula/tools/tabula-distro/src/*.egg-info \
+  && python -m venv /opt/tabula-venv \
+  && /opt/tabula-venv/bin/pip install -q --upgrade pip setuptools wheel \
+  && /opt/tabula-venv/bin/pip install -q -r /opt/src/tabula/scripts/requirements-dev.txt \
+  && /opt/tabula-venv/bin/pip install -q --no-build-isolation /opt/src/tabula/tools/tabula-distro \
   && mkdir -p /var/lib/tabula /workspace \
   && groupadd --gid 1000 tabula \
   && useradd --create-home --shell /bin/bash --uid 1000 --gid 1000 tabula

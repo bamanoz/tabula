@@ -23,8 +23,14 @@ type snapshotSessionInfo struct {
 	Busy            bool                  `json:"busy"`
 	CancelRequested bool                  `json:"cancel_requested"`
 	PendingInputs   int                   `json:"pending_inputs"`
-	Clients         []string              `json:"clients"`
+	Clients         []snapshotClientInfo  `json:"clients"`
 	Processes       []snapshotProcessInfo `json:"processes"`
+}
+
+type snapshotClientInfo struct {
+	ID   string          `json:"id,omitempty"`
+	Name string          `json:"name"`
+	Meta json.RawMessage `json:"meta,omitempty"`
 }
 
 type snapshotRuntimeInfo struct {
@@ -72,12 +78,16 @@ func (h *Hub) SnapshotSessions() []byte {
 			Busy:            sess.inflightTurn,
 			CancelRequested: sess.cancelRequested,
 			PendingInputs:   len(sess.pendingInputs),
-			Clients:         []string{},
+			Clients:         []snapshotClientInfo{},
 			Processes:       []snapshotProcessInfo{},
 		}
 		sess.mu.RUnlock()
 		for _, c := range h.sessionClients(sess.TenantID, sess.ID) {
-			info.Clients = append(info.Clients, c.name)
+			info.Clients = append(info.Clients, snapshotClientInfo{
+				ID:   c.clientID(),
+				Name: c.name,
+				Meta: append(json.RawMessage(nil), c.meta...),
+			})
 		}
 		for _, proc := range h.sessionProcesses(sess.ID) {
 			info.Processes = append(info.Processes, snapshotProcessInfo{

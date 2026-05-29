@@ -12,6 +12,7 @@ type connectPlan struct {
 	receives       []string
 	receivesGlobal []string
 	hooks          []HookSubscription
+	meta           json.RawMessage
 	depth          int
 	clientID       int
 	requestID      string
@@ -33,6 +34,7 @@ func (h *Hub) buildConnectPlan(c *Client, msg *Message) connectPlan {
 		receives:       data.ReceiveTopics,
 		receivesGlobal: data.GlobalTopics,
 		hooks:          data.Hooks,
+		meta:           append(json.RawMessage(nil), data.Meta...),
 		requestID:      msg.ID,
 	}
 
@@ -79,7 +81,7 @@ func (h *Hub) applyConnectPlan(c *Client, plan connectPlan) {
 	}
 
 	// Mutate state.
-	h.configureClient(c, plan.name, plan.sends, plan.receives, plan.receivesGlobal, plan.hooks, plan.depth)
+	h.configureClient(c, plan.name, plan.sends, plan.receives, plan.receivesGlobal, plan.hooks, plan.meta, plan.depth)
 	c.MarkProtocolReady()
 	h.rebuildHookIndex()
 

@@ -10,7 +10,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Anomaly" }]
-dependencies = []
+dependencies = [
+    "tomlkit>=0.12",
+]
 
 [project.scripts]
 tabula-distro = "tabula_distro.cli:main"
