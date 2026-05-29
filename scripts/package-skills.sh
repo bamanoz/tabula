@@ -19,7 +19,6 @@ tar -czf "extra/tabula-skills-${VERSION}.tar.gz" \
   bin/tabula-runner.ps1 \
   bin/tabula-cli \
   bin/tabula-cli.ps1 \
-  tools/tabula-distro/ \
-  service/
+  tools/tabula-distro/
 
 echo "Created extra/tabula-skills-${VERSION}.tar.gz"
