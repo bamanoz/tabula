@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/bamanoz/tabula/internal/runtime/host/manifest"
@@ -44,31 +43,13 @@ type Pool struct {
 	policy   policy.PluginExecPolicy
 	opts     Options
 
-	mu          sync.Mutex
-	entries     map[key]*entry
-	coldTenants map[string]*coldTenantState
+	registry *workerRegistry
+	cold     *coldWorkerLimiter
+	starter  *workerStarter
 
-	targetMu sync.RWMutex
-	targets  map[string]wire.Capability
-	async    chan any
-	logger   *slog.Logger
-}
-
-type coldTenantState struct {
-	sem    chan struct{}
-	active int
-	queued int
-}
-
-type key struct {
-	kernelID string
-	tenantID string
-	targetID string
-}
-
-type entry struct {
-	mu     sync.Mutex
-	worker policy.Worker
+	capabilities *capabilityState
+	publisher    *asyncPublisher
+	logger       *slog.Logger
 }
 
 // New creates a worker pool.
@@ -86,8 +67,12 @@ func New(kernelID string, store *manifest.Store, pol policy.PluginExecPolicy, op
 		resolved.TabulaHome = strings.TrimSpace(opts[0].TabulaHome)
 		resolved.KernelURL = strings.TrimSpace(opts[0].KernelURL)
 	}
-	p := &Pool{kernelID: kernelID, store: store, policy: pol, opts: resolved, entries: map[key]*entry{}, coldTenants: map[string]*coldTenantState{}, targets: map[string]wire.Capability{}, async: make(chan any, 128), logger: slog.Default()}
-	p.resetTargets(nil)
+	p := &Pool{kernelID: kernelID, store: store, policy: pol, opts: resolved, registry: newWorkerRegistry(), cold: newColdWorkerLimiter(resolved.ColdWorkersPerTenantMax, resolved.ColdAcquireTimeout, resolved.ColdWorkersByTenant), capabilities: newCapabilityState(store), publisher: newAsyncPublisher(), logger: slog.Default()}
+	p.starter = newWorkerStarter(kernelID, pol, p.spawnEnv)
+	p.starter.onInitializing = p.markTargetInitializing
+	p.starter.onFailed = p.markTargetFailed
+	p.starter.onReady = p.markTargetReady
+	p.starter.onWatch = p.watchWorker
 	return p
 }
 
@@ -105,7 +90,7 @@ func (p *Pool) AsyncFrames() <-chan any {
 	if p == nil {
 		return nil
 	}
-	return p.async
+	return p.publisher.Frames()
 }
 
 // PrimeTargets proactively initializes manifest-backed targets so runtime
@@ -120,7 +105,7 @@ func (p *Pool) PrimeTargets(ctx context.Context, target *wire.Target) {
 	if p == nil || p.store == nil {
 		return
 	}
-	for _, tenantID := range p.catalogTenants() {
+	for _, tenantID := range p.capabilities.catalogTenants() {
 		for _, capability := range p.store.CapabilitiesForTenant(tenantID) {
 			if target != nil {
 				if target.Kind != wire.TargetKindPlugin || target.ID != capability.Target.ID {
@@ -143,27 +128,7 @@ func (p *Pool) Capabilities() []wire.Capability {
 	if p == nil {
 		return nil
 	}
-	byTarget := map[string]wire.Capability{}
-	for _, tenantID := range p.catalogTenants() {
-		for _, capability := range p.store.CapabilitiesForTenant(tenantID) {
-			byTarget[capabilityKey(tenantID, capability.Target.ID)] = capability
-		}
-	}
-	p.targetMu.RLock()
-	for key, capability := range p.targets {
-		byTarget[key] = cloneCapability(capability)
-	}
-	p.targetMu.RUnlock()
-	ids := make([]string, 0, len(byTarget))
-	for id := range byTarget {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	out := make([]wire.Capability, 0, len(ids))
-	for _, id := range ids {
-		out = append(out, byTarget[id])
-	}
-	return out
+	return p.capabilities.list()
 }
 
 // Invoke routes one Runtime API invoke to the correct warm worker.
@@ -243,8 +208,7 @@ func (p *Pool) HookEvent(ctx context.Context, in wire.HookEvent) (*wire.HookEven
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", ErrTargetNotFound, in.Target.ID)
 	}
-	k := key{kernelID: p.kernelID, tenantID: tenantID, targetID: in.Target.ID}
-	e := p.entryFor(k)
+	e := p.registry.entryFor(key{kernelID: p.kernelID, tenantID: tenantID, targetID: in.Target.ID})
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	worker, _, err := p.ensureWorker(ctx, e, plugin, tenantID)
@@ -271,8 +235,7 @@ func (p *Pool) invokeLocked(ctx context.Context, plugin manifest.Plugin, in wire
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	k := key{kernelID: p.kernelID, tenantID: in.TenantID, targetID: in.Target.ID}
-	e := p.entryFor(k)
+	e := p.registry.entryFor(key{kernelID: p.kernelID, tenantID: in.TenantID, targetID: in.Target.ID})
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -318,7 +281,7 @@ func (p *Pool) invokeSkill(ctx context.Context, skill manifest.Skill, in wire.In
 	release, err := p.acquireColdWorkerSlot(ctx, in.TenantID)
 	if err != nil {
 		if errors.Is(err, errColdWorkerBusy) {
-			return failed(in.CallID, wire.ErrorRuntimeBusy, fmt.Sprintf("runtime busy: tenant %q reached %d concurrent cold workers", in.TenantID, p.opts.ColdWorkersPerTenantMax))
+			return failed(in.CallID, wire.ErrorRuntimeBusy, fmt.Sprintf("runtime busy: tenant %q reached %d concurrent cold workers", in.TenantID, p.coldWorkerLimit(in.TenantID)))
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			return failed(in.CallID, wire.ErrorTimeout, "invoke timed out")
@@ -377,85 +340,7 @@ func (p *Pool) invokeSkill(ctx context.Context, skill manifest.Skill, in wire.In
 }
 
 func (p *Pool) acquireColdWorkerSlot(ctx context.Context, tenantID string) (func(), error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	state := p.coldTenantStateFor(tenantID)
-	select {
-	case state.sem <- struct{}{}:
-		p.adjustColdTenantCounts(tenantID, 1, 0)
-		return func() { p.releaseColdWorkerSlot(tenantID, state) }, nil
-	default:
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	p.adjustColdTenantCounts(tenantID, 0, 1)
-	waitCtx, cancel := context.WithTimeout(ctx, p.opts.ColdAcquireTimeout)
-	defer cancel()
-	acquired := false
-	defer func() {
-		if !acquired {
-			p.adjustColdTenantCounts(tenantID, 0, -1)
-		}
-	}()
-	select {
-	case state.sem <- struct{}{}:
-		acquired = true
-		p.adjustColdTenantCounts(tenantID, 1, -1)
-		return func() { p.releaseColdWorkerSlot(tenantID, state) }, nil
-	case <-waitCtx.Done():
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
-			return nil, errColdWorkerBusy
-		}
-		return nil, waitCtx.Err()
-	}
-}
-
-func (p *Pool) coldTenantStateFor(tenantID string) *coldTenantState {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if existing := p.coldTenants[tenantID]; existing != nil {
-		return existing
-	}
-	state := &coldTenantState{sem: make(chan struct{}, p.coldWorkerLimit(tenantID))}
-	p.coldTenants[tenantID] = state
-	return state
-}
-
-func (p *Pool) adjustColdTenantCounts(tenantID string, activeDelta, queuedDelta int) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	state := p.coldTenants[tenantID]
-	if state == nil {
-		state = &coldTenantState{sem: make(chan struct{}, p.coldWorkerLimit(tenantID))}
-		p.coldTenants[tenantID] = state
-	}
-	state.active += activeDelta
-	if state.active < 0 {
-		state.active = 0
-	}
-	state.queued += queuedDelta
-	if state.queued < 0 {
-		state.queued = 0
-	}
-	if state.active == 0 && state.queued == 0 && len(state.sem) == 0 {
-		delete(p.coldTenants, tenantID)
-	}
-}
-
-func (p *Pool) releaseColdWorkerSlot(tenantID string, state *coldTenantState) {
-	if state == nil {
-		return
-	}
-	select {
-	case <-state.sem:
-		p.adjustColdTenantCounts(tenantID, -1, 0)
-	default:
-	}
+	return p.cold.acquire(ctx, tenantID)
 }
 
 func (p *Pool) tenantAllowed(tenantID string) bool {
@@ -478,38 +363,8 @@ func (p *Pool) tenantAllowed(tenantID string) bool {
 	return false
 }
 
-func (p *Pool) catalogTenants() []string {
-	if p == nil || p.store == nil {
-		return nil
-	}
-	if tenants := p.store.TenantIDs(); len(tenants) > 0 {
-		return tenants
-	}
-	return []string{"*"}
-}
-
-func (p *Pool) capabilityTenant(tenantID string) string {
-	if p != nil && p.store != nil && len(p.store.TenantIDs()) > 0 {
-		return tenantID
-	}
-	return "*"
-}
-
-func capabilityKey(tenantID, targetID string) string {
-	if tenantID == "" || tenantID == "*" {
-		return targetID
-	}
-	return tenantID + "\x00" + targetID
-}
-
 func (p *Pool) coldWorkerLimit(tenantID string) int {
-	if override, ok := p.opts.ColdWorkersByTenant[tenantID]; ok && override > 0 {
-		return override
-	}
-	if p.opts.ColdWorkersPerTenantMax > 0 {
-		return p.opts.ColdWorkersPerTenantMax
-	}
-	return defaultColdWorkersPerTenantMax
+	return p.cold.limit(tenantID)
 }
 
 func (p *Pool) spawnEnv(tenantID string) map[string]string {
@@ -560,94 +415,26 @@ func (p *Pool) logInvokeOutcome(in wire.Invoke, result wire.InvokeResult, err er
 }
 
 func (p *Pool) coldTenantCounts(tenantID string) (active, queued int) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	state := p.coldTenants[tenantID]
-	if state == nil {
-		return 0, 0
-	}
-	return state.active, state.queued
+	return p.cold.countsFor(tenantID)
 }
 
 func (p *Pool) coldCounts() (active, queued int) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for _, state := range p.coldTenants {
-		active += state.active
-		queued += state.queued
-	}
-	return active, queued
+	return p.cold.counts()
 }
 
 func (p *Pool) targetHasTool(tenantID, targetID, toolName string) bool {
-	if p == nil || toolName == "" {
-		return false
-	}
-	p.targetMu.RLock()
-	capability, ok := p.targets[capabilityKey(p.capabilityTenant(tenantID), targetID)]
-	p.targetMu.RUnlock()
-	if !ok {
-		return false
-	}
-	for _, tool := range capability.Tools {
-		if tool.Name == toolName {
-			return true
-		}
-	}
-	if p.store != nil {
-		if plugin, ok := p.store.GetForTenant(tenantID, targetID); ok {
-			for _, tool := range plugin.Tools {
-				if tool.Name == toolName {
-					return true
-				}
-			}
-		}
-	}
-	return false
+	return p.capabilities.hasTool(tenantID, targetID, toolName)
 }
 
 func (p *Pool) ensureWorker(ctx context.Context, e *entry, plugin manifest.Plugin, tenantID string) (policy.Worker, bool, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if e.worker != nil && e.worker.IsAlive() {
-		return e.worker, true, nil
-	}
-	p.markTargetInitializing(tenantID, plugin)
-	req := policy.SpawnReq{
-		KernelID:   p.kernelID,
-		TenantID:   tenantID,
-		TargetID:   plugin.ID,
-		Runtime:    plugin.Runtime,
-		Entry:      plugin.Entry,
-		Manifest:   plugin.RawJSON(),
-		Env:        p.spawnEnv(tenantID),
-		WorkingDir: plugin.RootDir,
-		Mode:       policy.SpawnModeWarm,
-	}
-	worker, err := p.policy.Spawn(ctx, req)
-	if err != nil {
-		p.markTargetFailed(tenantID, plugin)
-		return nil, false, err
-	}
-	e.worker = worker
-	p.watchWorker(tenantID, plugin, e, worker)
-	ack, err := worker.Init(ctx, workerwire.WorkerInit{KernelID: p.kernelID, TenantID: tenantID, TargetID: plugin.ID, Manifest: plugin.RawJSON()})
-	if err != nil {
-		if e.worker == worker {
-			e.worker = nil
-		}
-		p.markTargetFailed(tenantID, plugin)
-		_ = worker.Shutdown(context.Background())
-		return nil, false, err
-	}
-	p.markTargetReady(tenantID, plugin, ack)
-	return worker, false, nil
+	return p.starter.ensure(ctx, e, plugin, tenantID)
 }
 
 func (p *Pool) primeTarget(ctx context.Context, tenantID string, plugin manifest.Plugin) {
-	k := key{kernelID: p.kernelID, tenantID: tenantID, targetID: plugin.ID}
-	e := p.entryFor(k)
+	e := p.registry.entryFor(key{kernelID: p.kernelID, tenantID: tenantID, targetID: plugin.ID})
 	e.mu.Lock()
 	_, existing, err := p.ensureWorker(ctx, e, plugin, tenantID)
 	e.mu.Unlock()
@@ -735,42 +522,12 @@ func pluginEntryPath(plugin manifest.Plugin) string {
 	return filepath.Join(plugin.RootDir, plugin.Entry)
 }
 
-func (p *Pool) entryFor(k key) *entry {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if existing := p.entries[k]; existing != nil {
-		return existing
-	}
-	e := &entry{}
-	p.entries[k] = e
-	return e
-}
-
 // Reload evicts matching workers and returns their Runtime API targets.
 func (p *Pool) Reload(target *wire.Target, tenants ...string) []wire.Target {
 	if p == nil {
 		return nil
 	}
-	var evicted []struct {
-		target wire.Target
-		entry  *entry
-	}
-	requestedTenants := tenantSet(tenants)
-	p.mu.Lock()
-	for k, e := range p.entries {
-		if target != nil && (target.Kind != wire.TargetKindPlugin || target.ID != k.targetID) {
-			continue
-		}
-		if len(requestedTenants) > 0 && !requestedTenants[k.tenantID] {
-			continue
-		}
-		delete(p.entries, k)
-		evicted = append(evicted, struct {
-			target wire.Target
-			entry  *entry
-		}{target: wire.Target{Kind: wire.TargetKindPlugin, ID: k.targetID}, entry: e})
-	}
-	p.mu.Unlock()
+	evicted := p.registry.evict(target, tenants...)
 	out := make([]wire.Target, 0, len(evicted))
 	seenTargets := make(map[string]struct{}, len(evicted))
 	for _, item := range evicted {
@@ -813,12 +570,7 @@ func (p *Pool) WorkerCount() int {
 	if p == nil {
 		return 0
 	}
-	p.mu.Lock()
-	entries := make([]*entry, 0, len(p.entries))
-	for _, e := range p.entries {
-		entries = append(entries, e)
-	}
-	p.mu.Unlock()
+	entries := p.registry.entriesSnapshot()
 	count := 0
 	for _, e := range entries {
 		e.mu.Lock()
@@ -846,11 +598,11 @@ func (p *Pool) watchWorker(tenantID string, plugin manifest.Plugin, entry *entry
 	}
 	go func() {
 		for event := range worker.Events() {
-			if !p.isCurrentWorker(entry, worker) {
+			if !entryHasWorker(entry, worker) {
 				continue
 			}
 			if event.Err != nil {
-				p.clearCurrentWorker(entry, worker)
+				clearEntryWorker(entry, worker)
 				p.markTargetCrashed(tenantID, plugin, event.Err)
 				continue
 			}
@@ -864,7 +616,7 @@ func (p *Pool) watchWorker(tenantID string, plugin manifest.Plugin, entry *entry
 			case *workerwire.WorkerLog:
 				p.publishBestEffortFrame(wire.PluginLog{Op: wire.OpPluginLog, Target: wire.Target{Kind: wire.TargetKindPlugin, ID: plugin.ID}, Level: frame.Level, Message: frame.Message, Fields: frame.Fields})
 			case *workerwire.WorkerError:
-				p.clearCurrentWorker(entry, worker)
+				clearEntryWorker(entry, worker)
 				message := frame.Error.Code
 				if frame.Error.Message != "" {
 					message = frame.Error.Message
@@ -875,116 +627,16 @@ func (p *Pool) watchWorker(tenantID string, plugin manifest.Plugin, entry *entry
 	}()
 }
 
-func (p *Pool) isCurrentWorker(entry *entry, worker policy.Worker) bool {
-	entry.mu.Lock()
-	defer entry.mu.Unlock()
-	return entry.worker == worker
-}
-
 func (p *Pool) applyToolsUpdated(tenantID string, plugin manifest.Plugin, update workerwire.WorkerToolsUpdated) {
-	p.targetMu.Lock()
-	defer p.targetMu.Unlock()
-	capabilityTenant := p.capabilityTenant(tenantID)
-	key := capabilityKey(capabilityTenant, plugin.ID)
-	capability, ok := p.targets[key]
+	capability, ok := p.capabilities.applyToolsUpdated(tenantID, plugin, update)
 	if !ok {
-		capability = plugin.Capability()
-	}
-	if update.Revision <= capability.Revision && sameToolSpecs(capability.Tools, update.Tools) {
 		return
 	}
-	capability.Target = wire.Target{Kind: wire.TargetKindPlugin, ID: plugin.ID}
-	capability.Tenants = []string{capabilityTenant}
-	capability.Tools = cloneToolSpecs(update.Tools)
-	capability.State = wire.CapabilityStateReady
-	capability.Source = wire.CapabilitySourceWorker
-	capability.Revision = update.Revision
-	capability = cloneCapability(capability)
-	p.targets[key] = capability
 	p.publishCriticalFrame(wire.CatalogUpdate{Op: wire.OpCatalogUpdate, Target: capability.Target, Tenants: append([]string(nil), capability.Tenants...), Tools: cloneToolSpecs(capability.Tools), Hooks: cloneHookSpecs(capability.Hooks), Removed: append([]string(nil), update.Removed...), Revision: capability.Revision, State: capability.State, Source: capability.Source})
 }
 
 func (p *Pool) resetTargets(target *wire.Target, tenants ...string) {
-	if p == nil {
-		return
-	}
-	p.targetMu.Lock()
-	defer p.targetMu.Unlock()
-	requestedTenants := tenantSet(tenants)
-	if target == nil && len(requestedTenants) == 0 {
-		p.targets = map[string]wire.Capability{}
-		if p.store == nil {
-			return
-		}
-		for _, tenantID := range p.catalogTenants() {
-			for _, capability := range p.store.CapabilitiesForTenant(tenantID) {
-				p.targets[capabilityKey(tenantID, capability.Target.ID)] = cloneCapability(capability)
-			}
-		}
-		return
-	}
-	if target == nil {
-		for key, capability := range p.targets {
-			if len(capability.Tenants) == 0 {
-				continue
-			}
-			if requestedTenants[capability.Tenants[0]] {
-				delete(p.targets, key)
-			}
-		}
-		if p.store == nil {
-			return
-		}
-		for _, tenantID := range p.catalogTenants() {
-			if !requestedTenants[tenantID] {
-				continue
-			}
-			for _, capability := range p.store.CapabilitiesForTenant(tenantID) {
-				p.targets[capabilityKey(tenantID, capability.Target.ID)] = cloneCapability(capability)
-			}
-		}
-		return
-	}
-	if target.Kind != wire.TargetKindPlugin {
-		p.deleteTargetCapabilitiesLocked(target.ID)
-		return
-	}
-	if p.store == nil {
-		p.deleteTargetCapabilitiesLocked(target.ID)
-		return
-	}
-	if len(requestedTenants) == 0 {
-		p.deleteTargetCapabilitiesLocked(target.ID)
-	} else {
-		p.deleteTenantTargetCapabilitiesLocked(requestedTenants, target.ID)
-	}
-	for _, tenantID := range p.catalogTenants() {
-		if len(requestedTenants) > 0 && !requestedTenants[tenantID] {
-			continue
-		}
-		if plugin, ok := p.store.GetForTenant(tenantID, target.ID); ok {
-			capability := plugin.Capability()
-			capability.Tenants = []string{tenantID}
-			p.targets[capabilityKey(tenantID, target.ID)] = cloneCapability(capability)
-		}
-	}
-}
-
-func (p *Pool) deleteTenantTargetCapabilitiesLocked(tenants map[string]bool, targetID string) {
-	for key, capability := range p.targets {
-		if capability.Target.ID != targetID || len(capability.Tenants) == 0 || !tenants[capability.Tenants[0]] {
-			continue
-		}
-		delete(p.targets, key)
-	}
-}
-
-func (p *Pool) deleteTargetCapabilitiesLocked(targetID string) {
-	for key, capability := range p.targets {
-		if capability.Target.ID == targetID {
-			delete(p.targets, key)
-		}
-	}
+	p.capabilities.reset(target, tenants...)
 }
 
 func (p *Pool) markTargetInitializing(tenantID string, plugin manifest.Plugin) {
@@ -1006,87 +658,36 @@ func (p *Pool) markTargetCrashed(tenantID string, plugin manifest.Plugin, err er
 }
 
 func (p *Pool) setTargetState(tenantID string, plugin manifest.Plugin, state wire.CapabilityState) {
-	p.targetMu.Lock()
-	defer p.targetMu.Unlock()
-	capabilityTenant := p.capabilityTenant(tenantID)
-	key := capabilityKey(capabilityTenant, plugin.ID)
-	capability, ok := p.targets[key]
-	if !ok {
-		capability = plugin.Capability()
-	}
-	capability.Tenants = []string{capabilityTenant}
-	capability.State = state
-	if state == wire.CapabilityStateManifestLoaded {
-		capability.Source = wire.CapabilitySourceManifest
-	}
-	p.targets[key] = cloneCapability(capability)
+	p.capabilities.setState(tenantID, plugin, state)
 }
 
 func (p *Pool) publishTargetSnapshot(tenantID, targetID string) {
-	p.targetMu.RLock()
-	capability, ok := p.targets[capabilityKey(p.capabilityTenant(tenantID), targetID)]
-	p.targetMu.RUnlock()
-	if !ok || capability.State != wire.CapabilityStateReady {
+	capability, ok := p.capabilities.readySnapshot(tenantID, targetID)
+	if !ok {
 		return
 	}
-	capability = cloneCapability(capability)
 	p.publishCriticalFrame(wire.CatalogUpdate{Op: wire.OpCatalogUpdate, Target: capability.Target, Tenants: append([]string(nil), capability.Tenants...), Tools: cloneToolSpecs(capability.Tools), Hooks: cloneHookSpecs(capability.Hooks), Revision: capability.Revision, State: capability.State, Source: capability.Source})
 	p.publishCriticalFrame(wire.LifecycleNotice{Op: wire.OpLifecycleNotice, Target: capability.Target, State: wire.LifecycleStateReady})
 }
 
 func (p *Pool) markTargetReady(tenantID string, plugin manifest.Plugin, ack workerwire.WorkerInitAck) {
-	p.targetMu.Lock()
-	defer p.targetMu.Unlock()
-	capabilityTenant := p.capabilityTenant(tenantID)
-	key := capabilityKey(capabilityTenant, plugin.ID)
-	capability, ok := p.targets[key]
-	if !ok {
-		capability = plugin.Capability()
-	}
-	capability.Target = wire.Target{Kind: wire.TargetKindPlugin, ID: plugin.ID}
-	capability.Tenants = []string{capabilityTenant}
-	capability.Tools = cloneToolSpecs(ack.Tools)
-	capability.Hooks = cloneHookSpecs(ack.Subscriptions)
-	capability.State = wire.CapabilityStateReady
-	capability.Source = wire.CapabilitySourceWorker
-	if capability.Revision < 1 {
-		capability.Revision = 1
-	}
-	if capability.Revision == 1 {
-		capability.Revision = 2
-	}
-	capability = cloneCapability(capability)
-	p.targets[key] = capability
+	capability := p.capabilities.markReady(tenantID, plugin, ack)
 	p.publishCriticalFrame(wire.CatalogUpdate{Op: wire.OpCatalogUpdate, Target: capability.Target, Tenants: append([]string(nil), capability.Tenants...), Tools: cloneToolSpecs(capability.Tools), Hooks: cloneHookSpecs(capability.Hooks), Revision: capability.Revision, State: capability.State, Source: capability.Source, Diagnostic: "worker ready"})
 	p.publishCriticalFrame(wire.LifecycleNotice{Op: wire.OpLifecycleNotice, Target: capability.Target, State: wire.LifecycleStateReady})
 }
 
 func (p *Pool) publishCriticalFrame(frame any) {
-	if p == nil || p.async == nil || frame == nil {
+	if p == nil {
 		return
 	}
-	p.async <- frame
+	p.publisher.PublishCritical(frame)
 }
 
 func (p *Pool) publishBestEffortFrame(frame any) {
-	if p == nil || p.async == nil || frame == nil {
+	if p == nil {
 		return
 	}
-	select {
-	case p.async <- frame:
-	default:
-	}
-}
-
-func (p *Pool) clearCurrentWorker(entry *entry, worker policy.Worker) {
-	if entry == nil {
-		return
-	}
-	entry.mu.Lock()
-	defer entry.mu.Unlock()
-	if entry.worker == worker {
-		entry.worker = nil
-	}
+	p.publisher.PublishBestEffort(frame)
 }
 
 func cloneCapability(in wire.Capability) wire.Capability {

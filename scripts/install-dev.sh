@@ -6,7 +6,6 @@
 #   * launch scripts (tabula-runner, tabula-cli)
 #   * Python venv with runtime + dev dependencies
 #   * tabula-distro installer (editable, from tools/tabula-distro)
-#   * service unit templates
 #
 # After this script finishes, install a distro separately:
 #
@@ -50,8 +49,11 @@ if [ ! -f "$TABULA_HOME/config/global.toml" ]; then
   cp "$REPO_ROOT/config/global.toml" "$TABULA_HOME/config/global.toml"
 fi
 
-# Service unit templates
-rsync -a --delete "$REPO_ROOT/service/" "$TABULA_HOME/service/"
+# Optional service unit templates for host service managers. Agent/dev installs do
+# not need them, and newer source checkouts may not carry this packaging surface.
+if [ -d "$REPO_ROOT/service" ]; then
+  rsync -a --delete "$REPO_ROOT/service/" "$TABULA_HOME/service/"
+fi
 
 # Python venv with dependencies
 if [ -d "$VENV" ] && { ! "$VENV/bin/python" -c 'import sys; print(sys.version)' >/dev/null 2>&1 || ! "$VENV/bin/pip" --version >/dev/null 2>&1; }; then
@@ -64,6 +66,13 @@ if [ ! -d "$VENV" ]; then
 fi
 "$VENV/bin/pip" install -q --upgrade pip
 "$VENV/bin/pip" install -q -r "$SCRIPT_DIR/requirements-dev.txt"
+TABULA_BUNDLES_ROOT="${TABULA_BUNDLES_ROOT:-$REPO_ROOT/../tabula-bundles}"
+if [ -d "$TABULA_BUNDLES_ROOT/_lib/python" ]; then
+  "$VENV/bin/pip" install -q -e "$TABULA_BUNDLES_ROOT/_lib/python"
+else
+  echo "warning: tabula-bundles Python SDK not found at $TABULA_BUNDLES_ROOT/_lib/python" >&2
+  echo "         tabula-install requires tabula_plugin_sdk; set TABULA_BUNDLES_ROOT to your checkout" >&2
+fi
 "$VENV/bin/pip" install -q -e "$REPO_ROOT/tools/tabula-distro"
 echo "    Python dependencies installed"
 

@@ -170,7 +170,7 @@ func TestPoolCapabilitiesTrackWorkerToolsUpdated(t *testing.T) {
 	if err != nil || !resp.OK {
 		t.Fatalf("Invoke = %#v, %v", resp, err)
 	}
-	fake.lastWorker.emit(policy.WorkerAsyncEvent{Frame: &workerwire.WorkerToolsUpdated{Op: workerwire.OpToolsUpdated, Revision: 7, Tools: []wire.ToolSpec{{Name: "dynamic_extra"}, {Name: "echo"}}}})
+	fake.lastSpawnedWorker().emit(policy.WorkerAsyncEvent{Frame: &workerwire.WorkerToolsUpdated{Op: workerwire.OpToolsUpdated, Revision: 7, Tools: []wire.ToolSpec{{Name: "dynamic_extra"}, {Name: "echo"}}}})
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
@@ -185,10 +185,11 @@ func TestPoolCapabilitiesTrackWorkerToolsUpdated(t *testing.T) {
 
 func TestPoolAcceptsFirstToolsUpdatedAtReadyRevision(t *testing.T) {
 	p, fake := testPool(t)
-	fake.nextWorker = newFakeWorker()
-	fake.nextWorker.initEvents = []policy.WorkerAsyncEvent{
+	w := newFakeWorker()
+	w.initEvents = []policy.WorkerAsyncEvent{
 		{Frame: &workerwire.WorkerToolsUpdated{Op: workerwire.OpToolsUpdated, Revision: 2, Tools: []wire.ToolSpec{{Name: "mcp__filesystem__list_allowed_directories"}, {Name: "mcp_call"}}}},
 	}
+	fake.setNextWorker(w)
 
 	resp, err := p.Invoke(context.Background(), invoke("call-mcp", "tenant-a", "echo"))
 	if err != nil || !resp.OK {
@@ -238,9 +239,10 @@ func TestPoolAsyncFramesPublishWorkerReplySendAndLog(t *testing.T) {
 	if err != nil || !resp.OK {
 		t.Fatalf("Invoke = %#v, %v", resp, err)
 	}
-	fake.lastWorker.emit(policy.WorkerAsyncEvent{Frame: &workerwire.WorkerEventReply{Op: workerwire.OpEventReply, CallID: "hook-1", Action: wire.HookActionRewrite, Data: json.RawMessage(`{"tool":"safe"}`)}})
-	fake.lastWorker.emit(policy.WorkerAsyncEvent{Frame: &workerwire.WorkerSend{Op: workerwire.OpSend, Channel: "bus", Type: "notify", Payload: json.RawMessage(`{"x":1}`), SessionID: "sess-1"}})
-	fake.lastWorker.emit(policy.WorkerAsyncEvent{Frame: &workerwire.WorkerLog{Op: workerwire.OpLog, Level: "info", Message: "ready", Fields: json.RawMessage(`{"worker":1}`)}})
+	lastWorker := fake.lastSpawnedWorker()
+	lastWorker.emit(policy.WorkerAsyncEvent{Frame: &workerwire.WorkerEventReply{Op: workerwire.OpEventReply, CallID: "hook-1", Action: wire.HookActionRewrite, Data: json.RawMessage(`{"tool":"safe"}`)}})
+	lastWorker.emit(policy.WorkerAsyncEvent{Frame: &workerwire.WorkerSend{Op: workerwire.OpSend, Channel: "bus", Type: "notify", Payload: json.RawMessage(`{"x":1}`), SessionID: "sess-1"}})
+	lastWorker.emit(policy.WorkerAsyncEvent{Frame: &workerwire.WorkerLog{Op: workerwire.OpLog, Level: "info", Message: "ready", Fields: json.RawMessage(`{"worker":1}`)}})
 
 	var sawReply, sawSend, sawLog bool
 	deadline := time.Now().Add(time.Second)
@@ -326,11 +328,12 @@ func TestPoolPrimeTargetsRepublishesReadyCatalogWithoutRespawn(t *testing.T) {
 
 func TestPoolInitTimeAsyncFramesAreNotDropped(t *testing.T) {
 	p, fake := testPool(t)
-	fake.nextWorker = newFakeWorker()
-	fake.nextWorker.initEvents = []policy.WorkerAsyncEvent{
+	w := newFakeWorker()
+	w.initEvents = []policy.WorkerAsyncEvent{
 		{Frame: &workerwire.WorkerLog{Op: workerwire.OpLog, Level: "info", Message: "init ready"}},
 		{Frame: &workerwire.WorkerToolsUpdated{Op: workerwire.OpToolsUpdated, Revision: 7, Tools: []wire.ToolSpec{{Name: "dynamic_extra"}, {Name: "echo"}}}},
 	}
+	fake.setNextWorker(w)
 
 	resp, err := p.Invoke(context.Background(), invoke("call-init-async", "tenant-a", "echo"))
 	if err != nil || !resp.OK {
@@ -363,8 +366,9 @@ func TestPoolInitTimeAsyncFramesAreNotDropped(t *testing.T) {
 
 func TestPoolInitFailureMarksTargetFailed(t *testing.T) {
 	p, fake := testPool(t)
-	fake.nextWorker = newFakeWorker()
-	fake.nextWorker.initErr = errors.New("boom")
+	w := newFakeWorker()
+	w.initErr = errors.New("boom")
+	fake.setNextWorker(w)
 
 	resp, err := p.Invoke(context.Background(), invoke("call-fail", "tenant-a", "echo"))
 	if err != nil || resp.Error == nil || resp.Error.Code != wire.ErrorInternal {
@@ -379,8 +383,9 @@ func TestPoolInitFailureMarksTargetFailed(t *testing.T) {
 
 func TestPoolInitFailureReturnsRedactedWorkerDiagnostics(t *testing.T) {
 	p, fake := testPool(t)
-	fake.nextWorker = newFakeWorker()
-	fake.nextWorker.initErr = errors.New("bare policy: read worker init ack: worker wire: eof (worker stderr captured: 2 lines, 122 bytes; hint: likely legacy register_request/stdio plugin SDK, not the M2 worker protocol; raw secret_token=super-secret)")
+	w := newFakeWorker()
+	w.initErr = errors.New("bare policy: read worker init ack: worker wire: eof (worker stderr captured: 2 lines, 122 bytes; hint: likely legacy register_request/stdio plugin SDK, not the M2 worker protocol; raw secret_token=super-secret)")
+	fake.setNextWorker(w)
 
 	resp, err := p.Invoke(context.Background(), invoke("call-redacted", "tenant-a", "echo"))
 	if err != nil || resp.Error == nil || resp.Error.Code != wire.ErrorInternal {
@@ -400,8 +405,9 @@ func TestPoolInitFailureReturnsRedactedWorkerDiagnostics(t *testing.T) {
 
 func TestPoolHookEventInitFailureReturnsRedactedWorkerDiagnostics(t *testing.T) {
 	p, fake := testPool(t)
-	fake.nextWorker = newFakeWorker()
-	fake.nextWorker.initErr = errors.New("bare policy: read worker init ack: worker wire: eof (worker stderr captured: 2 lines, 122 bytes; hint: likely legacy register_request/stdio plugin SDK, not the M2 worker protocol; raw api_key=super-secret)")
+	w := newFakeWorker()
+	w.initErr = errors.New("bare policy: read worker init ack: worker wire: eof (worker stderr captured: 2 lines, 122 bytes; hint: likely legacy register_request/stdio plugin SDK, not the M2 worker protocol; raw api_key=super-secret)")
+	fake.setNextWorker(w)
 
 	_, err := p.HookEvent(context.Background(), wire.HookEvent{Op: wire.OpHookEvent, CallID: "hook-redacted", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Event: "before_tool_call", ReplyMode: wire.HookReplyModeModifying, Data: json.RawMessage(`{"tool":"echo"}`)})
 	if err == nil {
@@ -421,8 +427,9 @@ func TestPoolHookEventInitFailureReturnsRedactedWorkerDiagnostics(t *testing.T) 
 
 func TestPoolHookEventFailureReturnsRedactedWorkerDiagnostics(t *testing.T) {
 	p, fake := testPool(t)
-	fake.nextWorker = newFakeWorker()
-	fake.nextWorker.hookErr = errors.New("bare policy: read worker event reply: worker wire: eof (worker stderr captured: 1 line, 44 bytes; raw token=super-secret)")
+	w := newFakeWorker()
+	w.hookErr = errors.New("bare policy: read worker event reply: worker wire: eof (worker stderr captured: 1 line, 44 bytes; raw token=super-secret)")
+	fake.setNextWorker(w)
 
 	_, err := p.HookEvent(context.Background(), wire.HookEvent{Op: wire.OpHookEvent, CallID: "hook-call-redacted", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Event: "before_tool_call", ReplyMode: wire.HookReplyModeModifying, Data: json.RawMessage(`{"tool":"echo"}`)})
 	if err == nil {
@@ -439,8 +446,9 @@ func TestPoolHookEventFailureReturnsRedactedWorkerDiagnostics(t *testing.T) {
 
 func TestPoolPrimeTargetsLogsRuntimeAndEntryPathOnFailure(t *testing.T) {
 	p, fake := testPool(t)
-	fake.nextWorker = newFakeWorker()
-	fake.nextWorker.initErr = errors.New("bare policy: read worker init ack: worker wire: eof (worker stderr captured: 2 lines, 122 bytes; hint: likely legacy register_request/stdio plugin SDK, not the M2 worker protocol; raw secret_token=super-secret)")
+	w := newFakeWorker()
+	w.initErr = errors.New("bare policy: read worker init ack: worker wire: eof (worker stderr captured: 2 lines, 122 bytes; hint: likely legacy register_request/stdio plugin SDK, not the M2 worker protocol; raw secret_token=super-secret)")
+	fake.setNextWorker(w)
 	var buf bytes.Buffer
 	p.SetLogger(slog.New(slog.NewTextHandler(&buf, nil)))
 
@@ -476,7 +484,7 @@ func TestPoolLifecycleCrashRedactsWorkerDiagnostics(t *testing.T) {
 	if err != nil || !resp.OK {
 		t.Fatalf("Invoke = %#v, %v", resp, err)
 	}
-	fake.lastWorker.emit(policy.WorkerAsyncEvent{Err: errors.New("bare policy: worker exited before result (worker stderr captured: 1 line, 25 bytes; raw password=hunter2)")})
+	fake.lastSpawnedWorker().emit(policy.WorkerAsyncEvent{Err: errors.New("bare policy: worker exited before result (worker stderr captured: 1 line, 25 bytes; raw password=hunter2)")})
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
@@ -580,7 +588,7 @@ func waitForWorkerStopped(t *testing.T, w *fakeWorker) {
 
 func TestPoolTimeoutEvictsWarmWorkerAndNextInvokeSucceeds(t *testing.T) {
 	p, fake := testPool(t)
-	fake.nextWorker = newFakeWorker()
+	fake.setNextWorker(newFakeWorker())
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	resp, err := p.Invoke(ctx, invoke("slow-timeout", "tenant-a", "slow"))
@@ -593,7 +601,7 @@ func TestPoolTimeoutEvictsWarmWorkerAndNextInvokeSucceeds(t *testing.T) {
 	if got := fake.spawnCount.Load(); got != 1 {
 		t.Fatalf("spawn count after timeout = %d, want 1", got)
 	}
-	fake.nextWorker = newFakeWorker()
+	fake.setNextWorker(newFakeWorker())
 	resp, err = p.Invoke(context.Background(), invoke("after-timeout", "tenant-a", "echo"))
 	if err != nil || !resp.OK {
 		t.Fatalf("invoke after timeout = %#v, %v", resp, err)
@@ -605,13 +613,14 @@ func TestPoolTimeoutEvictsWarmWorkerAndNextInvokeSucceeds(t *testing.T) {
 
 func TestPoolCrashEvictsWorkerAndNextInvokeRespawns(t *testing.T) {
 	p, fake := testPool(t)
-	w := fake.nextWorker
+	w := newFakeWorker()
 	w.callErr = errors.New("worker exited: boom")
+	fake.setNextWorker(w)
 	resp, err := p.Invoke(context.Background(), invoke("crash", "tenant-a", "echo"))
 	if err != nil || resp.Error == nil || resp.Error.Code != wire.ErrorInternal {
 		t.Fatalf("crash resp = %#v, %v", resp, err)
 	}
-	fake.nextWorker = newFakeWorker()
+	fake.setNextWorker(newFakeWorker())
 	resp, err = p.Invoke(context.Background(), invoke("after-crash", "tenant-a", "echo"))
 	if err != nil || !resp.OK {
 		t.Fatalf("after crash = %#v, %v", resp, err)
@@ -630,7 +639,7 @@ func TestPoolReloadEvictsTarget(t *testing.T) {
 	if len(evicted) != 1 || evicted[0].ID != "fs" {
 		t.Fatalf("evicted = %#v", evicted)
 	}
-	if !fake.lastWorker.shutdown.Load() {
+	if !fake.lastSpawnedWorker().shutdown.Load() {
 		t.Fatal("reload should shut down worker")
 	}
 	deadline := time.Now().Add(time.Second)
@@ -804,6 +813,18 @@ func (f *fakePolicy) Spawn(_ context.Context, req policy.SpawnReq) (policy.Worke
 	default:
 	}
 	return w, nil
+}
+
+func (f *fakePolicy) setNextWorker(w *fakeWorker) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextWorker = w
+}
+
+func (f *fakePolicy) lastSpawnedWorker() *fakeWorker {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastWorker
 }
 
 func (f *fakePolicy) spawnRequests() []policy.SpawnReq {

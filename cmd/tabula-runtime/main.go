@@ -18,6 +18,7 @@ import (
 	"github.com/bamanoz/tabula/internal/runtime/host/manifest"
 	"github.com/bamanoz/tabula/internal/runtime/host/policy/bare"
 	"github.com/bamanoz/tabula/internal/runtime/host/pool"
+	"github.com/bamanoz/tabula/internal/runtime/paths"
 	"github.com/bamanoz/tabula/internal/runtime/transport/stdio"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
 )
@@ -97,9 +98,9 @@ func stdioCmd(args []string, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
-	manifestStore.SetTabulaHome(os.Getenv("TABULA_HOME"))
+	manifestStore.SetTabulaHome(paths.Home())
 	logger := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	workerPool := pool.New(kernelCfg.ID, manifestStore, bare.New(), pool.Options{ColdWorkersPerTenantMax: cfg.Pool.ColdWorkersPerTenantMax, ColdWorkersByTenant: coldWorkerTenantOverrides(cfg.Pool.Tenants), AllowedTenants: kernelCfg.Tenants, TabulaHome: os.Getenv("TABULA_HOME"), KernelURL: os.Getenv("TABULA_URL")})
+	workerPool := pool.New(kernelCfg.ID, manifestStore, bare.New(), pool.Options{ColdWorkersPerTenantMax: cfg.Pool.ColdWorkersPerTenantMax, ColdWorkersByTenant: coldWorkerTenantOverrides(cfg.Pool.Tenants), AllowedTenants: kernelCfg.Tenants, TabulaHome: paths.Home(), KernelURL: os.Getenv("TABULA_URL")})
 	workerPool.SetLogger(logger)
 	defer workerPool.Close()
 	conn := stdio.NewConn(os.Stdin, os.Stdout)
@@ -158,14 +159,14 @@ func startCmd(args []string, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
-	manifestStore.SetTabulaHome(os.Getenv("TABULA_HOME"))
+	manifestStore.SetTabulaHome(paths.Home())
 	logger := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	logger.Info("runtime manifest store loaded", "plugin_dirs", len(runtimePluginDirs(cfg)), "skill_dirs", len(runtimeSkillDirs(cfg)), "capabilities", len(manifestStore.Capabilities()))
 	workerPool := pool.New(kernelCfg.ID, manifestStore, bare.New(), pool.Options{
 		ColdWorkersPerTenantMax: cfg.Pool.ColdWorkersPerTenantMax,
 		ColdWorkersByTenant:     coldWorkerTenantOverrides(cfg.Pool.Tenants),
 		AllowedTenants:          kernelCfg.Tenants,
-		TabulaHome:              os.Getenv("TABULA_HOME"),
+		TabulaHome:              paths.Home(),
 		KernelURL:               os.Getenv("TABULA_URL"),
 	})
 	workerPool.SetLogger(logger)

@@ -4,7 +4,7 @@ Type: Feature (Neovim parity)
 
 Priority: P2
 
-Status: Open
+Status: Completed
 
 Repos: `tabula`, `tabula-bundles`
 
@@ -100,19 +100,19 @@ tabula config inspect
 
 ## Acceptance criteria
 
-- [ ] `tabula config inspect` без аргументов работает на чистой code-immune
+- [x] `tabula config inspect` без аргументов работает на чистой code-immune
       установке и печатает все секции.
-- [ ] `tabula config inspect --plugin fs --format=json` валиден как JSON и
+- [x] `tabula config inspect --plugin fs --format=json` валиден как JSON и
       содержит merged config.
-- [ ] Значения из `secrets.json` (или плагин-секрет paths) **не** попадают
+- [x] Значения из `secrets.json` (или плагин-секрет paths) **не** попадают
       в output, заменены на `<redacted>`.
-- [ ] `tabula health` пробегает по plugin_dirs, для каждого либо зовёт
+- [x] `tabula health` пробегает по plugin_dirs, для каждого либо зовёт
       health-tool, либо помечает `skipped`. На code-immune минимум один
       плагин экспортирует реальный health (для демо — `fs` или `exec`).
-- [ ] `tabula config inspect` НЕ запускает distro boot script. Проверка
+- [x] `tabula config inspect` НЕ запускает distro boot script. Проверка
       через testbed (mock boot, который пишет файл при запуске — после
       `inspect` файла нет).
-- [ ] Output stable для скриптов: `--format=json` schema задокументирована.
+- [x] Output stable для скриптов: `--format=json` schema задокументирована.
 
 ## Files
 

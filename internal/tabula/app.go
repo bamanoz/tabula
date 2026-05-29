@@ -202,6 +202,10 @@ func Run(args []string, build BuildInfo) int {
 		return runtimeCmd(args[1:])
 	case "distro":
 		return distroCmd(args[1:])
+	case "config":
+		return configCmd(args[1:])
+	case "health":
+		return healthCmd(args[1:])
 	case "serve":
 		serveOpts, code := parseServeFlags(args[1:])
 		if code != 0 {
@@ -223,7 +227,7 @@ func Run(args []string, build BuildInfo) int {
 			return 0
 		}
 		// No subcommand — print usage.
-		fmt.Fprintf(os.Stderr, "Usage: tabula <command>\n\nCommands:\n  serve    Start the kernel WebSocket server (default)\n  run      One-shot prompt → response\n  status   Show kernel/runtime/tenant status\n  tenant   Manage tenants\n  runtime  Manage runtimes\n  distro   Manage distro trust\n\nServe flags:\n  --runtime-mode external|disabled\n\nFlags:\n  --version    Show version\n  --protocol   Show kernel plugin protocol range (JSON)\n")
+		fmt.Fprintf(os.Stderr, "Usage: tabula <command>\n\nCommands:\n  serve    Start the kernel WebSocket server (default)\n  run      One-shot prompt → response\n  status   Show kernel/runtime/tenant status\n  config   Inspect runtime configuration\n  health   Check installed plugin health\n  tenant   Manage tenants\n  runtime  Manage runtimes\n  distro   Manage distro trust\n\nServe flags:\n  --runtime-mode external|disabled\n\nFlags:\n  --version    Show version\n  --protocol   Show kernel plugin protocol range (JSON)\n")
 		return 1
 	}
 

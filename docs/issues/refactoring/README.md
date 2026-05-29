@@ -31,7 +31,7 @@ config inspect`, `tabula health`).
 3. `003-single-dotenv-loader.md` — **Completed**
 4. `004-runtime-toml-as-plugin-source-of-truth.md` — **Completed**
 5. `005-slim-down-code-immune-boot.md` — **Completed**
-6. `006-tabula-config-inspect-and-health.md` — **Skipped** (P2 feature, deferred)
+6. `006-tabula-config-inspect-and-health.md` — **Completed**
 7. `007-distro-boot-trust-db.md` — **Completed**
 
 ## Dependency Map

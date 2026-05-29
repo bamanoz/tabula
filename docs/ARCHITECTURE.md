@@ -410,6 +410,30 @@ transport = "stdio"
 command = ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 ```
 
+### Introspection
+
+`tabula config inspect` is the read-only static view of the installed runtime
+surface. It reads `$TABULA_HOME/config/runtime.toml`, resolved path locations,
+tenant plugin catalogs, plugin manifests, and optional plugin config overlays.
+It does not execute distro boot. JSON output is available with
+`--format=json`; the schema is beta until Tabula v1.0.
+
+`tabula config inspect --plugin <id>` includes the effective plugin config from:
+
+1. `$TABULA_HOME/config/global.toml` under `[plugins.<plugin-id>]`
+2. `$TABULA_HOME/config/plugins/<plugin-id>/config.toml`
+3. `$TABULA_HOME/tenants/<tenant>/config/plugins/<plugin-id>/defaults.toml`
+4. `$TABULA_HOME/tenants/<tenant>/config/plugins/<plugin-id>/config.toml`
+5. `$TABULA_HOME/tenants/<tenant>/config/plugins/<plugin-id>/overrides.toml`
+
+Secret-like keys such as `token`, `password`, `api_key`, and `client_secret` are
+printed as `<redacted>`.
+
+`tabula health` walks the same runtime plugin catalog. Plugins that expose a
+zero-argument `health` tool are called through the runtime worker protocol;
+plugins without that tool are reported as `skipped`. It does not start a kernel
+session or run an LLM driver.
+
 Plugins talk to `tabula-runtime` over stdio NDJSON worker frames. The runtime
 attaches to the kernel over the Runtime API and forwards `init`, tool calls,
 events, `tools_updated`, logs, and shutdown. See [PLUGIN_AUTHORING.md](PLUGIN_AUTHORING.md)

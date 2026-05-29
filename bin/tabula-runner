@@ -36,6 +36,32 @@ if [ ! -x "$TABULA_VENV/bin/python3" ]; then
 fi
 
 export TABULA_HOME
+load_app_env() {
+  [ -z "${TABULA_APP_ID:-}" ] || return 0
+  local runtime_config="$TABULA_HOME/config/runtime.toml"
+  [ -f "$runtime_config" ] || return 0
+  local app_id
+  app_id="$($TABULA_VENV/bin/python3 - "$runtime_config" <<'PY'
+import sys
+import tomllib
+from pathlib import Path
+
+path = Path(sys.argv[1])
+with path.open("rb") as f:
+    data = tomllib.load(f)
+tenants = data.get("tenant") or []
+ids = [str(item.get("id") or "").strip() for item in tenants if isinstance(item, dict) and str(item.get("id") or "").strip()]
+if len(ids) == 1:
+    print(ids[0])
+PY
+)"
+  [ -n "$app_id" ] || return 0
+  export TABULA_APP_ID="$app_id"
+  export TABULA_TENANT_ID="${TABULA_TENANT_ID:-$app_id}"
+  export TABULA_TENANT_DIR="${TABULA_TENANT_DIR:-$TABULA_HOME/tenants/$app_id}"
+}
+
+load_app_env
 if [ -z "${TABULA_BOOT:-}" ]; then
   BOOT_FILE="$TABULA_HOME/boot.py"
   if [ ! -f "$BOOT_FILE" ]; then

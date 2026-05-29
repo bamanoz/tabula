@@ -19,6 +19,10 @@ func (h *Hub) handleSessionMessage(sender *Client, msg *Message) {
 
 	switch MsgType(msg.Type) {
 	case MsgRequest:
+		if msg.Topic == TopicKernelSessions {
+			sender.SendMsg(&Message{Type: string(MsgReply), Topic: TopicKernelSessions, ID: msg.ID, Data: h.SnapshotSessions()})
+			return
+		}
 		if isExchangeTopic(msg.Topic) {
 			h.handleExchangeRequest(sender, msg)
 			return

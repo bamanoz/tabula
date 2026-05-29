@@ -219,6 +219,14 @@ distro boot output during `tabula-install`; the running kernel reads the file
 directly and reloads through `run/reload.touch` without re-running boot. See
 [`docs/DISTRO_CONFIG.md`](docs/DISTRO_CONFIG.md) for the contract.
 
+Inspect the installed runtime surface without executing distro boot:
+
+```bash
+tabula config inspect
+tabula config inspect --plugin fs --format=json
+tabula health
+```
+
 ## Distros
 
 Distros are how you package a kernel + skills + personality into a product.
