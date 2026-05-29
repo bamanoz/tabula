@@ -1,4 +1,5 @@
 websocket-client
+tomlkit>=0.12
 prompt_toolkit
 rich
 mempalace
