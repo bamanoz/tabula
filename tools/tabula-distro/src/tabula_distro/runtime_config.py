@@ -8,7 +8,7 @@ from pathlib import Path
 
 import tomlkit
 
-from tabula_plugin_sdk import toml_io
+from tabula_distro import toml_io
 
 
 class RuntimeConfigError(RuntimeError):

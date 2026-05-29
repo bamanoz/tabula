@@ -9,7 +9,7 @@ import sys
 from collections.abc import Iterator
 from pathlib import Path
 
-from tabula_plugin_sdk import paths
+from tabula_distro import paths
 
 from . import __version__
 from . import app_bindings as bindmod

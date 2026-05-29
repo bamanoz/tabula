@@ -18,7 +18,7 @@ from urllib.request import urlopen
 
 import tomlkit
 
-from tabula_plugin_sdk import toml_io
+from tabula_distro import toml_io
 
 from .app_manifest import AppManifest, RuntimeTopology
 

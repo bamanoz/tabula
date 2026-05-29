@@ -26,7 +26,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tabula_plugin_sdk import paths as sdk_paths
+from tabula_distro import paths as sdk_paths
 
 
 class TrustError(RuntimeError):
