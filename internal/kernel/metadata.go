@@ -18,6 +18,16 @@ func (h *Hub) prepareRoutedMessage(sender *Client, session string, scope string,
 	if tenantID == "" && sender != nil {
 		tenantID = sender.tenantID
 	}
+	if routed.Session == "" && session != "" {
+		routed.Session = session
+	}
+	if routed.TenantID == "" {
+		if resolved := h.sessionTenantID(tenantID, session); resolved != "" {
+			routed.TenantID = resolved
+		} else if tenantID != "" {
+			routed.TenantID = tenantID
+		}
+	}
 	routed.Meta = withKernelMeta(routed.Meta, h.kernelMeta(sender, tenantID, session, scope, nil))
 	return routed
 }

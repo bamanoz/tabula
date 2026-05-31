@@ -38,14 +38,6 @@ func (h *Hub) broadcastToSessionFrom(tenantID, session, msgType string, msg *Mes
 		}
 		globalMsg := h.prepareRoutedMessage(sender, session, "global", msg)
 		if globalMsg != nil {
-			if globalMsg.Session == "" {
-				globalMsg.Session = session
-			}
-			if globalMsg.TenantID == "" {
-				if sess, ok := h.sessions.Get(session, tenantID); ok {
-					globalMsg.TenantID = sess.TenantID
-				}
-			}
 			c.SendMsg(globalMsg)
 		} else {
 			c.SendMsg(msg)

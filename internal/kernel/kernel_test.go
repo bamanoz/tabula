@@ -65,7 +65,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	return &testEnv{Hub: hub, Server: server, t: t, Token: "test-kernel-token"}
 }
 
-func TestBroadcastToSessionAnnotatesGlobalReceiversWithSession(t *testing.T) {
+func TestBroadcastToSessionStampsSessionAndTenantForAllReceivers(t *testing.T) {
 	env := newTestEnv(t)
 	member := addCaptureClient(t, env.Hub, "member", "main", []string{TopicStreamDelta}, nil)
 	global := addCaptureClient(t, env.Hub, "global", "", nil, []string{TopicStreamDelta})
@@ -73,8 +73,11 @@ func TestBroadcastToSessionAnnotatesGlobalReceiversWithSession(t *testing.T) {
 	env.Hub.broadcastToSession("default", "main", TopicStreamDelta, &Message{Type: string(MsgEvent), Topic: TopicStreamDelta, Data: mustMarshalRaw(map[string]any{"text": "hi"})}, nil)
 
 	memberMsg := waitForMessage(t, member.recvCh)
-	if memberMsg.Session != "" {
-		t.Fatalf("expected session member message to keep empty session field, got %q", memberMsg.Session)
+	if memberMsg.Session != "main" {
+		t.Fatalf("expected session member message Session=main, got %q", memberMsg.Session)
+	}
+	if memberMsg.TenantID != tenant.DefaultID {
+		t.Fatalf("expected session member message TenantID=%q, got %q", tenant.DefaultID, memberMsg.TenantID)
 	}
 	globalMsg := waitForMessage(t, global.recvCh)
 	if globalMsg.Session != "main" {
