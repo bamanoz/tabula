@@ -3,6 +3,7 @@ package manifest
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/bamanoz/tabula/internal/runtime/wire"
@@ -110,6 +111,64 @@ func TestLoadDirsDiscoversSymlinkedPluginDirectories(t *testing.T) {
 	caps := idx.Capabilities()
 	if len(caps) != 1 || caps[0].Target.ID != "fs" || len(caps[0].Tools) != 1 || caps[0].Tools[0].Name != "fs_read" {
 		t.Fatalf("capabilities = %#v", caps)
+	}
+}
+
+func TestLoadAcceptsColdWorkerModeForToolOnlyPlugin(t *testing.T) {
+	dir := t.TempDir()
+	body := `id = "question"
+name = "Question"
+version = "0.1.0"
+runtime = "python"
+entry = "run.py"
+worker_mode = "cold"
+
+[[tools]]
+name = "question"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`
+	path := filepath.Join(dir, "question", "plugin.toml")
+	writePlugin(t, path, body)
+	plugin, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if plugin.WorkerMode != wire.WorkerModeCold {
+		t.Fatalf("worker mode = %q, want cold", plugin.WorkerMode)
+	}
+	if plugin.Capability().WorkerMode != wire.WorkerModeCold {
+		t.Fatalf("capability worker mode = %q, want cold", plugin.Capability().WorkerMode)
+	}
+}
+
+func TestLoadRejectsColdWorkerModeForHookPlugin(t *testing.T) {
+	dir := t.TempDir()
+	body := `id = "fs"
+name = "Filesystem"
+version = "0.1.0"
+runtime = "python"
+entry = "run.py"
+worker_mode = "cold"
+
+[[tools]]
+name = "fs_read"
+
+[[hooks]]
+event = "before_tool_call"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`
+	path := filepath.Join(dir, "fs", "plugin.toml")
+	writePlugin(t, path, body)
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "worker_mode cold does not support hooks") {
+		t.Fatalf("expected cold hook plugin rejection, got %v", err)
 	}
 }
 

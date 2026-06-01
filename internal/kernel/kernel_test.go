@@ -773,6 +773,65 @@ func testExchangeReplyRequiresChosenResponder(t *testing.T, topic string) {
 	}
 }
 
+func TestPickExchangeResponderPrefersManagedUIClient(t *testing.T) {
+	hub := NewHub(nil, 3, 5, nil)
+	requester := addCaptureClient(t, hub, "requester", "main", []string{TopicExchangeChoose}, []string{TopicExchangeChoose, string(MsgError)})
+	generic := addCaptureClient(t, hub, "generic", "main", []string{TopicExchangeChoose}, nil)
+	ui := addCaptureClient(t, hub, "gateway-web", "main", []string{TopicExchangeChoose}, nil)
+	requester.sends[TopicExchangeChoose] = true
+	generic.sends[TopicExchangeChoose] = true
+	ui.sends[TopicExchangeChoose] = true
+	generic.id = 1
+	ui.id = 2
+	ui.meta = mustMarshalRaw(map[string]any{"tabula.client_role": "ui", "tabula.managed": true})
+
+	hub.HandleMessage(requester, &Message{
+		V:     ProtocolVersion,
+		Type:  string(MsgRequest),
+		Topic: TopicExchangeChoose,
+		ID:    "ex-ui",
+		Data:  mustMarshalRaw(map[string]any{"question": "Pick one", "options": []string{"yes", "no"}}),
+	})
+
+	req := waitForMessage(t, ui.recvCh)
+	if req.ID != "ex-ui" || req.Topic != TopicExchangeChoose {
+		t.Fatalf("expected managed UI responder to receive exchange, got %+v", req)
+	}
+	if msg := readCaptureMessageTimeout(generic.recvCh, 100*time.Millisecond); msg != nil {
+		t.Fatalf("generic responder should not receive exchange when UI responder exists, got %+v", msg)
+	}
+}
+
+func TestPickExchangeResponderPrefersNewestManagedUIClient(t *testing.T) {
+	hub := NewHub(nil, 3, 5, nil)
+	requester := addCaptureClient(t, hub, "requester", "main", []string{TopicExchangeChoose}, []string{TopicExchangeChoose, string(MsgError)})
+	older := addCaptureClient(t, hub, "gateway-old", "main", []string{TopicExchangeChoose}, nil)
+	newer := addCaptureClient(t, hub, "gateway-new", "main", []string{TopicExchangeChoose}, nil)
+	requester.sends[TopicExchangeChoose] = true
+	older.sends[TopicExchangeChoose] = true
+	newer.sends[TopicExchangeChoose] = true
+	older.id = 10
+	newer.id = 11
+	older.meta = mustMarshalRaw(map[string]any{"tabula.client_role": "ui", "tabula.managed": true})
+	newer.meta = mustMarshalRaw(map[string]any{"tabula.client_role": "ui", "tabula.managed": true})
+
+	hub.HandleMessage(requester, &Message{
+		V:     ProtocolVersion,
+		Type:  string(MsgRequest),
+		Topic: TopicExchangeChoose,
+		ID:    "ex-newest",
+		Data:  mustMarshalRaw(map[string]any{"question": "Pick one", "options": []string{"yes", "no"}}),
+	})
+
+	req := waitForMessage(t, newer.recvCh)
+	if req.ID != "ex-newest" || req.Topic != TopicExchangeChoose {
+		t.Fatalf("expected newest managed UI responder to receive exchange, got %+v", req)
+	}
+	if msg := readCaptureMessageTimeout(older.recvCh, 100*time.Millisecond); msg != nil {
+		t.Fatalf("older UI responder should not receive exchange when a newer one exists, got %+v", msg)
+	}
+}
+
 func TestNotConnected(t *testing.T) {
 	env := newTestEnv(t)
 

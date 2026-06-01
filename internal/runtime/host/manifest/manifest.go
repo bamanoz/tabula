@@ -31,16 +31,17 @@ type Tool struct {
 
 // Plugin is the runtime daemon's normalized view of one plugin.toml.
 type Plugin struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Version     string    `json:"version"`
-	Runtime     string    `json:"runtime"`
-	Entry       string    `json:"entry"`
-	Description string    `json:"description,omitempty"`
-	Tools       []Tool    `json:"tools,omitempty"`
-	Hooks       []Hook    `json:"hooks,omitempty"`
-	Requires    *Requires `json:"requires,omitempty"`
-	RootDir     string    `json:"-"`
+	ID          string          `json:"id"`
+	Name        string          `json:"name"`
+	Version     string          `json:"version"`
+	Runtime     string          `json:"runtime"`
+	Entry       string          `json:"entry"`
+	Description string          `json:"description,omitempty"`
+	WorkerMode  wire.WorkerMode `json:"worker_mode,omitempty"`
+	Tools       []Tool          `json:"tools,omitempty"`
+	Hooks       []Hook          `json:"hooks,omitempty"`
+	Requires    *Requires       `json:"requires,omitempty"`
+	RootDir     string          `json:"-"`
 }
 
 // Hook mirrors an advisory [[hooks]] entry from plugin.toml. Runtime does not
@@ -62,15 +63,16 @@ type Requires struct {
 }
 
 type pluginTOML struct {
-	ID          string        `toml:"id"`
-	Name        string        `toml:"name"`
-	Version     string        `toml:"version"`
-	Runtime     string        `toml:"runtime"`
-	Entry       string        `toml:"entry"`
-	Description string        `toml:"description"`
-	Tools       []Tool        `toml:"tools"`
-	Hooks       []Hook        `toml:"hooks"`
-	Requires    *requiresTOML `toml:"requires"`
+	ID          string          `toml:"id"`
+	Name        string          `toml:"name"`
+	Version     string          `toml:"version"`
+	Runtime     string          `toml:"runtime"`
+	Entry       string          `toml:"entry"`
+	Description string          `toml:"description"`
+	WorkerMode  wire.WorkerMode `toml:"worker_mode"`
+	Tools       []Tool          `toml:"tools"`
+	Hooks       []Hook          `toml:"hooks"`
+	Requires    *requiresTOML   `toml:"requires"`
 }
 
 type requiresTOML struct {
@@ -277,9 +279,13 @@ func Load(path string) (Plugin, error) {
 		Runtime:     strings.TrimSpace(raw.Runtime),
 		Entry:       strings.TrimSpace(raw.Entry),
 		Description: strings.TrimSpace(raw.Description),
+		WorkerMode:  raw.WorkerMode,
 		Tools:       make([]Tool, 0, len(raw.Tools)),
 		Hooks:       make([]Hook, 0, len(raw.Hooks)),
 		RootDir:     filepath.Dir(abs),
+	}
+	if plugin.WorkerMode == "" {
+		plugin.WorkerMode = wire.WorkerModeWarm
 	}
 	for _, tool := range raw.Tools {
 		plugin.Tools = append(plugin.Tools, Tool{Name: strings.TrimSpace(tool.Name), Description: strings.TrimSpace(tool.Description), DeadlineMS: tool.DeadlineMS})
@@ -318,6 +324,11 @@ func (p Plugin) Validate() error {
 	if p.Entry == "" {
 		return fmt.Errorf("entry is required")
 	}
+	switch p.WorkerMode {
+	case wire.WorkerModeWarm, wire.WorkerModeCold:
+	default:
+		return fmt.Errorf("worker_mode %q must be warm or cold", p.WorkerMode)
+	}
 	if err := validateRelativePath("entry", p.Entry); err != nil {
 		return err
 	}
@@ -336,6 +347,9 @@ func (p Plugin) Validate() error {
 		if hook.TimeoutMS != nil && *hook.TimeoutMS < 0 {
 			return fmt.Errorf("hooks[%d].timeout_ms must be >= 0", i)
 		}
+	}
+	if p.WorkerMode == wire.WorkerModeCold && len(p.Hooks) > 0 {
+		return fmt.Errorf("worker_mode cold does not support hooks")
 	}
 	if err := validateRequires(p.Requires); err != nil {
 		return err
@@ -505,7 +519,7 @@ func (p Plugin) Capability() wire.Capability {
 		Revision:    1,
 		State:       wire.CapabilityStateManifestLoaded,
 		Source:      wire.CapabilitySourceManifest,
-		WorkerMode:  wire.WorkerModeWarm,
+		WorkerMode:  p.WorkerMode,
 		HarnessKind: detectHarnessKind(p.Runtime),
 	}
 }

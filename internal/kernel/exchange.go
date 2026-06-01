@@ -1,6 +1,10 @@
 package kernel
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+	"sort"
+)
 
 type pendingExchange struct {
 	requester *Client
@@ -48,22 +52,59 @@ func (h *Hub) handleExchangeReply(sender *Client, msg *Message) {
 }
 
 func (h *Hub) pickExchangeResponder(sender *Client, tenantID, session string, topic string) *Client {
-	for _, c := range h.sessionClients(tenantID, session) {
-		if c == sender || !c.IsConnected() || !c.canReceive(topic) || !c.canSend(topic) {
-			continue
-		}
-		return c
+	if responder := pickPreferredExchangeResponder(h.sessionClients(tenantID, session), func(c *Client) bool {
+		return c != sender && c.IsConnected() && c.canReceive(topic) && c.canSend(topic)
+	}); responder != nil {
+		return responder
 	}
-	for _, c := range h.allClients() {
+	return pickPreferredExchangeResponder(h.allClients(), func(c *Client) bool {
 		if c == sender || !c.IsConnected() || !c.canReceiveGlobal(topic) || !c.canSend(topic) {
-			continue
+			return false
 		}
-		if c.tenantID != "" && c.tenantID != tenantID {
-			continue
+		return c.tenantID == "" || c.tenantID == tenantID
+	})
+}
+
+func pickPreferredExchangeResponder(clients []*Client, eligible func(*Client) bool) *Client {
+	candidates := make([]*Client, 0, len(clients))
+	for _, c := range clients {
+		if eligible(c) {
+			candidates = append(candidates, c)
 		}
-		return c
 	}
-	return nil
+	if len(candidates) == 0 {
+		return nil
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		left := exchangeResponderScore(candidates[i])
+		right := exchangeResponderScore(candidates[j])
+		if left != right {
+			return left > right
+		}
+		return candidates[i].id > candidates[j].id
+	})
+	return candidates[0]
+}
+
+func exchangeResponderScore(c *Client) int {
+	if c == nil || len(c.meta) == 0 {
+		return 0
+	}
+	var meta struct {
+		Role    string `json:"tabula.client_role"`
+		Managed bool   `json:"tabula.managed"`
+	}
+	if err := json.Unmarshal(c.meta, &meta); err != nil {
+		return 0
+	}
+	score := 0
+	if meta.Role == "ui" {
+		score += 2
+	}
+	if meta.Managed {
+		score++
+	}
+	return score
 }
 
 // cancelExchangesForClient aborts any pending exchanges that involve the

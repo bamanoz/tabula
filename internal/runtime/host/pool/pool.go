@@ -116,6 +116,9 @@ func (p *Pool) PrimeTargets(ctx context.Context, target *wire.Target) {
 			if !ok {
 				continue
 			}
+			if plugin.WorkerMode == wire.WorkerModeCold {
+				continue
+			}
 			p.primeTarget(ctx, tenantID, plugin)
 		}
 	}
@@ -151,6 +154,9 @@ func (p *Pool) Invoke(ctx context.Context, in wire.Invoke) (result wire.InvokeRe
 		plugin, ok := p.store.GetForTenant(in.TenantID, in.Target.ID)
 		if !ok {
 			return failed(in.CallID, wire.ErrorTargetUnknown, fmt.Sprintf("target %q not found", in.Target.ID)), nil
+		}
+		if plugin.WorkerMode == wire.WorkerModeCold {
+			return p.invokeColdPlugin(ctx, plugin, in), nil
 		}
 		resultCh := make(chan wire.InvokeResult, 1)
 		go func() {
@@ -328,6 +334,70 @@ func (p *Pool) invokeSkill(ctx context.Context, skill manifest.Skill, in wire.In
 	if !result.OK {
 		code := wire.ErrorInternal
 		message := "skill call failed"
+		if result.Error != nil {
+			message = result.Error.Message
+			if wire.IsErrorCode(wire.ErrorCode(result.Error.Code)) {
+				code = wire.ErrorCode(result.Error.Code)
+			}
+		}
+		return failed(in.CallID, code, message)
+	}
+	return wire.InvokeResult{Op: wire.OpInvokeResult, CallID: in.CallID, OK: true, Data: result.Data}
+}
+
+func (p *Pool) invokeColdPlugin(ctx context.Context, plugin manifest.Plugin, in wire.Invoke) wire.InvokeResult {
+	if !p.targetHasTool(in.TenantID, in.Target.ID, in.Tool) {
+		return failed(in.CallID, wire.ErrorToolNotFound, fmt.Sprintf("tool %q not found on target %q", in.Tool, in.Target.ID))
+	}
+	release, err := p.acquireColdWorkerSlot(ctx, in.TenantID)
+	if err != nil {
+		if errors.Is(err, errColdWorkerBusy) {
+			return failed(in.CallID, wire.ErrorRuntimeBusy, fmt.Sprintf("runtime busy: tenant %q reached %d concurrent cold workers", in.TenantID, p.coldWorkerLimit(in.TenantID)))
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return failed(in.CallID, wire.ErrorTimeout, "invoke timed out")
+		}
+		if errors.Is(err, context.Canceled) {
+			return failed(in.CallID, wire.ErrorCancelled, "invoke cancelled")
+		}
+		return failed(in.CallID, wire.ErrorInternal, err.Error())
+	}
+	defer release()
+	worker, err := p.policy.Spawn(ctx, policy.SpawnReq{
+		KernelID:   p.kernelID,
+		TenantID:   in.TenantID,
+		TargetID:   in.Target.ID,
+		TargetKind: wire.TargetKindPlugin,
+		Runtime:    plugin.Runtime,
+		Entry:      plugin.Entry,
+		Manifest:   plugin.RawJSON(),
+		Env:        p.spawnEnv(in.TenantID),
+		WorkingDir: plugin.RootDir,
+		Mode:       policy.SpawnModeCold,
+	})
+	if err != nil {
+		return failed(in.CallID, wire.ErrorInternal, err.Error())
+	}
+	defer func() {
+		_ = worker.Shutdown(context.Background())
+		_, _ = worker.Wait()
+	}()
+	if _, err := worker.Init(ctx, workerwire.WorkerInit{Op: workerwire.OpInit, KernelID: p.kernelID, TenantID: in.TenantID, TargetID: in.Target.ID, Manifest: plugin.RawJSON()}); err != nil {
+		return failed(in.CallID, wire.ErrorInternal, err.Error())
+	}
+	result, err := worker.Call(ctx, workerwire.WorkerCall{Op: workerwire.OpCall, CallID: in.CallID, Tool: in.Tool, Args: in.Args, SessionID: in.SessionID})
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return failed(in.CallID, wire.ErrorTimeout, "invoke timed out")
+		}
+		if errors.Is(err, context.Canceled) {
+			return failed(in.CallID, wire.ErrorCancelled, "invoke cancelled")
+		}
+		return failed(in.CallID, wire.ErrorInternal, err.Error())
+	}
+	if !result.OK {
+		code := wire.ErrorInternal
+		message := "plugin call failed"
 		if result.Error != nil {
 			message = result.Error.Message
 			if wire.IsErrorCode(wire.ErrorCode(result.Error.Code)) {

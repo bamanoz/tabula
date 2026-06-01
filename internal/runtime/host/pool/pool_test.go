@@ -41,6 +41,82 @@ func TestPoolInvokesWarmWorkerAndReusesByTenantTarget(t *testing.T) {
 	}
 }
 
+func TestPoolInvokesColdPluginWithoutBlockingSecondCall(t *testing.T) {
+	dir := t.TempDir()
+	body := `id = "question"
+name = "Question"
+version = "0.1.0"
+runtime = "python"
+entry = "run.py"
+worker_mode = "cold"
+
+[[tools]]
+name = "question"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`
+	writePoolPluginBody(t, filepath.Join(dir, "question", "plugin.toml"), body)
+	store, err := manifest.NewTenantStore(map[string]manifest.SearchDirs{
+		"tenant-a": {PluginDirs: []string{dir}},
+	})
+	if err != nil {
+		t.Fatalf("NewTenantStore: %v", err)
+	}
+	slowDone := make(chan struct{})
+	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), workerFactory: func(req policy.SpawnReq) *fakeWorker {
+		if req.Mode != policy.SpawnModeCold {
+			t.Fatalf("spawn mode = %q, want cold", req.Mode)
+		}
+		w := newFakeWorker()
+		w.callFn = func(ctx context.Context, call workerwire.WorkerCall) (workerwire.WorkerResult, error) {
+			if call.CallID == "call-1" {
+				select {
+				case <-slowDone:
+				case <-ctx.Done():
+					return workerwire.WorkerResult{}, ctx.Err()
+				}
+			}
+			return workerwire.WorkerResult{Op: workerwire.OpResult, CallID: call.CallID, OK: true, Data: json.RawMessage(`{"ok":true}`)}, nil
+		}
+		return w
+	}}
+	p := New("main", store, fake, Options{AllowedTenants: []string{"tenant-a"}})
+	t.Cleanup(p.Close)
+
+	firstDone := make(chan wire.InvokeResult, 1)
+	go func() {
+		resp, _ := p.Invoke(context.Background(), wire.Invoke{Op: wire.OpInvoke, CallID: "call-1", TenantID: "tenant-a", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "question"}, Tool: "question"})
+		firstDone <- resp
+	}()
+	fake.waitForWorker(t)
+
+	secondDone := make(chan wire.InvokeResult, 1)
+	go func() {
+		resp, _ := p.Invoke(context.Background(), wire.Invoke{Op: wire.OpInvoke, CallID: "call-2", TenantID: "tenant-a", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "question"}, Tool: "question"})
+		secondDone <- resp
+	}()
+
+	select {
+	case resp := <-secondDone:
+		if !resp.OK {
+			t.Fatalf("second invoke = %#v", resp)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second cold plugin invoke blocked behind first call")
+	}
+	if got := fake.spawnCount.Load(); got != 2 {
+		t.Fatalf("spawn count = %d, want 2", got)
+	}
+	close(slowDone)
+	resp := <-firstDone
+	if !resp.OK {
+		t.Fatalf("first invoke = %#v", resp)
+	}
+}
+
 func TestPoolCapabilitiesUpgradeFromManifestToWorkerReady(t *testing.T) {
 	p, _ := testPool(t)
 
@@ -753,6 +829,11 @@ kernel = ">=0.9.0,<1.0.0"
 protocol_version = 1
 sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 `
+	writePoolPluginBody(t, path, body)
+}
+
+func writePoolPluginBody(t *testing.T, path, body string) {
+	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
