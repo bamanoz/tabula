@@ -20,6 +20,7 @@ import (
 	runtimemock "github.com/bamanoz/tabula/internal/runtime/mock"
 	"github.com/bamanoz/tabula/internal/runtime/transport/wss"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
+	"github.com/bamanoz/tabula/internal/tenant"
 )
 
 func TestServeAuthenticatedRuntimeRegistersAndDetachesRuntime(t *testing.T) {
@@ -407,6 +408,7 @@ func TestServeAuthenticatedRuntimeDetachRemovesRuntimeTools(t *testing.T) {
 	client := codec.New(clientWS)
 	server := codec.New(serverWS)
 	defer func() { _ = client.CloseNow() }()
+	driver := addTenantCaptureClient(t, hub, tenant.DefaultID, "driver", "main", []string{TopicSessionInit}, nil)
 
 	done := make(chan error, 1)
 	go func() {
@@ -431,6 +433,9 @@ func TestServeAuthenticatedRuntimeDetachRemovesRuntimeTools(t *testing.T) {
 	waitForToolDispatch(t, hub, "echo", func(entry toolDispatch) bool {
 		return entry.Source == toolSourceRuntime && entry.RuntimeID == runtimeauth.LocalRuntimeID
 	})
+	if msg := readCaptureMessageTimeout(driver.recvCh, time.Second); msg == nil {
+		t.Fatal("expected session.init after catalog update")
+	}
 
 	_ = client.Close(websocket.StatusNormalClosure, "test close")
 	if err := <-done; err != nil {
@@ -438,6 +443,16 @@ func TestServeAuthenticatedRuntimeDetachRemovesRuntimeTools(t *testing.T) {
 	}
 	if entry, ok := toolDispatchEntry(hub, "echo"); ok {
 		t.Fatalf("runtime tool dispatch still present after detach: %+v", entry)
+	}
+	msg := readCaptureMessageTimeout(driver.recvCh, time.Second)
+	if msg == nil {
+		t.Fatal("expected session.init refresh after runtime detach")
+	}
+	if msg.Type != string(MsgEvent) || msg.Topic != TopicSessionInit {
+		t.Fatalf("expected session.init after detach, got %+v", msg)
+	}
+	if strings.Contains(string(msg.Tools), "echo") {
+		t.Fatalf("expected refreshed catalog without echo, got %s", string(msg.Tools))
 	}
 }
 
@@ -606,6 +621,7 @@ func TestDetachRuntimeForRevokeClosesRuntimeAndRemovesTools(t *testing.T) {
 		t.Fatalf("RegisterHello: %v", err)
 	}
 	hub.syncRuntimeCapability("remote", runtimeapi.Capability{Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Tools: []wire.ToolSpec{{Name: "fs_read"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker})
+	driver := addTenantCaptureClient(t, hub, "code-immune-tabula-dev", "driver", "main", []string{TopicSessionInit}, nil)
 	if _, ok := toolDispatchEntry(hub, "fs_read"); !ok {
 		t.Fatal("expected fs_read dispatch before revoke")
 	}
@@ -619,6 +635,24 @@ func TestDetachRuntimeForRevokeClosesRuntimeAndRemovesTools(t *testing.T) {
 	resp, err := rc.Invoke(context.Background(), runtimeapi.InvokeReq{CallID: "after-revoke"})
 	if err != nil || resp.Error == nil || resp.Error.Code != wire.ErrorRuntimeUnavailable {
 		t.Fatalf("expected closed runtime unavailable, got resp=%#v err=%v", resp, err)
+	}
+	msg := readCaptureMessageTimeout(driver.recvCh, time.Second)
+	if msg == nil {
+		t.Fatal("expected session.init refresh after revoke")
+	}
+	if msg.Type != string(MsgEvent) || msg.Topic != TopicSessionInit {
+		t.Fatalf("expected session.init after revoke, got %+v", msg)
+	}
+	var tools []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(msg.Tools, &tools); err != nil {
+		t.Fatalf("unmarshal session tools: %v", err)
+	}
+	for _, tool := range tools {
+		if tool.Name == "fs_read" {
+			t.Fatalf("expected refreshed catalog without fs_read, got %s", string(msg.Tools))
+		}
 	}
 }
 

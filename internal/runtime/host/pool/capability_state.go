@@ -75,6 +75,24 @@ func (s *capabilityState) hasTool(tenantID, targetID, toolName string) bool {
 	return false
 }
 
+func (s *capabilityState) toolSpec(tenantID, targetID, toolName string) (wire.ToolSpec, bool) {
+	if s == nil || toolName == "" {
+		return wire.ToolSpec{}, false
+	}
+	s.mu.RLock()
+	capability, ok := s.targets[capabilityKey(s.capabilityTenant(tenantID), targetID)]
+	s.mu.RUnlock()
+	if !ok {
+		return wire.ToolSpec{}, false
+	}
+	for _, tool := range capability.Tools {
+		if tool.Name == toolName {
+			return cloneToolSpecs([]wire.ToolSpec{tool})[0], true
+		}
+	}
+	return wire.ToolSpec{}, false
+}
+
 func (s *capabilityState) applyToolsUpdated(tenantID string, plugin manifest.Plugin, update workerwire.WorkerToolsUpdated) (wire.Capability, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

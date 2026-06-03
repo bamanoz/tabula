@@ -61,6 +61,12 @@ sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 	if caps[0].WorkerMode != wire.WorkerModeWarm || caps[0].HarnessKind != wire.HarnessKindPython {
 		t.Fatalf("unexpected plugin capability runtime metadata: %#v", caps[0])
 	}
+	if caps[0].Tools[0].Concurrency != wire.ToolConcurrencySerial || caps[0].Tools[0].ExecutionGroup != "fs_read" || len(caps[0].Tools[0].ConflictsWithGroups) != 1 || caps[0].Tools[0].ConflictsWithGroups[0] != "fs_read" {
+		t.Fatalf("expected default execution policy on fs_read, got %#v", caps[0].Tools[0])
+	}
+	if caps[0].Tools[1].Concurrency != wire.ToolConcurrencySerial || caps[0].Tools[1].ExecutionGroup != "fs_write" || len(caps[0].Tools[1].ConflictsWithGroups) != 1 || caps[0].Tools[1].ConflictsWithGroups[0] != "fs_write" {
+		t.Fatalf("expected default execution policy on fs_write, got %#v", caps[0].Tools[1])
+	}
 }
 
 func TestLoadDirsIgnoresMissingSearchDir(t *testing.T) {
@@ -125,6 +131,7 @@ worker_mode = "cold"
 
 [[tools]]
 name = "question"
+schema_json = '{"type":"object","properties":{"questions":{"type":"array"}},"required":["questions"]}'
 
 [requires]
 kernel = ">=0.9.0,<1.0.0"
@@ -140,8 +147,14 @@ sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 	if plugin.WorkerMode != wire.WorkerModeCold {
 		t.Fatalf("worker mode = %q, want cold", plugin.WorkerMode)
 	}
+	if got := string(plugin.Tools[0].Schema); got != `{"type":"object","properties":{"questions":{"type":"array"}},"required":["questions"]}` {
+		t.Fatalf("tool schema = %s", got)
+	}
 	if plugin.Capability().WorkerMode != wire.WorkerModeCold {
 		t.Fatalf("capability worker mode = %q, want cold", plugin.Capability().WorkerMode)
+	}
+	if got := string(plugin.Capability().Tools[0].Schema); got != `{"type":"object","properties":{"questions":{"type":"array"}},"required":["questions"]}` {
+		t.Fatalf("capability tool schema = %s", got)
 	}
 }
 
@@ -169,6 +182,73 @@ sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 	writePlugin(t, path, body)
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "worker_mode cold does not support hooks") {
 		t.Fatalf("expected cold hook plugin rejection, got %v", err)
+	}
+}
+
+func TestLoadAcceptsExplicitToolExecutionPolicy(t *testing.T) {
+	dir := t.TempDir()
+	body := `id = "fs"
+name = "Filesystem"
+version = "0.1.0"
+runtime = "python"
+entry = "run.py"
+
+[[tools]]
+name = "fs_grep"
+concurrency = "parallel"
+execution_group = "fs-read"
+conflicts_with_groups = ["fs-write"]
+
+[[tools]]
+name = "fs_write"
+concurrency = "serial"
+execution_group = "fs-write"
+conflicts_with_groups = ["fs-read", "fs-write"]
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`
+	path := filepath.Join(dir, "fs", "plugin.toml")
+	writePlugin(t, path, body)
+	plugin, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if plugin.Tools[0].Concurrency != wire.ToolConcurrencyParallel || plugin.Tools[0].ExecutionGroup != "fs-read" || len(plugin.Tools[0].ConflictsWithGroups) != 1 || plugin.Tools[0].ConflictsWithGroups[0] != "fs-write" {
+		t.Fatalf("unexpected fs_grep execution policy: %#v", plugin.Tools[0])
+	}
+	if plugin.Tools[1].Concurrency != wire.ToolConcurrencySerial || plugin.Tools[1].ExecutionGroup != "fs-write" || len(plugin.Tools[1].ConflictsWithGroups) != 2 {
+		t.Fatalf("unexpected fs_write execution policy: %#v", plugin.Tools[1])
+	}
+	cap := plugin.Capability()
+	if cap.Tools[0].Name != "fs_grep" || cap.Tools[0].Concurrency != wire.ToolConcurrencyParallel || cap.Tools[0].ExecutionGroup != "fs-read" || len(cap.Tools[0].ConflictsWithGroups) != 1 || cap.Tools[0].ConflictsWithGroups[0] != "fs-write" {
+		t.Fatalf("unexpected capability tool policy: %#v", cap.Tools[0])
+	}
+}
+
+func TestLoadRejectsInvalidToolExecutionPolicy(t *testing.T) {
+	dir := t.TempDir()
+	body := `id = "fs"
+name = "Filesystem"
+version = "0.1.0"
+runtime = "python"
+entry = "run.py"
+
+[[tools]]
+name = "fs_grep"
+concurrency = "sideways"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`
+	path := filepath.Join(dir, "fs", "plugin.toml")
+	writePlugin(t, path, body)
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "concurrency") {
+		t.Fatalf("expected invalid concurrency error, got %v", err)
 	}
 }
 
@@ -313,6 +393,24 @@ entry = "run.py"
 kernel = ">=0.9.0,<1.0.0"
 protocol_version = 1
 sdk = "tabula-plugin-sdk>=not-a-version"
+`,
+		},
+		{
+			name: "invalid tool schema json",
+			body: `id = "fs"
+name = "Filesystem"
+version = "0.1.0"
+runtime = "python"
+entry = "run.py"
+
+[[tools]]
+name = "fs_read"
+schema_json = '{not-json}'
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 `,
 		},
 	}

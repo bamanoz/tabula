@@ -75,7 +75,7 @@ func (h *Hub) dispatchHookExcept(event string, payload json.RawMessage, tenantID
 	result, ok := h.hooks.DispatchExcept(event, payload, tenantID, session, exclude)
 
 	if !ok {
-		h.Logger.Info("hook blocked event", "event", event)
+		h.Logger.Info("hook blocked event", "event", event, "type", def.Type, "tenant_id", tenantID, "session", session, "payload_bytes", len(payload))
 	}
 	return result, ok
 }

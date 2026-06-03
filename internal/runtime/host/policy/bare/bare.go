@@ -313,8 +313,9 @@ type worker struct {
 	initTimeout time.Duration
 
 	mu             sync.Mutex
+	writeMu        sync.Mutex
 	called         bool
-	inFlight       bool
+	eventInFlight  bool
 	alive          bool
 	exitInfo       policy.ExitInfo
 	waitErr        error
@@ -431,25 +432,18 @@ func (w *worker) Call(ctx context.Context, call workerwire.WorkerCall) (workerwi
 		w.mu.Unlock()
 		return workerwire.WorkerResult{}, errors.New("bare policy: cold worker already handled a call")
 	}
-	if w.inFlight {
-		w.mu.Unlock()
-		return workerwire.WorkerResult{}, errors.New("bare policy: worker already has an in-flight call")
-	}
 	w.called = true
-	w.inFlight = true
 	call.Op = workerwire.OpCall
 	resultCh := make(chan callResult, 1)
 	w.pendingCalls[call.CallID] = resultCh
 	if err := w.writeFrame(ctx, &call); err != nil {
 		delete(w.pendingCalls, call.CallID)
-		w.inFlight = false
 		w.mu.Unlock()
 		return workerwire.WorkerResult{}, fmt.Errorf("bare policy: send worker call: %w", err)
 	}
 	w.mu.Unlock()
 	defer func() {
 		w.mu.Lock()
-		w.inFlight = false
 		delete(w.pendingCalls, call.CallID)
 		w.mu.Unlock()
 	}()
@@ -486,11 +480,11 @@ func (w *worker) HookEvent(ctx context.Context, event workerwire.WorkerEvent) (*
 		w.mu.Unlock()
 		return nil, errors.New("bare policy: worker is not alive")
 	}
-	if w.inFlight {
+	if w.eventInFlight {
 		w.mu.Unlock()
 		return nil, errors.New("bare policy: worker already has an in-flight call")
 	}
-	w.inFlight = true
+	w.eventInFlight = true
 	event.Op = workerwire.OpEvent
 	var resultCh chan eventResult
 	if event.ReplyMode != workerwire.ReplyModeNone {
@@ -499,14 +493,14 @@ func (w *worker) HookEvent(ctx context.Context, event workerwire.WorkerEvent) (*
 	}
 	if err := w.writeFrame(ctx, &event); err != nil {
 		delete(w.pendingEvents, event.CallID)
-		w.inFlight = false
+		w.eventInFlight = false
 		w.mu.Unlock()
 		return nil, fmt.Errorf("bare policy: send worker event: %w", err)
 	}
 	w.mu.Unlock()
 	defer func() {
 		w.mu.Lock()
-		w.inFlight = false
+		w.eventInFlight = false
 		delete(w.pendingEvents, event.CallID)
 		w.mu.Unlock()
 	}()
@@ -661,7 +655,11 @@ func (w *worker) wait() {
 }
 
 func (w *worker) writeFrame(ctx context.Context, frame any) error {
-	return runWithContext(ctx, func() error { return workerwire.WriteFrame(w.stdin, frame) })
+	return runWithContext(ctx, func() error {
+		w.writeMu.Lock()
+		defer w.writeMu.Unlock()
+		return workerwire.WriteFrame(w.stdin, frame)
+	})
 }
 
 func runWithContext(ctx context.Context, fn func() error) error {

@@ -177,10 +177,20 @@ func (h *Hub) broadcastRuntimeCatalogUpdate(capability runtimeapi.Capability) {
 	if h == nil || h.sessions == nil || capability.Target.Kind != wire.TargetKindPlugin {
 		return
 	}
+	h.broadcastRuntimeCatalogRefreshForTenants(capability.Tenants)
+}
+
+func (h *Hub) broadcastRuntimeCatalogRefreshForTenants(tenants []string) {
+	if h == nil || h.sessions == nil {
+		return
+	}
+	sessionCount := 0
+	clientCount := 0
 	for _, sess := range h.sessions.All() {
-		if sess == nil || sess.ID == "" || !capabilityVisibleToTenant(capability, sess.TenantID) {
+		if sess == nil || sess.ID == "" || !runtimeServesTenant(tenants, sess.TenantID) {
 			continue
 		}
+		sessionCount++
 		tools := h.initToolsJSON(sess.TenantID)
 		meta := h.initMetaJSON(sess.TenantID)
 		for _, client := range h.sessionClients(sess.TenantID, sess.ID) {
@@ -188,8 +198,12 @@ func (h *Hub) broadcastRuntimeCatalogUpdate(capability runtimeapi.Capability) {
 				context := h.policy.BeforePromptBuild(sess.ID, sess.TenantID, client.name, sess.GetInitContext(), tools, meta)
 				msg := h.initMessage(context, tools, meta)
 				client.SendMsg(msg)
+				clientCount++
 			}
 		}
+	}
+	if sessionCount > 0 || clientCount > 0 {
+		h.Logger.Info("runtime catalog refresh broadcast", "tenants", tenants, "sessions", sessionCount, "clients", clientCount)
 	}
 }
 
@@ -200,14 +214,17 @@ func capabilityVisibleToTenant(capability runtimeapi.Capability, tenantID string
 	return runtimeServesTenant(capability.Tenants, tenantID)
 }
 
-func (h *Hub) removeRuntimeTools(runtimeID string) {
+func (h *Hub) removeRuntimeTools(runtimeID string) int {
 	h.toolExecMu.Lock()
 	defer h.toolExecMu.Unlock()
+	removed := 0
 	for name, entry := range h.toolExec {
 		if entry.Source == toolSourceRuntime && entry.RuntimeID == runtimeID {
 			delete(h.toolExec, name)
+			removed++
 		}
 	}
+	return removed
 }
 
 func (h *Hub) removeRuntimeTargetToolsLocked(runtimeID string, target wire.Target, tenants []string) {

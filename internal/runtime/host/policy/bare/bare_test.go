@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -59,6 +60,94 @@ func TestWarmWorkerAcceptsMultipleSequentialCalls(t *testing.T) {
 		if !result.OK || result.CallID != callID {
 			t.Fatalf("Call(%s) = %#v", callID, result)
 		}
+	}
+}
+
+func TestWarmWorkerAcceptsConcurrentCallsWithOutOfOrderResults(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TABULA_HOME", filepath.Join(dir, "home"))
+	script := filepath.Join(dir, "worker.py")
+	writeFile(t, script, concurrentWorkerScript)
+	worker, err := New().Spawn(context.Background(), policy.SpawnReq{
+		KernelID:   "main",
+		TenantID:   "tenant-a",
+		TargetID:   "fs",
+		Runtime:    "python",
+		Entry:      "worker.py",
+		Manifest:   json.RawMessage(`{"id":"fs"}`),
+		WorkingDir: dir,
+		Mode:       policy.SpawnModeWarm,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	defer func() { _ = worker.Shutdown(context.Background()) }()
+	if _, err := worker.Init(context.Background(), workerwire.WorkerInit{KernelID: "main", TenantID: "tenant-a", TargetID: "fs", Manifest: json.RawMessage(`{"id":"fs"}`)}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	asyncLogs := make(chan string, 8)
+	stopLogs := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stopLogs:
+				return
+			case event, ok := <-worker.Events():
+				if !ok {
+					return
+				}
+				if log, ok := event.Frame.(*workerwire.WorkerLog); ok {
+					asyncLogs <- log.Message
+				}
+			}
+		}
+	}()
+	defer close(stopLogs)
+
+	results := make(chan workerwire.WorkerResult, 2)
+	errs := make(chan string, 2)
+	var wg sync.WaitGroup
+	for _, call := range []workerwire.WorkerCall{{CallID: "slow", Tool: "slow"}, {CallID: "fast", Tool: "fast"}} {
+		wg.Add(1)
+		go func(call workerwire.WorkerCall) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			result, err := worker.Call(ctx, call)
+			if err != nil {
+				errs <- call.CallID + ": " + err.Error()
+				return
+			}
+			results <- result
+		}(call)
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		seenLogs := []string{}
+		for {
+			select {
+			case msg := <-asyncLogs:
+				seenLogs = append(seenLogs, msg)
+			default:
+				t.Fatalf("Call error: %s (async logs: %v)", err, seenLogs)
+			}
+		}
+	}
+	seen := map[string]string{}
+	for result := range results {
+		if !result.OK {
+			t.Fatalf("unexpected result: %#v", result)
+		}
+		var data map[string]string
+		if err := json.Unmarshal(result.Data, &data); err != nil {
+			t.Fatalf("decode result %s: %v", result.Data, err)
+		}
+		seen[result.CallID] = data["tool"]
+	}
+	if len(seen) != 2 || seen["fast"] != "fast" || seen["slow"] != "slow" {
+		t.Fatalf("unexpected concurrent results: %#v", seen)
 	}
 }
 
@@ -351,4 +440,47 @@ for line in sys.stdin:
     }
     sys.stdout.write(json.dumps({"op": "result", "call_id": call_id, "ok": True, "data": data}) + "\n")
     sys.stdout.flush()
+`
+
+const concurrentWorkerScript = `#!/usr/bin/env python3
+import json
+import sys
+import threading
+import time
+
+line = sys.stdin.readline()
+if not line:
+    sys.exit(2)
+json.loads(line)
+sys.stdout.write(json.dumps({"op": "init_ack", "ready": True, "tools": [], "subscriptions": []}) + "\n")
+sys.stdout.flush()
+out_lock = threading.Lock()
+
+
+
+def handle(frame):
+    with out_lock:
+        sys.stdout.write(json.dumps({"op": "log", "level": "info", "msg": "received " + frame.get("tool")}) + "\n")
+        sys.stdout.flush()
+    if frame.get("tool") == "slow":
+        time.sleep(0.2)
+    else:
+        time.sleep(0.02)
+    with out_lock:
+        sys.stdout.write(json.dumps({"op": "log", "level": "info", "msg": "sent " + frame.get("tool")}) + "\n")
+        sys.stdout.flush()
+        sys.stdout.write(json.dumps({"op": "result", "call_id": frame.get("call_id"), "ok": True, "data": {"tool": frame.get("tool")}}) + "\n")
+        sys.stdout.flush()
+
+threads = []
+for line in sys.stdin:
+    frame = json.loads(line)
+    if frame.get("op") == "shutdown":
+        break
+    t = threading.Thread(target=handle, args=(frame,))
+    t.start()
+    threads.append(t)
+
+for t in threads:
+    t.join()
 `

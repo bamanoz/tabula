@@ -181,12 +181,40 @@ type ToolSpec struct {
 	Schema json.RawMessage `json:"schema,omitempty"`
 	// DeadlineMS is the target-local default deadline when non-zero.
 	DeadlineMS int64 `json:"deadline_ms,omitempty"`
+	// Concurrency declares whether this tool may overlap with other inflight calls.
+	Concurrency ToolConcurrency `json:"concurrency,omitempty"`
+	// ExecutionGroup is the plugin-declared execution domain for this tool.
+	ExecutionGroup string `json:"execution_group,omitempty"`
+	// ConflictsWithGroups lists execution groups that must be idle before this tool runs.
+	ConflictsWithGroups []string `json:"conflicts_with_groups,omitempty"`
 }
+
+// ToolConcurrency describes whether a tool remains serial or may overlap with
+// other inflight calls on the same warm worker.
+type ToolConcurrency string
+
+const (
+	ToolConcurrencySerial   ToolConcurrency = "serial"
+	ToolConcurrencyParallel ToolConcurrency = "parallel"
+)
 
 // Validate returns a protocol error when the tool metadata is incomplete.
 func (t ToolSpec) Validate() error {
 	if t.Name == "" {
 		return ProtocolErrorf("tool name is required")
+	}
+	switch t.Concurrency {
+	case "", ToolConcurrencySerial, ToolConcurrencyParallel:
+	default:
+		return ProtocolErrorf("unknown tool concurrency %q", t.Concurrency)
+	}
+	if t.ExecutionGroup == "" && len(t.ConflictsWithGroups) > 0 {
+		return ProtocolErrorf("execution_group is required when conflicts_with_groups is set")
+	}
+	for i, group := range t.ConflictsWithGroups {
+		if group == "" {
+			return ProtocolErrorf("conflicts_with_groups[%d] is required", i)
+		}
 	}
 	return nil
 }

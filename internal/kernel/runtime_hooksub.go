@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
@@ -15,15 +16,17 @@ type runtimeHookSubscriber struct {
 	conn       runtimeapi.RuntimeConn
 	done       <-chan struct{}
 	busy       func(string, wire.Target) bool
+	logger     *slog.Logger
 }
 
-func newRuntimeHookSubscriber(target runtimeHookTarget, busy func(string, wire.Target) bool) HookSubscriber {
+func newRuntimeHookSubscriber(target runtimeHookTarget, busy func(string, wire.Target) bool, logger *slog.Logger) HookSubscriber {
 	return &runtimeHookSubscriber{
 		runtimeID:  target.RuntimeID,
 		capability: target.Capability,
 		conn:       target.Conn,
 		done:       target.Done,
 		busy:       busy,
+		logger:     logger,
 	}
 }
 
@@ -64,7 +67,7 @@ func (s *runtimeHookSubscriber) SendMsg(msg *Message) {
 	if s == nil || s.conn == nil || msg == nil || msg.Type != string(MsgHook) {
 		return
 	}
-	_ = s.conn.SendHookEvent(context.Background(), wire.HookEvent{
+	event := wire.HookEvent{
 		Op:        wire.OpHookEvent,
 		TenantID:  msg.TenantID,
 		CallID:    msg.ID,
@@ -73,7 +76,24 @@ func (s *runtimeHookSubscriber) SendMsg(msg *Message) {
 		ReplyMode: runtimeHookReplyMode(msg.Name),
 		Data:      json.RawMessage(msg.Payload),
 		SessionID: msg.Session,
-	})
+	}
+	if err := s.conn.SendHookEvent(context.Background(), event); err != nil {
+		if s.logger != nil {
+			s.logger.Warn(
+				"runtime hook send failed",
+				"runtime_id", s.runtimeID,
+				"target_kind", string(s.capability.Target.Kind),
+				"target", s.capability.Target.ID,
+				"event", msg.Name,
+				"hook_id", msg.ID,
+				"tenant_id", msg.TenantID,
+				"session", msg.Session,
+				"payload_bytes", len(msg.Payload),
+				"err", err,
+			)
+		}
+		_ = s.conn.Close()
+	}
 }
 
 func runtimeHookReplyMode(event string) wire.HookReplyMode {

@@ -3,6 +3,7 @@ package pool
 import (
 	"sync"
 
+	"github.com/bamanoz/tabula/internal/runtime/host/manifest"
 	"github.com/bamanoz/tabula/internal/runtime/host/policy"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
 )
@@ -19,8 +20,10 @@ type key struct {
 }
 
 type entry struct {
-	mu     sync.Mutex
-	worker policy.Worker
+	mu           sync.Mutex
+	worker       policy.Worker
+	activeGroups map[string]int
+	waitCh       chan struct{}
 }
 
 type evictedEntry struct {
@@ -34,16 +37,66 @@ func newWorkerRegistry() *workerRegistry {
 
 func (r *workerRegistry) entryFor(k key) *entry {
 	if r == nil {
-		return &entry{}
+		return newEntry()
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if existing := r.entries[k]; existing != nil {
 		return existing
 	}
-	e := &entry{}
+	e := newEntry()
 	r.entries[k] = e
 	return e
+}
+
+func newEntry() *entry {
+	return &entry{activeGroups: map[string]int{}, waitCh: make(chan struct{})}
+}
+
+func (e *entry) canRunLocked(tool manifest.Tool) bool {
+	for _, group := range tool.ConflictsWithGroups {
+		if e.activeGroups[group] > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *entry) startToolLocked(tool manifest.Tool) {
+	if tool.ExecutionGroup == "" {
+		return
+	}
+	e.activeGroups[tool.ExecutionGroup]++
+}
+
+func (e *entry) finishToolLocked(tool manifest.Tool) {
+	if tool.ExecutionGroup == "" {
+		e.notifyWaitersLocked()
+		return
+	}
+	if count := e.activeGroups[tool.ExecutionGroup]; count <= 1 {
+		delete(e.activeGroups, tool.ExecutionGroup)
+	} else {
+		e.activeGroups[tool.ExecutionGroup] = count - 1
+	}
+	e.notifyWaitersLocked()
+}
+
+func (e *entry) notifyWaitersLocked() {
+	if e.waitCh == nil {
+		e.waitCh = make(chan struct{})
+		return
+	}
+	close(e.waitCh)
+	e.waitCh = make(chan struct{})
+}
+
+func (e *entry) activeToolCallsLocked() int {
+	total := 0
+	for _, count := range e.activeGroups {
+		total += count
+	}
+	return total
 }
 
 func (r *workerRegistry) evict(target *wire.Target, tenants ...string) []evictedEntry {

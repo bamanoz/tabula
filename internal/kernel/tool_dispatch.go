@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"encoding/json"
+	"strings"
 
 	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
 )
@@ -47,4 +48,23 @@ func toolExecKey(tenantID, toolName string) string {
 
 func toolExecVisible(entry toolDispatch, tenantID string) bool {
 	return entry.TenantID == "" || entry.TenantID == "*" || entry.TenantID == tenantID
+}
+
+func (h *Hub) toolDispatchDiagnostics(tenantID, toolName string) (int, bool) {
+	if h == nil {
+		return 0, false
+	}
+	h.toolExecMu.RLock()
+	defer h.toolExecMu.RUnlock()
+	count := len(h.toolExec)
+	for key, entry := range h.toolExec {
+		_, name, tenantScoped := strings.Cut(key, "\x00")
+		if !tenantScoped {
+			name = key
+		}
+		if name == toolName && !toolExecVisible(entry, tenantID) {
+			return count, true
+		}
+	}
+	return count, false
 }

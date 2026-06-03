@@ -117,6 +117,176 @@ sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 	}
 }
 
+func TestPoolAllowsParallelWarmToolsInSameExecutionGroup(t *testing.T) {
+	dir := t.TempDir()
+	body := `id = "fs"
+name = "Filesystem"
+version = "0.1.0"
+runtime = "python"
+entry = "run.py"
+
+[[tools]]
+name = "read_slow"
+concurrency = "parallel"
+execution_group = "fs-read"
+conflicts_with_groups = ["fs-write"]
+
+[[tools]]
+name = "read_fast"
+concurrency = "parallel"
+execution_group = "fs-read"
+conflicts_with_groups = ["fs-write"]
+
+[[tools]]
+name = "write"
+concurrency = "serial"
+execution_group = "fs-write"
+conflicts_with_groups = ["fs-read", "fs-write"]
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`
+	writePoolPluginBody(t, filepath.Join(dir, "fs", "plugin.toml"), body)
+	store, err := manifest.NewTenantStore(map[string]manifest.SearchDirs{"tenant-a": {PluginDirs: []string{dir}}})
+	if err != nil {
+		t.Fatalf("NewTenantStore: %v", err)
+	}
+	slowStarted := make(chan struct{}, 1)
+	slowDone := make(chan struct{})
+	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), workerFactory: func(req policy.SpawnReq) *fakeWorker {
+		w := newFakeWorker()
+		w.callFn = func(ctx context.Context, call workerwire.WorkerCall) (workerwire.WorkerResult, error) {
+			switch call.Tool {
+			case "read_slow":
+				slowStarted <- struct{}{}
+				select {
+				case <-slowDone:
+				case <-ctx.Done():
+					return workerwire.WorkerResult{}, ctx.Err()
+				}
+			}
+			return workerwire.WorkerResult{Op: workerwire.OpResult, CallID: call.CallID, OK: true, Data: json.RawMessage(`{"tool":"` + call.Tool + `"}`)}, nil
+		}
+		return w
+	}}
+	p := New("main", store, fake, Options{AllowedTenants: []string{"tenant-a"}})
+	t.Cleanup(p.Close)
+
+	firstDone := make(chan wire.InvokeResult, 1)
+	go func() {
+		resp, _ := p.Invoke(context.Background(), wire.Invoke{Op: wire.OpInvoke, CallID: "read-slow", TenantID: "tenant-a", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Tool: "read_slow"})
+		firstDone <- resp
+	}()
+	<-slowStarted
+
+	secondDone := make(chan wire.InvokeResult, 1)
+	go func() {
+		resp, _ := p.Invoke(context.Background(), wire.Invoke{Op: wire.OpInvoke, CallID: "read-fast", TenantID: "tenant-a", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Tool: "read_fast"})
+		secondDone <- resp
+	}()
+
+	select {
+	case resp := <-secondDone:
+		if !resp.OK {
+			t.Fatalf("parallel read invoke = %#v", resp)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("parallel read blocked behind active read in same execution_group")
+	}
+	close(slowDone)
+	if resp := <-firstDone; !resp.OK {
+		t.Fatalf("slow read invoke = %#v", resp)
+	}
+}
+
+func TestPoolBlocksConflictingWarmExecutionGroups(t *testing.T) {
+	dir := t.TempDir()
+	body := `id = "fs"
+name = "Filesystem"
+version = "0.1.0"
+runtime = "python"
+entry = "run.py"
+
+[[tools]]
+name = "read_slow"
+concurrency = "parallel"
+execution_group = "fs-read"
+conflicts_with_groups = ["fs-write"]
+
+[[tools]]
+name = "write"
+concurrency = "serial"
+execution_group = "fs-write"
+conflicts_with_groups = ["fs-read", "fs-write"]
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`
+	writePoolPluginBody(t, filepath.Join(dir, "fs", "plugin.toml"), body)
+	store, err := manifest.NewTenantStore(map[string]manifest.SearchDirs{"tenant-a": {PluginDirs: []string{dir}}})
+	if err != nil {
+		t.Fatalf("NewTenantStore: %v", err)
+	}
+	slowStarted := make(chan struct{}, 1)
+	slowDone := make(chan struct{})
+	writeStarted := make(chan struct{}, 1)
+	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), workerFactory: func(req policy.SpawnReq) *fakeWorker {
+		w := newFakeWorker()
+		w.callFn = func(ctx context.Context, call workerwire.WorkerCall) (workerwire.WorkerResult, error) {
+			switch call.Tool {
+			case "read_slow":
+				slowStarted <- struct{}{}
+				select {
+				case <-slowDone:
+				case <-ctx.Done():
+					return workerwire.WorkerResult{}, ctx.Err()
+				}
+			case "write":
+				writeStarted <- struct{}{}
+			}
+			return workerwire.WorkerResult{Op: workerwire.OpResult, CallID: call.CallID, OK: true, Data: json.RawMessage(`{"tool":"` + call.Tool + `"}`)}, nil
+		}
+		return w
+	}}
+	p := New("main", store, fake, Options{AllowedTenants: []string{"tenant-a"}})
+	t.Cleanup(p.Close)
+
+	readDone := make(chan wire.InvokeResult, 1)
+	go func() {
+		resp, _ := p.Invoke(context.Background(), wire.Invoke{Op: wire.OpInvoke, CallID: "read-slow", TenantID: "tenant-a", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Tool: "read_slow"})
+		readDone <- resp
+	}()
+	<-slowStarted
+
+	writeDone := make(chan wire.InvokeResult, 1)
+	go func() {
+		resp, _ := p.Invoke(context.Background(), wire.Invoke{Op: wire.OpInvoke, CallID: "write-call", TenantID: "tenant-a", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Tool: "write"})
+		writeDone <- resp
+	}()
+
+	select {
+	case <-writeStarted:
+		t.Fatal("conflicting write started before active read completed")
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(slowDone)
+	if resp := <-readDone; !resp.OK {
+		t.Fatalf("read invoke = %#v", resp)
+	}
+	select {
+	case <-writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("conflicting write did not start after read completion")
+	}
+	if resp := <-writeDone; !resp.OK {
+		t.Fatalf("write invoke = %#v", resp)
+	}
+}
+
 func TestPoolCapabilitiesUpgradeFromManifestToWorkerReady(t *testing.T) {
 	p, _ := testPool(t)
 
@@ -281,6 +451,38 @@ func TestPoolAcceptsFirstToolsUpdatedAtReadyRevision(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("same-revision dynamic tools update not reflected: %#v", p.Capabilities())
+}
+
+func TestPoolInvokesWarmDynamicToolPublishedAfterWorkerReady(t *testing.T) {
+	p, fake := testPool(t)
+	w := newFakeWorker()
+	w.initEvents = []policy.WorkerAsyncEvent{
+		{Frame: &workerwire.WorkerToolsUpdated{Op: workerwire.OpToolsUpdated, Revision: 2, Tools: []wire.ToolSpec{{Name: "mcp__duckduckgo__search"}, {Name: "echo"}}}},
+	}
+	fake.setNextWorker(w)
+
+	resp, err := p.Invoke(context.Background(), invoke("call-bootstrap", "tenant-a", "echo"))
+	if err != nil || !resp.OK {
+		t.Fatalf("bootstrap invoke = %#v, %v", resp, err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		caps := p.Capabilities()
+		if len(caps) == 1 {
+			for _, tool := range caps[0].Tools {
+				if tool.Name == "mcp__duckduckgo__search" {
+					resp, err = p.Invoke(context.Background(), wire.Invoke{Op: wire.OpInvoke, CallID: "call-dynamic", TenantID: "tenant-a", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Tool: "mcp__duckduckgo__search"})
+					if err != nil || !resp.OK {
+						t.Fatalf("dynamic invoke = %#v, %v", resp, err)
+					}
+					return
+				}
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("dynamic tool never published: %#v", p.Capabilities())
 }
 
 func TestPoolAsyncFramesPublishCatalogAndLifecycle(t *testing.T) {

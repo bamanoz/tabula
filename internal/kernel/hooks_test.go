@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/bamanoz/tabula/internal/tenant"
 )
 
 // connectHook dials + sends connect with hook subscriptions (no join — global subscriber).
@@ -865,5 +867,36 @@ func TestDomainHookTimeoutPassesThrough(t *testing.T) {
 	}
 	if joined.Type != "joined" {
 		t.Fatalf("expected joined, got %+v", joined)
+	}
+}
+
+func TestAfterToolCallHookTruncatesLargeOutput(t *testing.T) {
+	env := newTestEnv(t)
+	hook := env.connectHook("observer", []HookSubscription{
+		{Event: "after_tool_call", Priority: 0},
+	})
+
+	env.Hub.emitAfterToolCall(tenant.DefaultID, "main", "tool-1", map[string]string{
+		"tool":   "fs_grep",
+		"id":     "tool-1",
+		"output": strings.Repeat("x", afterToolCallOutputPreviewBytes+1024),
+	})
+
+	msg := readMsg(t, hook)
+	if msg.Type != string(MsgHook) || msg.Name != "after_tool_call" {
+		t.Fatalf("expected after_tool_call hook, got %+v", msg)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal hook payload: %v", err)
+	}
+	if payload["output_truncated"] != "true" {
+		t.Fatalf("expected output_truncated=true, got %+v", payload)
+	}
+	if len(payload["output"]) != afterToolCallOutputPreviewBytes {
+		t.Fatalf("preview length = %d, want %d", len(payload["output"]), afterToolCallOutputPreviewBytes)
+	}
+	if payload["output_bytes"] == "" {
+		t.Fatalf("expected original output size, got %+v", payload)
 	}
 }

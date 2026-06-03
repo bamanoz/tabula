@@ -1,11 +1,14 @@
 package kernel
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
 	runtimemock "github.com/bamanoz/tabula/internal/runtime/mock"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
 	"github.com/bamanoz/tabula/internal/tenant"
@@ -124,6 +127,81 @@ func TestBusyRuntimeTargetIsNotSkippedForSecurityHooks(t *testing.T) {
 	}
 	if elapsed > time.Second {
 		t.Fatalf("security hook should fail closed quickly in tests, elapsed=%s", elapsed)
+	}
+}
+
+type failingHookRuntimeConn struct {
+	done   chan struct{}
+	closed bool
+}
+
+func newFailingHookRuntimeConn() *failingHookRuntimeConn {
+	return &failingHookRuntimeConn{done: make(chan struct{})}
+}
+
+func (c *failingHookRuntimeConn) Invoke(context.Context, runtimeapi.InvokeReq) (runtimeapi.InvokeResp, error) {
+	return runtimeapi.InvokeResp{}, errors.New("unexpected invoke")
+}
+
+func (c *failingHookRuntimeConn) Cancel(context.Context, string) error {
+	return errors.New("unexpected cancel")
+}
+
+func (c *failingHookRuntimeConn) Health(context.Context) (runtimeapi.HealthResp, error) {
+	return runtimeapi.HealthResp{}, errors.New("unexpected health")
+}
+
+func (c *failingHookRuntimeConn) ListCapabilities(context.Context) (runtimeapi.ListCapabilitiesResp, error) {
+	return runtimeapi.ListCapabilitiesResp{}, errors.New("unexpected list capabilities")
+}
+
+func (c *failingHookRuntimeConn) Reload(context.Context, runtimeapi.ReloadReq) (runtimeapi.ReloadResp, error) {
+	return runtimeapi.ReloadResp{}, errors.New("unexpected reload")
+}
+
+func (c *failingHookRuntimeConn) SendHookEvent(context.Context, runtimeapi.HookEventReq) error {
+	return errors.New("broken pipe")
+}
+
+func (c *failingHookRuntimeConn) Close() error {
+	if !c.closed {
+		c.closed = true
+		close(c.done)
+	}
+	return nil
+}
+
+func (c *failingHookRuntimeConn) Done() <-chan struct{} { return c.done }
+
+func TestRuntimeHookSendErrorClosesConnAndBlocksQuickly(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: tenant.DefaultID, CreatedAt: time.Now()}))
+	hub.runtimes = NewRuntimeRegistry()
+	timeout := int64(20)
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-permissions"}
+	capability := wire.Capability{
+		Target: target,
+		Hooks:  []wire.HookSpec{{Event: "before_tool_call", Priority: 100, TimeoutMS: &timeout}},
+		State:  wire.CapabilityStateReady,
+		Source: wire.CapabilitySourceWorker,
+	}
+	rc := newFailingHookRuntimeConn()
+	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{capability}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	hub.syncRuntimeCapability("local", capability)
+	hub.rebuildHookIndex()
+
+	started := time.Now()
+	_, ok := hub.dispatchHook("before_tool_call", json.RawMessage(`{"tool":"fs_read","input":{}}`), tenant.DefaultID, "s1")
+	if ok {
+		t.Fatal("expected broken runtime hook send to fail closed")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("expected disconnect path to avoid hook timeout wait, elapsed=%s", elapsed)
+	}
+	if !rc.closed {
+		t.Fatal("expected hook send failure to close runtime connection")
 	}
 }
 

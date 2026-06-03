@@ -77,11 +77,13 @@ func (h *Hub) ServeAuthenticatedRuntime(ctx context.Context, c *codec.Conn, opts
 	case <-ctx.Done():
 		err = ctx.Err()
 	}
+	tenants := h.runtimes.TenantsServed(hello.RuntimeID)
 	h.runtimes.MarkDetached(hello.RuntimeID, err)
-	h.removeRuntimeTools(hello.RuntimeID)
+	removedTools := h.removeRuntimeTools(hello.RuntimeID)
 	h.rebuildHookIndex()
+	go h.broadcastRuntimeCatalogRefreshForTenants(tenants)
 	if opts.Logger != nil {
-		opts.Logger.Info("runtime detached", "runtime_id", hello.RuntimeID)
+		opts.Logger.Warn("runtime detached", "runtime_id", hello.RuntimeID, "tenants", tenants, "removed_tools", removedTools, "err", err)
 	}
 	return err
 }
@@ -124,9 +126,12 @@ func (h *Hub) DetachRuntimeForRevoke(runtimeID string) {
 	if conn != nil {
 		_ = conn.Close()
 	}
+	tenants := h.runtimes.TenantsServed(runtimeID)
 	h.runtimes.MarkDetached(runtimeID, fmt.Errorf("runtime token revoked"))
-	h.removeRuntimeTools(runtimeID)
+	removedTools := h.removeRuntimeTools(runtimeID)
 	h.rebuildHookIndex()
+	go h.broadcastRuntimeCatalogRefreshForTenants(tenants)
+	h.Logger.Warn("runtime detached for revoke", "runtime_id", runtimeID, "tenants", tenants, "removed_tools", removedTools)
 }
 
 // ConfigureRuntimeRegistryForTest replaces runtime definitions in tests.

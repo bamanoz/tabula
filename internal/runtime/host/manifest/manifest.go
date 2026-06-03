@@ -20,13 +20,28 @@ import (
 )
 
 var pluginIDPattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
+var executionGroupPattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
 var semverPattern = regexp.MustCompile(`^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$`)
 
 // Tool mirrors an advisory [[tools]] entry from plugin.toml.
 type Tool struct {
-	Name        string `toml:"name" json:"name"`
-	Description string `toml:"description" json:"description,omitempty"`
-	DeadlineMS  int    `toml:"deadline_ms" json:"deadline_ms,omitempty"`
+	Name                string               `toml:"name" json:"name"`
+	Description         string               `toml:"description" json:"description,omitempty"`
+	Schema              json.RawMessage      `json:"schema,omitempty"`
+	DeadlineMS          int                  `toml:"deadline_ms" json:"deadline_ms,omitempty"`
+	Concurrency         wire.ToolConcurrency `toml:"concurrency" json:"concurrency,omitempty"`
+	ExecutionGroup      string               `toml:"execution_group" json:"execution_group,omitempty"`
+	ConflictsWithGroups []string             `toml:"conflicts_with_groups" json:"conflicts_with_groups,omitempty"`
+}
+
+type toolTOML struct {
+	Name                string               `toml:"name"`
+	Description         string               `toml:"description"`
+	SchemaJSON          string               `toml:"schema_json"`
+	DeadlineMS          int                  `toml:"deadline_ms"`
+	Concurrency         wire.ToolConcurrency `toml:"concurrency"`
+	ExecutionGroup      string               `toml:"execution_group"`
+	ConflictsWithGroups []string             `toml:"conflicts_with_groups"`
 }
 
 // Plugin is the runtime daemon's normalized view of one plugin.toml.
@@ -70,7 +85,7 @@ type pluginTOML struct {
 	Entry       string          `toml:"entry"`
 	Description string          `toml:"description"`
 	WorkerMode  wire.WorkerMode `toml:"worker_mode"`
-	Tools       []Tool          `toml:"tools"`
+	Tools       []toolTOML      `toml:"tools"`
 	Hooks       []Hook          `toml:"hooks"`
 	Requires    *requiresTOML   `toml:"requires"`
 }
@@ -287,8 +302,12 @@ func Load(path string) (Plugin, error) {
 	if plugin.WorkerMode == "" {
 		plugin.WorkerMode = wire.WorkerModeWarm
 	}
-	for _, tool := range raw.Tools {
-		plugin.Tools = append(plugin.Tools, Tool{Name: strings.TrimSpace(tool.Name), Description: strings.TrimSpace(tool.Description), DeadlineMS: tool.DeadlineMS})
+	for i, tool := range raw.Tools {
+		parsed, err := parseTool(tool)
+		if err != nil {
+			return Plugin{}, fmt.Errorf("plugin manifest %s: tools[%d]: %w", abs, i, err)
+		}
+		plugin.Tools = append(plugin.Tools, normalizeTool(parsed))
 	}
 	for _, hook := range raw.Hooks {
 		plugin.Hooks = append(plugin.Hooks, Hook{Event: strings.TrimSpace(hook.Event), Priority: hook.Priority, TimeoutMS: hook.TimeoutMS})
@@ -338,6 +357,24 @@ func (p Plugin) Validate() error {
 		}
 		if tool.DeadlineMS < 0 {
 			return fmt.Errorf("tools[%d].deadline_ms must be >= 0", i)
+		}
+		switch tool.Concurrency {
+		case wire.ToolConcurrencySerial, wire.ToolConcurrencyParallel:
+		default:
+			return fmt.Errorf("tools[%d].concurrency %q must be serial or parallel", i, tool.Concurrency)
+		}
+		if !executionGroupPattern.MatchString(tool.ExecutionGroup) {
+			return fmt.Errorf("tools[%d].execution_group %q is invalid", i, tool.ExecutionGroup)
+		}
+		seen := map[string]struct{}{}
+		for j, group := range tool.ConflictsWithGroups {
+			if !executionGroupPattern.MatchString(group) {
+				return fmt.Errorf("tools[%d].conflicts_with_groups[%d] %q is invalid", i, j, group)
+			}
+			if _, dup := seen[group]; dup {
+				return fmt.Errorf("tools[%d].conflicts_with_groups has duplicate %q", i, group)
+			}
+			seen[group] = struct{}{}
 		}
 	}
 	for i, hook := range p.Hooks {
@@ -499,7 +536,15 @@ func (p Plugin) RawJSON() json.RawMessage {
 func (p Plugin) Capability() wire.Capability {
 	tools := make([]wire.ToolSpec, 0, len(p.Tools))
 	for _, tool := range p.Tools {
-		tools = append(tools, wire.ToolSpec{Name: tool.Name, Description: tool.Description, DeadlineMS: int64(tool.DeadlineMS)})
+		tools = append(tools, wire.ToolSpec{
+			Name:                tool.Name,
+			Description:         tool.Description,
+			Schema:              append(json.RawMessage(nil), tool.Schema...),
+			DeadlineMS:          int64(tool.DeadlineMS),
+			Concurrency:         tool.Concurrency,
+			ExecutionGroup:      tool.ExecutionGroup,
+			ConflictsWithGroups: append([]string(nil), tool.ConflictsWithGroups...),
+		})
 	}
 	sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
 	hooks := make([]wire.HookSpec, 0, len(p.Hooks))
@@ -522,6 +567,59 @@ func (p Plugin) Capability() wire.Capability {
 		WorkerMode:  p.WorkerMode,
 		HarnessKind: detectHarnessKind(p.Runtime),
 	}
+}
+
+func normalizeTool(tool Tool) Tool {
+	normalized := Tool{
+		Name:           strings.TrimSpace(tool.Name),
+		Description:    strings.TrimSpace(tool.Description),
+		Schema:         append(json.RawMessage(nil), tool.Schema...),
+		DeadlineMS:     tool.DeadlineMS,
+		Concurrency:    tool.Concurrency,
+		ExecutionGroup: strings.TrimSpace(tool.ExecutionGroup),
+	}
+	if normalized.Concurrency == "" {
+		normalized.Concurrency = wire.ToolConcurrencySerial
+	}
+	if normalized.ExecutionGroup == "" {
+		normalized.ExecutionGroup = normalized.Name
+	}
+	groups := make([]string, 0, len(tool.ConflictsWithGroups))
+	for _, group := range tool.ConflictsWithGroups {
+		group = strings.TrimSpace(group)
+		if group == "" {
+			continue
+		}
+		groups = append(groups, group)
+	}
+	if len(groups) == 0 {
+		groups = []string{normalized.ExecutionGroup}
+	}
+	normalized.ConflictsWithGroups = groups
+	return normalized
+}
+
+func parseTool(raw toolTOML) (Tool, error) {
+	tool := Tool{
+		Name:                raw.Name,
+		Description:         raw.Description,
+		DeadlineMS:          raw.DeadlineMS,
+		Concurrency:         raw.Concurrency,
+		ExecutionGroup:      raw.ExecutionGroup,
+		ConflictsWithGroups: append([]string(nil), raw.ConflictsWithGroups...),
+	}
+	if strings.TrimSpace(raw.SchemaJSON) == "" {
+		return tool, nil
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(raw.SchemaJSON), &parsed); err != nil {
+		return Tool{}, fmt.Errorf("schema_json must be valid JSON: %w", err)
+	}
+	if _, ok := parsed.(map[string]any); !ok {
+		return Tool{}, fmt.Errorf("schema_json must decode to a JSON object")
+	}
+	tool.Schema = json.RawMessage(raw.SchemaJSON)
+	return tool, nil
 }
 
 // Get returns the plugin for target id.

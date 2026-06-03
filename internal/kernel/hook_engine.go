@@ -209,14 +209,16 @@ func (e *HookEngine) dispatchModifying(event string, payload json.RawMessage, te
 		result := e.sendAndWait(entry, event, current, tenantID, session)
 		if result == nil {
 			if secure {
-				e.logger.Info("security hook timeout, blocking", "event", event, "client", entry.sub.Name())
+				e.logger.Info("security hook timeout, blocking", hookLogAttrs(event, entry.sub.Name(), current, tenantID, session)...)
 				return nil, false
 			}
 			continue
 		}
 		switch HookAction(result.Action) {
 		case ActionBlock:
-			e.logger.Info("hook blocked event", "event", event, "client", entry.sub.Name(), "reason", result.Reason)
+			attrs := hookLogAttrs(event, entry.sub.Name(), current, tenantID, session)
+			attrs = append(attrs, "reason", result.Reason)
+			e.logger.Info("hook blocked event", attrs...)
 			return nil, false
 		case ActionModify:
 			if result.Payload != nil {
@@ -312,7 +314,9 @@ func (e *HookEngine) sendAndWait(entry hookEntry, event string, payload json.Raw
 		select {
 		case result = <-ch:
 		case <-s.Done():
-			e.logger.Info("hook subscriber disconnected", "event", event, "client", s.Name(), "id", id)
+			attrs := hookLogAttrs(event, s.Name(), payload, tenantID, session)
+			attrs = append(attrs, "hook_id", id)
+			e.logger.Info("hook subscriber disconnected", attrs...)
 		}
 	} else {
 		d := hookTimeout
@@ -325,14 +329,49 @@ func (e *HookEngine) sendAndWait(entry hookEntry, event string, payload json.Raw
 			timer.Stop()
 		case <-s.Done():
 			timer.Stop()
-			e.logger.Info("hook subscriber disconnected", "event", event, "client", s.Name(), "id", id)
+			attrs := hookLogAttrs(event, s.Name(), payload, tenantID, session)
+			attrs = append(attrs, "hook_id", id, "timeout_ms", d.Milliseconds())
+			e.logger.Info("hook subscriber disconnected", attrs...)
 		case <-timer.C:
-			e.logger.Warn("hook timeout", "event", event, "client", s.Name(), "id", id)
+			attrs := hookLogAttrs(event, s.Name(), payload, tenantID, session)
+			attrs = append(attrs, "hook_id", id, "timeout_ms", d.Milliseconds())
+			e.logger.Warn("hook timeout", attrs...)
 		}
 	}
 
 	e.removePendingHook(id)
 	return result
+}
+
+func hookLogAttrs(event, client string, payload json.RawMessage, tenantID, session string) []any {
+	attrs := []any{
+		"event", event,
+		"client", client,
+		"tenant_id", tenantID,
+		"session", session,
+		"payload_bytes", len(payload),
+	}
+	var body struct {
+		Tool     string          `json:"tool"`
+		ID       string          `json:"id"`
+		TenantID string          `json:"tenant_id"`
+		Input    json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(payload, &body); err == nil {
+		if body.Tool != "" {
+			attrs = append(attrs, "tool", body.Tool)
+		}
+		if body.ID != "" {
+			attrs = append(attrs, "tool_call_id", body.ID)
+		}
+		if tenantID == "" && body.TenantID != "" {
+			attrs = append(attrs, "payload_tenant_id", body.TenantID)
+		}
+		if len(body.Input) > 0 {
+			attrs = append(attrs, "input_bytes", len(body.Input))
+		}
+	}
+	return attrs
 }
 
 func (e *HookEngine) injectSession(payload json.RawMessage, tenantID, session string) json.RawMessage {

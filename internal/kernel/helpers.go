@@ -2,9 +2,13 @@ package kernel
 
 import (
 	"encoding/json"
+	"strconv"
+	"unicode/utf8"
 
 	"github.com/bamanoz/tabula/internal/tenant"
 )
+
+const afterToolCallOutputPreviewBytes = 16 << 10
 
 func (h *Hub) targetSession(sender *Client, msg *Message) string {
 	if msg.Session != "" {
@@ -42,7 +46,7 @@ func (h *Hub) allHookSubscribers() []HookSubscriber {
 		subs = append(subs, c)
 	}
 	for _, target := range runtimeTargets {
-		subs = append(subs, newRuntimeHookSubscriber(target, h.isRuntimeTargetBusy))
+		subs = append(subs, newRuntimeHookSubscriber(target, h.isRuntimeTargetBusy, h.Logger))
 	}
 	return subs
 }
@@ -79,8 +83,26 @@ func (h *Hub) emitAfterMessage(tenantID, session string, sender *Client) {
 
 func (h *Hub) emitAfterToolCall(tenantID, session, toolID string, payload map[string]string) {
 	payload["tenant_id"] = tenantID
+	if output, ok := payload["output"]; ok {
+		if preview, truncated := truncateHookOutput(output); truncated {
+			payload["output"] = preview
+			payload["output_truncated"] = "true"
+			payload["output_bytes"] = strconv.Itoa(len(output))
+		}
+	}
 	hookPayload, _ := json.Marshal(payload)
 	h.dispatchHook("after_tool_call", hookPayload, tenantID, session)
+}
+
+func truncateHookOutput(output string) (string, bool) {
+	if len(output) <= afterToolCallOutputPreviewBytes {
+		return output, false
+	}
+	cut := afterToolCallOutputPreviewBytes
+	for cut > 0 && !utf8.ValidString(output[:cut]) {
+		cut--
+	}
+	return output[:cut], true
 }
 
 func (h *Hub) emitSessionEnd(tenantID, session string) {
