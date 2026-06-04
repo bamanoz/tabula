@@ -28,12 +28,9 @@ class SessionsPluginSmoke(unittest.TestCase):
             self.assertIn("## Delivered Message Wrappers", client.init.get("context", ""))
             self.assertIn("delivered payload for the local human user", client.init.get("context", ""))
             self.assertIn("not a message addressed to you as the assistant", client.init.get("context", ""))
-            self.assertIn("## Timer Deliveries", client.init.get("context", ""))
-            self.assertIn("<timer", client.init.get("context", ""))
-            self.assertIn("Reminder:", client.init.get("context", ""))
-            client.wait_tools({"session_list", "session_info", "session_history", "session_send", "session_labels", "session_label_set", "session_relay"}, session="testbed-sessions")
+            client.wait_tools({"session_list", "session_info", "session_history", "session_context", "session_artifact_read", "session_send", "session_labels", "session_label_set", "session_relay"}, session="testbed-sessions")
             listed = client.call_tool("session_list", {}, timeout=10).json()
-            self.assertIn("testbed-sessions", listed.get("sessions", {}))
+            self.assertIn("default/testbed-sessions", listed.get("sessions", {}))
             info = client.call_tool("session_info", {"session": "testbed-sessions"}, timeout=10).json()
             self.assertEqual(info.get("session"), "testbed-sessions")
 
@@ -49,13 +46,15 @@ class SessionsPluginSmoke(unittest.TestCase):
             }, timeout=10).json()
             self.assertTrue(result["ok"], result)
             msg = receiver.recv(type="message.user", timeout=5)
-            self.assertIn("<cross_session from=\"source-session\">", msg.get("text", ""))
-            self.assertIn("hello session", msg.get("text", ""))
-            self.assertEqual(msg.get("meta", {}).get("source"), "session_relay")
-            self.assertEqual(msg.get("meta", {}).get("delivery"), "cross_session")
-            self.assertEqual(msg.get("meta", {}).get("from_session"), "source-session")
-            self.assertNotIn("reply_expected", msg.get("text", ""))
-            self.assertNotIn("to=", msg.get("text", ""))
+            data = msg.get("data") or {}
+            meta = msg.get("meta") or data.get("meta") or {}
+            self.assertIn("<cross_session from=\"source-session\">", data.get("text", ""))
+            self.assertIn("hello session", data.get("text", ""))
+            self.assertEqual(meta.get("source"), "session_relay")
+            self.assertEqual(meta.get("delivery"), "cross_session")
+            self.assertEqual(meta.get("from_session"), "source-session")
+            self.assertNotIn("reply_expected", data.get("text", ""))
+            self.assertNotIn("to=", data.get("text", ""))
         finally:
             sender.close()
             receiver.close()
@@ -86,10 +85,12 @@ class SessionsPluginSmoke(unittest.TestCase):
             self.assertEqual(result["session"], "target-valera")
             self.assertEqual(result["resolved_by"], "label")
             msg = receiver.recv(type="message.user", timeout=5)
-            self.assertIn("<cross_session from=\"source-veniamin\">", msg.get("text", ""))
-            self.assertIn("hello from Veniamin", msg.get("text", ""))
-            self.assertEqual(msg.get("meta", {}).get("source"), "session_relay")
-            self.assertEqual(msg.get("meta", {}).get("from_session"), "source-veniamin")
+            data = msg.get("data") or {}
+            meta = msg.get("meta") or data.get("meta") or {}
+            self.assertIn("<cross_session from=\"source-veniamin\">", data.get("text", ""))
+            self.assertIn("hello from Veniamin", data.get("text", ""))
+            self.assertEqual(meta.get("source"), "session_relay")
+            self.assertEqual(meta.get("from_session"), "source-veniamin")
         finally:
             sender.close()
             receiver.close()
@@ -116,10 +117,12 @@ class SessionsPluginSmoke(unittest.TestCase):
             self.assertEqual(result["session"], "source-self")
             self.assertEqual(result["resolved_by"], "label")
             msg = receiver.recv(type="message.user", timeout=5)
-            self.assertIn("<cross_session from=\"source-self\">", msg.get("text", ""))
-            self.assertIn("TOBI_RELAY_LABEL_RETEST_OK", msg.get("text", ""))
-            self.assertEqual(msg.get("meta", {}).get("source"), "session_relay")
-            self.assertEqual(msg.get("meta", {}).get("from_session"), "source-self")
+            data = msg.get("data") or {}
+            meta = msg.get("meta") or data.get("meta") or {}
+            self.assertIn("<cross_session from=\"source-self\">", data.get("text", ""))
+            self.assertIn("TOBI_RELAY_LABEL_RETEST_OK", data.get("text", ""))
+            self.assertEqual(meta.get("source"), "session_relay")
+            self.assertEqual(meta.get("from_session"), "source-self")
         finally:
             sender.close()
             receiver.close()
@@ -148,6 +151,44 @@ class SessionsPluginSmoke(unittest.TestCase):
                 "summary": True,
             }, timeout=10).json()
         self.assertEqual([entry.get("text") for entry in result["entries"]], ["first visible", "second visible"])
+
+    def test_session_artifact_read_returns_full_stored_tool_result(self):
+        session = "testbed-artifacts"
+        ref = "session-artifact://exec_run-call-1-demo"
+        artifact_dir = Path(self.tabula_home) / "data" / "sessions" / session / "artifacts"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        content = "full output\n" + ("x" * 20000)
+        (artifact_dir / "exec_run-call-1-demo.txt").write_text(content, encoding="utf-8")
+        (artifact_dir / "index.json").write_text(json.dumps({
+            "version": 1,
+            "artifacts": {
+                "exec_run-call-1-demo": {
+                    "id": "exec_run-call-1-demo",
+                    "ref": ref,
+                    "session": session,
+                    "tenant_id": "default",
+                    "tool_id": "call-1",
+                    "tool_name": "exec_run",
+                    "filename": "exec_run-call-1-demo.txt",
+                    "mime_type": "text/plain; charset=utf-8",
+                    "chars": len(content),
+                    "bytes": len(content.encode("utf-8")),
+                    "sha256": "testbed",
+                    "preview_chars": 12,
+                    "created_at": 123.0,
+                },
+            },
+        }), encoding="utf-8")
+        with self.make_client("testbed-artifacts-client", session) as client:
+            client.wait_tools({"session_artifact_read"}, session=session)
+            result = client.call_tool("session_artifact_read", {"session": session, "ref": ref, "limit_chars": 64}, timeout=10).json()
+            next_result = client.call_tool("session_artifact_read", {"session": session, "ref": ref, "offset": result["next_offset"], "limit_chars": 32}, timeout=10).json()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["content"], content[:64])
+        self.assertEqual(result["returned_chars"], 64)
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["artifact"]["ref"], ref)
+        self.assertEqual(next_result["content"], content[64:96])
 
 
 def main() -> int:

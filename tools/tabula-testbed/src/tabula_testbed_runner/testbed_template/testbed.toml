@@ -137,10 +137,10 @@ set = "empty"
 components = ["base:cron"]
 tests = ["tests/test_cron.py"]
 
-[suites.timer]
+[suites.wait]
 set = "empty"
-components = ["base:timer"]
-tests = ["tests/test_timer.py"]
+components = ["base:wait"]
+tests = ["tests/test_wait.py"]
 
 [suites.code]
 set = "empty"
