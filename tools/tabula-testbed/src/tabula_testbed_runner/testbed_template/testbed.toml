@@ -94,7 +94,7 @@ runtime_tenants = ["*"]
 
 [suites.fs-plugin]
 set = "workspace"
-components = ["workspace:fs"]
+components = ["base:sessions", "workspace:fs"]
 tests = ["tests/test_fs_plugin.py"]
 runtime_tenants = ["*"]
 
@@ -166,6 +166,11 @@ tests = ["tests/test_approvals.py"]
 set = "empty"
 components = ["base:sessions"]
 tests = ["tests/test_sessions.py"]
+
+[suites.artifacts]
+set = "empty"
+components = ["base:artifacts"]
+tests = ["tests/test_artifacts.py"]
 
 [suites.memory]
 set = "empty"

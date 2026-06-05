@@ -49,7 +49,7 @@ class FSPluginSmoke(unittest.TestCase):
 
     def test_all_fs_tools_and_outside_root_denial(self) -> None:
         with self.make_client() as client:
-            client.wait_tools({"fs_read", "fs_write", "fs_edit", "fs_glob", "fs_grep", "fs_list", "fs_stat"}, session="testbed-fs", tenant_id="default")
+            client.wait_tools({"fs_read", "fs_write", "fs_edit", "fs_delete", "fs_glob", "fs_grep", "fs_list", "fs_stat", "session_edits"}, session="testbed-fs", tenant_id="default")
             note = self.workspace_root / "notes.txt"
             nested = self.workspace_root / "nested"
             nested.mkdir()
@@ -86,6 +86,15 @@ class FSPluginSmoke(unittest.TestCase):
             grep = self.call_json(client, "fs_grep", {"path": str(self.workspace_root), "pattern": "gamma|needle", "include": "*.txt"})
             self.assertEqual(sorted(Path(match["path"]).name for match in grep["matches"]), ["notes.txt", "notes.txt", "other.txt"])
             self.assertEqual(grep["denied_count"], 1 if symlink else 0)
+
+            deleted = self.call_json(client, "fs_delete", {"path": str(other)})
+            self.assertEqual(deleted, {"ok": True})
+
+            edits = self.call_json(client, "session_edits", {"session": "testbed-fs", "last": 10})
+            self.assertEqual([group["edits"][0]["operation"] for group in edits["groups"][-3:]], ["create", "update", "delete"])
+            self.assertEqual(edits["groups"][-3]["edits"][0]["path"], str(note))
+            self.assertEqual(edits["groups"][-2]["edits"][0]["patch"]["format"], "unified")
+            self.assertEqual(edits["groups"][-1]["edits"][0]["path"], str(other))
 
             env_file = self.workspace_root / ".env"
             env_file.write_text("needle=secret\n", encoding="utf-8")

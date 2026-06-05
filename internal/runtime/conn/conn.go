@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 
@@ -33,6 +34,8 @@ type Handler interface {
 type AsyncFrameSource interface {
 	AsyncFrames() <-chan any
 }
+
+const oversizedInvokePreviewBytes = 256 << 10
 
 // Conn is a concrete RuntimeConn backed by one codec connection.
 type Conn struct {
@@ -419,6 +422,7 @@ func Serve(ctx context.Context, c *codec.Conn, handler Handler) error {
 func ServeAfterHandshake(ctx context.Context, c *codec.Conn, handler Handler) error {
 	var writeMu sync.Mutex
 	write := func(frame any) error {
+		frame = compactFrameForWrite(frame)
 		writeMu.Lock()
 		defer writeMu.Unlock()
 		return c.Write(ctx, frame)
@@ -523,6 +527,69 @@ func ServeAfterHandshake(ctx context.Context, c *codec.Conn, handler Handler) er
 			return fmt.Errorf("unsupported runtime frame %T", frame)
 		}
 	}
+}
+
+func compactFrameForWrite(frame any) any {
+	encoded, err := wire.Encode(frame)
+	if err != nil || int64(len(encoded)) <= codec.MaxFrameBytes {
+		return frame
+	}
+	switch f := frame.(type) {
+	case wire.InvokeResult:
+		return compactInvokeResultForWrite(f, len(encoded))
+	case *wire.InvokeResult:
+		if f == nil {
+			return frame
+		}
+		compacted := compactInvokeResultForWrite(*f, len(encoded))
+		return &compacted
+	default:
+		return frame
+	}
+}
+
+func compactInvokeResultForWrite(result wire.InvokeResult, originalBytes int) wire.InvokeResult {
+	if !result.OK {
+		return result
+	}
+	raw := strings.TrimSpace(string(result.Data))
+	if raw == "" {
+		return result
+	}
+	previewSource := raw
+	var text string
+	if err := json.Unmarshal(result.Data, &text); err == nil {
+		previewSource = text
+	}
+	preview := truncateUTF8Bytes(previewSource, oversizedInvokePreviewBytes)
+	message := fmt.Sprintf(
+		"%s\n\n[truncated: runtime tool result exceeded the %d-byte websocket frame limit; original frame bytes: %d. Narrow the query or page the result.]",
+		preview,
+		codec.MaxFrameBytes,
+		originalBytes,
+	)
+	data, err := json.Marshal(message)
+	if err != nil {
+		fallback, _ := json.Marshal(fmt.Sprintf("[truncated: runtime tool result exceeded the %d-byte websocket frame limit; original frame bytes: %d.]", codec.MaxFrameBytes, originalBytes))
+		result.Data = fallback
+		return result
+	}
+	result.Data = data
+	return result
+}
+
+func truncateUTF8Bytes(text string, limit int) string {
+	if limit <= 0 || len(text) <= limit {
+		return text
+	}
+	cut := limit
+	for cut > 0 && !utf8.ValidString(text[:cut]) {
+		cut--
+	}
+	if cut <= 0 {
+		return ""
+	}
+	return text[:cut]
 }
 
 func protocolErrorResponse(raw json.RawMessage, err error) (wire.InvokeResult, bool) {

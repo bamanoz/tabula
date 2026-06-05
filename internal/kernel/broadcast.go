@@ -1,6 +1,9 @@
 package kernel
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // broadcastToSession sends a message to all clients in a session that can receive the given type.
 // Also delivers to clients with receives_global for that type (regardless of session).
@@ -48,13 +51,15 @@ func (h *Hub) broadcastToSessionFrom(tenantID, session, msgType string, msg *Mes
 	h.Logger.Debug("broadcast", "type", msgType, "session", session, "delivered", delivered)
 }
 
-func (h *Hub) sendToolResultForTool(tenantID, session, toolID, toolName, output string) {
+func (h *Hub) sendToolResultForTool(tenantID, session, toolID, toolName, output string, artifact json.RawMessage, truncated bool) {
 	h.broadcastToSession(tenantID, session, TopicToolResult, &Message{
-		Type:   string(MsgReply),
-		Topic:  TopicToolResult,
-		ID:     toolID,
-		Name:   toolName,
-		Output: output,
+		Type:      string(MsgReply),
+		Topic:     TopicToolResult,
+		ID:        toolID,
+		Name:      toolName,
+		Output:    output,
+		Artifact:  artifact,
+		Truncated: truncated,
 	}, nil)
 }
 

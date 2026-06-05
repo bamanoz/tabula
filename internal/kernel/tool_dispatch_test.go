@@ -59,6 +59,39 @@ func TestHandleDynamicTool_RuntimeSourceInvokesAttachedRuntime(t *testing.T) {
 	}
 }
 
+func TestHandleDynamicTool_RuntimeArtifactEnvelopePassesThrough(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	rc := runtimemock.New()
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
+	rc.OnInvoke("alpha", target, "mcp__echo").Return([]byte(`{"output":"preview","artifact":{"ref":"artifact://echo-call-1","chars":50000},"truncated":true}`))
+	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{{Target: target, Tools: []wire.ToolSpec{{Name: "mcp__echo"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	hub.syncRuntimeCapability("local", wire.Capability{Target: target, Tools: []wire.ToolSpec{{Name: "mcp__echo"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker})
+
+	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	if !hub.addClient(c) {
+		t.Fatal("addClient failed")
+	}
+	hub.sessions.GetOrCreate("s1", "alpha").AddClient(c.name)
+
+	hub.tools.handleDynamicTool("alpha", "s1", "tid-rt", "mcp__echo", json.RawMessage(`{}`))
+	msg := waitForMessage(t, c.recvCh)
+	if !isToolResult(msg) || msg.Output != "preview" || !msg.Truncated {
+		t.Fatalf("unexpected runtime tool result: %+v", msg)
+	}
+	var artifact struct {
+		Ref string `json:"ref"`
+	}
+	if err := json.Unmarshal(msg.Artifact, &artifact); err != nil {
+		t.Fatalf("unmarshal artifact: %v", err)
+	}
+	if artifact.Ref != "artifact://echo-call-1" {
+		t.Fatalf("unexpected artifact: %+v", artifact)
+	}
+}
+
 func TestBusyRuntimeTargetIsSkippedForPromptBuildHooks(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))

@@ -6,6 +6,7 @@ import time
 import os
 from pathlib import Path
 import json
+import subprocess
 import sys
 import unittest
 import websocket
@@ -28,6 +29,7 @@ def kernel_auth_token() -> str:
 
 FAKE_ACP = """#!/usr/bin/env python3
 import json
+import os
 import sys
 from uuid import uuid4
 
@@ -63,6 +65,15 @@ for raw in sys.stdin:
         for block in prompt:
             if isinstance(block, dict) and block.get('type') == 'text':
                 text += str(block.get('text') or '')
+        for line in text.splitlines():
+            if line.startswith('CAPTURE_PATH='):
+                capture_path = line.split('=', 1)[1].strip()
+                with open(capture_path, 'w', encoding='utf-8') as fh:
+                    json.dump({'cwd': os.getcwd(), 'project_root': os.environ.get('TABULA_PROJECT_ROOT'), 'prompt': text}, fh)
+            elif line.startswith('MUTATE_FILE='):
+                target = line.split('=', 1)[1].strip()
+                with open(target, 'w', encoding='utf-8') as fh:
+                    fh.write('child\\n')
         response = f'FAKE ACP: {text}'
         note = {'jsonrpc': '2.0', 'method': 'session/update', 'params': {'sessionId': params.get('sessionId'), 'update': {'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': response}}}}
         sys.stdout.write(json.dumps(note) + '\\n')
@@ -93,11 +104,20 @@ class SubagentsPluginSmoke(unittest.TestCase):
 
     @classmethod
     def ensure_tenant(cls, tenant_id: str) -> None:
-        import subprocess
-
         env = os.environ.copy()
         env["TABULA_HOME"] = cls.tabula_home
         subprocess.run([cls.tabula_bin(), "tenant", "create", tenant_id, "--exists-ok"], env=env, check=True, timeout=30, stdout=subprocess.DEVNULL)
+
+    def make_git_repo(self, name: str) -> Path:
+        repo = Path(self.tabula_home) / "data" / "testbed" / name
+        repo.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init"], cwd=repo, check=True, timeout=30, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, timeout=30, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True, timeout=30, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        (repo / "file.txt").write_text("parent\n", encoding="utf-8")
+        subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True, timeout=30, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, timeout=30, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        return repo
 
     def test_before_prompt_build_hooks_do_not_block_join_ack(self):
         hook = websocket.create_connection(self.url, timeout=5)
@@ -333,7 +353,140 @@ class SubagentsPluginSmoke(unittest.TestCase):
             self.assertTrue(waited_steer.get("ok"), waited_steer)
             self.assertIn("FAKE ACP: [steering] THIRD", str(waited_steer.get("result", "")))
             killed = client.call_tool("subagent_kill", {"id": "sa-acp-history"}, timeout=10).json()
-            self.assertEqual(killed.get("status"), "killed")
+            self.assertIn(killed.get("status"), {"killed", "completed"})
+
+    def test_async_acp_kill_preserves_completion(self):
+        home = Path(self.tabula_home)
+        fake_acp = home / "data" / "testbed" / "fake-acp-agent.py"
+        fake_acp.parent.mkdir(parents=True, exist_ok=True)
+        fake_acp.write_text(FAKE_ACP, encoding="utf-8")
+        python = home / ".venv" / "bin" / "python3"
+        if not python.is_file():
+            python = Path(sys.executable)
+        with self.make_client("testbed-subagents-result-ref") as client:
+            client.wait_tools({"subagent_spawn", "subagent_kill"}, session="testbed-subagents")
+            spawned = client.call_tool(
+                "subagent_spawn",
+                {
+                    "type": "acp",
+                    "task": "RESULT-REF",
+                    "id": "sa-acp-result-ref",
+                    "mode": "async",
+                    "timeout": 0,
+                    "acp_command": [str(python), str(fake_acp)],
+                },
+                timeout=20,
+            ).json()
+            self.assertEqual(spawned.get("status"), "running")
+            time.sleep(0.5)
+            killed = client.call_tool("subagent_kill", {"id": "sa-acp-result-ref"}, timeout=10).json()
+            self.assertEqual(killed.get("status"), "completed", killed)
+            self.assertEqual(killed.get("notification", {}).get("kind"), "subagent.completed")
+            self.assertIsNone(killed.get("cancellation"), killed)
+            self.assertFalse(killed.get("result_ref"))
+            self.assertIn("RESULT-REF", str(killed.get("result", "")))
+
+    def test_sync_acp_subagent_can_use_isolated_git_worktree(self):
+        home = Path(self.tabula_home)
+        fake_acp = home / "data" / "testbed" / "fake-acp-agent.py"
+        fake_acp.parent.mkdir(parents=True, exist_ok=True)
+        fake_acp.write_text(FAKE_ACP, encoding="utf-8")
+        python = home / ".venv" / "bin" / "python3"
+        if not python.is_file():
+            python = Path(sys.executable)
+        try:
+            repo = self.make_git_repo("subagent-worktree-keep")
+        except Exception as exc:
+            self.skipTest(f"git unavailable: {exc}")
+        capture = home / "data" / "testbed" / "worktree-capture.json"
+        with self.make_client("testbed-subagents-worktree-keep") as client:
+            client.wait_tools({"subagent_spawn"}, session="testbed-subagents")
+            payload = client.call_tool(
+                "subagent_spawn",
+                {
+                    "type": "acp",
+                    "task": f"CAPTURE_PATH={capture}\nMUTATE_FILE=file.txt",
+                    "id": "sa-worktree-keep",
+                    "mode": "sync",
+                    "timeout": 30,
+                    "acp_command": [str(python), str(fake_acp)],
+                    "worktree": {"source": str(repo), "keep": True},
+                },
+                timeout=35,
+            ).json()
+        self.assertTrue(payload.get("ok"), payload)
+        worktree = (payload.get("entry") or {}).get("worktree") or {}
+        captured = json.loads(capture.read_text(encoding="utf-8"))
+        self.assertEqual(captured.get("cwd"), worktree.get("path"))
+        self.assertEqual(captured.get("project_root"), worktree.get("path"))
+        self.assertEqual((repo / "file.txt").read_text(encoding="utf-8"), "parent\n")
+        self.assertEqual(worktree.get("cleanup_state"), "kept")
+
+    def test_sync_acp_subagent_worktree_keep_false_removes_clean_tree(self):
+        home = Path(self.tabula_home)
+        fake_acp = home / "data" / "testbed" / "fake-acp-agent.py"
+        fake_acp.parent.mkdir(parents=True, exist_ok=True)
+        fake_acp.write_text(FAKE_ACP, encoding="utf-8")
+        python = home / ".venv" / "bin" / "python3"
+        if not python.is_file():
+            python = Path(sys.executable)
+        try:
+            repo = self.make_git_repo("subagent-worktree-remove")
+        except Exception as exc:
+            self.skipTest(f"git unavailable: {exc}")
+        capture = home / "data" / "testbed" / "worktree-remove-capture.json"
+        with self.make_client("testbed-subagents-worktree-remove") as client:
+            client.wait_tools({"subagent_spawn"}, session="testbed-subagents")
+            payload = client.call_tool(
+                "subagent_spawn",
+                {
+                    "type": "acp",
+                    "task": f"CAPTURE_PATH={capture}",
+                    "id": "sa-worktree-remove",
+                    "mode": "sync",
+                    "timeout": 30,
+                    "acp_command": [str(python), str(fake_acp)],
+                    "worktree": {"source": str(repo), "keep": False},
+                },
+                timeout=35,
+            ).json()
+        self.assertTrue(payload.get("ok"), payload)
+        worktree = (payload.get("entry") or {}).get("worktree") or {}
+        self.assertEqual(worktree.get("cleanup_state"), "removed")
+        self.assertFalse(Path(str(worktree.get("path") or "")).exists())
+
+    def test_sync_acp_subagent_worktree_keep_false_keeps_changed_tree(self):
+        home = Path(self.tabula_home)
+        fake_acp = home / "data" / "testbed" / "fake-acp-agent.py"
+        fake_acp.parent.mkdir(parents=True, exist_ok=True)
+        fake_acp.write_text(FAKE_ACP, encoding="utf-8")
+        python = home / ".venv" / "bin" / "python3"
+        if not python.is_file():
+            python = Path(sys.executable)
+        try:
+            repo = self.make_git_repo("subagent-worktree-changed")
+        except Exception as exc:
+            self.skipTest(f"git unavailable: {exc}")
+        capture = home / "data" / "testbed" / "worktree-changed-capture.json"
+        with self.make_client("testbed-subagents-worktree-changed") as client:
+            client.wait_tools({"subagent_spawn"}, session="testbed-subagents")
+            payload = client.call_tool(
+                "subagent_spawn",
+                {
+                    "type": "acp",
+                    "task": f"CAPTURE_PATH={capture}\nMUTATE_FILE=file.txt",
+                    "id": "sa-worktree-changed",
+                    "mode": "sync",
+                    "timeout": 30,
+                    "acp_command": [str(python), str(fake_acp)],
+                    "worktree": {"source": str(repo), "keep": False},
+                },
+                timeout=35,
+            ).json()
+        self.assertTrue(payload.get("ok"), payload)
+        worktree = (payload.get("entry") or {}).get("worktree") or {}
+        self.assertEqual(worktree.get("cleanup_state"), "kept_due_to_changes")
+        self.assertTrue(Path(str(worktree.get("path") or "")).exists())
 
 
 def main() -> int:

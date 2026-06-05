@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -238,6 +239,52 @@ func TestRuntimeConnRoutesAsyncPluginControlFramesToSink(t *testing.T) {
 	t.Fatalf("async sink did not receive all frames: %+v", sink)
 }
 
+func TestServeCompactsOversizedInvokeResultAndKeepsConnectionUsable(t *testing.T) {
+	clientWS, serverWS := websocketNetPipe(t)
+	client := codec.New(clientWS)
+	server := codec.New(serverWS)
+	defer func() { _ = client.CloseNow() }()
+
+	go func() {
+		_ = ServeAuthenticated(context.Background(), server, testHandler{})
+	}()
+
+	ack, err := Handshake(context.Background(), client, wire.Hello{Op: wire.OpHello, RuntimeID: "local", Token: "redacted", ProtocolVersion: "1"})
+	if err != nil {
+		t.Fatalf("Handshake: %v", err)
+	}
+	if !ack.Accepted {
+		t.Fatalf("handshake rejected: %#v", ack)
+	}
+	rc := New(client)
+
+	got, err := rc.Invoke(context.Background(), runtimeapi.InvokeReq{CallID: "call-huge", TenantID: "default", Target: pluginTarget("fs"), Tool: "huge"})
+	if err != nil {
+		t.Fatalf("Invoke huge: %v", err)
+	}
+	if !got.OK {
+		t.Fatalf("expected OK for huge invoke, got %#v", got)
+	}
+	var text string
+	if err := json.Unmarshal(got.Data, &text); err != nil {
+		t.Fatalf("expected compacted string payload, got %s: %v", string(got.Data), err)
+	}
+	if !strings.Contains(text, "[truncated: runtime tool result exceeded") {
+		t.Fatalf("expected truncation marker, got %q", text)
+	}
+	if len(got.Data) >= int(codec.MaxFrameBytes) {
+		t.Fatalf("compacted payload still exceeds frame limit: %d", len(got.Data))
+	}
+
+	after, err := rc.Invoke(context.Background(), runtimeapi.InvokeReq{CallID: "call-after-huge", TenantID: "default", Target: pluginTarget("fs"), Tool: "parallel"})
+	if err != nil {
+		t.Fatalf("Invoke after huge: %v", err)
+	}
+	if !after.OK || after.CallID != "call-after-huge" {
+		t.Fatalf("connection unusable after huge invoke: %#v", after)
+	}
+}
+
 func TestServeWritesHandlerAsyncFramesToClientSink(t *testing.T) {
 	clientWS, serverWS := websocketNetPipe(t)
 	client := codec.New(clientWS)
@@ -325,6 +372,10 @@ func (testHandler) Hello(context.Context, wire.Hello) (wire.HelloAck, error) {
 func (testHandler) Invoke(_ context.Context, in wire.Invoke) (wire.InvokeResult, error) {
 	if in.Tool == "long" {
 		select {}
+	}
+	if in.Tool == "huge" {
+		data, _ := json.Marshal("prefix\n" + strings.Repeat("x", int(codec.MaxFrameBytes)+4096))
+		return wire.InvokeResult{Op: wire.OpInvokeResult, CallID: in.CallID, OK: true, Data: data}, nil
 	}
 	return wire.InvokeResult{Op: wire.OpInvokeResult, CallID: in.CallID, OK: true, Data: json.RawMessage(fmt.Sprintf(`{"call_id":"%s"}`, in.CallID))}, nil
 }

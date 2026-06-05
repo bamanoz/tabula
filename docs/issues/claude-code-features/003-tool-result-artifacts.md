@@ -39,24 +39,24 @@ This should work for at least one high-volume tool path, such as `exec_*`,
 
 Implemented in `tabula-bundles` and installed testbed coverage:
 
-- Added `tabula_session_sdk.artifacts` for deterministic artifact ids, safe
-  filenames, preview generation, artifact index metadata, and readback.
-- Driver runtime materializes large tool results through
-  `materialize_tool_result()`, writes preview text to provider-visible history,
-  preserves artifact metadata on assistant tool parts, and records a
-  `tool_result.artifact` ledger event.
-- Sessions plugin exposes `session_artifact_read` so agents can inspect a
-  referenced artifact in bounded `offset`/`limit_chars` chunks without creating
-  recursive large-result artifact chains.
+- Added shared artifact helpers and platform-owned `artifact://...` references
+  for deterministic artifact ids, safe filenames, preview generation, artifact
+  index metadata, and readback.
+- Runtime host materializes large tool results before transport, writes preview
+  text plus artifact metadata to driver-visible history, and keeps full content
+  in per-session artifact storage.
+- Artifacts plugin exposes `artifact_read` so agents can inspect a referenced
+  artifact in bounded `offset`/`limit_chars` chunks without creating recursive
+  large-result artifact chains.
 - Session transcript/context reconstruction preserves artifact references while
   keeping large content out of replay.
-- Testbed `sessions` suite verifies installed `session_artifact_read` behavior.
+- Testbed `artifacts` suite verifies installed `artifact_read` behavior.
 
 Verification:
 
 ```bash
-python3 -m unittest base.sessions.test_session_sdk base.sessions.test_sessions drivers.test_driver_agents
-python3 -m tabula_testbed_runner.runner --repo-root /Users/mak/src/tabula --suite sessions --source tabula-bundles=local:/Users/mak/src/tabula-bundles --source tabula-distrib=local:/Users/mak/src/tabula-distrib
+python3 -m unittest base.artifacts.test_artifacts base.sessions.test_session_sdk drivers.test_driver_agents
+PYTHONPATH="/Users/mak/src/tabula/tools/tabula-testbed/src" python3 -m tabula_testbed_runner.cli run --tabula-root "/Users/mak/src/tabula" --suite artifacts --source tabula-bundles=/Users/mak/src/tabula-bundles --source tabula-distrib=/Users/mak/src/tabula-distrib
 ```
 
 ## Blocked by

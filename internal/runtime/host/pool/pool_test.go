@@ -334,11 +334,11 @@ func TestPoolUsesTenantScopedDuplicatePluginCatalogs(t *testing.T) {
 	p := New("main", store, fake, Options{AllowedTenants: []string{"alpha", "beta"}})
 
 	alphaResp, err := p.Invoke(context.Background(), wire.Invoke{Op: wire.OpInvoke, CallID: "alpha-call", TenantID: "alpha", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Tool: "alpha_read"})
-	if err != nil || !alphaResp.OK || string(alphaResp.Data) != `"alpha"` {
+	if err != nil || !alphaResp.OK || outputOfInvokeResult(t, alphaResp) != "alpha" {
 		t.Fatalf("alpha invoke = %#v err=%v", alphaResp, err)
 	}
 	betaResp, err := p.Invoke(context.Background(), wire.Invoke{Op: wire.OpInvoke, CallID: "beta-call", TenantID: "beta", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Tool: "beta_read"})
-	if err != nil || !betaResp.OK || string(betaResp.Data) != `"beta"` {
+	if err != nil || !betaResp.OK || outputOfInvokeResult(t, betaResp) != "beta" {
 		t.Fatalf("beta invoke = %#v err=%v", betaResp, err)
 	}
 	wrongResp, err := p.Invoke(context.Background(), wire.Invoke{Op: wire.OpInvoke, CallID: "wrong-call", TenantID: "alpha", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Tool: "beta_read"})
@@ -398,7 +398,7 @@ func TestPoolAllowsTenantDiscoveredAfterStartupReload(t *testing.T) {
 	}
 	p.Reload(nil, "alpha")
 	resp, err := p.Invoke(context.Background(), wire.Invoke{Op: wire.OpInvoke, CallID: "alpha-call", TenantID: "alpha", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Tool: "alpha_read"})
-	if err != nil || !resp.OK || string(resp.Data) != `"alpha"` {
+	if err != nil || !resp.OK || outputOfInvokeResult(t, resp) != "alpha" {
 		t.Fatalf("late tenant invoke = %#v err=%v", resp, err)
 	}
 }
@@ -827,6 +827,60 @@ func TestPoolSetsTenantDirOnWarmWorkers(t *testing.T) {
 	}
 }
 
+func TestPoolMaterializesLargeToolResultsAsArtifacts(t *testing.T) {
+	home := t.TempDir()
+	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), workerFactory: func(req policy.SpawnReq) *fakeWorker {
+		w := newFakeWorker()
+		w.callFn = func(context.Context, workerwire.WorkerCall) (workerwire.WorkerResult, error) {
+			return workerwire.WorkerResult{Op: workerwire.OpResult, CallID: "large-call", OK: true, Data: json.RawMessage(`"prefix\n` + strings.Repeat("x", 13000) + `"`)}, nil
+		}
+		return w
+	}}
+	p := New("main", manifestStoreForPool(t), fake, Options{AllowedTenants: []string{"alpha"}, TabulaHome: home})
+	t.Cleanup(p.Close)
+	call := invoke("large-call", "alpha", "echo")
+	call.SessionID = "main"
+
+	resp, err := p.Invoke(context.Background(), call)
+	if err != nil || !resp.OK {
+		t.Fatalf("Invoke large = %#v, %v", resp, err)
+	}
+	var env struct {
+		Output   string `json:"output"`
+		Artifact struct {
+			Ref      string `json:"ref"`
+			Filename string `json:"filename"`
+			Chars    int    `json:"chars"`
+		} `json:"artifact"`
+		Truncated bool `json:"truncated"`
+	}
+	if err := json.Unmarshal(resp.Data, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v\n%s", err, string(resp.Data))
+	}
+	if !env.Truncated || !strings.HasPrefix(env.Artifact.Ref, "artifact://") || env.Artifact.Chars <= 12000 {
+		t.Fatalf("unexpected artifact envelope: %+v", env)
+	}
+	if !strings.Contains(env.Output, env.Artifact.Ref) {
+		t.Fatalf("preview missing artifact ref: %q", env.Output)
+	}
+	artifactPath := filepath.Join(home, "data", "sessions", "main", "artifacts", env.Artifact.Filename)
+	content, readErr := os.ReadFile(artifactPath)
+	if readErr != nil {
+		t.Fatalf("read artifact %s: %v", artifactPath, readErr)
+	}
+	if string(content) != "prefix\n"+strings.Repeat("x", 13000) {
+		t.Fatalf("unexpected artifact content length=%d", len(content))
+	}
+	indexPath := filepath.Join(home, "data", "sessions", "main", "artifacts", "index.json")
+	index, readErr := os.ReadFile(indexPath)
+	if readErr != nil {
+		t.Fatalf("read index %s: %v", indexPath, readErr)
+	}
+	if !bytes.Contains(index, []byte(`"ref": "artifact://`)) {
+		t.Fatalf("artifact index missing artifact:// ref: %s", string(index))
+	}
+}
+
 func TestPoolCancelAbandonsCallWithoutKillingWorker(t *testing.T) {
 	p, fake := testPool(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -952,6 +1006,17 @@ func skillInvoke(callID, tenantID, tool string) wire.Invoke {
 	return wire.Invoke{Op: wire.OpInvoke, CallID: callID, TenantID: tenantID, Target: wire.Target{Kind: wire.TargetKindSkill, ID: "skill:testbed-echo"}, Tool: tool, Args: json.RawMessage(`{"text":"hello"}`)}
 }
 
+func outputOfInvokeResult(t *testing.T, result wire.InvokeResult) string {
+	t.Helper()
+	var env struct {
+		Output string `json:"output"`
+	}
+	if err := json.Unmarshal(result.Data, &env); err != nil {
+		t.Fatalf("unmarshal invoke result %s: %v", string(result.Data), err)
+	}
+	return env.Output
+}
+
 func drainAsyncFrames(p *Pool) {
 	for {
 		select {
@@ -968,12 +1033,18 @@ func testPool(t *testing.T) (*Pool, *fakePolicy) {
 
 func testPoolWithOptions(t *testing.T, opts Options) (*Pool, *fakePolicy) {
 	t.Helper()
+	store := manifestStoreForPool(t)
+	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), nextWorker: newFakeWorker()}
+	return New("main", store, fake, opts), fake
+}
+
+func manifestStoreForPool(t *testing.T) *manifest.Store {
+	t.Helper()
 	store, err := manifest.NewStore([]string{testPluginDir(t)})
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), nextWorker: newFakeWorker()}
-	return New("main", store, fake, opts), fake
+	return store
 }
 
 func testSkillPool(t *testing.T, opts Options) (*Pool, *fakePolicy) {

@@ -38,7 +38,7 @@ func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 	effectiveInput, ok := s.hub.policy.CanUseTool(sender, toolName, toolID, msg.Input, msg.Meta, session)
 	if !ok {
 		s.hub.Logger.Warn("tool call blocked by policy", "tool", toolName, "tool_call_id", toolID, "tenant_id", tenantID, "session", session, "input_bytes", len(msg.Input))
-		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, "ERROR: blocked")
+		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, "ERROR: blocked", nil, false)
 		return
 	}
 	msg.Input = effectiveInput
@@ -72,14 +72,14 @@ func (s *ToolService) handleDynamicTool(tenantID, session, toolID, toolName stri
 			"tool_registry_entries", count,
 			"tool_visible_in_other_tenant", visibleElsewhere,
 		)
-		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: unknown tool %s", toolName))
+		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: unknown tool %s", toolName), nil, false)
 		return
 	}
 	switch entry.Source {
 	case toolSourceRuntime:
 		s.handleRuntimeTool(tenantID, session, toolID, toolName, entry, input)
 	default:
-		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: tool %s has unknown dispatch source", toolName))
+		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: tool %s has unknown dispatch source", toolName), nil, false)
 	}
 }
 func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName string, entry toolDispatch, input json.RawMessage) {
@@ -94,7 +94,7 @@ func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName stri
 			conn, code, pickErr = s.hub.runtimeForTenant(tenantID, pickedRuntimeID)
 		}
 		if pickErr != nil {
-			s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, "ERROR: "+pickErr.Error())
+			s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, "ERROR: "+pickErr.Error(), nil, false)
 			if code != "" {
 				s.hub.Logger.Warn("runtime pick failed", "tool", toolName, "tool_call_id", toolID, "runtime_id", pickedRuntimeID, "tenant_id", tenantID, "session", session, "code", code, "err", pickErr)
 			}
@@ -102,7 +102,7 @@ func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName stri
 		}
 		if conn == nil {
 			s.hub.Logger.Warn("runtime tool unavailable", "tool", toolName, "tool_call_id", toolID, "runtime_id", pickedRuntimeID, "tenant_id", tenantID, "session", session, "target_kind", string(entry.Target.Kind), "target", entry.Target.ID)
-			s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: runtime tool %s is unavailable", toolName))
+			s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: runtime tool %s is unavailable", toolName), nil, false)
 			return
 		}
 		releaseRuntimeTarget := s.hub.markRuntimeTargetBusy(pickedRuntimeID, entry.Target)
@@ -123,37 +123,57 @@ func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName stri
 		if err != nil {
 			s.hub.Logger.Warn("runtime tool invoke failed", "tool", toolName, "tool_call_id", toolID, "runtime_id", pickedRuntimeID, "tenant_id", tenantID, "session", session, "target_kind", string(entry.Target.Kind), "target", entry.Target.ID, "err", err)
 			if ctx.Err() != nil {
-				s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, "ERROR: invoke timed out")
+				s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, "ERROR: invoke timed out", nil, false)
 				return
 			}
-			s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: runtime tool %s failed: %v", toolName, err))
+			s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: runtime tool %s failed: %v", toolName, err), nil, false)
 			return
 		}
-		output := runtimeToolOutput(resp)
-		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, output)
+		result := runtimeToolOutput(resp)
+		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, result.Output, result.Artifact, result.Truncated)
 		s.hub.emitAfterToolCall(tenantID, session, toolID, map[string]string{
-			"tool": toolName, "id": toolID, "output": output,
+			"tool": toolName, "id": toolID, "output": result.Output,
 		})
 	}()
 }
-func runtimeToolOutput(resp runtimeapi.InvokeResp) string {
+
+type runtimeToolResult struct {
+	Output    string
+	Artifact  json.RawMessage
+	Truncated bool
+}
+
+func runtimeToolOutput(resp runtimeapi.InvokeResp) runtimeToolResult {
 	if resp.OK {
 		if len(resp.Data) == 0 {
-			return "OK"
+			return runtimeToolResult{Output: "OK"}
+		}
+		var payload map[string]json.RawMessage
+		if err := json.Unmarshal(resp.Data, &payload); err == nil {
+			if _, ok := payload["output"]; ok {
+				var parsed struct {
+					Output    string          `json:"output"`
+					Artifact  json.RawMessage `json:"artifact,omitempty"`
+					Truncated bool            `json:"truncated,omitempty"`
+				}
+				if err := json.Unmarshal(resp.Data, &parsed); err == nil {
+					return runtimeToolResult{Output: parsed.Output, Artifact: parsed.Artifact, Truncated: parsed.Truncated}
+				}
+			}
 		}
 		var text string
 		if err := json.Unmarshal(resp.Data, &text); err == nil {
-			return text
+			return runtimeToolResult{Output: text}
 		}
-		return strings.TrimSpace(string(resp.Data))
+		return runtimeToolResult{Output: strings.TrimSpace(string(resp.Data))}
 	}
 	if resp.Error == nil {
-		return "ERROR: runtime returned empty error"
+		return runtimeToolResult{Output: "ERROR: runtime returned empty error"}
 	}
 	if resp.Error.Message != "" {
-		return "ERROR: " + resp.Error.Message
+		return runtimeToolResult{Output: "ERROR: " + resp.Error.Message}
 	}
-	return "ERROR: " + string(resp.Error.Code)
+	return runtimeToolResult{Output: "ERROR: " + string(resp.Error.Code)}
 }
 
 func runtimeInvokeDeadline(toolDeadline time.Duration) time.Duration {
