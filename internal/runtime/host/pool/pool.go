@@ -14,7 +14,6 @@ import (
 
 	"github.com/bamanoz/tabula/internal/runtime/host/manifest"
 	"github.com/bamanoz/tabula/internal/runtime/host/policy"
-	"github.com/bamanoz/tabula/internal/runtime/toolresult"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
 	workerwire "github.com/bamanoz/tabula/internal/runtime/worker/wire"
 )
@@ -282,11 +281,7 @@ func (p *Pool) invokeWarm(ctx context.Context, plugin manifest.Plugin, in wire.I
 		}
 		return failed(in.CallID, wire.ErrorInternal, message)
 	}
-	materialized, err := p.materializeToolResult(in, result.Data)
-	if err != nil {
-		return failed(in.CallID, wire.ErrorInternal, err.Error())
-	}
-	return wire.InvokeResult{Op: wire.OpInvokeResult, CallID: in.CallID, OK: true, Data: materialized}
+	return wire.InvokeResult{Op: wire.OpInvokeResult, CallID: in.CallID, OK: true, Data: append(json.RawMessage(nil), result.Data...)}
 }
 
 func (p *Pool) acquireWarmToolSlot(ctx context.Context, e *entry, plugin manifest.Plugin, tenantID string, tool manifest.Tool) (policy.Worker, error) {
@@ -437,22 +432,7 @@ func (p *Pool) invokeSkill(ctx context.Context, skill manifest.Skill, in wire.In
 		}
 		return failed(in.CallID, code, message)
 	}
-	materialized, err := p.materializeToolResult(in, result.Data)
-	if err != nil {
-		return failed(in.CallID, wire.ErrorInternal, err.Error())
-	}
-	return wire.InvokeResult{Op: wire.OpInvokeResult, CallID: in.CallID, OK: true, Data: materialized}
-}
-
-func (p *Pool) materializeToolResult(in wire.Invoke, data json.RawMessage) (json.RawMessage, error) {
-	if strings.TrimSpace(in.SessionID) == "" || strings.TrimSpace(p.opts.TabulaHome) == "" {
-		output, err := toolresult.Render(data)
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(toolresult.Envelope{Output: output})
-	}
-	return toolresult.Materialize(p.opts.TabulaHome, in.SessionID, in.TenantID, in.CallID, in.Tool, data)
+	return wire.InvokeResult{Op: wire.OpInvokeResult, CallID: in.CallID, OK: true, Data: append(json.RawMessage(nil), result.Data...)}
 }
 
 func (p *Pool) invokeColdPlugin(ctx context.Context, plugin manifest.Plugin, in wire.Invoke) wire.InvokeResult {

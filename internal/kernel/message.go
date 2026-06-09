@@ -13,6 +13,7 @@ type Message struct {
 	Topic     string          `json:"topic,omitempty"`
 	Data      json.RawMessage `json:"data,omitempty"`
 	Text      string          `json:"text,omitempty"`
+	State     string          `json:"state,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
 	Output    string          `json:"output,omitempty"`
 	Artifact  json.RawMessage `json:"artifact,omitempty"`

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -59,12 +61,13 @@ func TestHandleDynamicTool_RuntimeSourceInvokesAttachedRuntime(t *testing.T) {
 	}
 }
 
-func TestHandleDynamicTool_RuntimeArtifactEnvelopePassesThrough(t *testing.T) {
+func TestHandleDynamicTool_LargeRuntimeResultWithoutRewriteFailsExplicitly(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetSessionStore(NewDiskSessionStore(t.TempDir()))
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
 	rc := runtimemock.New()
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
-	rc.OnInvoke("alpha", target, "mcp__echo").Return([]byte(`{"output":"preview","artifact":{"ref":"artifact://echo-call-1","chars":50000},"truncated":true}`))
+	rc.OnInvoke("alpha", target, "mcp__echo").Return([]byte(`"` + strings.Repeat("x", 13000) + `"`))
 	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{{Target: target, Tools: []wire.ToolSpec{{Name: "mcp__echo"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}}, 0); err != nil {
 		t.Fatalf("RegisterHello: %v", err)
 	}
@@ -78,17 +81,215 @@ func TestHandleDynamicTool_RuntimeArtifactEnvelopePassesThrough(t *testing.T) {
 
 	hub.tools.handleDynamicTool("alpha", "s1", "tid-rt", "mcp__echo", json.RawMessage(`{}`))
 	msg := waitForMessage(t, c.recvCh)
-	if !isToolResult(msg) || msg.Output != "preview" || !msg.Truncated {
+	if !isToolResult(msg) || !strings.Contains(msg.Output, "before_tool_result") {
 		t.Fatalf("unexpected runtime tool result: %+v", msg)
 	}
-	var artifact struct {
-		Ref string `json:"ref"`
+	if msg.Artifact != nil || msg.Truncated {
+		t.Fatalf("expected explicit error without artifact rewrite, got %+v", msg)
 	}
-	if err := json.Unmarshal(msg.Artifact, &artifact); err != nil {
-		t.Fatalf("unmarshal artifact: %v", err)
+}
+
+func TestHandleDynamicTool_InvokeStreamCleansKernelSpool(t *testing.T) {
+	home := t.TempDir()
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetSessionStore(NewDiskSessionStore(home))
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	rc := runtimemock.New()
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
+	rc.OnInvoke("alpha", target, "mcp__echo").Return([]byte(`"ok"`))
+	capability := wire.Capability{Target: target, Tools: []wire.ToolSpec{{Name: "mcp__echo"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}
+	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{capability}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
 	}
-	if artifact.Ref != "artifact://echo-call-1" {
-		t.Fatalf("unexpected artifact: %+v", artifact)
+	hub.syncRuntimeCapability("local", capability)
+
+	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	if !hub.addClient(c) {
+		t.Fatal("addClient failed")
+	}
+	hub.sessions.GetOrCreate("s1", "alpha").AddClient(c.name)
+
+	hub.tools.handleDynamicTool("alpha", "s1", "tid-stream", "mcp__echo", json.RawMessage(`{}`))
+	msg := waitForMessage(t, c.recvCh)
+	if !isToolResult(msg) || msg.Output != "ok" {
+		t.Fatalf("unexpected runtime tool result: %+v", msg)
+	}
+	spoolDir := filepath.Join(home, "run", "tool-results")
+	waitForEmptySpoolDir(t, spoolDir)
+}
+
+func TestHandleDynamicTool_BroadcastsBoundedToolResultStreamEvents(t *testing.T) {
+	home := t.TempDir()
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetSessionStore(NewDiskSessionStore(home))
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	rc := runtimemock.New()
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
+	rc.OnInvoke("alpha", target, "mcp__echo").Return([]byte(`"` + strings.Repeat("x", toolResultInlineLimitBytes+100) + `"`))
+	capability := wire.Capability{Target: target, Tools: []wire.ToolSpec{{Name: "mcp__echo"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}
+	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{capability}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	hub.syncRuntimeCapability("local", capability)
+	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *Message, 8), receives: map[string]bool{TopicToolResult: true, TopicToolResultStart: true, TopicToolResultDelta: true, TopicToolResultEnd: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	if !hub.addClient(c) {
+		t.Fatal("addClient failed")
+	}
+	hub.sessions.GetOrCreate("s1", "alpha").AddClient(c.name)
+
+	hub.tools.handleDynamicTool("alpha", "s1", "tid-stream-events", "mcp__echo", json.RawMessage(`{}`))
+	seen := map[string]*Message{}
+	for len(seen) < 4 {
+		msg := waitForMessage(t, c.recvCh)
+		seen[msg.Topic] = msg
+	}
+	if seen[TopicToolResultStart] == nil || seen[TopicToolResultDelta] == nil || seen[TopicToolResultEnd] == nil || seen[TopicToolResult] == nil {
+		t.Fatalf("missing stream/result events: %+v", seen)
+	}
+	if len(seen[TopicToolResultDelta].Text) > toolResultSpoolPreviewBytes {
+		t.Fatalf("delta preview exceeded cap: %d", len(seen[TopicToolResultDelta].Text))
+	}
+	if !strings.Contains(seen[TopicToolResult].Output, "before_tool_result") {
+		t.Fatalf("expected final explicit delivery error, got %+v", seen[TopicToolResult])
+	}
+}
+
+func TestHandleDynamicTool_FailedRuntimeResultDoesNotBroadcastStreamEnd(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetSessionStore(NewDiskSessionStore(t.TempDir()))
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	rc := runtimemock.New()
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
+	rc.OnInvoke("alpha", target, "mcp__echo").ReturnError(wire.Error{Code: wire.ErrorInternal, Message: "boom"})
+	capability := wire.Capability{Target: target, Tools: []wire.ToolSpec{{Name: "mcp__echo"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}
+	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{capability}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	hub.syncRuntimeCapability("local", capability)
+	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true, TopicToolResultEnd: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	if !hub.addClient(c) {
+		t.Fatal("addClient failed")
+	}
+	hub.sessions.GetOrCreate("s1", "alpha").AddClient(c.name)
+
+	hub.tools.handleDynamicTool("alpha", "s1", "tid-failed", "mcp__echo", json.RawMessage(`{}`))
+	msg := waitForMessage(t, c.recvCh)
+	if !isToolResult(msg) || !strings.Contains(msg.Output, "boom") {
+		t.Fatalf("unexpected runtime tool result: %+v", msg)
+	}
+	select {
+	case msg := <-c.recvCh:
+		t.Fatalf("failed non-streamed result should not emit stream terminal event: %+v", msg)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func waitForEmptySpoolDir(t *testing.T, spoolDir string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		entries, err := os.ReadDir(spoolDir)
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatalf("ReadDir spool: %v", err)
+		}
+		if len(entries) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected empty kernel spool dir, found %d entries", len(entries))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestInvokeResultSpoolTracksTerminalStateAndPreview(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetSessionStore(NewDiskSessionStore(t.TempDir()))
+	spool, err := newInvokeResultSpool(hub, "alpha", "s1", "tid-preview")
+	if err != nil {
+		t.Fatalf("newInvokeResultSpool: %v", err)
+	}
+	defer spool.Close()
+	if err := spool.Start("tid-preview"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := spool.Delta("tid-preview", []byte(`"hello world"`)); err != nil {
+		t.Fatalf("Delta: %v", err)
+	}
+	if err := spool.End("tid-preview", int64(len(`"hello world"`))); err != nil {
+		t.Fatalf("End: %v", err)
+	}
+	if !spool.MarkTerminal(invokeResultSpoolCompleted) {
+		t.Fatal("expected completed terminal transition")
+	}
+	if spool.MarkTerminal(invokeResultSpoolFailed) {
+		t.Fatal("terminal state should not change twice")
+	}
+	if got := spool.TerminalState(); got != invokeResultSpoolCompleted {
+		t.Fatalf("terminal state = %s", got)
+	}
+	if source := spool.Source(); source == nil || source.Kind != "spool_file" || source.Path == "" || source.Bytes != int64(len(`"hello world"`)) || source.Preview == "" {
+		t.Fatalf("unexpected source: %+v", source)
+	}
+}
+
+func TestInvokeResultSpoolJanitorRemovesStaleFiles(t *testing.T) {
+	home := t.TempDir()
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetSessionStore(NewDiskSessionStore(home))
+	spoolDir := filepath.Join(home, "run", "tool-results")
+	if err := os.MkdirAll(spoolDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll spool: %v", err)
+	}
+	stalePath := filepath.Join(spoolDir, "stale.json")
+	freshPath := filepath.Join(spoolDir, "fresh.json")
+	if err := os.WriteFile(stalePath, []byte(`"old"`), 0o600); err != nil {
+		t.Fatalf("write stale: %v", err)
+	}
+	if err := os.WriteFile(freshPath, []byte(`"new"`), 0o600); err != nil {
+		t.Fatalf("write fresh: %v", err)
+	}
+	old := time.Now().Add(-toolResultSpoolStaleAge - time.Hour)
+	if err := os.Chtimes(stalePath, old, old); err != nil {
+		t.Fatalf("chtimes stale: %v", err)
+	}
+	spool, err := newInvokeResultSpool(hub, "alpha", "s1", "tid-janitor")
+	if err != nil {
+		t.Fatalf("newInvokeResultSpool: %v", err)
+	}
+	if err := spool.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := os.Stat(stalePath); !os.IsNotExist(err) {
+		t.Fatalf("expected stale spool removed, err=%v", err)
+	}
+	if _, err := os.Stat(freshPath); err != nil {
+		t.Fatalf("expected fresh spool to remain: %v", err)
+	}
+}
+
+func TestInvokeResultSpoolIdleTimeoutCancelsStartedStream(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetSessionStore(NewDiskSessionStore(t.TempDir()))
+	spool, err := newInvokeResultSpool(hub, "alpha", "s1", "tid-idle")
+	if err != nil {
+		t.Fatalf("newInvokeResultSpool: %v", err)
+	}
+	defer spool.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stop := spool.watchIdle(ctx, cancel, 10*time.Millisecond)
+	defer stop()
+	if err := spool.Start("tid-idle"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("expected idle timeout to cancel context")
+	}
+	if got := spool.TerminalState(); got != invokeResultSpoolTimedOut {
+		t.Fatalf("terminal state = %s", got)
 	}
 }
 
@@ -174,6 +375,10 @@ func newFailingHookRuntimeConn() *failingHookRuntimeConn {
 
 func (c *failingHookRuntimeConn) Invoke(context.Context, runtimeapi.InvokeReq) (runtimeapi.InvokeResp, error) {
 	return runtimeapi.InvokeResp{}, errors.New("unexpected invoke")
+}
+
+func (c *failingHookRuntimeConn) InvokeStream(context.Context, runtimeapi.InvokeReq, runtimeapi.InvokeStreamSink) (runtimeapi.InvokeResp, error) {
+	return runtimeapi.InvokeResp{}, errors.New("unexpected invoke stream")
 }
 
 func (c *failingHookRuntimeConn) Cancel(context.Context, string) error {

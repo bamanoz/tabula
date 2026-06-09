@@ -897,7 +897,7 @@ func TestExecErrorExit(t *testing.T) {
 	}
 }
 
-func TestExecOutputTruncation(t *testing.T) {
+func TestExecLargeOutputRequiresBeforeToolResultRewrite(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.connectAndJoin("driver", "main",
 		[]string{TopicToolCall},
@@ -908,11 +908,8 @@ func TestExecOutputTruncation(t *testing.T) {
 	writeJSON(t, conn, toolCall("t3", testShellToolName, json.RawMessage(`{"command":"python3 -c \"print('A'*32768)\""}`)))
 
 	msg := readMsg(t, conn)
-	if len(msg.Output) > maxExecOutput+100 { // some slack for trimming
-		t.Errorf("output should be truncated to ~%d bytes, got %d", maxExecOutput, len(msg.Output))
-	}
-	if !strings.HasSuffix(msg.Output, "[truncated]") {
-		t.Errorf("truncated output should end with [truncated], got suffix %q", msg.Output[len(msg.Output)-20:])
+	if !strings.Contains(msg.Output, "before_tool_result") {
+		t.Errorf("expected explicit before_tool_result rewrite error, got %q", msg.Output)
 	}
 }
 

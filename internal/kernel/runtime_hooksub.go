@@ -40,7 +40,7 @@ func (s *runtimeHookSubscriber) Name() string {
 func (s *runtimeHookSubscriber) Session() string { return "" }
 
 func (s *runtimeHookSubscriber) IsConnected() bool {
-	return s != nil && s.conn != nil && s.capability.State == wire.CapabilityStateReady
+	return s != nil && s.conn != nil && len(s.capability.Hooks) > 0 && (s.capability.State == wire.CapabilityStateReady || s.capability.State == wire.CapabilityStateManifestLoaded)
 }
 
 func (s *runtimeHookSubscriber) IsBusy() bool {

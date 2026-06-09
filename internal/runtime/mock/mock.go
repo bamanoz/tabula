@@ -131,6 +131,29 @@ func (m *RuntimeConn) Invoke(ctx context.Context, req runtimeapi.InvokeReq) (run
 	return resp, nil
 }
 
+func (m *RuntimeConn) InvokeStream(ctx context.Context, req runtimeapi.InvokeReq, sink runtimeapi.InvokeStreamSink) (runtimeapi.InvokeResp, error) {
+	resp, err := m.Invoke(ctx, req)
+	if err != nil || sink == nil || !resp.OK {
+		return resp, err
+	}
+	if err := sink.Start(req.CallID); err != nil {
+		return runtimeapi.InvokeResp{}, err
+	}
+	if len(resp.Data) > 0 {
+		if err := sink.Delta(req.CallID, resp.Data); err != nil {
+			return runtimeapi.InvokeResp{}, err
+		}
+	}
+	if err := sink.End(req.CallID, int64(len(resp.Data))); err != nil {
+		return runtimeapi.InvokeResp{}, err
+	}
+	bytes := int64(len(resp.Data))
+	resp.Data = nil
+	resp.Streamed = true
+	resp.Bytes = bytes
+	return resp, nil
+}
+
 // Cancel records cancellation and unblocks a pending Invoke if present.
 func (m *RuntimeConn) Cancel(ctx context.Context, callID string) error {
 	select {

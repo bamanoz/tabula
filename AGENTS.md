@@ -44,13 +44,23 @@ and shared development tooling. Distro-specific product policy belongs in
 
 ## Tests
 
+- Write production-ready code on the first pass. Do not leave known race risks,
+  cleanup gaps, TODO behavior, best-effort protocol validation, or unverified
+  edge cases for a later hardening pass.
 - If a regression requires installed layout to reproduce, add or update a
   testbed suite. Unit tests alone are not enough for install/fan-out bugs.
 - Testbed checks should execute the relevant installed tool/plugin, not only
   assert that it appears in the tool catalog.
 - Keep canonical testbed files and the generated testbed template in sync.
-- Run focused tests first, then the relevant testbed suite. Run baseline when
-  touching shared runtime or installer behavior.
+- Run focused tests first, then the relevant testbed suite. For Go changes,
+  focused tests must use `-race -count=1` unless there is a documented reason
+  they cannot. Run baseline with `-race -count=1` when touching shared runtime,
+  kernel, concurrency, streaming, installer, or session behavior.
+- A plain `go test` run is not sufficient verification for production changes
+  that touch goroutines, channels, locks, runtime transport, kernel dispatch,
+  spool/file lifecycle, hook delivery, or shared mutable state.
+- After any build step, inspect `git status --short` and do not include generated
+  artifacts such as `dist/`, `build/`, `*.egg-info/`, `__pycache__/`, or `*.pyc`.
 
 ## Installer And Artifacts
 

@@ -325,6 +325,28 @@ func (c *runtimePipeClient) Invoke(ctx context.Context, req InvokeReq) (InvokeRe
 	return c.waitInvoke(ctx, req.CallID, ch)
 }
 
+func (c *runtimePipeClient) InvokeStream(ctx context.Context, req InvokeReq, sink InvokeStreamSink) (InvokeResp, error) {
+	resp, err := c.Invoke(ctx, req)
+	if err != nil || sink == nil || !resp.OK {
+		return resp, err
+	}
+	if err := sink.Start(req.CallID); err != nil {
+		return InvokeResp{}, err
+	}
+	if len(resp.Data) > 0 {
+		if err := sink.Delta(req.CallID, resp.Data); err != nil {
+			return InvokeResp{}, err
+		}
+	}
+	if err := sink.End(req.CallID, int64(len(resp.Data))); err != nil {
+		return InvokeResp{}, err
+	}
+	resp.Bytes = int64(len(resp.Data))
+	resp.Data = nil
+	resp.Streamed = true
+	return resp, nil
+}
+
 func (c *runtimePipeClient) RawInvoke(ctx context.Context, raw []byte, callID string) (InvokeResp, error) {
 	ch := c.registerPending(callID)
 	if err := c.writeRaw(raw); err != nil {

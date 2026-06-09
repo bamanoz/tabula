@@ -214,9 +214,6 @@ func TestServeAuthenticatedRuntimeCatalogUpdatePopulatesRuntimeDispatchAndSnapsh
 	}); err != nil {
 		t.Fatalf("catalog_update: %v", err)
 	}
-	waitForToolDispatch(t, hub, "seed", func(entry toolDispatch) bool {
-		return entry.Source == toolSourceRuntime && entry.RuntimeID == runtimeauth.LocalRuntimeID
-	})
 	if err := client.Write(context.Background(), wire.LifecycleNotice{
 		Op:      wire.OpLifecycleNotice,
 		Target:  wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"},
@@ -270,6 +267,22 @@ func TestServeAuthenticatedRuntimeCatalogUpdatePopulatesRuntimeDispatchAndSnapsh
 
 	_ = client.Close(websocket.StatusNormalClosure, "test close")
 	<-done
+}
+
+func TestRuntimeHookSubscriberConnectsManifestLoadedHookOnlyTarget(t *testing.T) {
+	sub := newRuntimeHookSubscriber(runtimeHookTarget{
+		RuntimeID: runtimeauth.LocalRuntimeID,
+		Conn:      runtimemock.New(),
+		Capability: wire.Capability{
+			Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "tool-result-artifacts"},
+			Hooks:  []wire.HookSpec{{Event: "before_tool_result", Priority: 10}},
+			State:  wire.CapabilityStateManifestLoaded,
+			Source: wire.CapabilitySourceManifest,
+		},
+	}, nil, nil)
+	if !sub.IsConnected() {
+		t.Fatal("manifest-loaded hook-only runtime target should be dispatchable")
+	}
 }
 
 func TestServeAuthenticatedRuntimeInitialCapabilitiesReachInitTools(t *testing.T) {

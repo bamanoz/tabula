@@ -181,7 +181,7 @@ func TestRunServesManifestBackedInvokeOverUnix(t *testing.T) {
 				TenantEnv  string `json:"tenant_env"`
 				TenantInit string `json:"tenant_init"`
 			}
-			if err := json.Unmarshal(invoke.Data, &data); err != nil {
+			if err := decodeRenderedInvokeData(invoke.Data, &data); err != nil {
 				t.Errorf("decode invoke data: %v", err)
 				return
 			}
@@ -287,7 +287,7 @@ func TestRunServesManifestBackedInvokeOverWS(t *testing.T) {
 			TenantEnv  string `json:"tenant_env"`
 			TenantInit string `json:"tenant_init"`
 		}
-		if err := json.Unmarshal(invoke.Data, &data); err != nil {
+		if err := decodeRenderedInvokeData(invoke.Data, &data); err != nil {
 			t.Errorf("decode invoke data: %v", err)
 			return
 		}
@@ -635,4 +635,8 @@ for line in sys.stdin:
 `), 0o755); err != nil {
 		t.Fatalf("write worker: %v", err)
 	}
+}
+
+func decodeRenderedInvokeData(raw json.RawMessage, out any) error {
+	return json.Unmarshal(raw, out)
 }

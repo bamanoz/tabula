@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"encoding/json"
+	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -245,5 +246,111 @@ func TestBeforeToolCallHookSkipsSenderHookSubscription(t *testing.T) {
 	}
 	if !isToolResult(result) || !strings.Contains(result.Output, "ok") {
 		t.Fatalf("expected ok tool_result, got %+v", result)
+	}
+}
+
+func TestBeforeToolResultHookTimeoutFailsOpenForSmallResult(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	env := newTestEnvWithSkillTool(t)
+	timeout := 10
+	hook := env.connectHook("tool-results", []HookSubscription{{Event: "before_tool_result", Priority: 100, TimeoutMs: &timeout}})
+	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
+
+	go func() {
+		writeJSON(t, drv, Message{
+			Type:  string(MsgRequest),
+			Topic: TopicToolCall,
+			Name:  "echo_tool",
+			ID:    "t-small-result",
+			Input: json.RawMessage(`{"text":"ok"}`),
+		})
+	}()
+
+	hookMsg := readMsg(t, hook)
+	if hookMsg.Type != "hook" || hookMsg.Name != "before_tool_result" {
+		t.Fatalf("expected hook/before_tool_result, got %s/%s", hookMsg.Type, hookMsg.Name)
+	}
+	result := readMsgTimeout(t, drv, 2*time.Second)
+	if result == nil || !isToolResult(result) || !strings.Contains(result.Output, "ok") {
+		t.Fatalf("expected small result to fail open, got %+v", result)
+	}
+}
+
+func TestBeforeToolResultHookCanRewriteLargeResultFromSpool(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	env := newTestEnvWithSkillTool(t)
+	hook := env.connectHook("tool-results", []HookSubscription{{Event: "before_tool_result", Priority: 100}})
+	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
+	large := strings.Repeat("x", 13000)
+
+	go func() {
+		writeJSON(t, drv, Message{
+			Type:  string(MsgRequest),
+			Topic: TopicToolCall,
+			Name:  "echo_tool",
+			ID:    "t-large-result",
+			Input: mustMarshalRaw(map[string]any{"text": large}),
+		})
+	}()
+
+	hookMsg := readMsg(t, hook)
+	if hookMsg.Type != "hook" || hookMsg.Name != "before_tool_result" {
+		t.Fatalf("expected hook/before_tool_result, got %s/%s", hookMsg.Type, hookMsg.Name)
+	}
+	var payload struct {
+		Tool   string `json:"tool"`
+		ID     string `json:"id"`
+		Source struct {
+			Kind string `json:"kind"`
+			Path string `json:"path"`
+		} `json:"source"`
+	}
+	if err := json.Unmarshal(hookMsg.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal hook payload: %v", err)
+	}
+	if payload.Tool != "echo_tool" || payload.ID != "t-large-result" || payload.Source.Kind != "spool_file" || payload.Source.Path == "" {
+		t.Fatalf("unexpected hook payload: %+v", payload)
+	}
+	content, err := os.ReadFile(payload.Source.Path)
+	if err != nil {
+		t.Fatalf("read spool: %v", err)
+	}
+	previewLen := len(content)
+	if previewLen > 128 {
+		previewLen = 128
+	}
+	if !strings.Contains(string(content), large[:128]) {
+		t.Fatalf("expected spool to contain large result prefix, got %q", string(content[:previewLen]))
+	}
+	writeJSON(t, hook, Message{
+		Type:   "hook_reply",
+		ID:     hookMsg.ID,
+		Action: "modify",
+		Payload: mustMarshalRaw(map[string]any{
+			"tool":      payload.Tool,
+			"id":        payload.ID,
+			"output":    "preview",
+			"artifact":  map[string]any{"ref": "artifact://echo-large", "chars": len(large)},
+			"truncated": true,
+		}),
+	})
+	result := readMsgTimeout(t, drv, 2*time.Second)
+	if result == nil || !isToolResult(result) || result.Output != "preview" || !result.Truncated {
+		t.Fatalf("expected rewritten large tool result, got %+v", result)
+	}
+	var artifact struct {
+		Ref string `json:"ref"`
+	}
+	if err := json.Unmarshal(result.Artifact, &artifact); err != nil {
+		t.Fatalf("unmarshal artifact: %v", err)
+	}
+	if artifact.Ref != "artifact://echo-large" {
+		t.Fatalf("unexpected artifact: %+v", artifact)
 	}
 }

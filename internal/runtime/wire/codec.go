@@ -31,6 +31,12 @@ func Decode(data []byte) (Envelope, any, error) {
 		frame = &Invoke{}
 	case OpInvokeResult:
 		frame = &InvokeResult{}
+	case OpInvokeResultStart:
+		frame = &InvokeResultStart{}
+	case OpInvokeResultDelta:
+		frame = &InvokeResultDelta{}
+	case OpInvokeResultEnd:
+		frame = &InvokeResultEnd{}
 	case OpCancel:
 		frame = &Cancel{}
 	case OpCancelAck:
@@ -73,6 +79,12 @@ func Decode(data []byte) (Envelope, any, error) {
 	case *Invoke:
 		head.CallID = f.CallID
 	case *InvokeResult:
+		head.CallID = f.CallID
+	case *InvokeResultStart:
+		head.CallID = f.CallID
+	case *InvokeResultDelta:
+		head.CallID = f.CallID
+	case *InvokeResultEnd:
 		head.CallID = f.CallID
 	case *Cancel:
 		head.CallID = f.CallID
@@ -155,6 +167,42 @@ func validateFrame(frame any) error {
 				return ProtocolErrorf("failed invoke_result requires error")
 			}
 			return f.Error.Validate()
+		}
+		return nil
+	case InvokeResultStart:
+		return validateFrame(&f)
+	case *InvokeResultStart:
+		if f.Op != OpInvokeResultStart {
+			return ProtocolErrorf("invoke_result_start op must be %q", OpInvokeResultStart)
+		}
+		if f.CallID == "" {
+			return ProtocolErrorf("call_id is required")
+		}
+		return nil
+	case InvokeResultDelta:
+		return validateFrame(&f)
+	case *InvokeResultDelta:
+		if f.Op != OpInvokeResultDelta {
+			return ProtocolErrorf("invoke_result_delta op must be %q", OpInvokeResultDelta)
+		}
+		if f.CallID == "" {
+			return ProtocolErrorf("call_id is required")
+		}
+		if f.Seq <= 0 {
+			return ProtocolErrorf("seq must be > 0")
+		}
+		return nil
+	case InvokeResultEnd:
+		return validateFrame(&f)
+	case *InvokeResultEnd:
+		if f.Op != OpInvokeResultEnd {
+			return ProtocolErrorf("invoke_result_end op must be %q", OpInvokeResultEnd)
+		}
+		if f.CallID == "" {
+			return ProtocolErrorf("call_id is required")
+		}
+		if f.Bytes < 0 {
+			return ProtocolErrorf("bytes must be >= 0")
 		}
 		return nil
 	case Cancel:

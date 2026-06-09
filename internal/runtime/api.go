@@ -21,6 +21,10 @@ type RuntimeConn interface {
 	// Invoke performs a tenant-scoped tool call and blocks until a terminal result,
 	// context cancellation, timeout, disconnect, or Close.
 	Invoke(ctx context.Context, req InvokeReq) (InvokeResp, error)
+	// InvokeStream performs a tenant-scoped tool call and delivers successful
+	// result bytes to sink incrementally instead of materializing them into one
+	// response payload.
+	InvokeStream(ctx context.Context, req InvokeReq, sink InvokeStreamSink) (InvokeResp, error)
 	// Cancel asks the runtime to abort an in-flight call_id. It returns after the
 	// cancel frame is accepted or the context/connection fails.
 	Cancel(ctx context.Context, callID string) error
@@ -69,10 +73,21 @@ type InvokeReq struct {
 
 // InvokeResp is the terminal result of an Invoke.
 type InvokeResp struct {
-	CallID string
-	OK     bool
-	Data   json.RawMessage
-	Error  *wire.Error
+	CallID   string
+	OK       bool
+	Data     json.RawMessage
+	Error    *wire.Error
+	Streamed bool
+	Bytes    int64
+}
+
+// InvokeStreamSink receives one successful invoke result as start/delta/end.
+// Implementations must treat callbacks as strictly ordered and non-concurrent
+// per call.
+type InvokeStreamSink interface {
+	Start(callID string) error
+	Delta(callID string, chunk []byte) error
+	End(callID string, totalBytes int64) error
 }
 
 // HealthResp is the kernel-facing runtime liveness response.
@@ -105,6 +120,10 @@ var _ RuntimeConn = (*notImplementedConn)(nil)
 func NewNotImplementedConn() RuntimeConn { return &notImplementedConn{} }
 
 func (c *notImplementedConn) Invoke(context.Context, InvokeReq) (InvokeResp, error) {
+	return InvokeResp{}, ErrNotImplemented
+}
+
+func (c *notImplementedConn) InvokeStream(context.Context, InvokeReq, InvokeStreamSink) (InvokeResp, error) {
 	return InvokeResp{}, ErrNotImplemented
 }
 

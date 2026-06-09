@@ -827,7 +827,7 @@ func TestPoolSetsTenantDirOnWarmWorkers(t *testing.T) {
 	}
 }
 
-func TestPoolMaterializesLargeToolResultsAsArtifacts(t *testing.T) {
+func TestPoolReturnsRawLargeToolResults(t *testing.T) {
 	home := t.TempDir()
 	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), workerFactory: func(req policy.SpawnReq) *fakeWorker {
 		w := newFakeWorker()
@@ -845,39 +845,12 @@ func TestPoolMaterializesLargeToolResultsAsArtifacts(t *testing.T) {
 	if err != nil || !resp.OK {
 		t.Fatalf("Invoke large = %#v, %v", resp, err)
 	}
-	var env struct {
-		Output   string `json:"output"`
-		Artifact struct {
-			Ref      string `json:"ref"`
-			Filename string `json:"filename"`
-			Chars    int    `json:"chars"`
-		} `json:"artifact"`
-		Truncated bool `json:"truncated"`
+	var got string
+	if err := json.Unmarshal(resp.Data, &got); err != nil {
+		t.Fatalf("unmarshal raw result: %v\n%s", err, string(resp.Data))
 	}
-	if err := json.Unmarshal(resp.Data, &env); err != nil {
-		t.Fatalf("unmarshal envelope: %v\n%s", err, string(resp.Data))
-	}
-	if !env.Truncated || !strings.HasPrefix(env.Artifact.Ref, "artifact://") || env.Artifact.Chars <= 12000 {
-		t.Fatalf("unexpected artifact envelope: %+v", env)
-	}
-	if !strings.Contains(env.Output, env.Artifact.Ref) {
-		t.Fatalf("preview missing artifact ref: %q", env.Output)
-	}
-	artifactPath := filepath.Join(home, "data", "sessions", "main", "artifacts", env.Artifact.Filename)
-	content, readErr := os.ReadFile(artifactPath)
-	if readErr != nil {
-		t.Fatalf("read artifact %s: %v", artifactPath, readErr)
-	}
-	if string(content) != "prefix\n"+strings.Repeat("x", 13000) {
-		t.Fatalf("unexpected artifact content length=%d", len(content))
-	}
-	indexPath := filepath.Join(home, "data", "sessions", "main", "artifacts", "index.json")
-	index, readErr := os.ReadFile(indexPath)
-	if readErr != nil {
-		t.Fatalf("read index %s: %v", indexPath, readErr)
-	}
-	if !bytes.Contains(index, []byte(`"ref": "artifact://`)) {
-		t.Fatalf("artifact index missing artifact:// ref: %s", string(index))
+	if got != "prefix\n"+strings.Repeat("x", 13000) {
+		t.Fatalf("unexpected raw result length=%d", len(got))
 	}
 }
 
@@ -1008,6 +981,10 @@ func skillInvoke(callID, tenantID, tool string) wire.Invoke {
 
 func outputOfInvokeResult(t *testing.T, result wire.InvokeResult) string {
 	t.Helper()
+	var text string
+	if err := json.Unmarshal(result.Data, &text); err == nil {
+		return text
+	}
 	var env struct {
 		Output string `json:"output"`
 	}

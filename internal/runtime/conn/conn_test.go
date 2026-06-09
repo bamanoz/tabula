@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -33,6 +34,9 @@ func TestCodecNetPipeRoundTripEveryOp(t *testing.T) {
 		wire.HelloAck{Op: wire.OpHelloAck, Accepted: true, KernelID: "main"},
 		wire.Invoke{Op: wire.OpInvoke, CallID: "call-1", TenantID: "default", Target: pluginTarget("fs"), Tool: "echo", Args: json.RawMessage(`{"x":1}`)},
 		wire.InvokeResult{Op: wire.OpInvokeResult, CallID: "call-1", OK: true, Data: json.RawMessage(`{"ok":true}`)},
+		wire.InvokeResultStart{Op: wire.OpInvokeResultStart, CallID: "call-2"},
+		wire.InvokeResultDelta{Op: wire.OpInvokeResultDelta, CallID: "call-2", Seq: 1, Data: `{"ok":true}`},
+		wire.InvokeResultEnd{Op: wire.OpInvokeResultEnd, CallID: "call-2", Bytes: 11},
 		wire.Cancel{Op: wire.OpCancel, CallID: "call-1"},
 		wire.CancelAck{Op: wire.OpCancelAck, CallID: "call-1"},
 		wire.Health{Op: wire.OpHealth},
@@ -239,7 +243,7 @@ func TestRuntimeConnRoutesAsyncPluginControlFramesToSink(t *testing.T) {
 	t.Fatalf("async sink did not receive all frames: %+v", sink)
 }
 
-func TestServeCompactsOversizedInvokeResultAndKeepsConnectionUsable(t *testing.T) {
+func TestServeStreamsOversizedInvokeResultAndKeepsConnectionUsable(t *testing.T) {
 	clientWS, serverWS := websocketNetPipe(t)
 	client := codec.New(clientWS)
 	server := codec.New(serverWS)
@@ -267,13 +271,14 @@ func TestServeCompactsOversizedInvokeResultAndKeepsConnectionUsable(t *testing.T
 	}
 	var text string
 	if err := json.Unmarshal(got.Data, &text); err != nil {
-		t.Fatalf("expected compacted string payload, got %s: %v", string(got.Data), err)
+		t.Fatalf("expected streamed string payload, got %s: %v", string(got.Data), err)
 	}
-	if !strings.Contains(text, "[truncated: runtime tool result exceeded") {
-		t.Fatalf("expected truncation marker, got %q", text)
+	want := "prefix\n" + strings.Repeat("x", int(codec.MaxFrameBytes)+4096)
+	if text != want {
+		t.Fatalf("unexpected streamed payload length/content: got=%d want=%d", len(text), len(want))
 	}
-	if len(got.Data) >= int(codec.MaxFrameBytes) {
-		t.Fatalf("compacted payload still exceeds frame limit: %d", len(got.Data))
+	if len(got.Data) <= int(codec.MaxFrameBytes) {
+		t.Fatalf("expected reconstructed payload to exceed frame limit after streaming, got %d", len(got.Data))
 	}
 
 	after, err := rc.Invoke(context.Background(), runtimeapi.InvokeReq{CallID: "call-after-huge", TenantID: "default", Target: pluginTarget("fs"), Tool: "parallel"})
@@ -282,6 +287,129 @@ func TestServeCompactsOversizedInvokeResultAndKeepsConnectionUsable(t *testing.T
 	}
 	if !after.OK || after.CallID != "call-after-huge" {
 		t.Fatalf("connection unusable after huge invoke: %#v", after)
+	}
+}
+
+func TestRuntimeConnProtocolFailureOnInvokeResultDeltaBeforeStart(t *testing.T) {
+	clientWS, serverWS := websocketNetPipe(t)
+	client := codec.New(clientWS)
+	server := codec.New(serverWS)
+	defer func() { _ = client.CloseNow() }()
+
+	done := make(chan struct{})
+	resultCh := make(chan runtimeapi.InvokeResp, 1)
+	go func() {
+		_, frame, err := server.Read(context.Background())
+		if err != nil {
+			return
+		}
+		hello, ok := frame.(*wire.Hello)
+		if !ok {
+			return
+		}
+		_ = server.Write(context.Background(), wire.HelloAck{Op: wire.OpHelloAck, Accepted: true, KernelID: hello.RuntimeID})
+		_, frame, err = server.Read(context.Background())
+		if err != nil {
+			return
+		}
+		invoke, ok := frame.(*wire.Invoke)
+		if !ok {
+			return
+		}
+		_ = server.Write(context.Background(), wire.InvokeResultDelta{Op: wire.OpInvokeResultDelta, CallID: invoke.CallID, Seq: 1, Data: "{}"})
+		close(done)
+	}()
+
+	ack, err := Handshake(context.Background(), client, wire.Hello{Op: wire.OpHello, RuntimeID: "local", Token: "redacted", ProtocolVersion: "1"})
+	if err != nil {
+		t.Fatalf("Handshake: %v", err)
+	}
+	if !ack.Accepted {
+		t.Fatalf("handshake rejected: %#v", ack)
+	}
+	rc := New(client)
+	go func() {
+		resp, err := rc.Invoke(context.Background(), runtimeapi.InvokeReq{CallID: "bad-call", TenantID: "default", Target: pluginTarget("fs"), Tool: "parallel"})
+		if err == nil {
+			resultCh <- resp
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("server did not send malformed invoke result delta")
+	}
+
+	select {
+	case <-rc.Done():
+	case <-time.After(time.Second):
+		t.Fatal("expected protocol failure to close runtime connection")
+	}
+
+	select {
+	case resp := <-resultCh:
+		if resp.Error == nil || resp.Error.Code != wire.ErrorRuntimeUnavailable {
+			t.Fatalf("expected bad invoke to fail with runtime_unavailable, got %#v", resp)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("invoke did not finish after protocol failure")
+	}
+
+	after, err := rc.Invoke(context.Background(), runtimeapi.InvokeReq{CallID: "call-after-bad-stream", TenantID: "default", Target: pluginTarget("fs"), Tool: "parallel"})
+	if err == nil {
+		if after.Error == nil || after.Error.Code != wire.ErrorRuntimeUnavailable {
+			t.Fatalf("expected runtime_unavailable after protocol failure, got %#v", after)
+		}
+		return
+	}
+	if !strings.Contains(err.Error(), "runtime unavailable") {
+		t.Fatalf("expected runtime unavailable error after protocol failure, got %v", err)
+	}
+}
+
+func TestRuntimeConnInvokeStreamStartErrorRemovesPending(t *testing.T) {
+	wantErr := errors.New("sink start failed")
+	rc := &Conn{pending: make(map[string]*pendingInvoke), cancels: make(map[string]chan error), done: make(chan struct{})}
+	ch, err := rc.registerPending("call-start-fail", failingStartSink{err: wantErr})
+	if err != nil {
+		t.Fatalf("registerPending: %v", err)
+	}
+	if err := rc.startInvokeResultStream(wire.InvokeResultStart{Op: wire.OpInvokeResultStart, CallID: "call-start-fail"}); err != nil {
+		t.Fatalf("startInvokeResultStream: %v", err)
+	}
+	select {
+	case outcome := <-ch:
+		if !errors.Is(outcome.err, wantErr) {
+			t.Fatalf("expected sink error, got %+v", outcome)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("start sink failure did not finish invoke")
+	}
+	rc.mu.Lock()
+	_, stillPending := rc.pending["call-start-fail"]
+	rc.mu.Unlock()
+	if stillPending {
+		t.Fatal("pending invoke survived sink start failure")
+	}
+	if err := rc.appendInvokeResultStream(wire.InvokeResultDelta{Op: wire.OpInvokeResultDelta, CallID: "call-start-fail", Seq: 1, Data: `"late"`}); err != nil {
+		t.Fatalf("late delta for failed pending should be ignored: %v", err)
+	}
+}
+
+func TestRuntimeConnInvokeStreamValidatesEndBytesWithSink(t *testing.T) {
+	rc := &Conn{pending: make(map[string]*pendingInvoke), cancels: make(map[string]chan error), done: make(chan struct{})}
+	if _, err := rc.registerPending("call-byte-mismatch", countingStreamSink{}); err != nil {
+		t.Fatalf("registerPending: %v", err)
+	}
+	if err := rc.startInvokeResultStream(wire.InvokeResultStart{Op: wire.OpInvokeResultStart, CallID: "call-byte-mismatch"}); err != nil {
+		t.Fatalf("startInvokeResultStream: %v", err)
+	}
+	if err := rc.appendInvokeResultStream(wire.InvokeResultDelta{Op: wire.OpInvokeResultDelta, CallID: "call-byte-mismatch", Seq: 1, Data: `"abc"`}); err != nil {
+		t.Fatalf("appendInvokeResultStream: %v", err)
+	}
+	if err := rc.endInvokeResultStream(wire.InvokeResultEnd{Op: wire.OpInvokeResultEnd, CallID: "call-byte-mismatch", Bytes: 99}); err == nil || !strings.Contains(err.Error(), "declared 99 bytes") {
+		t.Fatalf("expected byte mismatch protocol error, got %v", err)
 	}
 }
 
@@ -445,6 +573,24 @@ func (s *recordingAsyncSink) LifecycleNoticed(_ string, notice wire.LifecycleNot
 
 func (s *recordingAsyncSink) RuntimeProtocolError(string, error) {}
 
+type failingStartSink struct {
+	err error
+}
+
+func (s failingStartSink) Start(string) error { return s.err }
+func (s failingStartSink) Delta(string, []byte) error {
+	return errors.New("delta should not be called after start failure")
+}
+func (s failingStartSink) End(string, int64) error {
+	return errors.New("end should not be called after start failure")
+}
+
+type countingStreamSink struct{}
+
+func (countingStreamSink) Start(string) error         { return nil }
+func (countingStreamSink) Delta(string, []byte) error { return nil }
+func (countingStreamSink) End(string, int64) error    { return nil }
+
 func websocketNetPipe(t *testing.T) (*websocket.Conn, *websocket.Conn) {
 	t.Helper()
 	var serverConn *websocket.Conn
@@ -519,6 +665,12 @@ func deref(v any) any {
 	case *wire.Invoke:
 		return *f
 	case *wire.InvokeResult:
+		return *f
+	case *wire.InvokeResultStart:
+		return *f
+	case *wire.InvokeResultDelta:
+		return *f
+	case *wire.InvokeResultEnd:
 		return *f
 	case *wire.Cancel:
 		return *f

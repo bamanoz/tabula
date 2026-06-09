@@ -35,7 +35,25 @@ type AsyncFrameSource interface {
 	AsyncFrames() <-chan any
 }
 
-const oversizedInvokePreviewBytes = 256 << 10
+const invokeResultStreamChunkBytes = 64 << 10
+
+type invokeResultStreamState struct {
+	started bool
+	data    []byte
+	bytes   int64
+	nextSeq int64
+}
+
+type pendingInvoke struct {
+	ch    chan invokeOutcome
+	sink  runtimeapi.InvokeStreamSink
+	state invokeResultStreamState
+}
+
+type invokeOutcome struct {
+	resp runtimeapi.InvokeResp
+	err  error
+}
 
 // Conn is a concrete RuntimeConn backed by one codec connection.
 type Conn struct {
@@ -48,7 +66,7 @@ type Conn struct {
 	closeOnce sync.Once
 
 	mu      sync.Mutex
-	pending map[string]chan runtimeapi.InvokeResp
+	pending map[string]*pendingInvoke
 	cancels map[string]chan error
 	health  chan runtimeapi.HealthResp
 	caps    chan runtimeapi.ListCapabilitiesResp
@@ -72,7 +90,7 @@ func NewWithSink(c *codec.Conn, runtimeID string, sink runtimeapi.AsyncSink) *Co
 		runtimeID: runtimeID,
 		sink:      sink,
 		done:      make(chan struct{}),
-		pending:   make(map[string]chan runtimeapi.InvokeResp),
+		pending:   make(map[string]*pendingInvoke),
 		cancels:   make(map[string]chan error),
 		health:    make(chan runtimeapi.HealthResp, 1),
 		caps:      make(chan runtimeapi.ListCapabilitiesResp, 1),
@@ -99,7 +117,7 @@ func Handshake(ctx context.Context, c *codec.Conn, hello wire.Hello) (wire.Hello
 }
 
 func (c *Conn) Invoke(ctx context.Context, req runtimeapi.InvokeReq) (runtimeapi.InvokeResp, error) {
-	ch, err := c.registerPending(req.CallID)
+	ch, err := c.registerPending(req.CallID, nil)
 	if err != nil {
 		return runtimeapi.InvokeResp{}, err
 	}
@@ -109,8 +127,32 @@ func (c *Conn) Invoke(ctx context.Context, req runtimeapi.InvokeReq) (runtimeapi
 		return runtimeapi.InvokeResp{}, err
 	}
 	select {
-	case resp := <-ch:
-		return resp, nil
+	case outcome := <-ch:
+		return outcome.resp, outcome.err
+	case <-ctx.Done():
+		c.unregisterPending(req.CallID)
+		return runtimeapi.InvokeResp{}, ctx.Err()
+	case <-c.done:
+		return unavailableResp(req.CallID), nil
+	}
+}
+
+func (c *Conn) InvokeStream(ctx context.Context, req runtimeapi.InvokeReq, sink runtimeapi.InvokeStreamSink) (runtimeapi.InvokeResp, error) {
+	if sink == nil {
+		return c.Invoke(ctx, req)
+	}
+	ch, err := c.registerPending(req.CallID, sink)
+	if err != nil {
+		return runtimeapi.InvokeResp{}, err
+	}
+	frame := wire.Invoke{Op: wire.OpInvoke, CallID: req.CallID, TenantID: req.TenantID, SessionID: req.SessionID, Target: req.Target, Tool: req.Tool, Args: req.Args, TimeoutMS: req.TimeoutMS}
+	if err := c.write(ctx, frame); err != nil {
+		c.unregisterPending(req.CallID)
+		return runtimeapi.InvokeResp{}, err
+	}
+	select {
+	case outcome := <-ch:
+		return outcome.resp, outcome.err
 	case <-ctx.Done():
 		c.unregisterPending(req.CallID)
 		return runtimeapi.InvokeResp{}, ctx.Err()
@@ -226,7 +268,25 @@ func (c *Conn) readLoop() {
 		}
 		switch f := frame.(type) {
 		case *wire.InvokeResult:
-			c.deliverInvoke(f.CallID, runtimeapi.InvokeResp{CallID: f.CallID, OK: f.OK, Data: f.Data, Error: f.Error})
+			if err := c.handleInvokeResult(*f); err != nil {
+				c.protocolFailure(err)
+				return
+			}
+		case *wire.InvokeResultStart:
+			if err := c.startInvokeResultStream(*f); err != nil {
+				c.protocolFailure(err)
+				return
+			}
+		case *wire.InvokeResultDelta:
+			if err := c.appendInvokeResultStream(*f); err != nil {
+				c.protocolFailure(err)
+				return
+			}
+		case *wire.InvokeResultEnd:
+			if err := c.endInvokeResultStream(*f); err != nil {
+				c.protocolFailure(err)
+				return
+			}
 		case *wire.CancelAck:
 			c.deliverCancel(f.CallID, nil)
 		case *wire.HealthResp:
@@ -278,11 +338,11 @@ func (c *Conn) write(ctx context.Context, frame any) error {
 	return c.c.Write(ctx, frame)
 }
 
-func (c *Conn) registerPending(callID string) (chan runtimeapi.InvokeResp, error) {
+func (c *Conn) registerPending(callID string, sink runtimeapi.InvokeStreamSink) (chan invokeOutcome, error) {
 	if callID == "" {
 		return nil, wire.ProtocolErrorf("call_id is required")
 	}
-	ch := make(chan runtimeapi.InvokeResp, 1)
+	ch := make(chan invokeOutcome, 1)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	select {
@@ -293,7 +353,7 @@ func (c *Conn) registerPending(callID string) (chan runtimeapi.InvokeResp, error
 	if _, exists := c.pending[callID]; exists {
 		return nil, wire.ProtocolErrorf("duplicate call_id %q", callID)
 	}
-	c.pending[callID] = ch
+	c.pending[callID] = &pendingInvoke{ch: ch, sink: sink, state: invokeResultStreamState{nextSeq: 1}}
 	return ch, nil
 }
 
@@ -327,11 +387,21 @@ func (c *Conn) unregisterCancel(callID string) {
 
 func (c *Conn) deliverInvoke(callID string, resp runtimeapi.InvokeResp) {
 	c.mu.Lock()
-	ch := c.pending[callID]
+	pending := c.pending[callID]
 	delete(c.pending, callID)
 	c.mu.Unlock()
-	if ch != nil {
-		ch <- resp
+	if pending != nil {
+		pending.ch <- invokeOutcome{resp: resp}
+	}
+}
+
+func (c *Conn) failInvoke(callID string, err error) {
+	c.mu.Lock()
+	pending := c.pending[callID]
+	delete(c.pending, callID)
+	c.mu.Unlock()
+	if pending != nil {
+		pending.ch <- invokeOutcome{err: err}
 	}
 }
 
@@ -349,18 +419,146 @@ func (c *Conn) closeWithUnavailable() {
 	c.closeOnce.Do(func() {
 		c.mu.Lock()
 		pending := c.pending
-		c.pending = make(map[string]chan runtimeapi.InvokeResp)
+		c.pending = make(map[string]*pendingInvoke)
 		cancels := c.cancels
 		c.cancels = make(map[string]chan error)
 		c.mu.Unlock()
-		for callID, ch := range pending {
-			ch <- unavailableResp(callID)
+		for callID, invoke := range pending {
+			invoke.ch <- invokeOutcome{resp: unavailableResp(callID)}
 		}
 		for _, ch := range cancels {
 			ch <- runtimeUnavailableError()
 		}
 		close(c.done)
 	})
+}
+
+func (c *Conn) handleInvokeResult(result wire.InvokeResult) error {
+	c.mu.Lock()
+	pending := c.pending[result.CallID]
+	c.mu.Unlock()
+	if pending == nil {
+		return nil
+	}
+	if pending.sink != nil && result.OK {
+		if err := emitInvokeResultToSink(result.CallID, result.Data, pending.sink); err != nil {
+			c.failInvoke(result.CallID, err)
+			return nil
+		}
+		c.deliverInvoke(result.CallID, runtimeapi.InvokeResp{CallID: result.CallID, OK: true, Streamed: true, Bytes: int64(len(result.Data))})
+		return nil
+	}
+	c.deliverInvoke(result.CallID, runtimeapi.InvokeResp{CallID: result.CallID, OK: result.OK, Data: result.Data, Error: result.Error})
+	return nil
+}
+
+func (c *Conn) startInvokeResultStream(start wire.InvokeResultStart) error {
+	c.mu.Lock()
+	pending, exists := c.pending[start.CallID]
+	if !exists {
+		c.mu.Unlock()
+		return nil
+	}
+	if pending.state.nextSeq != 1 || len(pending.state.data) > 0 {
+		c.mu.Unlock()
+		return wire.ProtocolErrorf("duplicate invoke_result_start for call_id %q", start.CallID)
+	}
+	pending.state.started = true
+	sink := pending.sink
+	c.mu.Unlock()
+	if sink != nil {
+		if err := sink.Start(start.CallID); err != nil {
+			c.failInvoke(start.CallID, err)
+		}
+	}
+	return nil
+}
+
+func (c *Conn) appendInvokeResultStream(delta wire.InvokeResultDelta) error {
+	c.mu.Lock()
+	pending, exists := c.pending[delta.CallID]
+	if !exists {
+		c.mu.Unlock()
+		return nil
+	}
+	if !pending.state.started {
+		c.mu.Unlock()
+		return wire.ProtocolErrorf("invoke_result_delta for call_id %q arrived before invoke_result_start", delta.CallID)
+	}
+	if delta.Seq != pending.state.nextSeq {
+		c.mu.Unlock()
+		return wire.ProtocolErrorf("invoke_result_delta for call_id %q expected seq %d, got %d", delta.CallID, pending.state.nextSeq, delta.Seq)
+	}
+	pending.state.nextSeq++
+	pending.state.bytes += int64(len(delta.Data))
+	sink := pending.sink
+	if sink == nil {
+		pending.state.data = append(pending.state.data, delta.Data...)
+		c.mu.Unlock()
+		return nil
+	}
+	c.mu.Unlock()
+	if err := sink.Delta(delta.CallID, []byte(delta.Data)); err != nil {
+		c.failInvoke(delta.CallID, err)
+	}
+	return nil
+}
+
+func (c *Conn) endInvokeResultStream(end wire.InvokeResultEnd) error {
+	c.mu.Lock()
+	pending, exists := c.pending[end.CallID]
+	if !exists {
+		c.mu.Unlock()
+		return nil
+	}
+	if !pending.state.started {
+		c.mu.Unlock()
+		return wire.ProtocolErrorf("invoke_result_end for call_id %q arrived before invoke_result_start", end.CallID)
+	}
+	sink := pending.sink
+	data := append([]byte(nil), pending.state.data...)
+	reconstructedBytes := pending.state.bytes
+	if sink == nil {
+		reconstructedBytes = int64(len(data))
+	}
+	if end.Bytes != 0 && reconstructedBytes != end.Bytes {
+		c.mu.Unlock()
+		return wire.ProtocolErrorf("invoke_result_end for call_id %q declared %d bytes, reconstructed %d", end.CallID, end.Bytes, reconstructedBytes)
+	}
+	ch := pending.ch
+	delete(c.pending, end.CallID)
+	c.mu.Unlock()
+	if sink != nil {
+		if err := sink.End(end.CallID, end.Bytes); err != nil {
+			if ch != nil {
+				ch <- invokeOutcome{err: err}
+			}
+			return nil
+		}
+		if ch != nil {
+			ch <- invokeOutcome{resp: runtimeapi.InvokeResp{CallID: end.CallID, OK: true, Streamed: true, Bytes: end.Bytes}}
+		}
+		return nil
+	}
+	if ch != nil {
+		ch <- invokeOutcome{resp: runtimeapi.InvokeResp{CallID: end.CallID, OK: true, Data: json.RawMessage(data), Bytes: end.Bytes}}
+	}
+	return nil
+}
+
+func emitInvokeResultToSink(callID string, data []byte, sink runtimeapi.InvokeStreamSink) error {
+	if err := sink.Start(callID); err != nil {
+		return err
+	}
+	remaining := data
+	for len(remaining) > 0 {
+		chunk, rest := nextBytesChunk(remaining, invokeResultStreamChunkBytes)
+		if err := sink.Delta(callID, chunk); err != nil {
+			return err
+		}
+		remaining = rest
+	}
+	return sink.End(callID, int64(len(data)))
 }
 
 func (c *Conn) protocolFailure(err error) {
@@ -422,10 +620,18 @@ func Serve(ctx context.Context, c *codec.Conn, handler Handler) error {
 func ServeAfterHandshake(ctx context.Context, c *codec.Conn, handler Handler) error {
 	var writeMu sync.Mutex
 	write := func(frame any) error {
-		frame = compactFrameForWrite(frame)
+		frames, err := expandFramesForWrite(frame)
+		if err != nil {
+			return err
+		}
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		return c.Write(ctx, frame)
+		for _, item := range frames {
+			if err := c.Write(ctx, item); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	if source, ok := handler.(AsyncFrameSource); ok {
 		if frames := source.AsyncFrames(); frames != nil {
@@ -529,67 +735,61 @@ func ServeAfterHandshake(ctx context.Context, c *codec.Conn, handler Handler) er
 	}
 }
 
-func compactFrameForWrite(frame any) any {
+func expandFramesForWrite(frame any) ([]any, error) {
 	encoded, err := wire.Encode(frame)
 	if err != nil || int64(len(encoded)) <= codec.MaxFrameBytes {
-		return frame
+		return []any{frame}, err
 	}
 	switch f := frame.(type) {
 	case wire.InvokeResult:
-		return compactInvokeResultForWrite(f, len(encoded))
+		return streamInvokeResultForWrite(f)
 	case *wire.InvokeResult:
 		if f == nil {
-			return frame
+			return []any{frame}, nil
 		}
-		compacted := compactInvokeResultForWrite(*f, len(encoded))
-		return &compacted
+		return streamInvokeResultForWrite(*f)
 	default:
-		return frame
+		return []any{frame}, nil
 	}
 }
 
-func compactInvokeResultForWrite(result wire.InvokeResult, originalBytes int) wire.InvokeResult {
-	if !result.OK {
-		return result
+func streamInvokeResultForWrite(result wire.InvokeResult) ([]any, error) {
+	if !result.OK || len(result.Data) == 0 {
+		return []any{result}, nil
 	}
-	raw := strings.TrimSpace(string(result.Data))
-	if raw == "" {
-		return result
+	frames := make([]any, 0, 4)
+	frames = append(frames, wire.InvokeResultStart{Op: wire.OpInvokeResultStart, CallID: result.CallID})
+	remaining := result.Data
+	seq := int64(1)
+	for len(remaining) > 0 {
+		chunk, rest := nextUTF8Chunk(remaining, invokeResultStreamChunkBytes)
+		frames = append(frames, wire.InvokeResultDelta{Op: wire.OpInvokeResultDelta, CallID: result.CallID, Seq: seq, Data: chunk})
+		remaining = rest
+		seq++
 	}
-	previewSource := raw
-	var text string
-	if err := json.Unmarshal(result.Data, &text); err == nil {
-		previewSource = text
-	}
-	preview := truncateUTF8Bytes(previewSource, oversizedInvokePreviewBytes)
-	message := fmt.Sprintf(
-		"%s\n\n[truncated: runtime tool result exceeded the %d-byte websocket frame limit; original frame bytes: %d. Narrow the query or page the result.]",
-		preview,
-		codec.MaxFrameBytes,
-		originalBytes,
-	)
-	data, err := json.Marshal(message)
-	if err != nil {
-		fallback, _ := json.Marshal(fmt.Sprintf("[truncated: runtime tool result exceeded the %d-byte websocket frame limit; original frame bytes: %d.]", codec.MaxFrameBytes, originalBytes))
-		result.Data = fallback
-		return result
-	}
-	result.Data = data
-	return result
+	frames = append(frames, wire.InvokeResultEnd{Op: wire.OpInvokeResultEnd, CallID: result.CallID, Bytes: int64(len(result.Data))})
+	return frames, nil
 }
 
-func truncateUTF8Bytes(text string, limit int) string {
-	if limit <= 0 || len(text) <= limit {
-		return text
+func nextUTF8Chunk(data []byte, limit int) (string, []byte) {
+	if limit <= 0 || len(data) <= limit {
+		return string(data), nil
 	}
 	cut := limit
-	for cut > 0 && !utf8.ValidString(text[:cut]) {
+	for cut > 0 && !utf8.Valid(data[:cut]) {
 		cut--
 	}
 	if cut <= 0 {
-		return ""
+		cut = limit
 	}
-	return text[:cut]
+	return string(data[:cut]), data[cut:]
+}
+
+func nextBytesChunk(data []byte, limit int) ([]byte, []byte) {
+	if limit <= 0 || len(data) <= limit {
+		return append([]byte(nil), data...), nil
+	}
+	return append([]byte(nil), data[:limit]...), data[limit:]
 }
 
 func protocolErrorResponse(raw json.RawMessage, err error) (wire.InvokeResult, bool) {
@@ -630,7 +830,7 @@ func defaultHookReplyMode(event string) wire.HookReplyMode {
 	switch event {
 	case "after_message", "after_tool_call", "session_join", "session_end", "cancel":
 		return wire.HookReplyModeNone
-	case "before_message", "before_tool_call", "session_start", "before_prompt_build":
+	case "before_message", "before_tool_call", "before_tool_result", "session_start", "before_prompt_build":
 		return wire.HookReplyModeModifying
 	default:
 		return wire.HookReplyModeModifying

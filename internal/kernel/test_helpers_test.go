@@ -107,6 +107,27 @@ func (testRuntimeConn) Invoke(_ context.Context, req runtimeapi.InvokeReq) (runt
 	}
 }
 
+func (testRuntimeConn) InvokeStream(ctx context.Context, req runtimeapi.InvokeReq, sink runtimeapi.InvokeStreamSink) (runtimeapi.InvokeResp, error) {
+	resp, err := (testRuntimeConn{}).Invoke(ctx, req)
+	if err != nil || sink == nil || !resp.OK {
+		return resp, err
+	}
+	if err := sink.Start(req.CallID); err != nil {
+		return runtimeapi.InvokeResp{}, err
+	}
+	if len(resp.Data) > 0 {
+		if err := sink.Delta(req.CallID, resp.Data); err != nil {
+			return runtimeapi.InvokeResp{}, err
+		}
+	}
+	if err := sink.End(req.CallID, int64(len(resp.Data))); err != nil {
+		return runtimeapi.InvokeResp{}, err
+	}
+	resp.Data = nil
+	resp.Streamed = true
+	return resp, nil
+}
+
 func (testRuntimeConn) Cancel(context.Context, string) error { return nil }
 
 func (testRuntimeConn) Health(context.Context) (runtimeapi.HealthResp, error) {

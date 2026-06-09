@@ -21,6 +21,12 @@ const (
 	OpInvoke Operation = "invoke"
 	// OpInvokeResult is the terminal runtime response for an Invoke call_id.
 	OpInvokeResult Operation = "invoke_result"
+	// OpInvokeResultStart starts a streamed successful invoke result payload.
+	OpInvokeResultStart Operation = "invoke_result_start"
+	// OpInvokeResultDelta carries one streamed invoke result chunk.
+	OpInvokeResultDelta Operation = "invoke_result_delta"
+	// OpInvokeResultEnd ends a streamed successful invoke result payload.
+	OpInvokeResultEnd Operation = "invoke_result_end"
 	// OpCancel asks the runtime to abort an in-flight call_id.
 	OpCancel Operation = "cancel"
 	// OpCancelAck acknowledges that cancellation for a call_id was observed.
@@ -409,6 +415,36 @@ type InvokeResult struct {
 	Data json.RawMessage `json:"data,omitempty"`
 	// Error is set when OK is false.
 	Error *Error `json:"error,omitempty"`
+}
+
+// InvokeResultStart starts a streamed successful Invoke response.
+type InvokeResultStart struct {
+	// Op must be "invoke_result_start".
+	Op Operation `json:"op"`
+	// CallID is the Invoke correlation id.
+	CallID string `json:"call_id"`
+}
+
+// InvokeResultDelta carries one chunk of a streamed successful Invoke response.
+type InvokeResultDelta struct {
+	// Op must be "invoke_result_delta".
+	Op Operation `json:"op"`
+	// CallID is the Invoke correlation id.
+	CallID string `json:"call_id"`
+	// Seq is a positive monotonic chunk sequence number starting at 1.
+	Seq int64 `json:"seq"`
+	// Data is one UTF-8-safe slice of the raw successful result JSON payload.
+	Data string `json:"data"`
+}
+
+// InvokeResultEnd ends a streamed successful Invoke response.
+type InvokeResultEnd struct {
+	// Op must be "invoke_result_end".
+	Op Operation `json:"op"`
+	// CallID is the Invoke correlation id.
+	CallID string `json:"call_id"`
+	// Bytes is the total payload byte count reconstructed from deltas.
+	Bytes int64 `json:"bytes,omitempty"`
 }
 
 // Cancel asks the runtime to abort an in-flight call.
