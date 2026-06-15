@@ -3,6 +3,7 @@ package kernel
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -193,8 +194,17 @@ func TestBeforeToolCallHook_InfiniteTimeout_DisconnectBlocks(t *testing.T) {
 	if !isToolResult(result) {
 		t.Fatalf("expected tool_result, got %s", result.Type)
 	}
-	if !strings.Contains(result.Output, "blocked") {
-		t.Fatalf("expected blocked output, got %q", result.Output)
+	var blocked struct {
+		Error string `json:"error"`
+		Hook  struct {
+			Status string `json:"status"`
+		} `json:"hook"`
+	}
+	if err := json.Unmarshal([]byte(result.Output), &blocked); err != nil {
+		t.Fatalf("blocked output should be structured JSON: %v (%s)", err, result.Output)
+	}
+	if blocked.Error != "not_invoked" || blocked.Hook.Status == "" {
+		t.Fatalf("unexpected blocked output: %+v", blocked)
 	}
 }
 
@@ -352,5 +362,86 @@ func TestBeforeToolResultHookCanRewriteLargeResultFromSpool(t *testing.T) {
 	}
 	if artifact.Ref != "artifact://echo-large" {
 		t.Fatalf("unexpected artifact: %+v", artifact)
+	}
+}
+
+func TestBeforeToolCallHookWritesDispatchAuditEvents(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	home := t.TempDir()
+	env := newTestEnvWithSkillToolHome(t, home)
+	hook := env.connectHook("perm", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
+	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
+
+	go func() {
+		writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-audit", Input: json.RawMessage(`{"text":"ok"}`)})
+	}()
+
+	hookMsg := readMsg(t, hook)
+	writeJSON(t, hook, Message{Type: "hook_reply", ID: hookMsg.ID, Action: "pass"})
+	result := readMsgTimeout(t, drv, 2*time.Second)
+	if result == nil || !isToolResult(result) {
+		t.Fatalf("expected tool_result, got %+v", result)
+	}
+
+	ledger := filepath.Join(home, "data", "sessions", "main", "ledger.jsonl")
+	data, err := os.ReadFile(ledger)
+	if err != nil {
+		t.Fatalf("read ledger: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "hook.dispatch.audit") || !strings.Contains(text, "echo_tool") || !strings.Contains(text, "continued") {
+		t.Fatalf("expected hook dispatch audit event, got %q", text)
+	}
+}
+
+func TestDispatchHookWritesMissingAuditEvent(t *testing.T) {
+	home := t.TempDir()
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetSessionStore(NewDiskSessionStore(home))
+	hub.dispatchHook("before_tool_call", json.RawMessage(`{"tool":"echo_tool","id":"t-missing","input":{"text":"ok"}}`), "default", "main")
+	data, err := os.ReadFile(filepath.Join(home, "data", "sessions", "main", "ledger.jsonl"))
+	if err != nil {
+		t.Fatalf("read ledger: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `"status":"missing"`) || !strings.Contains(text, `"dispatch_effect":"continued"`) {
+		t.Fatalf("expected missing audit event, got %q", text)
+	}
+}
+
+func TestDispatchHookWritesTimeoutAuditEvent(t *testing.T) {
+	home := t.TempDir()
+	env := newTestEnvWithSkillToolHome(t, home)
+	hook := env.connectHook("perm", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
+	defer hook.Close()
+	env.Hub.dispatchHook("before_tool_call", json.RawMessage(`{"tool":"echo_tool","id":"t-timeout","input":{"text":"ok"}}`), "default", "main")
+	data, err := os.ReadFile(filepath.Join(home, "data", "sessions", "main", "ledger.jsonl"))
+	if err != nil {
+		t.Fatalf("read ledger: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `"status":"timeout"`) || !strings.Contains(text, `"dispatch_effect":"failed_closed"`) {
+		t.Fatalf("expected timeout audit event, got %q", text)
+	}
+}
+
+func TestHookDispatchAuditRedactsExecCommandInput(t *testing.T) {
+	home := t.TempDir()
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetSessionStore(NewDiskSessionStore(home))
+	hub.dispatchHook("before_tool_call", json.RawMessage(`{"tool":"exec_run","id":"t-exec","input":{"command":"echo super-secret-token","timeout_seconds":30}}`), "default", "main")
+	data, err := os.ReadFile(filepath.Join(home, "data", "sessions", "main", "ledger.jsonl"))
+	if err != nil {
+		t.Fatalf("read ledger: %v", err)
+	}
+	text := string(data)
+	if strings.Contains(text, "super-secret-token") {
+		t.Fatalf("expected exec command to be redacted from audit, got %q", text)
+	}
+	if !strings.Contains(text, `"command_sha256"`) || !strings.Contains(text, `"timeout_seconds":30`) {
+		t.Fatalf("expected summarized exec command fields, got %q", text)
 	}
 }

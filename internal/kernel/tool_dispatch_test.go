@@ -23,6 +23,18 @@ func TestNewHubStartsWithoutDynamicDispatch(t *testing.T) {
 	}
 }
 
+func TestResolveToolDeadlineCapsAtFifteenMinutes(t *testing.T) {
+	if got := resolveToolDeadline(0); got != 30*time.Second {
+		t.Fatalf("default deadline = %v, want 30s", got)
+	}
+	if got := resolveToolDeadline(900_000); got != 15*time.Minute {
+		t.Fatalf("fifteen-minute deadline = %v, want 15m", got)
+	}
+	if got := resolveToolDeadline(7_200_000); got != 15*time.Minute {
+		t.Fatalf("capped deadline = %v, want 15m", got)
+	}
+}
+
 func TestHandleDynamicTool_RuntimeSourceInvokesAttachedRuntime(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))

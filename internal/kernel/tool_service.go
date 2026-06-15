@@ -55,10 +55,10 @@ func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 
 	s.hub.Logger.Debug("tool.call", "tool", toolName, "tenant_id", tenantID, "session", session, "id", toolID)
 
-	effectiveInput, ok := s.hub.policy.CanUseTool(sender, toolName, toolID, msg.Input, msg.Meta, session)
-	if !ok {
+	effectiveInput, blocked := s.hub.policy.CanUseTool(sender, toolName, toolID, msg.Input, msg.Meta, session)
+	if blocked != nil {
 		s.hub.Logger.Warn("tool call blocked by policy", "tool", toolName, "tool_call_id", toolID, "tenant_id", tenantID, "session", session, "input_bytes", len(msg.Input))
-		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, "ERROR: blocked", nil, false)
+		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, buildNotInvokedToolResult(blocked), nil, false)
 		return
 	}
 	msg.Input = effectiveInput
@@ -101,6 +101,28 @@ func (s *ToolService) handleDynamicTool(tenantID, session, toolID, toolName stri
 	default:
 		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: tool %s has unknown dispatch source", toolName), nil, false)
 	}
+}
+
+func buildNotInvokedToolResult(blocked *HookDispatchDecision) string {
+	result := map[string]any{
+		"ok":    false,
+		"error": "not_invoked",
+		"hook": map[string]any{
+			"event":        blocked.Event,
+			"target":       blocked.Target,
+			"hook_id":      blocked.HookID,
+			"reply_action": blocked.ReplyAction,
+			"reason":       blocked.Reason,
+			"status":       blocked.Status,
+		},
+	}
+	if len(blocked.Payload) > 0 {
+		var details any
+		if json.Unmarshal(blocked.Payload, &details) == nil {
+			result["hook"].(map[string]any)["details"] = details
+		}
+	}
+	return string(mustMarshalRaw(result))
 }
 func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName string, entry toolDispatch, input json.RawMessage) {
 	go func() {
@@ -614,8 +636,9 @@ func resolveToolDeadline(deadlineMs int) time.Duration {
 	if deadlineMs <= 0 {
 		deadlineMs = 30000
 	}
-	if deadlineMs > 600000 {
-		deadlineMs = 600000
+	maxDeadline := int((15 * time.Minute) / time.Millisecond)
+	if deadlineMs > maxDeadline {
+		deadlineMs = maxDeadline
 	}
 	return time.Duration(deadlineMs) * time.Millisecond
 }

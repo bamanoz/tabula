@@ -118,9 +118,9 @@ class ApprovalFlowInstalled(unittest.TestCase):
 
             history = home / "data" / "sessions" / session / "history.jsonl"
             text = history.read_text(encoding="utf-8")
-            self.assertIn('"tool_use": {"id": "call-1", "name": "exec_run"', text)
-            self.assertIn('"tool_use": {"id": "call-2", "name": "exec_run"', text)
-            self.assertIn('"tool_use": {"id": "call-3", "name": "exec_run"', text)
+            self.assertIn('"id": "call-1", "name": "exec_run"', text)
+            self.assertIn('"id": "call-2", "name": "exec_run"', text)
+            self.assertIn('"id": "call-3", "name": "exec_run"', text)
             self.assertIn('delayed', text)
             self.assertGreaterEqual(text.count('approved'), 2)
         finally:

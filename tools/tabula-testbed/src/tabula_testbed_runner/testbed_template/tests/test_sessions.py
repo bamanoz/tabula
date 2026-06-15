@@ -28,11 +28,41 @@ class SessionsPluginSmoke(unittest.TestCase):
             self.assertIn("## Delivered Message Wrappers", client.init.get("context", ""))
             self.assertIn("delivered payload for the local human user", client.init.get("context", ""))
             self.assertIn("not a message addressed to you as the assistant", client.init.get("context", ""))
-            client.wait_tools({"session_list", "session_info", "session_history", "session_context", "session_send", "session_labels", "session_label_set", "session_relay"}, session="testbed-sessions")
+            client.wait_tools({"session_list", "session_info", "session_history", "session_context", "session_send", "session_labels", "session_label_set", "session_relay", "hook_dispatch_audit"}, session="testbed-sessions")
             listed = client.call_tool("session_list", {}, timeout=10).json()
             self.assertIn("default/testbed-sessions", listed.get("sessions", {}))
             info = client.call_tool("session_info", {"session": "testbed-sessions"}, timeout=10).json()
             self.assertEqual(info.get("session"), "testbed-sessions")
+
+    def test_hook_dispatch_audit_reads_recent_events(self):
+        session = "testbed-hook-audit"
+        ledger_dir = Path(self.tabula_home) / "data" / "sessions" / session
+        ledger_dir.mkdir(parents=True, exist_ok=True)
+        events = [
+            {
+                "type": "ledger.event",
+                "kind": "hook.dispatch.audit",
+                "session": session,
+                "tenant_id": "default",
+                "producer": "kernel:hook_dispatch",
+                "payload": {
+                    "hook": "before_tool_call",
+                    "target": "hook-permissions",
+                    "reply_action": "block",
+                    "dispatch_effect": "tool_not_invoked",
+                    "status": "reply",
+                    "input_summary": {"tool": "exec_run", "tool_call_id": "call-1", "input_keys": ["command"]},
+                },
+                "ts": 1.0,
+            }
+        ]
+        (ledger_dir / "ledger.jsonl").write_text("".join(json.dumps(entry) + "\n" for entry in events), encoding="utf-8")
+        with self.make_client("testbed-hook-audit-client", session) as client:
+            client.wait_tools({"hook_dispatch_audit"}, session=session)
+            result = client.call_tool("hook_dispatch_audit", {"session": session, "tool": "exec_run", "tool_call_id": "call-1"}, timeout=10).json()
+        self.assertEqual(len(result.get("items", [])), 1)
+        self.assertEqual(result["items"][0]["target"], "hook-permissions")
+        self.assertEqual(result["items"][0]["dispatch_effect"], "tool_not_invoked")
 
     def test_session_send_delivers_cross_session_message(self):
         receiver = self.make_client("testbed-session-receiver", "target-session")

@@ -39,7 +39,7 @@ class ExecPluginSmoke(unittest.TestCase):
         (config_dir / "config.toml").write_text(
             'cwd_default = "${project_root}"\n'
             'timeout_default_seconds = 5\n'
-            'timeout_max_seconds = 10\n'
+            'timeout_max_seconds = 120\n'
             'env_passthrough = ["PATH", "HOME"]\n'
             'env_extra = { TABULA_TENANT_ID = "${tenant_id}" }\n'
             'deny_commands = ["forbidden"]\n',
@@ -72,6 +72,10 @@ class ExecPluginSmoke(unittest.TestCase):
             timed = self.call_json(client, "exec_run", {"command": "sleep 2", "timeout_seconds": 1}, timeout=10)
             self.assertTrue(timed["timed_out"])
 
+            too_long = client.call_tool("exec_run", {"command": "printf never", "timeout_seconds": 901}, timeout=10).output
+            self.assertIn("timeout_seconds must be 120s or less", too_long)
+            self.assertIn("exec_run_background", too_long)
+
             tmp = self.call_json(client, "exec_run", {"command": "ls /tmp >/dev/null && printf ok"})
             self.assertEqual(tmp["stdout"], "ok")
             self.assertEqual(tmp["exit_code"], 0)
@@ -79,6 +83,14 @@ class ExecPluginSmoke(unittest.TestCase):
             denied = client.call_tool("exec_run", {"command": "echo forbidden"}, timeout=10)
             self.assertIn("command denied by pattern", denied.output)
             self.assertIn("forbidden", denied.output)
+
+    def test_exec_run_silent_command_can_outlive_default_runtime_deadline(self) -> None:
+        with self.make_client() as client:
+            client.wait_tools({"exec_run"}, session="testbed-exec", tenant_id="default")
+            result = self.call_json(client, "exec_run", {"command": "sleep 40; printf done", "timeout_seconds": 60}, timeout=90)
+            self.assertEqual(result["stdout"], "done")
+            self.assertEqual(result["exit_code"], 0)
+            self.assertFalse(result["timed_out"])
 
     def test_background_spawn_list_and_kill(self) -> None:
         with self.make_client() as client:

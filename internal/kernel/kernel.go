@@ -84,6 +84,7 @@ func NewHub(toolsJSON json.RawMessage, _ int, _ int, logger *slog.Logger) *Hub {
 		ShutdownTimeout: 3 * time.Second,
 	}
 	hub.hooks.SetSessionTenantResolver(hub.sessionTenantID)
+	hub.hooks.SetAuditRecorder(hub.recordHookDispatchAudit)
 	hub.policy = NewPolicyEngine(hub)
 	hub.tools = NewToolService(hub)
 	return hub

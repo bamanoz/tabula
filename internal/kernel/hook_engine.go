@@ -32,6 +32,39 @@ type HookResult struct {
 	Reason  string
 }
 
+type HookDispatchAudit struct {
+	Event          string
+	TenantID       string
+	Session        string
+	Target         string
+	HookID         string
+	ReplyAction    string
+	DispatchEffect string
+	Reason         string
+	Status         string
+	DurationMs     int64
+	TimeoutMs      int64
+	Payload        json.RawMessage
+}
+
+type HookDispatchDecision struct {
+	Event       string
+	Target      string
+	HookID      string
+	ReplyAction string
+	Reason      string
+	Status      string
+	Payload     json.RawMessage
+}
+
+type hookSendOutcome struct {
+	result     *HookResult
+	status     string
+	durationMs int64
+	timeoutMs  int64
+	hookID     string
+}
+
 type pendingHook struct {
 	subscriber HookSubscriber
 	runtimeID  string
@@ -44,6 +77,7 @@ type HookEngine struct {
 	pending        map[string]pendingHook
 	logger         *slog.Logger
 	sessionTenants func(string, string) string
+	audit          func(HookDispatchAudit)
 }
 
 func NewHookEngine(logger *slog.Logger) *HookEngine {
@@ -62,6 +96,13 @@ func (e *HookEngine) SetSessionTenantResolver(resolve func(string, string) strin
 		return
 	}
 	e.sessionTenants = resolve
+}
+
+func (e *HookEngine) SetAuditRecorder(record func(HookDispatchAudit)) {
+	if e == nil {
+		return
+	}
+	e.audit = record
 }
 
 // RebuildIndex reconstructs the hook index from the given subscribers
@@ -88,13 +129,20 @@ func (e *HookEngine) RebuildIndex(subs []HookSubscriber) {
 }
 
 func (e *HookEngine) Dispatch(event string, payload json.RawMessage, tenantID, session string) (json.RawMessage, bool) {
-	return e.DispatchExcept(event, payload, tenantID, session, nil)
+	result, ok, _ := e.DispatchDetailedExcept(event, payload, tenantID, session, nil)
+	return result, ok
 }
 
 func (e *HookEngine) DispatchExcept(event string, payload json.RawMessage, tenantID, session string, exclude HookSubscriber) (json.RawMessage, bool) {
+	result, ok, _ := e.DispatchDetailedExcept(event, payload, tenantID, session, exclude)
+	return result, ok
+}
+
+func (e *HookEngine) DispatchDetailedExcept(event string, payload json.RawMessage, tenantID, session string, exclude HookSubscriber) (json.RawMessage, bool, *HookDispatchDecision) {
 	entries := e.entries(event)
 	if len(entries) == 0 {
-		return payload, true
+		e.recordAudit(HookDispatchAudit{Event: event, TenantID: tenantID, Session: session, Status: "missing", DispatchEffect: "continued", Payload: payload})
+		return payload, true, nil
 	}
 
 	// Inject session into payload so observers can correlate events.
@@ -116,24 +164,26 @@ func (e *HookEngine) DispatchExcept(event string, payload json.RawMessage, tenan
 		}
 	}
 	if len(relevant) == 0 {
-		return payload, true
+		e.recordAudit(HookDispatchAudit{Event: event, TenantID: tenantID, Session: session, Status: "unavailable", DispatchEffect: "continued", Payload: payload})
+		return payload, true, nil
 	}
 
 	def, ok := HookEvents[event]
 	if !ok {
-		return payload, true
+		return payload, true, nil
 	}
 
 	switch def.Strategy {
 	case strategyVoid:
 		e.dispatchVoid(event, payload, tenantID, session, relevant)
-		return payload, true
+		return payload, true, nil
 	case strategyModifying:
 		return e.dispatchModifying(event, payload, tenantID, session, relevant, def.Type == HookSecurity)
 	case strategyClaiming:
-		return e.dispatchClaiming(event, payload, tenantID, session, relevant)
+		result, ok := e.dispatchClaiming(event, payload, tenantID, session, relevant)
+		return result, ok, nil
 	default:
-		return payload, true
+		return payload, true, nil
 	}
 }
 
@@ -203,30 +253,43 @@ func (e *HookEngine) dispatchVoid(event string, payload json.RawMessage, tenantI
 	}
 }
 
-func (e *HookEngine) dispatchModifying(event string, payload json.RawMessage, tenantID, session string, entries []hookEntry, secure bool) (json.RawMessage, bool) {
+func (e *HookEngine) dispatchModifying(event string, payload json.RawMessage, tenantID, session string, entries []hookEntry, secure bool) (json.RawMessage, bool, *HookDispatchDecision) {
 	current := payload
 	for _, entry := range entries {
-		result := e.sendAndWait(entry, event, current, tenantID, session)
+		outcome := e.sendAndWait(entry, event, current, tenantID, session)
+		result := outcome.result
 		if result == nil {
+			e.recordAudit(HookDispatchAudit{Event: event, TenantID: tenantID, Session: session, Target: entry.sub.Name(), HookID: outcome.hookID, Status: outcome.status, DispatchEffect: mapHookNilEffect(secure), DurationMs: outcome.durationMs, TimeoutMs: outcome.timeoutMs, Payload: current})
 			if secure {
 				e.logger.Info("security hook timeout, blocking", hookLogAttrs(event, entry.sub.Name(), current, tenantID, session)...)
-				return nil, false
+				return nil, false, &HookDispatchDecision{Event: event, Target: entry.sub.Name(), HookID: outcome.hookID, Status: outcome.status}
 			}
 			continue
 		}
 		switch HookAction(result.Action) {
 		case ActionBlock:
+			e.recordAudit(HookDispatchAudit{Event: event, TenantID: tenantID, Session: session, Target: entry.sub.Name(), HookID: outcome.hookID, ReplyAction: result.Action, DispatchEffect: "tool_not_invoked", Reason: result.Reason, Status: "reply", DurationMs: outcome.durationMs, TimeoutMs: outcome.timeoutMs, Payload: current})
 			attrs := hookLogAttrs(event, entry.sub.Name(), current, tenantID, session)
 			attrs = append(attrs, "reason", result.Reason)
 			e.logger.Info("hook blocked event", attrs...)
-			return nil, false
+			return nil, false, &HookDispatchDecision{Event: event, Target: entry.sub.Name(), HookID: outcome.hookID, ReplyAction: result.Action, Reason: result.Reason, Status: outcome.status, Payload: append(json.RawMessage(nil), result.Payload...)}
 		case ActionModify:
+			e.recordAudit(HookDispatchAudit{Event: event, TenantID: tenantID, Session: session, Target: entry.sub.Name(), HookID: outcome.hookID, ReplyAction: result.Action, DispatchEffect: "payload_rewritten", Reason: result.Reason, Status: "reply", DurationMs: outcome.durationMs, TimeoutMs: outcome.timeoutMs, Payload: current})
 			if result.Payload != nil {
 				current = e.mergePayload(event, current, result.Payload)
 			}
+		default:
+			e.recordAudit(HookDispatchAudit{Event: event, TenantID: tenantID, Session: session, Target: entry.sub.Name(), HookID: outcome.hookID, ReplyAction: result.Action, DispatchEffect: "continued", Reason: result.Reason, Status: "reply", DurationMs: outcome.durationMs, TimeoutMs: outcome.timeoutMs, Payload: current})
 		}
 	}
-	return current, true
+	return current, true, nil
+}
+
+func mapHookNilEffect(secure bool) string {
+	if secure {
+		return "failed_closed"
+	}
+	return "failed_open"
 }
 
 // mergePayload merges a hook's modify response with the running payload.
@@ -279,7 +342,8 @@ func contextAdditiveHookEvent(event string) bool {
 
 func (e *HookEngine) dispatchClaiming(event string, payload json.RawMessage, tenantID, session string, entries []hookEntry) (json.RawMessage, bool) {
 	for _, entry := range entries {
-		result := e.sendAndWait(entry, event, payload, tenantID, session)
+		outcome := e.sendAndWait(entry, event, payload, tenantID, session)
+		result := outcome.result
 		if result == nil {
 			continue
 		}
@@ -293,11 +357,13 @@ func (e *HookEngine) dispatchClaiming(event string, payload json.RawMessage, ten
 	return payload, true
 }
 
-func (e *HookEngine) sendAndWait(entry hookEntry, event string, payload json.RawMessage, tenantID, session string) *HookResult {
+func (e *HookEngine) sendAndWait(entry hookEntry, event string, payload json.RawMessage, tenantID, session string) hookSendOutcome {
 	s := entry.sub
 	id := generateHookID()
 	ch := make(chan *HookResult, 1)
 	e.addPendingHook(id, s, ch)
+	start := time.Now()
+	outcome := hookSendOutcome{status: "timeout", hookID: id}
 
 	s.SendMsg(&Message{
 		Type:     "hook",
@@ -313,7 +379,9 @@ func (e *HookEngine) sendAndWait(entry hookEntry, event string, payload json.Raw
 		// Wait indefinitely; only the subscriber disconnecting unblocks us.
 		select {
 		case result = <-ch:
+			outcome.status = "reply"
 		case <-s.Done():
+			outcome.status = "disconnected"
 			attrs := hookLogAttrs(event, s.Name(), payload, tenantID, session)
 			attrs = append(attrs, "hook_id", id)
 			e.logger.Info("hook subscriber disconnected", attrs...)
@@ -323,16 +391,20 @@ func (e *HookEngine) sendAndWait(entry hookEntry, event string, payload json.Raw
 		if entry.subscrip.TimeoutMs != nil && *entry.subscrip.TimeoutMs > 0 {
 			d = time.Duration(*entry.subscrip.TimeoutMs) * time.Millisecond
 		}
+		outcome.timeoutMs = d.Milliseconds()
 		timer := time.NewTimer(d)
 		select {
 		case result = <-ch:
+			outcome.status = "reply"
 			timer.Stop()
 		case <-s.Done():
+			outcome.status = "disconnected"
 			timer.Stop()
 			attrs := hookLogAttrs(event, s.Name(), payload, tenantID, session)
 			attrs = append(attrs, "hook_id", id, "timeout_ms", d.Milliseconds())
 			e.logger.Info("hook subscriber disconnected", attrs...)
 		case <-timer.C:
+			outcome.status = "timeout"
 			attrs := hookLogAttrs(event, s.Name(), payload, tenantID, session)
 			attrs = append(attrs, "hook_id", id, "timeout_ms", d.Milliseconds())
 			e.logger.Warn("hook timeout", attrs...)
@@ -340,7 +412,16 @@ func (e *HookEngine) sendAndWait(entry hookEntry, event string, payload json.Raw
 	}
 
 	e.removePendingHook(id)
-	return result
+	outcome.result = result
+	outcome.durationMs = time.Since(start).Milliseconds()
+	return outcome
+}
+
+func (e *HookEngine) recordAudit(event HookDispatchAudit) {
+	if e == nil || e.audit == nil {
+		return
+	}
+	e.audit(event)
 }
 
 func hookLogAttrs(event, client string, payload json.RawMessage, tenantID, session string) []any {

@@ -186,9 +186,15 @@ class SubagentsPluginSmoke(unittest.TestCase):
     def test_subagent_spawn_schema_exposes_provider_override(self):
         with self.make_client("testbed-subagents-schema") as client:
             client.wait_tools({"subagent_spawn"}, session="testbed-subagents")
-            tool = client.assert_tool("subagent_spawn")
-            properties = tool.get("params") or {}
+            spawn = client.assert_tool("subagent_spawn")
+            properties = spawn.get("params") or {}
             self.assertIn("provider", properties)
+
+    def test_subagent_manifest_uses_long_running_deadlines(self):
+        manifest = (Path(self.tabula_home) / "plugins" / "subagents" / "plugin.toml").read_text(encoding="utf-8")
+        self.assertIn('name = "subagent_spawn"', manifest)
+        self.assertIn('name = "subagent_wait"', manifest)
+        self.assertGreaterEqual(manifest.count("deadline_ms = 900000"), 2)
 
     def test_subagent_spawn_rejects_unknown_provider_override(self):
         with self.make_client("testbed-subagents-provider") as client:
@@ -226,6 +232,49 @@ class SubagentsPluginSmoke(unittest.TestCase):
             self.assertIn("sessions", allowed)
             blocked = client.call_tool("subagent_list", {}, timeout=10).output
             self.assertIn("blocked", blocked)
+
+    def test_subagents_empty_allowed_tools_does_not_block_child_tools(self):
+        home = Path(self.tabula_home)
+        entry = home / "tenants" / "default" / "state" / "plugins" / "subagents" / "sa-empty-tools.json"
+        entry.parent.mkdir(parents=True, exist_ok=True)
+        entry.write_text(json.dumps({
+            "version": 1,
+            "id": "sa-empty-tools",
+            "session": "subagent-sa-empty-tools",
+            "parent_session": "testbed-subagents",
+            "status": "running",
+            "pid": 0,
+            "allowed_tools": [],
+        }), encoding="utf-8")
+        with self.make_client("testbed-subagent-empty-tools") as client:
+            client.refresh_init("subagent-sa-empty-tools")
+            listed = client.call_tool("subagent_list", {}, timeout=10).json()
+            self.assertIn("items", listed)
+
+    def test_subagent_wait_timeout_is_structured_and_capped(self):
+        home = Path(self.tabula_home)
+        sid = "sa-wait-timeout"
+        entry = home / "tenants" / "default" / "state" / "plugins" / "subagents" / f"{sid}.json"
+        entry.parent.mkdir(parents=True, exist_ok=True)
+        entry.write_text(json.dumps({
+            "version": 1,
+            "id": sid,
+            "session": f"subagent-{sid}",
+            "parent_session": "testbed-subagents",
+            "status": "running",
+            "pid": os.getpid(),
+            "allowed_tools": [],
+        }), encoding="utf-8")
+        with self.make_client("testbed-subagent-wait-timeout") as client:
+            client.refresh_init("testbed-subagents")
+            payload = client.call_tool("subagent_wait", {"id": sid, "timeout": 0}, timeout=10).json()
+            self.assertFalse(payload.get("ok"), payload)
+            self.assertTrue(payload.get("timeout"), payload)
+            self.assertTrue(payload.get("continues_running"), payload)
+
+            too_long = client.call_tool("subagent_wait", {"id": sid, "timeout": 901}, timeout=10).json()
+            self.assertFalse(too_long.get("ok"), too_long)
+            self.assertIn("900s or less", too_long.get("error", ""))
 
     def test_native_subagent_send_delivers_to_child_tenant_session(self):
         tenant_id = "alpha-subagents"

@@ -143,25 +143,25 @@ func (pe *PolicyEngine) BeforeMessage(sender *Client, msg *Message) (string, boo
 	return text, false
 }
 
-// CanUseTool runs the before_tool_call hook and returns (result, ok).
-// Returns (nil, false) if the hook blocks the tool use.
-func (pe *PolicyEngine) CanUseTool(sender *Client, toolName string, toolID string, input json.RawMessage, meta json.RawMessage, session string) (json.RawMessage, bool) {
+// CanUseTool runs the before_tool_call hook and returns the effective input.
+// If a hook stops dispatch before invoke, blocked contains the generic hook facts.
+func (pe *PolicyEngine) CanUseTool(sender *Client, toolName string, toolID string, input json.RawMessage, meta json.RawMessage, session string) (json.RawMessage, *HookDispatchDecision) {
 	hookPayload, _ := json.Marshal(map[string]any{
 		"tool": toolName, "id": toolID, "input": input, "meta": meta, "tenant_id": sender.tenantID,
 	})
-	result, ok := pe.hub.dispatchHookExcept("before_tool_call", hookPayload, sender.tenantID, session, sender)
+	result, ok, blocked := pe.hub.hooks.DispatchDetailedExcept("before_tool_call", hookPayload, sender.tenantID, session, sender)
 	if !ok {
-		return nil, false
+		return nil, blocked
 	}
 
 	var modified struct {
 		Input json.RawMessage `json:"input"`
 	}
 	if err := json.Unmarshal(result, &modified); err != nil {
-		return input, true
+		return input, nil
 	}
 	if modified.Input == nil {
-		return input, true
+		return input, nil
 	}
-	return modified.Input, true
+	return modified.Input, nil
 }

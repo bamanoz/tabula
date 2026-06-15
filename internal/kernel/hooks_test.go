@@ -178,6 +178,10 @@ func TestHookSessionStartCanBlockJoin(t *testing.T) {
 		ID:     hookMsg.ID,
 		Action: "block",
 		Reason: "denied",
+		Payload: mustMarshalRaw(map[string]any{
+			"kind":      "approval_denied",
+			"retryable": false,
+		}),
 	})
 
 	// Blocked join sends only error, not joined+error.
@@ -606,9 +610,15 @@ func TestHookNone_MessagePassesThrough(t *testing.T) {
 // newTestEnvWithSkillTool creates a test env with one runtime-hosted plugin tool.
 func newTestEnvWithSkillTool(t *testing.T) *testEnv {
 	t.Helper()
+	return newTestEnvWithSkillToolHome(t, t.TempDir())
+}
+
+func newTestEnvWithSkillToolHome(t *testing.T, home string) *testEnv {
+	t.Helper()
 	toolsJSON := json.RawMessage(`[{"name":"echo_tool","description":"echo","params":{"text":{"type":"string","description":"text"},"command":{"type":"string","description":"command text"}},"required":[]}]`)
 	hub := NewHub(toolsJSON, 3, 5, nil)
 	hub.SetClientAuthToken("test-kernel-token")
+	hub.SetSessionStore(NewDiskSessionStore(home))
 	attachTestRuntime(t, hub, runtimePluginCapability("echo", "echo_tool"))
 
 	mux := http.NewServeMux()
@@ -765,8 +775,22 @@ func TestBeforeToolCallHookCanBlockDynamicSkillTool(t *testing.T) {
 	if !isToolResult(result) {
 		t.Fatalf("expected tool_result, got %+v", result)
 	}
-	if !strings.Contains(result.Output, "blocked") {
-		t.Fatalf("expected 'blocked' in output, got %s", result.Output)
+	var blocked struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+		Hook  struct {
+			ReplyAction string `json:"reply_action"`
+			Reason      string `json:"reason"`
+		} `json:"hook"`
+	}
+	if err := json.Unmarshal([]byte(result.Output), &blocked); err != nil {
+		t.Fatalf("blocked output should be structured JSON: %v (%s)", err, result.Output)
+	}
+	if blocked.OK || blocked.Error != "not_invoked" || blocked.Hook.ReplyAction != "block" || blocked.Hook.Reason != "denied" {
+		t.Fatalf("unexpected blocked output: %+v", blocked)
+	}
+	if !strings.Contains(result.Output, `"kind":"approval_denied"`) {
+		t.Fatalf("expected structured hook details in blocked output, got %s", result.Output)
 	}
 }
 
@@ -804,8 +828,19 @@ func TestBeforeToolCallHookCanBlockSkillTool(t *testing.T) {
 	if !isToolResult(&result) {
 		t.Fatalf("expected tool_result, got %+v", result)
 	}
-	if !strings.Contains(result.Output, "blocked") {
-		t.Fatalf("expected 'blocked' in output, got %s", result.Output)
+	var blocked struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+		Hook  struct {
+			ReplyAction string `json:"reply_action"`
+			Reason      string `json:"reason"`
+		} `json:"hook"`
+	}
+	if err := json.Unmarshal([]byte(result.Output), &blocked); err != nil {
+		t.Fatalf("blocked output should be structured JSON: %v (%s)", err, result.Output)
+	}
+	if blocked.OK || blocked.Error != "not_invoked" || blocked.Hook.ReplyAction != "block" || blocked.Hook.Reason != "denied" {
+		t.Fatalf("unexpected blocked output: %+v", blocked)
 	}
 }
 
@@ -842,8 +877,17 @@ func TestSecurityHookTimeoutBlocksToolCall(t *testing.T) {
 	if !isToolResult(&result) {
 		t.Fatalf("expected tool_result, got %+v", result)
 	}
-	if !strings.Contains(result.Output, "blocked") {
-		t.Fatalf("expected 'blocked' for timed-out security hook, got %s", result.Output)
+	var blocked struct {
+		Error string `json:"error"`
+		Hook  struct {
+			Status string `json:"status"`
+		} `json:"hook"`
+	}
+	if err := json.Unmarshal([]byte(result.Output), &blocked); err != nil {
+		t.Fatalf("blocked output should be structured JSON: %v (%s)", err, result.Output)
+	}
+	if blocked.Error != "not_invoked" || blocked.Hook.Status == "" {
+		t.Fatalf("unexpected blocked timeout output: %+v", blocked)
 	}
 }
 
