@@ -226,6 +226,7 @@ func (p *Pool) HookEvent(ctx context.Context, in wire.HookEvent) (*wire.HookEven
 		Event:     in.Event,
 		ReplyMode: workerwire.ReplyMode(in.ReplyMode),
 		SessionID: in.SessionID,
+		TurnCorrelationID: in.TurnCorrelationID,
 		Data:      in.Data,
 	})
 	if err != nil {
@@ -257,7 +258,7 @@ func (p *Pool) invokeWarm(ctx context.Context, plugin manifest.Plugin, in wire.I
 		return failed(in.CallID, wire.ErrorInternal, safeWorkerErrorMessage("worker initialization failed", err))
 	}
 	defer p.releaseWarmToolSlot(e, tool)
-	result, err := worker.Call(ctx, workerwire.WorkerCall{CallID: in.CallID, Tool: in.Tool, Args: in.Args, SessionID: in.SessionID})
+	result, err := worker.Call(ctx, workerwire.WorkerCall{CallID: in.CallID, Tool: in.Tool, Args: in.Args, SessionID: in.SessionID, TurnCorrelationID: in.TurnCorrelationID})
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			if p.shouldResetWarmWorkerAfterCallError(e, worker) {
@@ -411,7 +412,7 @@ func (p *Pool) invokeSkill(ctx context.Context, skill manifest.Skill, in wire.In
 	if _, err := worker.Init(ctx, workerwire.WorkerInit{Op: workerwire.OpInit, KernelID: p.kernelID, TenantID: in.TenantID, TargetID: in.Target.ID, Manifest: skill.RawJSON()}); err != nil {
 		return failed(in.CallID, wire.ErrorInternal, err.Error())
 	}
-	result, err := worker.Call(ctx, workerwire.WorkerCall{Op: workerwire.OpCall, CallID: in.CallID, Tool: in.Tool, Args: in.Args, SessionID: in.SessionID})
+	result, err := worker.Call(ctx, workerwire.WorkerCall{Op: workerwire.OpCall, CallID: in.CallID, Tool: in.Tool, Args: in.Args, SessionID: in.SessionID, TurnCorrelationID: in.TurnCorrelationID})
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return failed(in.CallID, wire.ErrorTimeout, "invoke timed out")
@@ -475,7 +476,7 @@ func (p *Pool) invokeColdPlugin(ctx context.Context, plugin manifest.Plugin, in 
 	if _, err := worker.Init(ctx, workerwire.WorkerInit{Op: workerwire.OpInit, KernelID: p.kernelID, TenantID: in.TenantID, TargetID: in.Target.ID, Manifest: plugin.RawJSON()}); err != nil {
 		return failed(in.CallID, wire.ErrorInternal, err.Error())
 	}
-	result, err := worker.Call(ctx, workerwire.WorkerCall{Op: workerwire.OpCall, CallID: in.CallID, Tool: in.Tool, Args: in.Args, SessionID: in.SessionID})
+	result, err := worker.Call(ctx, workerwire.WorkerCall{Op: workerwire.OpCall, CallID: in.CallID, Tool: in.Tool, Args: in.Args, SessionID: in.SessionID, TurnCorrelationID: in.TurnCorrelationID})
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return failed(in.CallID, wire.ErrorTimeout, "invoke timed out")
@@ -555,7 +556,7 @@ func (p *Pool) logTenantForbidden(in wire.Invoke) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	logger.Warn("runtime tenant forbidden", "kernel_id", p.kernelID, "tenant_id", in.TenantID, "target", in.Target.ID, "tool", in.Tool, "call_id", in.CallID)
+	logger.Warn("runtime tenant forbidden", "kernel_id", p.kernelID, "tenant_id", in.TenantID, "target", in.Target.ID, "tool", in.Tool, "call_id", in.CallID, "turn_correlation_id", in.TurnCorrelationID)
 }
 
 func (p *Pool) logInvokeOutcome(in wire.Invoke, result wire.InvokeResult, err error, elapsed time.Duration) {
@@ -571,7 +572,7 @@ func (p *Pool) logInvokeOutcome(in wire.Invoke, result wire.InvokeResult, err er
 	} else if !result.OK {
 		outcome = "failed"
 	}
-	logger.Info("runtime invoke handled", "kernel_id", p.kernelID, "tenant_id", in.TenantID, "target", in.Target.ID, "tool", in.Tool, "call_id", in.CallID, "outcome", outcome, "duration_ms", elapsed.Milliseconds())
+	logger.Info("runtime invoke handled", "kernel_id", p.kernelID, "tenant_id", in.TenantID, "target", in.Target.ID, "tool", in.Tool, "call_id", in.CallID, "turn_correlation_id", in.TurnCorrelationID, "outcome", outcome, "duration_ms", elapsed.Milliseconds())
 }
 
 func (p *Pool) coldTenantCounts(tenantID string) (active, queued int) {

@@ -101,6 +101,7 @@ func (h *Hub) queueMessagePlan(sender *Client, msg *Message, plan messagePlan) b
 }
 
 func (h *Hub) handleUserMessage(sender *Client, msg *Message) {
+	msg.Meta, _ = ensureTurnCorrelationMeta(msg.Meta)
 	plan := h.buildMessagePlan(sender, msg)
 	if !plan.blocked && h.shouldStartSessionTurn(sender, plan.tenantID, plan.targetSession) {
 		if !h.tryBeginSessionTurn(plan.tenantID, plan.targetSession) {

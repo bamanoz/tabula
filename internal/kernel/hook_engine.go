@@ -436,6 +436,7 @@ func hookLogAttrs(event, client string, payload json.RawMessage, tenantID, sessi
 		Tool     string          `json:"tool"`
 		ID       string          `json:"id"`
 		TenantID string          `json:"tenant_id"`
+		Meta     map[string]any  `json:"meta"`
 		Input    json.RawMessage `json:"input"`
 	}
 	if err := json.Unmarshal(payload, &body); err == nil {
@@ -444,6 +445,9 @@ func hookLogAttrs(event, client string, payload json.RawMessage, tenantID, sessi
 		}
 		if body.ID != "" {
 			attrs = append(attrs, "tool_call_id", body.ID)
+		}
+		if turnCorrelationID, _ := body.Meta[turnCorrelationMetaKey].(string); turnCorrelationID != "" {
+			attrs = append(attrs, "turn_correlation_id", turnCorrelationID)
 		}
 		if tenantID == "" && body.TenantID != "" {
 			attrs = append(attrs, "payload_tenant_id", body.TenantID)

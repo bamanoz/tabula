@@ -121,7 +121,7 @@ func (c *Conn) Invoke(ctx context.Context, req runtimeapi.InvokeReq) (runtimeapi
 	if err != nil {
 		return runtimeapi.InvokeResp{}, err
 	}
-	frame := wire.Invoke{Op: wire.OpInvoke, CallID: req.CallID, TenantID: req.TenantID, SessionID: req.SessionID, Target: req.Target, Tool: req.Tool, Args: req.Args, TimeoutMS: req.TimeoutMS}
+	frame := wire.Invoke{Op: wire.OpInvoke, CallID: req.CallID, TenantID: req.TenantID, SessionID: req.SessionID, TurnCorrelationID: req.TurnCorrelationID, Target: req.Target, Tool: req.Tool, Args: req.Args, TimeoutMS: req.TimeoutMS}
 	if err := c.write(ctx, frame); err != nil {
 		c.unregisterPending(req.CallID)
 		return runtimeapi.InvokeResp{}, err
@@ -145,7 +145,7 @@ func (c *Conn) InvokeStream(ctx context.Context, req runtimeapi.InvokeReq, sink 
 	if err != nil {
 		return runtimeapi.InvokeResp{}, err
 	}
-	frame := wire.Invoke{Op: wire.OpInvoke, CallID: req.CallID, TenantID: req.TenantID, SessionID: req.SessionID, Target: req.Target, Tool: req.Tool, Args: req.Args, TimeoutMS: req.TimeoutMS}
+	frame := wire.Invoke{Op: wire.OpInvoke, CallID: req.CallID, TenantID: req.TenantID, SessionID: req.SessionID, TurnCorrelationID: req.TurnCorrelationID, Target: req.Target, Tool: req.Tool, Args: req.Args, TimeoutMS: req.TimeoutMS}
 	if err := c.write(ctx, frame); err != nil {
 		c.unregisterPending(req.CallID)
 		return runtimeapi.InvokeResp{}, err
@@ -237,6 +237,7 @@ func (c *Conn) SendHookEvent(ctx context.Context, req runtimeapi.HookEventReq) e
 		ReplyMode: replyMode,
 		Data:      req.Data,
 		SessionID: req.SessionID,
+		TurnCorrelationID: req.TurnCorrelationID,
 	}
 	if frame.TenantID == "" && frame.SessionID != "" {
 		var payload struct {

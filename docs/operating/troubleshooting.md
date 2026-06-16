@@ -13,6 +13,29 @@ tabula status --json
 
 Look at runtime `attached`, `last_error`, and target lifecycle diagnostics.
 
+## Tracing One Turn
+
+When you need to trace one agent turn end-to-end, use the session history or any
+client transcript to find the `turn_correlation_id` attached to the relevant
+`message.user` entry. Then inspect the merged correlation trace:
+
+```text
+turn_correlation_trace {"session":"SESSION_ID","turn_correlation_id":"tc-..."}
+```
+
+The trace merges matching history and ledger events so you can correlate:
+
+- the original user turn
+- driver lifecycle and usage events
+- tool dispatch events
+- hook dispatch audit entries
+- edit diffs
+- compaction boundaries
+
+Structured kernel/runtime logs also include `turn_correlation_id` on tool and
+runtime-dispatch paths, so you can cross-reference the same id in log files
+without exposing raw prompt contents.
+
 ## `tenant_forbidden`
 
 The tenant is not allowed to use the selected runtime. Check tenant config:

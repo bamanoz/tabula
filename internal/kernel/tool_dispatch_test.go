@@ -62,7 +62,7 @@ func TestHandleDynamicTool_RuntimeSourceInvokesAttachedRuntime(t *testing.T) {
 	}
 	hub.sessions.GetOrCreate("s1", "alpha").AddClient(c.name)
 
-	hub.tools.handleDynamicTool("alpha", "s1", "tid-rt", "mcp__echo", json.RawMessage(`{}`))
+	hub.tools.handleDynamicTool("alpha", "s1", "tid-rt", "mcp__echo", json.RawMessage(`{}`), "")
 	msg := waitForMessage(t, c.recvCh)
 	if !isToolResult(msg) || msg.Output != "ok" {
 		t.Fatalf("unexpected runtime tool result: %+v", msg)
@@ -91,7 +91,7 @@ func TestHandleDynamicTool_LargeRuntimeResultWithoutRewriteFailsExplicitly(t *te
 	}
 	hub.sessions.GetOrCreate("s1", "alpha").AddClient(c.name)
 
-	hub.tools.handleDynamicTool("alpha", "s1", "tid-rt", "mcp__echo", json.RawMessage(`{}`))
+	hub.tools.handleDynamicTool("alpha", "s1", "tid-rt", "mcp__echo", json.RawMessage(`{}`), "")
 	msg := waitForMessage(t, c.recvCh)
 	if !isToolResult(msg) || !strings.Contains(msg.Output, "before_tool_result") {
 		t.Fatalf("unexpected runtime tool result: %+v", msg)
@@ -121,7 +121,7 @@ func TestHandleDynamicTool_InvokeStreamCleansKernelSpool(t *testing.T) {
 	}
 	hub.sessions.GetOrCreate("s1", "alpha").AddClient(c.name)
 
-	hub.tools.handleDynamicTool("alpha", "s1", "tid-stream", "mcp__echo", json.RawMessage(`{}`))
+	hub.tools.handleDynamicTool("alpha", "s1", "tid-stream", "mcp__echo", json.RawMessage(`{}`), "")
 	msg := waitForMessage(t, c.recvCh)
 	if !isToolResult(msg) || msg.Output != "ok" {
 		t.Fatalf("unexpected runtime tool result: %+v", msg)
@@ -149,7 +149,7 @@ func TestHandleDynamicTool_BroadcastsBoundedToolResultStreamEvents(t *testing.T)
 	}
 	hub.sessions.GetOrCreate("s1", "alpha").AddClient(c.name)
 
-	hub.tools.handleDynamicTool("alpha", "s1", "tid-stream-events", "mcp__echo", json.RawMessage(`{}`))
+	hub.tools.handleDynamicTool("alpha", "s1", "tid-stream-events", "mcp__echo", json.RawMessage(`{}`), "")
 	seen := map[string]*Message{}
 	for len(seen) < 4 {
 		msg := waitForMessage(t, c.recvCh)
@@ -184,7 +184,7 @@ func TestHandleDynamicTool_FailedRuntimeResultDoesNotBroadcastStreamEnd(t *testi
 	}
 	hub.sessions.GetOrCreate("s1", "alpha").AddClient(c.name)
 
-	hub.tools.handleDynamicTool("alpha", "s1", "tid-failed", "mcp__echo", json.RawMessage(`{}`))
+	hub.tools.handleDynamicTool("alpha", "s1", "tid-failed", "mcp__echo", json.RawMessage(`{}`), "")
 	msg := waitForMessage(t, c.recvCh)
 	if !isToolResult(msg) || !strings.Contains(msg.Output, "boom") {
 		t.Fatalf("unexpected runtime tool result: %+v", msg)
@@ -507,7 +507,7 @@ func TestRuntimeToolsAreScopedByTenant(t *testing.T) {
 	}
 	hub.sessions.GetOrCreate("s-alpha", "alpha").AddClient(alphaClient.name)
 
-	hub.tools.handleDynamicTool("alpha", "s-alpha", "tid-alpha", "fs_read", json.RawMessage(`{}`))
+	hub.tools.handleDynamicTool("alpha", "s-alpha", "tid-alpha", "fs_read", json.RawMessage(`{}`), "")
 	msg := waitForMessage(t, alphaClient.recvCh)
 	if !isToolResult(msg) || msg.Output != "alpha-ok" {
 		t.Fatalf("unexpected alpha result: %+v", msg)
@@ -629,7 +629,7 @@ func TestHandleDynamicTool_FallsBackToTenantDefaultRuntimeForGlobalDispatch(t *t
 	}
 	hub.sessions.GetOrCreate("s1", "alpha").AddClient(c.name)
 
-	hub.tools.handleDynamicTool("alpha", "s1", "tid-rt", "mcp__echo", json.RawMessage(`{}`))
+	hub.tools.handleDynamicTool("alpha", "s1", "tid-rt", "mcp__echo", json.RawMessage(`{}`), "")
 	msg := waitForMessage(t, c.recvCh)
 	if !isToolResult(msg) || msg.Output != "remote" {
 		t.Fatalf("unexpected runtime tool result: %+v", msg)
@@ -669,7 +669,7 @@ func TestHandleDynamicToolInvokesRuntimeOwningTool(t *testing.T) {
 	}
 	hub.sessions.GetOrCreate("s1", "alpha").AddClient(c.name)
 
-	hub.tools.handleDynamicTool("alpha", "s1", "tid-rt", "fs_read", json.RawMessage(`{}`))
+	hub.tools.handleDynamicTool("alpha", "s1", "tid-rt", "fs_read", json.RawMessage(`{}`), "")
 	msg := waitForMessage(t, c.recvCh)
 	if !isToolResult(msg) || msg.Output != "remote" {
 		t.Fatalf("unexpected runtime tool result: %+v", msg)
@@ -699,7 +699,7 @@ func TestHandleDynamicTool_ReturnsTenantForbiddenWhenDefaultRuntimeDisallowed(t 
 	}
 	hub.sessions.GetOrCreate("s1", "alpha").AddClient(c.name)
 
-	hub.tools.handleDynamicTool("alpha", "s1", "tid-rt", "mcp__echo", json.RawMessage(`{}`))
+	hub.tools.handleDynamicTool("alpha", "s1", "tid-rt", "mcp__echo", json.RawMessage(`{}`), "")
 	msg := waitForMessage(t, c.recvCh)
 	if !isToolResult(msg) || !strings.Contains(msg.Output, "cannot use runtime") {
 		t.Fatalf("unexpected runtime tool result: %+v", msg)

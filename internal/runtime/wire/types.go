@@ -393,6 +393,8 @@ type Invoke struct {
 	TenantID string `json:"tenant_id"`
 	// SessionID optionally carries the originating kernel session id.
 	SessionID string `json:"session_id,omitempty"`
+	// TurnCorrelationID correlates all events within one logical agent turn.
+	TurnCorrelationID string `json:"turn_correlation_id,omitempty"`
 	// Target is the skill or plugin target object.
 	Target Target `json:"target"`
 	// Tool is the tool name within Target.
@@ -555,6 +557,8 @@ type HookEvent struct {
 	Data json.RawMessage `json:"data,omitempty"`
 	// SessionID optionally carries the session id for diagnostics/routing.
 	SessionID string `json:"session_id,omitempty"`
+	// TurnCorrelationID correlates all events within one logical agent turn.
+	TurnCorrelationID string `json:"turn_correlation_id,omitempty"`
 }
 
 // HookReplyMode declares whether a runtime hook event expects a reply.

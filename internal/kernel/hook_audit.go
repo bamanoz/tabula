@@ -78,6 +78,7 @@ func summarizeHookPayload(raw json.RawMessage) map[string]any {
 	var body struct {
 		Tool  string         `json:"tool"`
 		ID    string         `json:"id"`
+		Meta  map[string]any `json:"meta"`
 		Input map[string]any `json:"input"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
@@ -88,6 +89,9 @@ func summarizeHookPayload(raw json.RawMessage) map[string]any {
 	}
 	if body.ID != "" {
 		summary["tool_call_id"] = body.ID
+	}
+	if turnCorrelationID, _ := body.Meta[turnCorrelationMetaKey].(string); turnCorrelationID != "" {
+		summary["turn_correlation_id"] = turnCorrelationID
 	}
 	if body.Input == nil {
 		return summary

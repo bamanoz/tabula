@@ -99,6 +99,8 @@ type WorkerCall struct {
 	Args json.RawMessage `json:"args,omitempty"`
 	// SessionID optionally carries the originating kernel session id.
 	SessionID string `json:"session_id,omitempty"`
+	// TurnCorrelationID correlates all events within one logical agent turn.
+	TurnCorrelationID string `json:"turn_correlation_id,omitempty"`
 }
 
 // WorkerResult is the terminal worker response for one call.
@@ -125,6 +127,8 @@ type WorkerEvent struct {
 	ReplyMode ReplyMode `json:"reply_mode"`
 	// SessionID optionally carries the originating session id.
 	SessionID string `json:"session_id,omitempty"`
+	// TurnCorrelationID correlates all events within one logical agent turn.
+	TurnCorrelationID string `json:"turn_correlation_id,omitempty"`
 	// Data carries the raw hook payload.
 	Data json.RawMessage `json:"data,omitempty"`
 }

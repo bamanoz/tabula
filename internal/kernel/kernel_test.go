@@ -665,6 +665,26 @@ func TestRoutedMessagesOverwriteKernelMeta(t *testing.T) {
 	}
 }
 
+func TestUserMessagesGetTurnCorrelationID(t *testing.T) {
+	env := newTestEnv(t)
+	sender := env.connectAndJoin("sender", "main", []string{TopicMessageUser}, []string{})
+	receiver := env.connectAndJoin("receiver", "main", []string{}, []string{TopicMessageUser})
+
+	writeJSON(t, sender, userMessage("hello"))
+	routed := readMsg(t, receiver)
+	var meta map[string]any
+	if err := json.Unmarshal(routed.Meta, &meta); err != nil {
+		t.Fatalf("invalid routed meta: %v", err)
+	}
+	turnCorrelationID, _ := meta[turnCorrelationMetaKey].(string)
+	if turnCorrelationID == "" {
+		t.Fatalf("expected %s in routed meta, got %+v", turnCorrelationMetaKey, meta)
+	}
+	if !strings.HasPrefix(turnCorrelationID, "tc-") {
+		t.Fatalf("expected generated turn correlation id, got %q", turnCorrelationID)
+	}
+}
+
 func TestExchangeReplyRequiresChosenResponder(t *testing.T) {
 	testExchangeReplyRequiresChosenResponder(t, TopicExchangeChoose)
 	testExchangeReplyRequiresChosenResponder(t, TopicExchangeApprove)

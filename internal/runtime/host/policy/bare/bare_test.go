@@ -26,11 +26,11 @@ func TestBarePolicySpawnInitCallAndShutdown(t *testing.T) {
 	if _, err := worker.Init(context.Background(), workerwire.WorkerInit{KernelID: req.KernelID, TenantID: req.TenantID, TargetID: req.TargetID, Manifest: req.Manifest}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	result, err := worker.Call(context.Background(), workerwire.WorkerCall{CallID: "call-1", Tool: "read_file", Args: json.RawMessage(`{"path":"x"}`)})
+	result, err := worker.Call(context.Background(), workerwire.WorkerCall{CallID: "call-1", Tool: "read_file", Args: json.RawMessage(`{"path":"x"}`), TurnCorrelationID: "tc-1"})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	if !result.OK || result.CallID != "call-1" || !strings.Contains(string(result.Data), `"tenant_id": "tenant-a"`) {
+	if !result.OK || result.CallID != "call-1" || !strings.Contains(string(result.Data), `"tenant_id": "tenant-a"`) || !strings.Contains(string(result.Data), `"turn_correlation_id": "tc-1"`) {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 	if err := worker.Shutdown(context.Background()); err != nil {
@@ -437,6 +437,7 @@ for line in sys.stdin:
         "tenant_dir": os.environ.get("TABULA_TENANT_DIR", ""),
         "kernel_id": os.environ.get("TABULA_KERNEL_ID", ""),
         "target_id": os.environ.get("TABULA_TARGET_ID", ""),
+        "turn_correlation_id": frame.get("turn_correlation_id", ""),
     }
     sys.stdout.write(json.dumps({"op": "result", "call_id": call_id, "ok": True, "data": data}) + "\n")
     sys.stdout.flush()

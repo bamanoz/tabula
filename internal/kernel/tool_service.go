@@ -53,11 +53,12 @@ func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 	session := sender.session
 	tenantID := sender.tenantID
 
-	s.hub.Logger.Debug("tool.call", "tool", toolName, "tenant_id", tenantID, "session", session, "id", toolID)
+	turnCorrelationID := metaString(msg.Meta, turnCorrelationMetaKey)
+	s.hub.Logger.Debug("tool.call", "tool", toolName, "tenant_id", tenantID, "session", session, "id", toolID, "turn_correlation_id", turnCorrelationID)
 
 	effectiveInput, blocked := s.hub.policy.CanUseTool(sender, toolName, toolID, msg.Input, msg.Meta, session)
 	if blocked != nil {
-		s.hub.Logger.Warn("tool call blocked by policy", "tool", toolName, "tool_call_id", toolID, "tenant_id", tenantID, "session", session, "input_bytes", len(msg.Input))
+		s.hub.Logger.Warn("tool call blocked by policy", "tool", toolName, "tool_call_id", toolID, "turn_correlation_id", turnCorrelationID, "tenant_id", tenantID, "session", session, "input_bytes", len(msg.Input))
 		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, buildNotInvokedToolResult(blocked), nil, false)
 		return
 	}
@@ -71,10 +72,10 @@ func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 		Meta:  msg.Meta,
 	}, sender, sender)
 
-	s.handleDynamicTool(tenantID, session, toolID, toolName, msg.Input)
+	s.handleDynamicTool(tenantID, session, toolID, toolName, msg.Input, turnCorrelationID)
 }
 
-func (s *ToolService) handleDynamicTool(tenantID, session, toolID, toolName string, input json.RawMessage) {
+func (s *ToolService) handleDynamicTool(tenantID, session, toolID, toolName string, input json.RawMessage, turnCorrelationID string) {
 	s.hub.toolExecMu.RLock()
 	entry, ok := s.hub.toolExec[toolExecKey(tenantID, toolName)]
 	if !ok {
@@ -83,11 +84,12 @@ func (s *ToolService) handleDynamicTool(tenantID, session, toolID, toolName stri
 	s.hub.toolExecMu.RUnlock()
 	if !ok {
 		count, visibleElsewhere := s.hub.toolDispatchDiagnostics(tenantID, toolName)
-		s.hub.Logger.Warn(
-			"unknown tool dispatch",
-			"tool", toolName,
-			"tool_call_id", toolID,
-			"tenant_id", tenantID,
+			s.hub.Logger.Warn(
+				"unknown tool dispatch",
+				"tool", toolName,
+				"tool_call_id", toolID,
+				"turn_correlation_id", turnCorrelationID,
+				"tenant_id", tenantID,
 			"session", session,
 			"tool_registry_entries", count,
 			"tool_visible_in_other_tenant", visibleElsewhere,
@@ -97,7 +99,7 @@ func (s *ToolService) handleDynamicTool(tenantID, session, toolID, toolName stri
 	}
 	switch entry.Source {
 	case toolSourceRuntime:
-		s.handleRuntimeTool(tenantID, session, toolID, toolName, entry, input)
+		s.handleRuntimeTool(tenantID, session, toolID, toolName, entry, input, turnCorrelationID)
 	default:
 		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: tool %s has unknown dispatch source", toolName), nil, false)
 	}
@@ -124,7 +126,7 @@ func buildNotInvokedToolResult(blocked *HookDispatchDecision) string {
 	}
 	return string(mustMarshalRaw(result))
 }
-func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName string, entry toolDispatch, input json.RawMessage) {
+func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName string, entry toolDispatch, input json.RawMessage, turnCorrelationID string) {
 	go func() {
 		var conn runtimeapi.RuntimeConn
 		pickedRuntimeID := entry.RuntimeID
@@ -138,12 +140,12 @@ func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName stri
 		if pickErr != nil {
 			s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, "ERROR: "+pickErr.Error(), nil, false)
 			if code != "" {
-				s.hub.Logger.Warn("runtime pick failed", "tool", toolName, "tool_call_id", toolID, "runtime_id", pickedRuntimeID, "tenant_id", tenantID, "session", session, "code", code, "err", pickErr)
+				s.hub.Logger.Warn("runtime pick failed", "tool", toolName, "tool_call_id", toolID, "turn_correlation_id", turnCorrelationID, "runtime_id", pickedRuntimeID, "tenant_id", tenantID, "session", session, "code", code, "err", pickErr)
 			}
 			return
 		}
 		if conn == nil {
-			s.hub.Logger.Warn("runtime tool unavailable", "tool", toolName, "tool_call_id", toolID, "runtime_id", pickedRuntimeID, "tenant_id", tenantID, "session", session, "target_kind", string(entry.Target.Kind), "target", entry.Target.ID)
+			s.hub.Logger.Warn("runtime tool unavailable", "tool", toolName, "tool_call_id", toolID, "turn_correlation_id", turnCorrelationID, "runtime_id", pickedRuntimeID, "tenant_id", tenantID, "session", session, "target_kind", string(entry.Target.Kind), "target", entry.Target.ID)
 			s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: runtime tool %s is unavailable", toolName), nil, false)
 			return
 		}
@@ -163,13 +165,14 @@ func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName stri
 		defer stopWatch()
 
 		resp, err := conn.InvokeStream(ctx, runtimeapi.InvokeReq{
-			CallID:    toolID,
-			TenantID:  tenantID,
-			SessionID: session,
-			Target:    entry.Target,
-			Tool:      toolName,
-			Args:      input,
-			TimeoutMS: int64(deadline / time.Millisecond),
+			CallID:            toolID,
+			TenantID:          tenantID,
+			SessionID:         session,
+			TurnCorrelationID: turnCorrelationID,
+			Target:            entry.Target,
+			Tool:              toolName,
+			Args:              input,
+			TimeoutMS:         int64(deadline / time.Millisecond),
 		}, spool)
 		if err != nil {
 			if ctx.Err() == context.Canceled && spool.TerminalState() == invokeResultSpoolTimedOut {
@@ -177,7 +180,7 @@ func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName stri
 				return
 			}
 			spool.MarkTerminal(invokeResultSpoolFailed)
-			s.hub.Logger.Warn("runtime tool invoke failed", "tool", toolName, "tool_call_id", toolID, "runtime_id", pickedRuntimeID, "tenant_id", tenantID, "session", session, "target_kind", string(entry.Target.Kind), "target", entry.Target.ID, "err", err)
+			s.hub.Logger.Warn("runtime tool invoke failed", "tool", toolName, "tool_call_id", toolID, "turn_correlation_id", turnCorrelationID, "runtime_id", pickedRuntimeID, "tenant_id", tenantID, "session", session, "target_kind", string(entry.Target.Kind), "target", entry.Target.ID, "err", err)
 			if ctx.Err() != nil {
 				spool.MarkTerminal(invokeResultSpoolTimedOut)
 				s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, "ERROR: invoke timed out", nil, false)

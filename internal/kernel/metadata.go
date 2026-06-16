@@ -1,10 +1,14 @@
 package kernel
 
 import (
+	"crypto/rand"
 	"encoding/json"
+	"encoding/hex"
 	"strconv"
 	"time"
 )
+
+const turnCorrelationMetaKey = "turn_correlation_id"
 
 func (h *Hub) prepareRoutedMessage(sender *Client, session string, scope string, msg *Message) *Message {
 	routed := cloneMessage(msg)
@@ -76,6 +80,49 @@ func withKernelMeta(raw json.RawMessage, kernel map[string]any) json.RawMessage 
 		return raw
 	}
 	return encoded
+}
+
+func metaMap(raw json.RawMessage) map[string]any {
+	meta := map[string]any{}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &meta)
+	}
+	return meta
+}
+
+func metaString(raw json.RawMessage, key string) string {
+	meta := metaMap(raw)
+	value, _ := meta[key].(string)
+	return value
+}
+
+func withMetaString(raw json.RawMessage, key, value string) json.RawMessage {
+	if value == "" {
+		return raw
+	}
+	meta := metaMap(raw)
+	meta[key] = value
+	encoded, err := json.Marshal(meta)
+	if err != nil {
+		return raw
+	}
+	return encoded
+}
+
+func ensureTurnCorrelationMeta(raw json.RawMessage) (json.RawMessage, string) {
+	if existing := metaString(raw, turnCorrelationMetaKey); existing != "" {
+		return raw, existing
+	}
+	generated := generateTurnCorrelationID()
+	return withMetaString(raw, turnCorrelationMetaKey, generated), generated
+}
+
+func generateTurnCorrelationID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	return "tc-" + hex.EncodeToString(b)
 }
 
 func (c *Client) clientID() string {

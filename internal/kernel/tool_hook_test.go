@@ -376,7 +376,7 @@ func TestBeforeToolCallHookWritesDispatchAuditEvents(t *testing.T) {
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
 
 	go func() {
-		writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-audit", Input: json.RawMessage(`{"text":"ok"}`)})
+		writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-audit", Input: json.RawMessage(`{"text":"ok"}`), Meta: mustMarshalRaw(map[string]any{turnCorrelationMetaKey: "tc-audit-1"})})
 	}()
 
 	hookMsg := readMsg(t, hook)
@@ -392,7 +392,7 @@ func TestBeforeToolCallHookWritesDispatchAuditEvents(t *testing.T) {
 		t.Fatalf("read ledger: %v", err)
 	}
 	text := string(data)
-	if !strings.Contains(text, "hook.dispatch.audit") || !strings.Contains(text, "echo_tool") || !strings.Contains(text, "continued") {
+	if !strings.Contains(text, "hook.dispatch.audit") || !strings.Contains(text, "echo_tool") || !strings.Contains(text, "continued") || !strings.Contains(text, "tc-audit-1") {
 		t.Fatalf("expected hook dispatch audit event, got %q", text)
 	}
 }
