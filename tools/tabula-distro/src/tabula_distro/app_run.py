@@ -269,7 +269,7 @@ def _internal_url(kernel_url: str, path: str) -> str:
     return urlunparse((scheme, parsed.netloc, path, "", "", ""))
 
 
-def write_runtime_config(manifest: AppManifest, home: Path) -> Path:
+def write_runtime_config(manifest: AppManifest, home: Path, *, distro_dir: Path | None = None) -> Path:
     path = home / "config" / "runtime.toml"
     tenant = manifest.application.id
     tenant_dir = home / "tenants" / tenant
@@ -299,8 +299,24 @@ def write_runtime_config(manifest: AppManifest, home: Path) -> Path:
     kernel_aot.append(kernel)
     doc["kernel"] = kernel_aot
 
+    if distro_dir is not None:
+        doc["distro"] = _distro_table(distro_dir)
+
     toml_io.dump(path, doc)
     return path
+
+
+def _distro_table(distro_dir: Path) -> tomlkit.items.Table:
+    distro_dir = distro_dir.expanduser().resolve()
+    parent = distro_dir.parent
+    if parent.name == "generations":
+        active = parent.parent.name
+    else:
+        active = distro_dir.name
+    table = tomlkit.table()
+    table["active"] = active
+    table["dir"] = str(distro_dir)
+    return table
 
 
 def _string_array(values: list[str]) -> tomlkit.items.Array:

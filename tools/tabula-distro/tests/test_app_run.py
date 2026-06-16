@@ -87,6 +87,34 @@ class AppRunTests(unittest.TestCase):
             self.assertIn(str(home / "tenants" / "claw-tabula" / "plugins"), runtime_cfg)
             self.assertIn(str(home / "run" / "runtime-token"), runtime_cfg)
             self.assertIn('tenants = ["claw-tabula"]', runtime_cfg)
+            self.assertIn('[distro]', runtime_cfg)
+            self.assertIn('active = "claw"', runtime_cfg)
+
+    def test_dry_run_refreshes_stale_distro_generation_in_runtime_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            _make_distro(root)
+            stale = home / "distrib" / "claw" / "generations" / "0001-stale"
+            _write(home / "config" / "runtime.toml", f'''
+plugin_dirs = []
+skill_dirs = []
+
+[distro]
+active = "claw"
+dir = "{stale}"
+''')
+            manifest_path = root / "tabula.app.toml"
+            _write(manifest_path, _manifest(root))
+
+            code, _out, err = self._run_cli(["--home", str(home), "app", "run", str(manifest_path), "--dry-run", "--update"])
+
+            self.assertEqual(code, 0, err)
+            runtime_cfg = (home / "config" / "runtime.toml").read_text(encoding="utf-8")
+            self.assertIn('[distro]', runtime_cfg)
+            self.assertIn('active = "claw"', runtime_cfg)
+            self.assertNotIn("0001-stale", runtime_cfg)
+            self.assertIn(str(home / "distrib" / "claw" / "generations"), runtime_cfg)
 
     def test_run_uses_installed_tabula_bin_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:

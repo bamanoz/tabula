@@ -73,6 +73,41 @@ func TestHandleDynamicTool_RuntimeSourceInvokesAttachedRuntime(t *testing.T) {
 	}
 }
 
+func TestHandleCancelCancelsInFlightRuntimeTool(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	rc := runtimemock.New()
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
+	rc.OnInvoke("alpha", target, "mcp__slow").Delay(30 * time.Second).Return([]byte(`"late"`))
+	capability := wire.Capability{Target: target, Tools: []wire.ToolSpec{{Name: "mcp__slow"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}
+	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{capability}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	hub.syncRuntimeCapability("local", capability)
+
+	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	if !hub.addClient(c) {
+		t.Fatal("addClient failed")
+	}
+	hub.sessions.GetOrCreate("s1", "alpha").AddClient(c.name)
+
+	hub.tools.handleDynamicTool("alpha", "s1", "tid-cancel", "mcp__slow", json.RawMessage(`{}`), "")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := rc.WaitForRecordedInvokes(ctx, 1); err != nil {
+		t.Fatalf("WaitForRecordedInvokes: %v", err)
+	}
+
+	hub.handleCancel("alpha", "s1")
+	msg := waitForMessage(t, c.recvCh)
+	if !isToolResult(msg) || !strings.Contains(msg.Output, "cancel") {
+		t.Fatalf("unexpected cancelled runtime tool result: %+v", msg)
+	}
+	if cancels := rc.RecordedCancels(); len(cancels) != 1 || cancels[0] != "tid-cancel" {
+		t.Fatalf("unexpected recorded cancels: %+v", cancels)
+	}
+}
+
 func TestHandleDynamicTool_LargeRuntimeResultWithoutRewriteFailsExplicitly(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.SetSessionStore(NewDiskSessionStore(t.TempDir()))

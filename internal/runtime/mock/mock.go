@@ -249,6 +249,15 @@ func (m *RuntimeConn) RecordedInvokes() []runtimeapi.InvokeReq {
 	return out
 }
 
+// RecordedCancels returns cancelled call IDs in chronological order.
+func (m *RuntimeConn) RecordedCancels() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, len(m.cancels))
+	copy(out, m.cancels)
+	return out
+}
+
 // RecordedReloads returns reload requests in chronological order.
 func (m *RuntimeConn) RecordedReloads() []runtimeapi.ReloadReq {
 	m.mu.Lock()

@@ -109,6 +109,9 @@ func (h *Hub) handleCancel(tenantID, session string) {
 	if session == "" {
 		return
 	}
+	if h.tools != nil {
+		h.tools.CancelSession(tenantID, session)
+	}
 	sess, ok := h.sessions.Get(session, tenantID)
 	if ok && sess.RequestCancel() {
 		h.persistSessionState(tenantID, session)

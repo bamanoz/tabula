@@ -122,9 +122,10 @@ agent-prepare:
 	TABULA_SOURCE_ALIAS_TABULA_DISTRIB="local:$(LOCAL_TABULA_DISTRIB)" \
 	TABULA_SOURCE_ALIAS_TABULA_BUNDLES="local:$(LOCAL_TABULA_BUNDLES)" \
 	"$(AGENT_HOME)/bin/tabula-install" app run "$(CURDIR)/tabula.app.toml" --dry-run --update
+	TABULA_HOME="$(AGENT_HOME)" "$(AGENT_HOME)/bin/tabula" distro trust --yes
 
 agent-run:
-	TABULA_HOME="$(AGENT_HOME)" TABULA_LOG_LEVEL="$${TABULA_LOG_LEVEL:-info}" "$(AGENT_HOME)/bin/tabula-runner"
+	TABULA_HOME="$(AGENT_HOME)" TABULA_BOOT= TABULA_LOG_LEVEL="$${TABULA_LOG_LEVEL:-info}" "$(AGENT_HOME)/bin/tabula-runner"
 
 agent-connect:
 	TABULA_HOME="$(AGENT_HOME)" "$(AGENT_HOME)/bin/tabula-cli" $(if $(SESSION),--session $(SESSION),)

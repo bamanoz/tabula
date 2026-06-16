@@ -65,7 +65,25 @@ load_app_env
 if [ -z "${TABULA_BOOT:-}" ]; then
   BOOT_FILE="$TABULA_HOME/boot.py"
   if [ ! -f "$BOOT_FILE" ]; then
-    BOOT_FILE="$TABULA_HOME/distrib/active/boot.py"
+    BOOT_FILE="$($TABULA_VENV/bin/python3 - "$TABULA_HOME/config/runtime.toml" <<'PY'
+import sys
+import tomllib
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    with path.open("rb") as f:
+        data = tomllib.load(f)
+except OSError:
+    raise SystemExit(1)
+distro = data.get("distro") or {}
+boot = Path(str(distro.get("dir") or "")) / "boot.py"
+if boot.is_file():
+    print(boot)
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+)" || BOOT_FILE="$TABULA_HOME/distrib/active/boot.py"
   fi
   export TABULA_BOOT="\"$TABULA_VENV/bin/python3\" \"$BOOT_FILE\""
 fi

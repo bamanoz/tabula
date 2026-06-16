@@ -36,10 +36,18 @@ const (
 
 type ToolService struct {
 	hub *Hub
+
+	mu          sync.Mutex
+	activeCalls map[sessionKey]map[string]activeRuntimeCall
 }
 
 func NewToolService(hub *Hub) *ToolService {
-	return &ToolService{hub: hub}
+	return &ToolService{hub: hub, activeCalls: make(map[sessionKey]map[string]activeRuntimeCall)}
+}
+
+type activeRuntimeCall struct {
+	callID string
+	conn   runtimeapi.RuntimeConn
 }
 
 // HandleToolUse routes a tool.call request through the before_tool_call hook
@@ -84,12 +92,12 @@ func (s *ToolService) handleDynamicTool(tenantID, session, toolID, toolName stri
 	s.hub.toolExecMu.RUnlock()
 	if !ok {
 		count, visibleElsewhere := s.hub.toolDispatchDiagnostics(tenantID, toolName)
-			s.hub.Logger.Warn(
-				"unknown tool dispatch",
-				"tool", toolName,
-				"tool_call_id", toolID,
-				"turn_correlation_id", turnCorrelationID,
-				"tenant_id", tenantID,
+		s.hub.Logger.Warn(
+			"unknown tool dispatch",
+			"tool", toolName,
+			"tool_call_id", toolID,
+			"turn_correlation_id", turnCorrelationID,
+			"tenant_id", tenantID,
 			"session", session,
 			"tool_registry_entries", count,
 			"tool_visible_in_other_tenant", visibleElsewhere,
@@ -151,6 +159,8 @@ func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName stri
 		}
 		releaseRuntimeTarget := s.hub.markRuntimeTargetBusy(pickedRuntimeID, entry.Target)
 		defer releaseRuntimeTarget()
+		unregisterActiveCall := s.registerActiveRuntimeCall(tenantID, session, toolID, activeRuntimeCall{callID: toolID, conn: conn})
+		defer unregisterActiveCall()
 		deadline := resolveToolDeadline(entry.DeadlineMs)
 		ctx, cancel := context.WithTimeout(context.Background(), runtimeInvokeDeadline(deadline))
 		defer cancel()
@@ -207,6 +217,53 @@ func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName stri
 			"tool": toolName, "id": toolID, "output": result.Output,
 		})
 	}()
+}
+
+func (s *ToolService) registerActiveRuntimeCall(tenantID, session, toolID string, call activeRuntimeCall) func() {
+	if s == nil || session == "" || toolID == "" || call.conn == nil {
+		return func() {}
+	}
+	key := sessionRegistryKey(session, tenantID)
+	s.mu.Lock()
+	if s.activeCalls[key] == nil {
+		s.activeCalls[key] = make(map[string]activeRuntimeCall)
+	}
+	s.activeCalls[key][toolID] = call
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		calls := s.activeCalls[key]
+		if calls != nil {
+			delete(calls, toolID)
+			if len(calls) == 0 {
+				delete(s.activeCalls, key)
+			}
+		}
+		s.mu.Unlock()
+	}
+}
+
+func (s *ToolService) CancelSession(tenantID, session string) {
+	if s == nil || session == "" {
+		return
+	}
+	key := sessionRegistryKey(session, tenantID)
+	s.mu.Lock()
+	calls := s.activeCalls[key]
+	active := make([]activeRuntimeCall, 0, len(calls))
+	for _, call := range calls {
+		active = append(active, call)
+	}
+	s.mu.Unlock()
+	for _, call := range active {
+		go func(call activeRuntimeCall) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := call.conn.Cancel(ctx, call.callID); err != nil {
+				s.hub.Logger.Warn("runtime tool cancel failed", "tool_call_id", call.callID, "tenant_id", tenantID, "session", session, "err", err)
+			}
+		}(call)
+	}
 }
 
 type runtimeToolResult struct {

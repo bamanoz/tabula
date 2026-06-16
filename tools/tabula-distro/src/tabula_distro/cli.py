@@ -429,7 +429,7 @@ def _cmd_app_prepare(args: argparse.Namespace, home: Path) -> int:
     materialized = appmod.run_materializer(manifest, home, lock_path=lock_path, phase="run", dry_run=True)
     appmod.compile_plugin_configs(home, tenant_dir)
     registry = bindmod.apply_manifest_bindings(home, manifest.bindings)
-    runmod.write_runtime_config(manifest, home)
+    runmod.write_runtime_config(manifest, home, distro_dir=install_result.generation.path)
     _ = install_result
     installmod.touch_reload_trigger(home, tenant=manifest.application.id)
     print(f"prepared app {manifest.application.id}")
@@ -458,7 +458,7 @@ def _cmd_app_run(args: argparse.Namespace, home: Path) -> int:
     materialized = appmod.run_materializer(manifest, home, lock_path=lock_path, phase="run", dry_run=bool(args.dry_run))
     appmod.compile_plugin_configs(home, tenant_dir)
     bindmod.apply_manifest_bindings(home, manifest.bindings)
-    runmod.write_runtime_config(manifest, home)
+    runmod.write_runtime_config(manifest, home, distro_dir=install_result.generation.path)
     _ = materialized
     installmod.touch_reload_trigger(home, tenant=manifest.application.id)
     plan = runmod.plan(manifest)
