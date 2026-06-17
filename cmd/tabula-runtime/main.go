@@ -173,7 +173,7 @@ func startCmd(args []string, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	defer workerPool.Close()
-	if err := dialer.Run(ctx, dialer.Options{Kernel: kernelCfg, RuntimeID: *runtimeID, Handler: daemon.NewHandler(daemon.Options{Store: manifestStore, Pool: workerPool}), Logger: logger}); err != nil {
+	if err := dialer.Run(ctx, dialer.Options{Kernel: kernelCfg, RuntimeID: *runtimeID, Handler: daemon.NewHandler(daemon.Options{Store: manifestStore, Pool: workerPool}), Logger: logger, Reconnect: true}); err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}

@@ -431,6 +431,84 @@ func TestRunRetriesWithBackoff(t *testing.T) {
 	}
 }
 
+func TestRunReconnectsAfterKernelDisconnect(t *testing.T) {
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "runtime-token")
+	if err := os.WriteFile(tokenPath, []byte("secret-token\n"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	sock := filepath.Join("/tmp", "tabula-rt-dialer-"+filepath.Base(dir), "runtime.sock")
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(sock)) })
+	listener, err := unixsock.Listen(sock)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer listener.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var hellos atomic.Int32
+	serverDone := make(chan error, 1)
+	go func() {
+		serverDone <- listener.Serve(func(ctx context.Context, c *codec.Conn) {
+			defer func() { _ = c.CloseNow() }()
+			_, frame, err := c.Read(ctx)
+			if err != nil {
+				t.Errorf("read hello: %v", err)
+				return
+			}
+			hello, ok := frame.(*wire.Hello)
+			if !ok {
+				t.Errorf("expected hello, got %T", frame)
+				return
+			}
+			if hello.Token != "secret-token" || hello.RuntimeID != DefaultRuntimeID {
+				t.Errorf("unexpected hello: %#v", hello)
+			}
+			if err := c.Write(ctx, wire.HelloAck{Op: wire.OpHelloAck, Accepted: true, KernelID: "main"}); err != nil {
+				t.Errorf("write hello_ack: %v", err)
+				return
+			}
+			if hellos.Add(1) >= 2 {
+				cancel()
+			}
+		})
+	}()
+
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- Run(ctx, Options{
+			Kernel:          runtimeconfig.Kernel{ID: "local", URL: "unix://" + sock, TokenFile: tokenPath},
+			Handler:         daemon.NewHandler(),
+			Logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Reconnect:       true,
+			InitialBackoff:  time.Millisecond,
+			MaximumBackoff:  time.Millisecond,
+			ShutdownTimeout: time.Second,
+		})
+	}()
+
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		cancel()
+		<-runDone
+		t.Fatalf("Run did not reconnect, hellos=%d", hellos.Load())
+	}
+	if got := hellos.Load(); got < 2 {
+		t.Fatalf("hellos = %d, want at least 2", got)
+	}
+	listener.Close()
+	select {
+	case <-serverDone:
+	case <-time.After(time.Second):
+		t.Fatal("fake kernel listener did not stop")
+	}
+}
+
 func TestRunWithoutReconnectExitsAfterKernelDisconnect(t *testing.T) {
 	dir := t.TempDir()
 	tokenPath := filepath.Join(dir, "runtime-token")

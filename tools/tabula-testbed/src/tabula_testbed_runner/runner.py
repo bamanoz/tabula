@@ -39,6 +39,23 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def prune_old_testbed_homes(parent: Path, *, current: Path | None = None) -> tuple[int, int]:
+    removed = 0
+    errors = 0
+    current_resolved = current.resolve() if current is not None else None
+    for path in parent.glob("tabula-testbed.*"):
+        try:
+            if current_resolved is not None and path.resolve() == current_resolved:
+                continue
+            if not path.is_dir():
+                continue
+            shutil.rmtree(path)
+            removed += 1
+        except OSError:
+            errors += 1
+    return removed, errors
+
+
 def log(message: str) -> None:
     print(message, file=sys.stderr if JSON_MODE else sys.stdout)
 
@@ -659,6 +676,10 @@ def main(argv: list[str] | None = None) -> int:
 
     home = Path(args.home).resolve() if args.home else Path(tempfile.mkdtemp(prefix="tabula-testbed."))
     keep = args.keep or bool(args.home)
+    if not keep:
+        removed, errors = prune_old_testbed_homes(home.parent, current=home)
+        if removed or errors:
+            log(f"==> Pruned old testbed homes: removed={removed} errors={errors}")
     kernel_port = free_port()
     observer_port = free_port()
     kernel_url = f"ws://127.0.0.1:{kernel_port}/ws"

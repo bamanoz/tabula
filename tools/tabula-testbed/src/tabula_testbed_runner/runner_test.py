@@ -13,6 +13,7 @@ from tabula_testbed_runner.runner import (
     entry_protocol_markers,
     format_protocol_markers,
     lint_selection,
+    prune_old_testbed_homes,
     resolve_selection,
     runtime_tenants_for_suites,
     selected_bundles,
@@ -24,6 +25,23 @@ from tabula_testbed_runner.runner import (
 
 
 class RunnerProtocolMarkerTests(unittest.TestCase):
+    def test_prune_old_testbed_homes_removes_siblings_but_not_current(self) -> None:
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            old = root / "tabula-testbed.old"
+            current = root / "tabula-testbed.current"
+            unrelated = root / "other"
+            old.mkdir()
+            current.mkdir()
+            unrelated.mkdir()
+
+            removed, errors = prune_old_testbed_homes(root, current=current)
+
+            self.assertEqual((removed, errors), (1, 0))
+            self.assertFalse(old.exists())
+            self.assertTrue(current.exists())
+            self.assertTrue(unrelated.exists())
+
     def test_component_filters_do_not_narrow_baseline_set_bundles(self) -> None:
         manifest = {
             "sets": {"baseline": ["base", "test-fixtures"]},

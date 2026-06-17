@@ -25,3 +25,6 @@ opencode.json
 # Tabula files
 .tabula
 tabula.app.lock
+
+# Immune files
+.immune

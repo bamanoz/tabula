@@ -34,6 +34,8 @@ TABULA_VENV="${TABULA_VENV:-$TABULA_HOME/.venv}"
 if [ ! -x "$TABULA_VENV/bin/python3" ]; then
   TABULA_VENV="$TABULA_HOME/.venv"
 fi
+KERNEL_PID=0
+RUNTIME_PID=0
 
 export TABULA_HOME
 load_app_env() {
@@ -173,6 +175,24 @@ wait_for_file() {
   return 1
 }
 
+cleanup_children() {
+  trap - EXIT INT TERM
+  if [ "$RUNTIME_PID" -gt 0 ] && kill -0 "$RUNTIME_PID" 2>/dev/null; then
+    kill -TERM "$RUNTIME_PID" 2>/dev/null || true
+  fi
+  if [ "$KERNEL_PID" -gt 0 ] && kill -0 "$KERNEL_PID" 2>/dev/null; then
+    kill -TERM "$KERNEL_PID" 2>/dev/null || true
+  fi
+  if [ "$RUNTIME_PID" -gt 0 ]; then
+    wait "$RUNTIME_PID" 2>/dev/null || true
+  fi
+  if [ "$KERNEL_PID" -gt 0 ]; then
+    wait "$KERNEL_PID" 2>/dev/null || true
+  fi
+}
+
+trap cleanup_children EXIT INT TERM
+
 runtime_socket_path() {
   "$TABULA_VENV/bin/python3" - "$TABULA_HOME/config/runtime.toml" <<'PY'
 import sys
@@ -211,11 +231,13 @@ while true; do
   if ! kill -0 "$KERNEL_PID" 2>/dev/null; then
     status=0
     wait "$KERNEL_PID" || status=$?
+    KERNEL_PID=0
     exit "$status"
   fi
   if ! kill -0 "$RUNTIME_PID" 2>/dev/null; then
     status=0
     wait "$RUNTIME_PID" || status=$?
+    RUNTIME_PID=0
     exit "$status"
   fi
   sleep 0.2

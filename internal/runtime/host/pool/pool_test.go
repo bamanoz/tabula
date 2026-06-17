@@ -16,6 +16,7 @@ import (
 
 	"github.com/bamanoz/tabula/internal/runtime/host/manifest"
 	"github.com/bamanoz/tabula/internal/runtime/host/policy"
+	barepolicy "github.com/bamanoz/tabula/internal/runtime/host/policy/bare"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
 	workerwire "github.com/bamanoz/tabula/internal/runtime/worker/wire"
 )
@@ -198,6 +199,78 @@ sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 	close(slowDone)
 	if resp := <-firstDone; !resp.OK {
 		t.Fatalf("slow read invoke = %#v", resp)
+	}
+}
+
+func TestPoolDeliversConcurrentCallsToWarmPythonWorker(t *testing.T) {
+	dir := t.TempDir()
+	body := `id = "subagents"
+name = "Subagents"
+version = "0.1.0"
+runtime = "python"
+entry = "run.py"
+
+[[tools]]
+name = "subagent_spawn"
+concurrency = "parallel"
+execution_group = "subagents"
+conflicts_with_groups = ["subagents-exclusive"]
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`
+	pluginDir := filepath.Join(dir, "subagents")
+	writePoolPluginBody(t, filepath.Join(pluginDir, "plugin.toml"), body)
+	script := filepath.Join(pluginDir, "run.py")
+	if err := os.WriteFile(script, []byte(concurrentWarmPythonWorkerScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := manifest.NewTenantStore(map[string]manifest.SearchDirs{"tenant-a": {PluginDirs: []string{dir}}})
+	if err != nil {
+		t.Fatalf("NewTenantStore: %v", err)
+	}
+	p := New("main", store, barepolicy.New(), Options{AllowedTenants: []string{"tenant-a"}})
+	t.Cleanup(p.Close)
+
+	firstDone := make(chan wire.InvokeResult, 1)
+	go func() {
+		resp, _ := p.Invoke(context.Background(), wire.Invoke{Op: wire.OpInvoke, CallID: "call-slow", TenantID: "tenant-a", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "subagents"}, Tool: "subagent_spawn", Args: json.RawMessage(`{"block":true}`)})
+		firstDone <- resp
+	}()
+
+	select {
+	case <-waitForFile(t, filepath.Join(pluginDir, "slow.started")):
+	case <-time.After(time.Second):
+		t.Fatal("slow warm call did not start")
+	}
+
+	secondDone := make(chan wire.InvokeResult, 1)
+	go func() {
+		resp, _ := p.Invoke(context.Background(), wire.Invoke{Op: wire.OpInvoke, CallID: "call-fast", TenantID: "tenant-a", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "subagents"}, Tool: "subagent_spawn", Args: json.RawMessage(`{}`)})
+		secondDone <- resp
+	}()
+
+	select {
+	case resp := <-secondDone:
+		if !resp.OK {
+			t.Fatalf("second warm invoke = %#v", resp)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second warm invoke was not delivered while first call was still running")
+	}
+
+	if err := os.WriteFile(filepath.Join(pluginDir, "slow.release"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case resp := <-firstDone:
+		if !resp.OK {
+			t.Fatalf("first warm invoke = %#v", resp)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first warm invoke did not finish")
 	}
 }
 
@@ -1091,6 +1164,65 @@ func writePoolPluginBody(t *testing.T, path, body string) {
 		t.Fatal(err)
 	}
 }
+
+func waitForFile(t *testing.T, path string) <-chan struct{} {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			if _, err := os.Stat(path); err == nil {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	return done
+}
+
+const concurrentWarmPythonWorkerScript = `#!/usr/bin/env python3
+import json
+import pathlib
+import sys
+import threading
+import time
+
+root = pathlib.Path(__file__).resolve().parent
+out_lock = threading.Lock()
+
+
+def write_frame(frame):
+    with out_lock:
+        sys.stdout.write(json.dumps(frame) + "\n")
+        sys.stdout.flush()
+
+
+def handle(frame):
+    call_id = frame.get("call_id", "")
+    args = frame.get("args") or {}
+    if args.get("block"):
+        (root / "slow.started").write_text("started", encoding="utf-8")
+        release = root / "slow.release"
+        while not release.exists():
+            time.sleep(0.01)
+    write_frame({"op": "result", "call_id": call_id, "ok": True, "data": {"call_id": call_id}})
+
+
+json.loads(sys.stdin.readline())
+write_frame({"op": "init_ack", "ready": True, "tools": [{"name": "subagent_spawn"}], "subscriptions": []})
+
+threads = []
+for line in sys.stdin:
+    frame = json.loads(line)
+    if frame.get("op") == "shutdown":
+        break
+    thread = threading.Thread(target=handle, args=(frame,))
+    thread.start()
+    threads.append(thread)
+
+for thread in threads:
+    thread.join()
+`
 
 func testSkillDir(t *testing.T) string {
 	t.Helper()

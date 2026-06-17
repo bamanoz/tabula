@@ -230,8 +230,10 @@ class SubagentsPluginSmoke(unittest.TestCase):
             client.refresh_init("subagent-sa-testbed")
             allowed = client.call_tool("session_list", {}, timeout=10).json()
             self.assertIn("sessions", allowed)
-            blocked = client.call_tool("subagent_list", {}, timeout=10).output
-            self.assertIn("blocked", blocked)
+            blocked = client.call_tool("subagent_list", {}, timeout=10).json()
+            self.assertFalse(blocked.get("ok"), blocked)
+            self.assertEqual(blocked.get("error"), "not_invoked")
+            self.assertEqual((blocked.get("hook") or {}).get("reply_action"), "block")
 
     def test_subagents_empty_allowed_tools_does_not_block_child_tools(self):
         home = Path(self.tabula_home)
