@@ -67,13 +67,18 @@ func (s *runtimeHookSubscriber) SendMsg(msg *Message) {
 	if s == nil || s.conn == nil || msg == nil || msg.Type != string(MsgHook) {
 		return
 	}
+	replyMode := runtimeHookReplyMode(msg.Name)
+	callID := msg.ID
+	if replyMode == wire.HookReplyModeNone {
+		callID = ""
+	}
 	event := wire.HookEvent{
 		Op:        wire.OpHookEvent,
 		TenantID:  msg.TenantID,
-		CallID:    msg.ID,
+		CallID:    callID,
 		Target:    s.capability.Target,
 		Event:     msg.Name,
-		ReplyMode: runtimeHookReplyMode(msg.Name),
+		ReplyMode: replyMode,
 		Data:      json.RawMessage(msg.Payload),
 		SessionID: msg.Session,
 	}

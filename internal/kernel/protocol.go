@@ -66,10 +66,11 @@ const (
 type HookAction string
 
 const (
-	ActionPass   HookAction = "pass"
-	ActionModify HookAction = "modify"
-	ActionBlock  HookAction = "block"
-	ActionClaim  HookAction = "claim"
+	ActionPass    HookAction = "pass"
+	ActionModify  HookAction = "modify"
+	ActionBlock   HookAction = "block"
+	ActionClaim   HookAction = "claim"
+	ActionSuspend HookAction = "suspend"
 )
 
 // validateMessage checks that a client message has the required fields for its type.

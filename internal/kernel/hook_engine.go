@@ -55,6 +55,7 @@ type HookDispatchDecision struct {
 	Reason      string
 	Status      string
 	Payload     json.RawMessage
+	Pending     bool
 }
 
 type hookSendOutcome struct {
@@ -267,6 +268,12 @@ func (e *HookEngine) dispatchModifying(event string, payload json.RawMessage, te
 			continue
 		}
 		switch HookAction(result.Action) {
+		case ActionSuspend:
+			e.recordAudit(HookDispatchAudit{Event: event, TenantID: tenantID, Session: session, Target: entry.sub.Name(), HookID: outcome.hookID, ReplyAction: result.Action, DispatchEffect: "tool_suspended", Reason: result.Reason, Status: "reply", DurationMs: outcome.durationMs, TimeoutMs: outcome.timeoutMs, Payload: current})
+			attrs := hookLogAttrs(event, entry.sub.Name(), current, tenantID, session)
+			attrs = append(attrs, "reason", result.Reason)
+			e.logger.Info("hook suspended event", attrs...)
+			return nil, false, &HookDispatchDecision{Event: event, Target: entry.sub.Name(), HookID: outcome.hookID, ReplyAction: result.Action, Reason: result.Reason, Status: outcome.status, Payload: append(json.RawMessage(nil), result.Payload...), Pending: true}
 		case ActionBlock:
 			e.recordAudit(HookDispatchAudit{Event: event, TenantID: tenantID, Session: session, Target: entry.sub.Name(), HookID: outcome.hookID, ReplyAction: result.Action, DispatchEffect: "tool_not_invoked", Reason: result.Reason, Status: "reply", DurationMs: outcome.durationMs, TimeoutMs: outcome.timeoutMs, Payload: current})
 			attrs := hookLogAttrs(event, entry.sub.Name(), current, tenantID, session)

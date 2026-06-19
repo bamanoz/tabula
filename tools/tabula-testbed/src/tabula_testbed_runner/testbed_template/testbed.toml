@@ -159,7 +159,7 @@ tests = ["tests/test_todo.py"]
 
 [suites.approvals]
 set = "empty"
-components = ["base:hook-approvals", "base:hook-permissions", "drivers:driver", "workspace:exec"]
+components = ["base:deferred-tools", "base:hook-approvals", "base:hook-permissions", "drivers:driver", "workspace:exec"]
 tests = ["tests/test_approvals.py"]
 
 [suites.sessions]

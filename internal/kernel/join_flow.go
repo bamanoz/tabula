@@ -71,6 +71,7 @@ func (h *Hub) applyJoinPlan(c *Client, plan joinPlan) {
 		c.SendMsg(init)
 		h.Logger.Debug("sent init", "client", c.name)
 	}
+	h.resendPendingApprovals(c, plan.tenantID, plan.session)
 
 	h.policy.SessionJoin(plan.session, plan.tenantID, c.name)
 }

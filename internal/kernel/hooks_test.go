@@ -764,10 +764,11 @@ func TestBeforeToolCallHookCanBlockDynamicSkillTool(t *testing.T) {
 
 	hookMsg := readMsg(t, hook)
 	writeJSON(t, hook, Message{
-		Type:   "hook_reply",
-		ID:     hookMsg.ID,
-		Action: "block",
-		Reason: "denied",
+		Type:    "hook_reply",
+		ID:      hookMsg.ID,
+		Action:  "block",
+		Reason:  "denied",
+		Payload: mustMarshalRaw(map[string]any{"kind": "approval_denied", "retryable": false}),
 	})
 
 	// Driver should get error in tool_result

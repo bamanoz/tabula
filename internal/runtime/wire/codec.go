@@ -321,7 +321,7 @@ func validateFrame(frame any) error {
 			return ProtocolErrorf("call_id is required")
 		}
 		switch f.Action {
-		case HookActionOK, HookActionRewrite, HookActionDeny, HookActionClaim:
+		case HookActionOK, HookActionRewrite, HookActionDeny, HookActionClaim, HookActionSuspend:
 			return nil
 		default:
 			return ProtocolErrorf("unknown hook action %q", f.Action)

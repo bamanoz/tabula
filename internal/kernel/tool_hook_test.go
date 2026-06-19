@@ -98,6 +98,91 @@ func TestBeforeToolCallHookReceivesToolMeta(t *testing.T) {
 	}
 }
 
+func TestBeforeToolCallHookCanSuspendForApprovalAndResume(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	env := newTestEnvWithSkillTool(t)
+	hook := env.connectHook("approval", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
+	resolvedHook := env.connectHook("approval-recorder", []HookSubscription{{Event: "approval_resolved", Priority: 0}})
+	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult, "tool.suspended", "tool.resumed"})
+	ui := env.connectAndJoin("ui", "main", []string{TopicExchangeApprove}, []string{TopicExchangeApprove})
+
+	go func() {
+		writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-suspend", Input: json.RawMessage(`{"text":"needs approval"}`)})
+	}()
+
+	hookMsg := readMsg(t, hook)
+	if hookMsg.Type != "hook" || hookMsg.Name != "before_tool_call" {
+		t.Fatalf("expected hook/before_tool_call, got %+v", hookMsg)
+	}
+	writeJSON(t, hook, Message{
+		Type:    string(MsgHookReply),
+		ID:      hookMsg.ID,
+		Action:  string(ActionSuspend),
+		Reason:  "approve exec",
+		Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`),
+	})
+
+	approvalReq := readMsg(t, ui)
+	if approvalReq.Type != string(MsgRequest) || approvalReq.Topic != TopicExchangeApprove || approvalReq.ID == "" {
+		t.Fatalf("expected approval request, got %+v", approvalReq)
+	}
+	if msg := readMsgTimeout(t, drv, 100*time.Millisecond); msg != nil && msg.Topic == TopicToolResult {
+		t.Fatalf("tool result should not be emitted while approval is pending: %+v", msg)
+	}
+
+	writeJSON(t, ui, Message{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: approvalReq.ID, Data: json.RawMessage(`{"choice":"allow once"}`)})
+	resolved := readMsg(t, resolvedHook)
+	if resolved.Type != "hook" || resolved.Name != "approval_resolved" || !strings.Contains(string(resolved.Payload), "allow once") {
+		t.Fatalf("expected approval_resolved hook, got %+v", resolved)
+	}
+
+	for i := 0; i < 3; i++ {
+		msg := readMsg(t, drv)
+		if msg.Topic != TopicToolResult {
+			continue
+		}
+		if !strings.Contains(msg.Output, "needs approval") {
+			t.Fatalf("expected resumed tool result, got %q", msg.Output)
+		}
+		return
+	}
+	t.Fatal("expected resumed tool result")
+}
+
+func TestSuspendedApprovalResendsWhenUIRejoins(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	env := newTestEnvWithSkillTool(t)
+	hook := env.connectHook("approval", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
+	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
+	ui := env.connectAndJoin("ui", "main", []string{TopicExchangeApprove}, []string{TopicExchangeApprove})
+
+	go func() {
+		writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-resend", Input: json.RawMessage(`{"text":"needs approval"}`)})
+	}()
+	hookMsg := readMsg(t, hook)
+	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: hookMsg.ID, Action: string(ActionSuspend), Reason: "approve exec", Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve again?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`)})
+	firstReq := readMsg(t, ui)
+	if firstReq.Topic != TopicExchangeApprove || firstReq.ID == "" {
+		t.Fatalf("expected initial approval request, got %+v", firstReq)
+	}
+	ui.Close()
+
+	ui2 := env.connectAndJoin("ui2", "main", []string{TopicExchangeApprove}, []string{TopicExchangeApprove})
+	resent := readMsg(t, ui2)
+	if resent.Topic != TopicExchangeApprove || resent.ID != firstReq.ID {
+		t.Fatalf("expected resent approval request %q, got %+v", firstReq.ID, resent)
+	}
+	if !strings.Contains(string(resent.Data), "Approve again?") {
+		t.Fatalf("expected original approval payload to be resent, got %s", string(resent.Data))
+	}
+}
+
 // Interactive approval-style hook: timeout_ms=0 means wait until the
 // subscriber replies. The hook reply gates the tool execution.
 func TestBeforeToolCallHook_InfiniteTimeout_RepliesAfterDelay(t *testing.T) {
@@ -205,6 +290,113 @@ func TestBeforeToolCallHook_InfiniteTimeout_DisconnectBlocks(t *testing.T) {
 	}
 	if blocked.Error != "not_invoked" || blocked.Hook.Status == "" {
 		t.Fatalf("unexpected blocked output: %+v", blocked)
+	}
+}
+
+func TestBeforeToolCallHookTimeoutThenNextSubscriberDisconnect(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	env := newTestEnvWithSkillTool(t)
+	permTimeout := 20
+	infinite := 0
+	perm := env.connectHook("hook-permissions", []HookSubscription{
+		{Event: "before_tool_call", Priority: 100, TimeoutMs: &permTimeout},
+	})
+	approval := env.connectHook("hook-approvals", []HookSubscription{
+		{Event: "before_tool_call", Priority: 10, TimeoutMs: &infinite},
+	})
+	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
+
+	writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-timeout", Input: json.RawMessage(`{"text":"blocked-by-timeout"}`)})
+	if hookMsg := readMsg(t, perm); hookMsg.Type != "hook" || hookMsg.ID == "" {
+		t.Fatalf("expected permissions hook request, got %+v", hookMsg)
+	}
+	first := readMsgTimeout(t, drv, 5*time.Second)
+	if first == nil || !isToolResult(first) {
+		t.Fatalf("expected first tool_result blocked by timeout, got %+v", first)
+	}
+	var firstBlocked struct {
+		Error string `json:"error"`
+		Hook  struct {
+			Status string `json:"status"`
+			Target string `json:"target"`
+		} `json:"hook"`
+	}
+	if err := json.Unmarshal([]byte(first.Output), &firstBlocked); err != nil {
+		t.Fatalf("unmarshal first blocked result: %v (%s)", err, first.Output)
+	}
+	if firstBlocked.Error != "not_invoked" || firstBlocked.Hook.Status != "timeout" || !strings.Contains(firstBlocked.Hook.Target, "hook-permissions") {
+		t.Fatalf("unexpected first blocked result: %+v", firstBlocked)
+	}
+	writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-disconnect", Input: json.RawMessage(`{"text":"blocked-by-disconnect"}`)})
+	permMsg := readMsg(t, perm)
+	if permMsg.Type != "hook" || permMsg.ID == "" {
+		t.Fatalf("expected second permissions hook request, got %+v", permMsg)
+	}
+	writeJSON(t, perm, Message{Type: "hook_reply", ID: permMsg.ID, Action: "pass"})
+	approvalMsg := readMsg(t, approval)
+	if approvalMsg.Type != "hook" || approvalMsg.ID == "" {
+		t.Fatalf("expected approval hook request, got %+v", approvalMsg)
+	}
+	approval.Close()
+
+	second := readMsgTimeout(t, drv, 5*time.Second)
+	if second == nil || !isToolResult(second) {
+		t.Fatalf("expected second tool_result blocked by disconnect, got %+v", second)
+	}
+	var secondBlocked struct {
+		Error string `json:"error"`
+		Hook  struct {
+			Status string `json:"status"`
+			Target string `json:"target"`
+		} `json:"hook"`
+	}
+	if err := json.Unmarshal([]byte(second.Output), &secondBlocked); err != nil {
+		t.Fatalf("unmarshal second blocked result: %v (%s)", err, second.Output)
+	}
+	if secondBlocked.Error != "not_invoked" || secondBlocked.Hook.Status != "disconnected" || !strings.Contains(secondBlocked.Hook.Target, "hook-approvals") {
+		t.Fatalf("unexpected second blocked result: %+v", secondBlocked)
+	}
+}
+
+func TestBeforeToolCallHookBlockCarriesGenericRetryableDetails(t *testing.T) {
+	env := newTestEnvWithSkillTool(t)
+	hook := env.connectHook("policy", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
+	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
+
+	writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-retryable", Input: json.RawMessage(`{"text":"blocked"}`)})
+	hookMsg := readMsg(t, hook)
+	writeJSON(t, hook, Message{
+		Type:    string(MsgHookReply),
+		ID:      hookMsg.ID,
+		Action:  string(ActionBlock),
+		Reason:  "transient gate unavailable",
+		Payload: mustMarshalRaw(map[string]any{"kind": "approval_required", "retryable": true}),
+	})
+
+	result := readMsgTimeout(t, drv, 5*time.Second)
+	if result == nil || !isToolResult(result) {
+		t.Fatalf("expected retryable not_invoked tool_result, got %+v", result)
+	}
+	var blocked struct {
+		Error     string `json:"error"`
+		Kind      string `json:"kind"`
+		Retryable bool   `json:"retryable"`
+		Hook      struct {
+			Reason  string         `json:"reason"`
+			Details map[string]any `json:"details"`
+		} `json:"hook"`
+	}
+	if err := json.Unmarshal([]byte(result.Output), &blocked); err != nil {
+		t.Fatalf("unmarshal blocked output: %v (%s)", err, result.Output)
+	}
+	if blocked.Error != "not_invoked" || blocked.Kind != "approval_required" || !blocked.Retryable {
+		t.Fatalf("unexpected generic retryable fields: %+v", blocked)
+	}
+	if blocked.Hook.Reason != "transient gate unavailable" || blocked.Hook.Details["kind"] != "approval_required" {
+		t.Fatalf("unexpected hook details: %+v", blocked.Hook)
 	}
 }
 

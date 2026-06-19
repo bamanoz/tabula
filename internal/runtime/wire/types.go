@@ -578,6 +578,7 @@ const (
 	HookActionRewrite HookAction = "rewrite"
 	HookActionDeny    HookAction = "deny"
 	HookActionClaim   HookAction = "claim"
+	HookActionSuspend HookAction = "suspend"
 )
 
 // HookEventReply is the terminal result for one hook_event call_id.

@@ -18,6 +18,7 @@ func TestWorkerFrameRoundTripEveryType(t *testing.T) {
 		&WorkerResult{Op: OpResult, CallID: "call-1", OK: true, Data: []byte(`{"ok":true}`)},
 		&WorkerEvent{Op: OpEvent, CallID: "hook-1", Event: "before_tool_call", ReplyMode: ReplyModeModifying, Data: []byte(`{"tool":"run"}`)},
 		&WorkerEventReply{Op: OpEventReply, CallID: "hook-1", Action: runtimewire.HookActionRewrite, Data: []byte(`{"tool":"safe_run"}`)},
+		&WorkerEventReply{Op: OpEventReply, CallID: "hook-2", Action: runtimewire.HookActionSuspend, Data: []byte(`{"kind":"approval_required"}`)},
 		&WorkerToolsUpdated{Op: OpToolsUpdated, Revision: 2, Tools: []runtimewire.ToolSpec{{Name: "run"}}, Removed: []string{"old_run"}},
 		&WorkerSend{Op: OpSend, Channel: "bus", Type: "worker_event", Payload: []byte(`{"ok":true}`)},
 		&WorkerLog{Op: OpLog, Level: "info", Message: "worker ready", Fields: []byte(`{"worker":1}`)},

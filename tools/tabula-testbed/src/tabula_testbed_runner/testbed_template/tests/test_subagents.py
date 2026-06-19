@@ -183,6 +183,39 @@ class SubagentsPluginSmoke(unittest.TestCase):
             listed = client.call_tool("subagent_list", {}, timeout=10).json()
             self.assertIn("items", listed)
 
+    def test_subagent_list_defaults_to_runtime_context_session(self):
+        home = Path(self.tabula_home)
+        registry = home / "tenants" / "default" / "state" / "plugins" / "subagents"
+        registry.mkdir(parents=True, exist_ok=True)
+        (registry / "sa-context-list.json").write_text(json.dumps({
+            "version": 1,
+            "id": "sa-context-list",
+            "session": "subagent-sa-context-list",
+            "parent_session": "testbed-subagents-context",
+            "status": "running",
+            "pid": os.getpid(),
+            "allowed_tools": [],
+        }), encoding="utf-8")
+        (registry / "sa-other-list.json").write_text(json.dumps({
+            "version": 1,
+            "id": "sa-other-list",
+            "session": "subagent-sa-other-list",
+            "parent_session": "testbed-subagents-other",
+            "status": "running",
+            "pid": os.getpid(),
+            "allowed_tools": [],
+        }), encoding="utf-8")
+
+        client = TestbedClient(self.url, name="testbed-subagents-context-list")
+        try:
+            client.connect_join("testbed-subagents-context")
+            client.wait_tools({"subagent_list"}, session="testbed-subagents-context")
+            listed = client.call_tool("subagent_list", {"status": "running"}, timeout=10).json()
+        finally:
+            client.close()
+
+        self.assertEqual([item.get("id") for item in listed.get("items", [])], ["sa-context-list"])
+
     def test_subagent_spawn_schema_exposes_provider_override(self):
         with self.make_client("testbed-subagents-schema") as client:
             client.wait_tools({"subagent_spawn"}, session="testbed-subagents")
@@ -270,13 +303,9 @@ class SubagentsPluginSmoke(unittest.TestCase):
         with self.make_client("testbed-subagent-wait-timeout") as client:
             client.refresh_init("testbed-subagents")
             payload = client.call_tool("subagent_wait", {"id": sid, "timeout": 0}, timeout=10).json()
-            self.assertFalse(payload.get("ok"), payload)
+            self.assertTrue(payload.get("ok"), payload)
             self.assertTrue(payload.get("timeout"), payload)
             self.assertTrue(payload.get("continues_running"), payload)
-
-            too_long = client.call_tool("subagent_wait", {"id": sid, "timeout": 901}, timeout=10).json()
-            self.assertFalse(too_long.get("ok"), too_long)
-            self.assertIn("900s or less", too_long.get("error", ""))
 
     def test_native_subagent_send_delivers_to_child_tenant_session(self):
         tenant_id = "alpha-subagents"

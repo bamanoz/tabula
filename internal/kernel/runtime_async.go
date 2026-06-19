@@ -134,6 +134,8 @@ func kernelHookAction(action wire.HookAction) (string, error) {
 		return string(ActionBlock), nil
 	case wire.HookActionClaim:
 		return string(ActionClaim), nil
+	case wire.HookActionSuspend:
+		return string(ActionSuspend), nil
 	default:
 		return "", fmt.Errorf("unknown hook_event_reply action %q", action)
 	}

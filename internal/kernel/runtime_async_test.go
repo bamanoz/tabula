@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
 	runtimemock "github.com/bamanoz/tabula/internal/runtime/mock"
@@ -84,6 +85,47 @@ func TestRuntimeCatalogUpdateRebuildsPromptContext(t *testing.T) {
 	}
 	if init.Context != "fresh filesystem roots" {
 		t.Fatalf("expected fresh prompt context, got %q", init.Context)
+	}
+}
+
+func TestRuntimeLifecycleNonReadyDoesNotBroadcastTrimmedCatalog(t *testing.T) {
+	env := newTestEnv(t)
+	driver := env.connectAndJoin("driver", "s1", []string{}, []string{TopicSessionInit})
+	_ = readMsg(t, driver) // initial init
+
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
+	if err := env.Hub.runtimes.RegisterHello("local", runtimemock.New(), []runtimeapi.Capability{{
+		Target: target,
+		Tools:  []wire.ToolSpec{{Name: "fs_read"}},
+		State:  wire.CapabilityStateReady,
+		Source: wire.CapabilitySourceWorker,
+	}}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	env.Hub.syncRuntimeCapability("local", runtimeapi.Capability{
+		Target: target,
+		Tools:  []wire.ToolSpec{{Name: "fs_read"}},
+		State:  wire.CapabilityStateReady,
+		Source: wire.CapabilitySourceWorker,
+	})
+	env.Hub.rebuildHookIndex()
+	env.Hub.broadcastRuntimeCatalogUpdate(runtimeapi.Capability{Target: target, Tenants: []string{"*"}, State: wire.CapabilityStateReady})
+	ready := readMsg(t, driver)
+	if !isSessionInit(&ready) || !strings.Contains(string(ready.Tools), `"fs_read"`) {
+		t.Fatalf("expected refreshed fs_read init tools, got %+v", ready)
+	}
+
+	if err := env.Hub.runtimeAsyncSink().LifecycleNoticed("local", wire.LifecycleNotice{
+		Op:      wire.OpLifecycleNotice,
+		Target:  target,
+		State:   wire.LifecycleStateCrashed,
+		Message: "plugin crashed",
+	}); err != nil {
+		t.Fatalf("LifecycleNoticed: %v", err)
+	}
+
+	if msg := readMsgTimeout(t, driver, 100*time.Millisecond); msg != nil {
+		t.Fatalf("unexpected session.init after non-ready lifecycle: %+v", msg)
 	}
 }
 

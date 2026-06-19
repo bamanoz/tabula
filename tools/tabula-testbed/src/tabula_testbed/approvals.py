@@ -1,11 +1,11 @@
 """Background approval responder for testbed scenarios.
 
 Approval flow in Tabula is generic: any tool whose ``before_tool_call``
-permissions evaluate to ``ask`` triggers ``hook-approvals`` to open an
-``exchange.approve`` exchange. An interactive approval UI joins the
-session, binds ``exchange.approve`` capability and replies with the user's
-choice. In headless tests we stand in for that UI by running a small
-background WebSocket client that auto-answers each request.
+permissions evaluate to ``ask`` can suspend the tool call in the kernel.
+The kernel opens an ``exchange.approve`` exchange for an interactive UI that
+has joined the session and bound ``exchange.approve`` capability. In headless
+tests we stand in for that UI by running a small background WebSocket client
+that auto-answers each request.
 
 This module is intentionally tool-agnostic. Tests can target any tool that
 goes through the same hook path (``exec_run``, ``exec_run_background``,

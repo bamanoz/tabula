@@ -45,8 +45,18 @@ class _Completions:
             return SimpleNamespace(choices=[choice])
         user_count = sum(1 for message in messages if message.get("role") == "user")
         tool_count = sum(1 for message in messages if message.get("role") == "tool")
+        last_user = ""
+        for message in reversed(messages):
+            if message.get("role") == "user":
+                last_user = str(message.get("content") or "")
+                break
         if tool_count < user_count:
-            command = "printf approved" if user_count < 3 else "printf delayed"
+            if "persist" in last_user:
+                command = "printf approved"
+            elif "reconnect" in last_user:
+                command = "printf reconnect"
+            else:
+                command = "printf delayed"
             return _Stream([
                 _chunk(tool_call={
                     "id": f"call-{user_count}",
@@ -98,31 +108,40 @@ class ApprovalFlowInstalled(unittest.TestCase):
         proc, log_handle, log_path = self.start_driver(session, stub_dir)
         try:
             with self.connect_client(session) as client:
-                first = self.run_turn(client, "first run", approval_choice="allow always")
+                first = self.run_turn(client, "delayed run", approval_choice="allow once", approval_delay=6.0)
                 self.assertEqual(first["text"], "turn-1-done")
                 ask = first["ask"]
                 self.assertIsNotNone(ask)
                 self.assertEqual(ask["options"], ["allow once", "allow always", "deny once", "deny always"])
 
+                reconnected = self.run_turn_with_approval_reconnect(client, session, "reconnect run")
+                self.assertEqual(reconnected["text"], "turn-2-done")
+                self.assertEqual(reconnected["first_request_id"], reconnected["resent_request_id"])
+
+                persisted = self.run_turn(client, "persist first", approval_choice="allow always")
+                self.assertEqual(persisted["text"], "turn-3-done")
+                self.assertIsNotNone(persisted["ask"])
+
                 saved = approvals_cfg.read_text(encoding="utf-8")
                 self.assertIn('tool = "exec_run"', saved)
                 self.assertIn('effect = "allow_always"', saved)
 
-                second = self.run_turn(client, "second run", approval_choice=None)
-                self.assertEqual(second["text"], "turn-2-done")
-                self.assertIsNone(second["ask"])
-
-                delayed = self.run_turn(client, "third run", approval_choice="allow once", approval_delay=6.0)
-                self.assertEqual(delayed["text"], "turn-3-done")
-                self.assertIsNotNone(delayed["ask"])
+                second_persisted = self.run_turn(client, "persist second", approval_choice=None)
+                self.assertEqual(second_persisted["text"], "turn-4-done")
+                self.assertIsNone(second_persisted["ask"])
 
             history = home / "data" / "sessions" / session / "history.jsonl"
             text = history.read_text(encoding="utf-8")
             self.assertIn('"id": "call-1", "name": "exec_run"', text)
             self.assertIn('"id": "call-2", "name": "exec_run"', text)
             self.assertIn('"id": "call-3", "name": "exec_run"', text)
+            self.assertIn('"id": "call-4", "name": "exec_run"', text)
             self.assertIn('delayed', text)
+            self.assertIn('reconnect', text)
             self.assertGreaterEqual(text.count('approved'), 2)
+            driver_log = log_path.read_text(encoding="utf-8", errors="replace")
+            self.assertNotIn("runtime_unavailable", driver_log)
+            self.assertNotIn("unknown tool", driver_log)
         finally:
             self.stop_driver(proc)
             log_handle.close()
@@ -178,6 +197,55 @@ class ApprovalFlowInstalled(unittest.TestCase):
             if msg_type == "event" and msg.get("topic") == "turn.done":
                 return {"text": "".join(chunks), "ask": exchange_request}
         raise AssertionError(f"timed out waiting for turn completion after {text!r}")
+
+    def run_turn_with_approval_reconnect(self, client: TestbedClient, session: str, text: str, *, timeout: float = 20) -> dict[str, object]:
+        client.send_message(text)
+        deadline = time.time() + timeout
+        chunks: list[str] = []
+        first_request = None
+        while time.time() < deadline:
+            msg = client.recv(timeout=max(0.1, deadline - time.time()))
+            if msg.get("type") == "request" and msg.get("topic") == "exchange.approve":
+                first_request = {"id": msg.get("id", ""), **(msg.get("data") if isinstance(msg.get("data"), dict) else {})}
+                break
+            if msg.get("type") == "event" and msg.get("topic") == "stream.delta":
+                data = msg.get("data") if isinstance(msg.get("data"), dict) else {}
+                chunks.append(str(data.get("text") or ""))
+                continue
+            if msg.get("type") == "error":
+                raise AssertionError(f"kernel error before reconnect approval: {msg}")
+        if first_request is None:
+            raise AssertionError(f"timed out waiting for approval request before reconnect after {text!r}")
+
+        client.close()
+        reconnected = self.connect_client(session, timeout=max(5, deadline - time.time()))
+        client.ws = reconnected.ws
+        client.init = reconnected.init
+        reconnected.ws = None
+
+        resent = client.wait_for(lambda m: m.get("type") == "request" and m.get("topic") == "exchange.approve", timeout=max(0.1, deadline - time.time()))
+        resent_request = {"id": resent.get("id", ""), **(resent.get("data") if isinstance(resent.get("data"), dict) else {})}
+        self.assertEqual(resent_request.get("question"), first_request.get("question"))
+        options = resent_request.get("options") if isinstance(resent_request.get("options"), list) else []
+        self.assertIn("allow once", options)
+        client._send({
+            "type": "reply",
+            "topic": "exchange.approve",
+            "id": resent_request.get("id", ""),
+            "data": {"choice": "allow once", "index": options.index("allow once")},
+        })
+
+        while time.time() < deadline:
+            msg = client.recv(timeout=max(0.1, deadline - time.time()))
+            if msg.get("type") == "event" and msg.get("topic") == "stream.delta":
+                data = msg.get("data") if isinstance(msg.get("data"), dict) else {}
+                chunks.append(str(data.get("text") or ""))
+                continue
+            if msg.get("type") == "error":
+                raise AssertionError(f"kernel error after reconnect approval: {msg}")
+            if msg.get("type") == "event" and msg.get("topic") == "turn.done":
+                return {"text": "".join(chunks), "first_request_id": first_request.get("id"), "resent_request_id": resent_request.get("id")}
+        raise AssertionError(f"timed out waiting for turn completion after approval reconnect for {text!r}")
 
     def start_driver(self, session: str, stub_dir: Path) -> tuple[subprocess.Popen[bytes], object, Path]:
         home = Path(self.tabula_home)

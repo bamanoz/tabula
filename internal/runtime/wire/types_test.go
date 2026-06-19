@@ -27,6 +27,7 @@ func TestEncodeDecodeRoundTripEveryOp(t *testing.T) {
 		&HookEvent{Op: OpHookEvent, CallID: "hook-1", Target: Target{Kind: TargetKindPlugin, ID: "fs"}, Event: "before_tool_call", ReplyMode: HookReplyModeModifying, Data: json.RawMessage(`{"tool":"read"}`)},
 		&CatalogUpdate{Op: OpCatalogUpdate, Target: Target{Kind: TargetKindPlugin, ID: "fs"}, Tools: []ToolSpec{{Name: "read", Description: "Read file"}}, Hooks: []HookSpec{{Event: "before_tool_call", Priority: 1}}, Revision: 3, State: CapabilityStateReady, Source: CapabilitySourceWorker, Diagnostic: "ready"},
 		&HookEventReply{Op: OpHookEventReply, CallID: "hook-1", Action: HookActionRewrite, Data: json.RawMessage(`{"tool":"read_file"}`), Reason: "renamed"},
+		&HookEventReply{Op: OpHookEventReply, CallID: "hook-2", Action: HookActionSuspend, Data: json.RawMessage(`{"kind":"approval_required"}`), Reason: "approval required"},
 		&PluginSend{Op: OpPluginSend, Target: Target{Kind: TargetKindPlugin, ID: "fs"}, Channel: "bus", Type: "notify", Payload: json.RawMessage(`{"ok":true}`)},
 		&PluginLog{Op: OpPluginLog, Target: Target{Kind: TargetKindPlugin, ID: "fs"}, Level: "info", Message: "ready", Fields: json.RawMessage(`{"worker":1}`)},
 		&LifecycleNotice{Op: OpLifecycleNotice, Target: Target{Kind: TargetKindPlugin, ID: "fs"}, State: LifecycleStateReady, PID: 42, Message: "attached"},

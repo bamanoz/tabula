@@ -37,17 +37,30 @@ const (
 type ToolService struct {
 	hub *Hub
 
-	mu          sync.Mutex
-	activeCalls map[sessionKey]map[string]activeRuntimeCall
+	mu           sync.Mutex
+	activeCalls  map[sessionKey]map[string]activeRuntimeCall
+	pendingCalls map[string]pendingToolCall
 }
 
 func NewToolService(hub *Hub) *ToolService {
-	return &ToolService{hub: hub, activeCalls: make(map[sessionKey]map[string]activeRuntimeCall)}
+	return &ToolService{hub: hub, activeCalls: make(map[sessionKey]map[string]activeRuntimeCall), pendingCalls: make(map[string]pendingToolCall)}
 }
 
 type activeRuntimeCall struct {
 	callID string
 	conn   runtimeapi.RuntimeConn
+}
+
+type pendingToolCall struct {
+	ApprovalID        string
+	ApprovalData      json.RawMessage
+	TenantID          string
+	Session           string
+	ToolID            string
+	ToolName          string
+	Input             json.RawMessage
+	Meta              json.RawMessage
+	TurnCorrelationID string
 }
 
 // HandleToolUse routes a tool.call request through the before_tool_call hook
@@ -66,6 +79,10 @@ func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 
 	effectiveInput, blocked := s.hub.policy.CanUseTool(sender, toolName, toolID, msg.Input, msg.Meta, session)
 	if blocked != nil {
+		if blocked.Pending {
+			s.suspendForApproval(tenantID, session, toolID, toolName, msg.Input, msg.Meta, turnCorrelationID, blocked)
+			return
+		}
 		s.hub.Logger.Warn("tool call blocked by policy", "tool", toolName, "tool_call_id", toolID, "turn_correlation_id", turnCorrelationID, "tenant_id", tenantID, "session", session, "input_bytes", len(msg.Input))
 		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, buildNotInvokedToolResult(blocked), nil, false)
 		return
@@ -81,6 +98,105 @@ func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 	}, sender, sender)
 
 	s.handleDynamicTool(tenantID, session, toolID, toolName, msg.Input, turnCorrelationID)
+}
+
+func (s *ToolService) suspendForApproval(tenantID, session, toolID, toolName string, input, meta json.RawMessage, turnCorrelationID string, blocked *HookDispatchDecision) {
+	approvalID := approvalIDFromPayload(blocked.Payload)
+	if approvalID == "" {
+		approvalID = generateApprovalID()
+	}
+	pending := pendingToolCall{
+		ApprovalID:        approvalID,
+		ApprovalData:      approvalRequestDataFromDecision(toolName, blocked),
+		TenantID:          tenantID,
+		Session:           session,
+		ToolID:            toolID,
+		ToolName:          toolName,
+		Input:             append(json.RawMessage(nil), input...),
+		Meta:              append(json.RawMessage(nil), meta...),
+		TurnCorrelationID: turnCorrelationID,
+	}
+	s.mu.Lock()
+	s.pendingCalls[approvalID] = pending
+	s.mu.Unlock()
+	s.hub.Logger.Info("tool call suspended for approval", "approval_id", approvalID, "tool", toolName, "tool_call_id", toolID, "turn_correlation_id", turnCorrelationID, "tenant_id", tenantID, "session", session)
+	s.hub.broadcastToSession(tenantID, session, "tool.suspended", &Message{Type: string(MsgEvent), Topic: "tool.suspended", ID: toolID, Name: toolName, Data: mustMarshalRaw(map[string]any{"approval_id": approvalID, "tool_call_id": toolID, "tool": toolName, "reason": blocked.Reason})}, nil)
+	s.hub.requestApprovalForPendingTool(pending, blocked)
+}
+
+func (s *ToolService) resolvePendingApproval(approvalID string, approved bool, choice string) bool {
+	s.mu.Lock()
+	pending, ok := s.pendingCalls[approvalID]
+	if ok {
+		delete(s.pendingCalls, approvalID)
+	}
+	s.mu.Unlock()
+	if !ok {
+		return false
+	}
+	if !approved {
+		s.emitApprovalResolved(pending, choice, false)
+		s.hub.sendToolResultForTool(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, string(mustMarshalRaw(map[string]any{"ok": false, "error": "not_invoked", "kind": "approval_denied", "retryable": false, "approval_id": approvalID, "choice": choice})), nil, false)
+		return true
+	}
+	s.emitApprovalResolved(pending, choice, true)
+	input := markToolInputApproved(pending.Input)
+	s.hub.broadcastToSession(pending.TenantID, pending.Session, "tool.resumed", &Message{Type: string(MsgEvent), Topic: "tool.resumed", ID: pending.ToolID, Name: pending.ToolName, Data: mustMarshalRaw(map[string]any{"approval_id": approvalID, "tool_call_id": pending.ToolID, "tool": pending.ToolName, "choice": choice})}, nil)
+	s.handleDynamicTool(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, input, pending.TurnCorrelationID)
+	return true
+}
+
+func (s *ToolService) emitApprovalResolved(pending pendingToolCall, choice string, approved bool) {
+	if s == nil || s.hub == nil {
+		return
+	}
+	payload := map[string]any{"approval_id": pending.ApprovalID, "choice": choice, "approved": approved, "tool": pending.ToolName, "tool_call_id": pending.ToolID}
+	if normalized := approvalNormalizedDetails(pending.ApprovalData); normalized != nil {
+		payload["normalized"] = normalized
+	}
+	s.hub.dispatchHook("approval_resolved", mustMarshalRaw(payload), pending.TenantID, pending.Session)
+}
+
+func approvalNormalizedDetails(raw json.RawMessage) map[string]any {
+	if len(raw) == 0 {
+		return nil
+	}
+	var payload struct {
+		Details map[string]any `json:"details"`
+	}
+	if json.Unmarshal(raw, &payload) != nil || payload.Details == nil {
+		return nil
+	}
+	return payload.Details
+}
+
+func approvalIDFromPayload(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var payload struct {
+		ApprovalID string `json:"approval_id"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.ApprovalID)
+}
+
+func generateApprovalID() string {
+	return "approval-" + generateHookID()
+}
+
+func markToolInputApproved(raw json.RawMessage) json.RawMessage {
+	var input map[string]any
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &input)
+	}
+	if input == nil {
+		input = map[string]any{}
+	}
+	input["approved"] = true
+	return mustMarshalRaw(input)
 }
 
 func (s *ToolService) handleDynamicTool(tenantID, session, toolID, toolName string, input json.RawMessage, turnCorrelationID string) {
@@ -114,22 +230,39 @@ func (s *ToolService) handleDynamicTool(tenantID, session, toolID, toolName stri
 }
 
 func buildNotInvokedToolResult(blocked *HookDispatchDecision) string {
+	hook := map[string]any{
+		"event":        blocked.Event,
+		"target":       blocked.Target,
+		"hook_id":      blocked.HookID,
+		"reply_action": blocked.ReplyAction,
+		"reason":       blocked.Reason,
+		"status":       blocked.Status,
+	}
 	result := map[string]any{
 		"ok":    false,
 		"error": "not_invoked",
-		"hook": map[string]any{
-			"event":        blocked.Event,
-			"target":       blocked.Target,
-			"hook_id":      blocked.HookID,
-			"reply_action": blocked.ReplyAction,
-			"reason":       blocked.Reason,
-			"status":       blocked.Status,
-		},
+		"hook":  hook,
+	}
+	switch blocked.Status {
+	case "disconnected":
+		result["kind"] = "hook_disconnected"
+		result["retryable"] = true
+	case "timeout":
+		result["kind"] = "hook_timeout"
+		result["retryable"] = false
 	}
 	if len(blocked.Payload) > 0 {
 		var details any
 		if json.Unmarshal(blocked.Payload, &details) == nil {
-			result["hook"].(map[string]any)["details"] = details
+			hook["details"] = details
+			if m, ok := details.(map[string]any); ok {
+				if kind, ok := m["kind"].(string); ok && kind != "" {
+					result["kind"] = kind
+				}
+				if retryable, ok := m["retryable"].(bool); ok {
+					result["retryable"] = retryable
+				}
+			}
 		}
 	}
 	return string(mustMarshalRaw(result))

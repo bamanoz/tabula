@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 type pendingExchange struct {
@@ -12,6 +13,13 @@ type pendingExchange struct {
 	tenantID  string
 	session   string
 	topic     string
+}
+
+type pendingApprovalExchange struct {
+	responder  *Client
+	tenantID   string
+	session    string
+	approvalID string
 }
 
 func (h *Hub) handleExchangeRequest(sender *Client, msg *Message) {
@@ -34,6 +42,9 @@ func (h *Hub) handleExchangeRequest(sender *Client, msg *Message) {
 }
 
 func (h *Hub) handleExchangeReply(sender *Client, msg *Message) {
+	if msg.Topic == TopicExchangeApprove && h.handleApprovalExchangeReply(sender, msg) {
+		return
+	}
 	h.exchangesMu.Lock()
 	pending, ok := h.exchanges[msg.ID]
 	if ok && pending.responder == sender && pending.topic == msg.Topic {
@@ -49,6 +60,144 @@ func (h *Hub) handleExchangeReply(sender *Client, msg *Message) {
 	}
 	msg.TenantID = pending.tenantID
 	pending.requester.SendMsg(h.prepareRoutedMessage(sender, pending.session, "exchange", msg))
+}
+
+func (h *Hub) requestApprovalForPendingTool(pending pendingToolCall, blocked *HookDispatchDecision) {
+	if h == nil {
+		return
+	}
+	responder := h.pickExchangeResponder(nil, pending.TenantID, pending.Session, TopicExchangeApprove)
+	if responder == nil {
+		h.Logger.Warn("no approval responder for suspended tool", "approval_id", pending.ApprovalID, "tool", pending.ToolName, "tool_call_id", pending.ToolID, "tenant_id", pending.TenantID, "session", pending.Session)
+		h.tools.resolvePendingApproval(pending.ApprovalID, false, "no responder")
+		return
+	}
+	h.approvalMu.Lock()
+	h.approvalExchanges[pending.ApprovalID] = pendingApprovalExchange{responder: responder, tenantID: pending.TenantID, session: pending.Session, approvalID: pending.ApprovalID}
+	h.approvalMu.Unlock()
+	data := approvalRequestData(pending, blocked)
+	responder.SendMsg(h.prepareRoutedMessage(nil, pending.Session, "approval", &Message{Type: string(MsgRequest), Topic: TopicExchangeApprove, ID: pending.ApprovalID, Session: pending.Session, TenantID: pending.TenantID, Data: data}))
+}
+
+func (h *Hub) resendPendingApprovals(c *Client, tenantID, session string) {
+	if h == nil || c == nil || !c.canReceive(TopicExchangeApprove) || !c.canSend(TopicExchangeApprove) {
+		return
+	}
+	if c.tenantID != "" && c.tenantID != tenantID {
+		return
+	}
+	h.tools.mu.Lock()
+	pendingCalls := make([]pendingToolCall, 0, len(h.tools.pendingCalls))
+	for _, pending := range h.tools.pendingCalls {
+		if pending.TenantID == tenantID && pending.Session == session {
+			pendingCalls = append(pendingCalls, pending)
+		}
+	}
+	h.tools.mu.Unlock()
+	for _, pending := range pendingCalls {
+		h.approvalMu.Lock()
+		h.approvalExchanges[pending.ApprovalID] = pendingApprovalExchange{responder: c, tenantID: tenantID, session: session, approvalID: pending.ApprovalID}
+		h.approvalMu.Unlock()
+		c.SendMsg(h.prepareRoutedMessage(nil, session, "approval", &Message{Type: string(MsgRequest), Topic: TopicExchangeApprove, ID: pending.ApprovalID, Session: session, TenantID: tenantID, Data: approvalRequestData(pending, nil)}))
+	}
+}
+
+func (h *Hub) handleApprovalExchangeReply(sender *Client, msg *Message) bool {
+	h.approvalMu.Lock()
+	pending, ok := h.approvalExchanges[msg.ID]
+	if ok && pending.responder == sender {
+		delete(h.approvalExchanges, msg.ID)
+	}
+	h.approvalMu.Unlock()
+	if !ok {
+		return false
+	}
+	if pending.responder != sender {
+		sender.SendMsg(&Message{Type: string(MsgError), Text: "client not allowed to answer approval"})
+		return true
+	}
+	choice := approvalChoice(msg.Data)
+	approved := choice == "allow once" || choice == "allow always"
+	if choice == "" {
+		approved = false
+		choice = "deny once"
+	}
+	h.tools.resolvePendingApproval(pending.approvalID, approved, choice)
+	return true
+}
+
+func approvalRequestData(pending pendingToolCall, blocked *HookDispatchDecision) json.RawMessage {
+	if len(pending.ApprovalData) > 0 && blocked == nil {
+		var data map[string]any
+		if json.Unmarshal(pending.ApprovalData, &data) == nil {
+			data["approval_id"] = pending.ApprovalID
+			return mustMarshalRaw(data)
+		}
+		return append(json.RawMessage(nil), pending.ApprovalData...)
+	}
+	data := map[string]any{
+		"approval_id": pending.ApprovalID,
+		"question":    fmt.Sprintf("Approve tool %s?", pending.ToolName),
+		"details": map[string]any{
+			"tool":         pending.ToolName,
+			"tool_call_id": pending.ToolID,
+			"input":        json.RawMessage(pending.Input),
+		},
+		"options": []string{"allow once", "allow always", "deny once", "deny always"},
+	}
+	if blocked != nil {
+		if blocked.Reason != "" {
+			data["question"] = blocked.Reason
+		}
+		if len(blocked.Payload) > 0 {
+			var payload map[string]any
+			if json.Unmarshal(blocked.Payload, &payload) == nil {
+				for _, key := range []string{"question", "details", "options"} {
+					if value, ok := payload[key]; ok {
+						data[key] = value
+					}
+				}
+			}
+		}
+	}
+	return mustMarshalRaw(data)
+}
+
+func approvalRequestDataFromDecision(toolName string, blocked *HookDispatchDecision) json.RawMessage {
+	if blocked == nil || len(blocked.Payload) == 0 {
+		return nil
+	}
+	var payload map[string]any
+	if json.Unmarshal(blocked.Payload, &payload) != nil {
+		return nil
+	}
+	data := map[string]any{}
+	if question, ok := payload["question"]; ok {
+		data["question"] = question
+	} else if blocked.Reason != "" {
+		data["question"] = blocked.Reason
+	} else {
+		data["question"] = fmt.Sprintf("Approve tool %s?", toolName)
+	}
+	for _, key := range []string{"details", "options"} {
+		if value, ok := payload[key]; ok {
+			data[key] = value
+		}
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	return mustMarshalRaw(data)
+}
+
+func approvalChoice(raw json.RawMessage) string {
+	var body struct {
+		Choice string `json:"choice"`
+	}
+	if json.Unmarshal(raw, &body) != nil {
+		return ""
+	}
+	return strings.TrimSpace(body.Choice)
 }
 
 func (h *Hub) pickExchangeResponder(sender *Client, tenantID, session string, topic string) *Client {
@@ -128,6 +277,14 @@ func (h *Hub) cancelExchangesForClient(c *Client) {
 		delete(h.exchanges, id)
 	}
 	h.exchangesMu.Unlock()
+
+	h.approvalMu.Lock()
+	for id, approval := range h.approvalExchanges {
+		if approval.responder == c {
+			delete(h.approvalExchanges, id)
+		}
+	}
+	h.approvalMu.Unlock()
 
 	for _, pending := range affected {
 		if pending.responder == c && pending.requester != nil && pending.requester.IsConnected() {

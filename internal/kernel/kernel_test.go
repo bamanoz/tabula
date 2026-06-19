@@ -793,6 +793,45 @@ func testExchangeReplyRequiresChosenResponder(t *testing.T, topic string) {
 	}
 }
 
+func TestLateExchangeApprovalReplyAfterRequesterDisconnectIsRejected(t *testing.T) {
+	hub := NewHub(nil, 3, 5, nil)
+	approval := addCaptureClient(t, hub, "hook-approvals", "main", []string{TopicExchangeApprove, string(MsgError)}, []string{TopicExchangeApprove, string(MsgError)})
+	ui := addCaptureClient(t, hub, "gateway-web", "main", []string{TopicExchangeApprove, string(MsgError)}, []string{TopicExchangeApprove, string(MsgError)})
+	approval.sends[TopicExchangeApprove] = true
+	ui.sends[TopicExchangeApprove] = true
+	ui.meta = mustMarshalRaw(map[string]any{"tabula.client_role": "ui", "tabula.managed": true})
+
+	hub.HandleMessage(approval, &Message{
+		V:     ProtocolVersion,
+		Type:  string(MsgRequest),
+		Topic: TopicExchangeApprove,
+		ID:    "approval-late-1",
+		Data:  mustMarshalRaw(map[string]any{"question": "Allow exec_run?", "options": []string{"allow once", "deny once"}}),
+	})
+	req := waitForMessage(t, ui.recvCh)
+	if req.Type != string(MsgRequest) || req.Topic != TopicExchangeApprove || req.ID != "approval-late-1" {
+		t.Fatalf("expected approval exchange request for ui, got %+v", req)
+	}
+
+	// The approval hook/plugin gives up or disconnects while the UI still shows
+	// the stale prompt. This deletes the pending exchange.
+	hub.Unregister(approval)
+
+	// A late browser reply for the old exchange id must be rejected instead of
+	// being delivered to a new or missing requester.
+	hub.HandleMessage(ui, &Message{
+		V:     ProtocolVersion,
+		Type:  string(MsgReply),
+		Topic: TopicExchangeApprove,
+		ID:    "approval-late-1",
+		Data:  mustMarshalRaw(map[string]any{"choice": "allow once", "index": 0}),
+	})
+	errorMsg := waitForMessage(t, ui.recvCh)
+	if errorMsg.Type != string(MsgError) || errorMsg.Text != "client not allowed to answer exchange" {
+		t.Fatalf("expected stale approval reply rejection, got %+v", errorMsg)
+	}
+}
+
 func TestPickExchangeResponderPrefersManagedUIClient(t *testing.T) {
 	hub := NewHub(nil, 3, 5, nil)
 	requester := addCaptureClient(t, hub, "requester", "main", []string{TopicExchangeChoose}, []string{TopicExchangeChoose, string(MsgError)})

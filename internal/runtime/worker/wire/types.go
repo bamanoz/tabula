@@ -401,7 +401,7 @@ func validateFrame(frame any) error {
 			return ProtocolErrorf("call_id is required")
 		}
 		switch f.Action {
-		case runtimewire.HookActionOK, runtimewire.HookActionRewrite, runtimewire.HookActionDeny, runtimewire.HookActionClaim:
+		case runtimewire.HookActionOK, runtimewire.HookActionRewrite, runtimewire.HookActionDeny, runtimewire.HookActionClaim, runtimewire.HookActionSuspend:
 			return nil
 		default:
 			return ProtocolErrorf("unknown hook action %q", f.Action)
