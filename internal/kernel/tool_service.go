@@ -76,6 +76,7 @@ func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 
 	turnCorrelationID := metaString(msg.Meta, turnCorrelationMetaKey)
 	s.hub.Logger.Debug("tool.call", "tool", toolName, "tenant_id", tenantID, "session", session, "id", toolID, "turn_correlation_id", turnCorrelationID)
+	s.hub.recordToolStarted(tenantID, session, toolID, toolName)
 
 	effectiveInput, blocked := s.hub.policy.CanUseTool(sender, toolName, toolID, msg.Input, msg.Meta, session)
 	if blocked != nil {
@@ -120,6 +121,7 @@ func (s *ToolService) suspendForApproval(tenantID, session, toolID, toolName str
 	s.pendingCalls[approvalID] = pending
 	s.mu.Unlock()
 	s.hub.Logger.Info("tool call suspended for approval", "approval_id", approvalID, "tool", toolName, "tool_call_id", toolID, "turn_correlation_id", turnCorrelationID, "tenant_id", tenantID, "session", session)
+	s.hub.recordToolSuspended(tenantID, session, toolID, toolName, approvalID)
 	s.hub.broadcastToSession(tenantID, session, "tool.suspended", &Message{Type: string(MsgEvent), Topic: "tool.suspended", ID: toolID, Name: toolName, Data: mustMarshalRaw(map[string]any{"approval_id": approvalID, "tool_call_id": toolID, "tool": toolName, "reason": blocked.Reason})}, nil)
 	s.hub.requestApprovalForPendingTool(pending, blocked)
 }

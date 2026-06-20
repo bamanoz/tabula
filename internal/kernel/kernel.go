@@ -31,8 +31,10 @@ type Hub struct {
 	exchangesMu       sync.Mutex
 	approvalExchanges map[string]pendingApprovalExchange
 	approvalMu        sync.Mutex
+	toolLifecycleMu   sync.Mutex
 	runtimeBusy       map[string]int
 	runtimeBusyMu     sync.RWMutex
+	runID             string
 	toolsJSON         json.RawMessage
 	initMeta          json.RawMessage
 	tenantInitMeta    map[string]json.RawMessage
@@ -81,6 +83,7 @@ func NewHub(toolsJSON json.RawMessage, _ int, _ int, logger *slog.Logger) *Hub {
 		approvalExchanges: make(map[string]pendingApprovalExchange),
 		runtimeBusy:       make(map[string]int),
 		tenantInitMeta:    map[string]json.RawMessage{},
+		runID:             newKernelRunID(),
 		toolsJSON:         toolsJSON,
 		Logger:            logger,
 		MaxClients:        100,

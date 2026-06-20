@@ -252,10 +252,12 @@ func (r *SessionRegistry) Remove(id, tenantID string) {
 	defer r.mu.Unlock()
 	key := sessionRegistryKey(id, tenantID)
 	if s, ok := r.sessions[key]; ok {
+		s.mu.Lock()
 		s.State = SessionClosing
 		s.inflightTurn = false
 		s.cancelRequested = false
 		s.touchLocked()
+		s.mu.Unlock()
 	}
 	delete(r.sessions, key)
 }

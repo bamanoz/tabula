@@ -52,6 +52,7 @@ func (h *Hub) broadcastToSessionFrom(tenantID, session, msgType string, msg *Mes
 }
 
 func (h *Hub) sendToolResultForTool(tenantID, session, toolID, toolName, output string, artifact json.RawMessage, truncated bool) {
+	h.recordToolTerminal(tenantID, session, toolID, toolName, "completed")
 	h.broadcastToSession(tenantID, session, TopicToolResult, &Message{
 		Type:      string(MsgReply),
 		Topic:     TopicToolResult,

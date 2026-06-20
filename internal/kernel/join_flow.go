@@ -61,6 +61,7 @@ func (h *Hub) applyJoinPlan(c *Client, plan joinPlan) {
 	h.persistSessionState(plan.tenantID, plan.session)
 	h.assignClientSession(c, plan.tenantID, plan.session)
 	c.MarkJoined()
+	h.reconcileInterruptedTools(plan.tenantID, plan.session)
 
 	c.SendMsg(plan.joined)
 	h.Logger.Info("client joined session", "name", c.name, "session", plan.session)
