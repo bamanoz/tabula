@@ -24,7 +24,6 @@ done
 
 TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
 TABULA_BIN="${TABULA_BIN:-$TABULA_HOME/bin/tabula}"
-TABULA_BOOT="${TABULA_BOOT:-$TABULA_HOME/.venv/bin/python3 $TABULA_HOME/boot.py}"
 LOG_PATH="$TABULA_HOME/logs/kernel.log"
 
 escape_xml() {
@@ -49,8 +48,6 @@ render_launchd() {
   <dict>
     <key>TABULA_HOME</key>
     <string>$(escape_xml "$TABULA_HOME")</string>
-    <key>TABULA_BOOT</key>
-    <string>$(escape_xml "$TABULA_BOOT")</string>
   </dict>
   <key>WorkingDirectory</key>
   <string>$(escape_xml "$TABULA_HOME")</string>
@@ -81,7 +78,6 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=$TABULA_HOME
 Environment=TABULA_HOME=$TABULA_HOME
-Environment=TABULA_BOOT=$TABULA_BOOT
 ExecStart=$TABULA_BIN serve --foreground
 Restart=on-failure
 RestartSec=5s

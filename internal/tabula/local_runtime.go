@@ -3,7 +3,6 @@ package tabula
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,8 +15,6 @@ import (
 
 	"github.com/bamanoz/tabula/internal/kernel"
 	runtimeauth "github.com/bamanoz/tabula/internal/runtime/auth"
-	runtimeconfig "github.com/bamanoz/tabula/internal/runtime/host/config"
-	"github.com/bamanoz/tabula/internal/runtime/trust"
 )
 
 const localRuntimeAttachTimeout = 10 * time.Second
@@ -43,50 +40,6 @@ func ensureRuntimeConfigExists(tabulaHome string) error {
 	}
 	if info.IsDir() {
 		return fmt.Errorf("%s is a directory, expected a file", path)
-	}
-	return nil
-}
-
-// enforceDistroTrust verifies that the active distro's source tree matches
-// the user-approved SHA in $TABULA_HOME/state/trust.json before any boot
-// script is executed.
-//
-// The active distro id and directory come from the `[distro]` table the
-// installer writes into $TABULA_HOME/config/runtime.toml. If the table is
-// missing we skip the check (legacy installs without the field will be
-// auto-migrated by tabula-install on next run); the env override
-// TABULA_TRUST_SKIP=1 short-circuits for tests and emergency recovery.
-//
-// On mismatch or missing record, returns a structured error whose message
-// tells the operator exactly which command to run.
-func enforceDistroTrust(tabulaHome string) error {
-	if os.Getenv("TABULA_TRUST_SKIP") == "1" {
-		return nil
-	}
-	tabulaHome = strings.TrimSpace(tabulaHome)
-	if tabulaHome == "" {
-		return fmt.Errorf("trust: TABULA_HOME is required")
-	}
-	cfgPath := filepath.Join(tabulaHome, "config", "runtime.toml")
-	cfg, err := runtimeconfig.Load(cfgPath)
-	if err != nil {
-		return fmt.Errorf("trust: load runtime config: %w", err)
-	}
-	if cfg.Distro.Active == "" || cfg.Distro.Dir == "" {
-		// Legacy install: runtime.toml predates issue 007. The next
-		// `tabula-install` run will populate the field and the auto-trust
-		// migration shim will write the trust record. Until then, run
-		// without enforcement so we do not strand users who upgraded
-		// `tabula` before re-running the installer.
-		return nil
-	}
-	dbPath := filepath.Join(tabulaHome, "state", "trust.json")
-	if err := trust.Check(dbPath, cfg.Distro.Active, cfg.Distro.Dir); err != nil {
-		var ce *trust.CheckError
-		if errors.As(err, &ce) {
-			return ce
-		}
-		return fmt.Errorf("trust: %w", err)
 	}
 	return nil
 }

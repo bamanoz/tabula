@@ -2,7 +2,6 @@ package tabula
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -31,6 +30,7 @@ import (
 	"github.com/bamanoz/tabula/internal/runtime/wire"
 	"github.com/bamanoz/tabula/internal/tenant"
 
+	"github.com/BurntSushi/toml"
 	"github.com/gorilla/websocket"
 )
 
@@ -200,8 +200,6 @@ func Run(args []string, build BuildInfo) int {
 		return tenantCmd(args[1:])
 	case "runtime":
 		return runtimeCmd(args[1:])
-	case "distro":
-		return distroCmd(args[1:])
 	case "config":
 		return configCmd(args[1:])
 	case "health":
@@ -227,7 +225,7 @@ func Run(args []string, build BuildInfo) int {
 			return 0
 		}
 		// No subcommand — print usage.
-		fmt.Fprintf(os.Stderr, "Usage: tabula <command>\n\nCommands:\n  serve    Start the kernel WebSocket server (default)\n  run      One-shot prompt → response\n  status   Show kernel/runtime/tenant status\n  config   Inspect runtime configuration\n  health   Check installed plugin health\n  tenant   Manage tenants\n  runtime  Manage runtimes\n  distro   Manage distro trust\n\nServe flags:\n  --runtime-mode external|disabled\n\nFlags:\n  --version    Show version\n  --protocol   Show kernel plugin protocol range (JSON)\n")
+		fmt.Fprintf(os.Stderr, "Usage: tabula <command>\n\nCommands:\n  serve    Start the kernel WebSocket server (default)\n  run      One-shot prompt → response\n  status   Show kernel/runtime/tenant status\n  config   Inspect runtime configuration\n  health   Check installed plugin health\n  tenant   Manage tenants\n  runtime  Manage runtimes\n\nServe flags:\n  --runtime-mode external|disabled\n\nFlags:\n  --version    Show version\n  --protocol   Show kernel plugin protocol range (JSON)\n")
 		return 1
 	}
 
@@ -320,13 +318,6 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 		slog.Info("PATH restored from TABULA_PATH", "path", savedPath)
 	}
 
-	// Resolve boot command
-	bootCmd := os.Getenv("TABULA_BOOT")
-	if bootCmd == "" {
-		fmt.Fprintln(os.Stderr, "error: no boot command specified (set TABULA_BOOT env var)")
-		return 1
-	}
-
 	// Plugin layout is owned by runtime.toml (installer-written). Fail
 	// fast if it is missing so the operator gets a clear message rather
 	// than an obscure "no plugins" downstream error.
@@ -335,42 +326,30 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 		return 1
 	}
 
-	// Trust check runs before any boot execution. boot.py is arbitrary
-	// Python so an untrusted distro must not be invoked unconditionally.
-	// The active distro and its source tree come from runtime.toml; see
-	// internal/runtime/trust and docs/issues/refactoring/007-*.md.
-	if err := enforceDistroTrust(tabulaHome); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
-	}
-
-	slog.Info("running boot", "command", bootCmd)
-
-	// Run boot script → get config
-	bootConfig, err := runBoot(bootCmd)
+	kernelConfig, err := loadKernelConfigFile(tabulaHome)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: boot failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: kernel config failed: %v\n", err)
 		return 1
 	}
-	slog.Info("boot config loaded", "url", bootConfig.URL)
+	slog.Info("kernel config loaded", "url", kernelConfig.URL)
 
 	// Runtime-owned skills are advertised from runtime capabilities, not boot metadata.
 	toolsJSON := json.RawMessage(`[]`)
 
 	// Parse URL to get listen address
-	u, err := url.Parse(bootConfig.URL)
+	u, err := url.Parse(kernelConfig.URL)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: invalid url %q: %v\n", bootConfig.URL, err)
+		fmt.Fprintf(os.Stderr, "error: invalid url %q: %v\n", kernelConfig.URL, err)
 		return 1
 	}
 	listenAddr := u.Host
 	if !strings.Contains(listenAddr, ":") {
 		listenAddr += ":8089"
 	}
-	wsEndpoint := bootConfig.URL
+	wsEndpoint := kernelConfig.URL
 
 	// Set environment for all child processes
-	os.Setenv("TABULA_URL", bootConfig.URL)
+	os.Setenv("TABULA_URL", kernelConfig.URL)
 	os.Setenv("TABULA_HOME", tabulaHome)
 	clientAuthToken, err := kernel.IssueKernelClientTokenFile(kernel.KernelClientTokenPath(tabulaHome))
 	if err != nil {
@@ -394,11 +373,6 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 	runtimeDefinitions, err := kernel.LoadRuntimeDefinitions(tabulaHome)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: runtime registry config failed: %v\n", err)
-		return 1
-	}
-	hub.SetInitMeta(bootConfig.Meta)
-	if err := hub.ConfigureTenantInitMeta(tabulaHome); err != nil {
-		fmt.Fprintf(os.Stderr, "error: tenant init metadata setup failed: %v\n", err)
 		return 1
 	}
 	hub.StartReaper()
@@ -452,7 +426,7 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 	var runtimeWSSServer *http.Server
 	var runtimeWSSTLSConfig *tls.Config
 	serveMainTLS := false
-	if endpoint, ok := bootConfig.runtimeWSSEndpoint(); ok {
+	if endpoint, ok := kernelConfig.runtimeWSSEndpoint(); ok {
 		runtimeWSSTLSConfig, err = wss.LoadServerTLSConfig(endpoint.CertFile, endpoint.KeyFile, endpoint.ClientCA, wss.ClientCertAuthMode(endpoint.ClientAuth))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: invalid runtime websocket tls config: %v\n", err)
@@ -780,30 +754,14 @@ func runCmd(args []string, build BuildInfo) int {
 		os.Setenv("PATH", savedPath)
 	}
 
-	// Resolve boot command.
-	bootCmd := os.Getenv("TABULA_BOOT")
-	if bootCmd == "" {
-		fmt.Fprintln(os.Stderr, "error: no boot command specified (set TABULA_BOOT env var)")
-		return 1
-	}
-
 	if err := ensureRuntimeConfigExists(tabulaHome); err != nil {
 		fmt.Fprintf(os.Stderr, "error: runtime config not ready: %v\n", err)
 		return 1
 	}
 
-	// Trust check runs before any boot execution. See serveCmd above for
-	// rationale.
-	if err := enforceDistroTrust(tabulaHome); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
-	}
-
-	slog.Info("running boot", "command", bootCmd)
-
-	bootConfig, err := runBoot(bootCmd)
+	kernelConfig, err := loadKernelConfigFile(tabulaHome)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: boot failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: kernel config failed: %v\n", err)
 		return 1
 	}
 
@@ -811,9 +769,9 @@ func runCmd(args []string, build BuildInfo) int {
 	toolsJSON := json.RawMessage(`[]`)
 
 	// Parse URL.
-	u, err := url.Parse(bootConfig.URL)
+	u, err := url.Parse(kernelConfig.URL)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: invalid url %q: %v\n", bootConfig.URL, err)
+		fmt.Fprintf(os.Stderr, "error: invalid url %q: %v\n", kernelConfig.URL, err)
 		return 1
 	}
 	listenAddr := u.Host
@@ -821,7 +779,7 @@ func runCmd(args []string, build BuildInfo) int {
 		listenAddr += ":8089"
 	}
 
-	os.Setenv("TABULA_URL", bootConfig.URL)
+	os.Setenv("TABULA_URL", kernelConfig.URL)
 	os.Setenv("TABULA_HOME", tabulaHome)
 	os.Setenv("TABULA_SKIP_MCP", "1")
 	clientAuthToken, err := kernel.IssueKernelClientTokenFile(kernel.KernelClientTokenPath(tabulaHome))
@@ -842,7 +800,6 @@ func runCmd(args []string, build BuildInfo) int {
 		fmt.Fprintf(os.Stderr, "error: runtime registry config failed: %v\n", err)
 		return 1
 	}
-	hub.SetInitMeta(bootConfig.Meta)
 	hub.StartReaper()
 
 	localRuntimeStore := runtimeauth.NewMemoryStore()
@@ -1121,65 +1078,77 @@ func loadEnvFile(path string) {
 	}
 }
 
-// BootConfig holds the parsed output of the boot script.
-//
-// Boot emits behavior only (URL, prompt metadata, runtime endpoints).
-// Plugin layout lives in $TABULA_HOME/config/runtime.toml and is owned by
-// the installer (`tabula-install` / `tabula-distro`). Distros may continue
-// to emit `plugins[]` in their boot JSON — the installer reads it during
-// `tabula-install` to compile `plugin_dirs` — but the kernel ignores that
-// field at runtime.
-type BootConfig struct {
-	URL              string                `json:"url"`
-	Skills           json.RawMessage       `json:"skills"`
-	Meta             json.RawMessage       `json:"meta"`
-	RuntimeEndpoints *bootRuntimeEndpoints `json:"runtime_endpoints,omitempty"`
+type kernelConfigFile struct {
+	Kernel     kernelConfigKernel     `toml:"kernel"`
+	RuntimeWSS kernelConfigRuntimeWSS `toml:"runtime_wss"`
 }
 
-type bootRuntimeEndpoints struct {
-	WSS *bootRuntimeWSSEndpoint `json:"wss,omitempty"`
+type kernelConfig struct {
+	URL        string
+	RuntimeWSS *runtimeWSSEndpoint
 }
 
-type bootRuntimeWSSEndpoint struct {
-	Enabled    bool     `json:"enabled"`
-	Listen     string   `json:"listen"`
-	Path       string   `json:"path"`
-	Origins    []string `json:"origins"`
-	CertFile   string   `json:"cert_file"`
-	KeyFile    string   `json:"key_file"`
-	ClientCA   string   `json:"client_ca"`
-	ClientAuth string   `json:"client_auth"`
+type kernelConfigKernel struct {
+	URL string `toml:"url"`
 }
 
-// runBoot executes the boot command and parses its JSON output.
-func runBoot(cmd string) (*BootConfig, error) {
-	c := mainShellCommand(cmd)
-	var stderr bytes.Buffer
-	c.Stderr = &stderr
-	out, err := c.Output()
-	if err != nil {
-		if stderr.Len() > 0 {
-			slog.Error("boot script stderr", "output", stderr.String())
+type kernelConfigRuntimeWSS struct {
+	Enabled    bool     `toml:"enabled"`
+	Listen     string   `toml:"listen"`
+	Path       string   `toml:"path"`
+	Origins    []string `toml:"origins"`
+	CertFile   string   `toml:"cert_file"`
+	KeyFile    string   `toml:"key_file"`
+	ClientCA   string   `toml:"client_ca"`
+	ClientAuth string   `toml:"client_auth"`
+}
+
+type runtimeWSSEndpoint struct {
+	Listen     string
+	Path       string
+	Origins    []string
+	CertFile   string
+	KeyFile    string
+	ClientCA   string
+	ClientAuth string
+}
+
+func loadKernelConfigFile(tabulaHome string) (*kernelConfig, error) {
+	return loadKernelConfig(filepath.Join(tabulaHome, "config", "kernel.toml"))
+}
+
+func loadKernelConfig(path string) (*kernelConfig, error) {
+	var cfg kernelConfigFile
+	if _, err := toml.DecodeFile(path, &cfg); err != nil {
+		return nil, fmt.Errorf("load kernel config %s: %w", path, err)
+	}
+	url := strings.TrimSpace(os.ExpandEnv(cfg.Kernel.URL))
+	if envURL := strings.TrimSpace(os.Getenv("TABULA_URL")); envURL != "" {
+		url = envURL
+	}
+	if url == "" {
+		return nil, fmt.Errorf("kernel.url is required in %s", path)
+	}
+	out := &kernelConfig{URL: url}
+	if cfg.RuntimeWSS.Enabled {
+		out.RuntimeWSS = &runtimeWSSEndpoint{
+			Listen:     strings.TrimSpace(os.ExpandEnv(cfg.RuntimeWSS.Listen)),
+			Path:       strings.TrimSpace(cfg.RuntimeWSS.Path),
+			Origins:    cfg.RuntimeWSS.Origins,
+			CertFile:   strings.TrimSpace(os.ExpandEnv(cfg.RuntimeWSS.CertFile)),
+			KeyFile:    strings.TrimSpace(os.ExpandEnv(cfg.RuntimeWSS.KeyFile)),
+			ClientCA:   strings.TrimSpace(os.ExpandEnv(cfg.RuntimeWSS.ClientCA)),
+			ClientAuth: strings.TrimSpace(cfg.RuntimeWSS.ClientAuth),
 		}
-		return nil, fmt.Errorf("boot script failed: %v", err)
 	}
-
-	if stderr.Len() > 0 {
-		slog.Warn("boot script warnings", "output", stderr.String())
-	}
-
-	var config BootConfig
-	if err := json.Unmarshal(out, &config); err != nil {
-		return nil, fmt.Errorf("cannot parse boot output: %v", err)
-	}
-	return &config, nil
+	return out, nil
 }
 
-func (c *BootConfig) runtimeWSSEndpoint() (bootRuntimeWSSEndpoint, bool) {
-	if c == nil || c.RuntimeEndpoints == nil || c.RuntimeEndpoints.WSS == nil || !c.RuntimeEndpoints.WSS.Enabled {
-		return bootRuntimeWSSEndpoint{}, false
+func (c *kernelConfig) runtimeWSSEndpoint() (runtimeWSSEndpoint, bool) {
+	if c == nil || c.RuntimeWSS == nil {
+		return runtimeWSSEndpoint{}, false
 	}
-	endpoint := *c.RuntimeEndpoints.WSS
+	endpoint := *c.RuntimeWSS
 	if strings.TrimSpace(endpoint.Path) == "" {
 		endpoint.Path = wss.DefaultPath
 	}

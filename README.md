@@ -171,8 +171,8 @@ Pieces:
   hooks, and plugin/skill dispatch. It publishes no LLM-visible tools by
   default; `shell_exec`-style tools and subagent operations are supplied by the
   active distro's skills/plugins.
-- **Boot** — command from `TABULA_BOOT` that emits one JSON config for the
-  kernel. In the built-in distros this is currently implemented in Python.
+- **Kernel config** — installer-written `config/kernel.toml` containing only
+  kernel transport settings.
 - **Drivers** — one provider loop per process (Anthropic, OpenAI).
 - **Gateways** — the mouths and ears: CLI, HTTP API, Telegram.
 - **Plugins** — executable tools, hooks, integrations, memory, MCP, and gateway
@@ -189,15 +189,15 @@ $TABULA_HOME/
 │   ├── claw/current/
 │   ├── guardian/current/
 │   └── active -> claw
-├── boot.py         -> distrib/active/current/boot.py
 ├── templates/      -> distrib/active/current/templates
 ├── skills/         # distro skills + bundle skills
 ├── plugins/        # distro plugins + bundle plugins
 ├── config/
 │   ├── global.toml
+│   ├── kernel.toml  # kernel transport config — installer-owned
 │   └── runtime.toml  # plugin_dirs, skill_dirs, [[kernel]], [pool] — installer-owned
 ├── secrets.json
-├── .env            # loaded by the kernel; boot inherits via os.environ
+├── .env            # loaded by the kernel; workers inherit via os.environ
 ├── data/
 ├── logs/
 ├── run/            # reload.touch, runtime sockets, tokens
@@ -205,8 +205,8 @@ $TABULA_HOME/
 └── .venv/
 ```
 
-The active distro plus the bundles it declares fan out into `boot.py`,
-`templates/`, `skills/`, and `plugins/`. Shared SDK/support packages are
+The active distro plus the bundles it declares fan out into `templates/`,
+`skills/`, and `plugins/`. Shared SDK/support packages are
 installed as normal package artifacts (for example into `.venv` or bundle
 `_lib` payloads). During the library-relocation migration, source installs may
 still stage temporary legacy support directories for compatibility; don't treat
@@ -214,12 +214,13 @@ those as the long-term authoring surface.
 Files like `IDENTITY.md`, `SOUL.md`, `AGENTS.md` under `templates/` are the
 agent's personality — edit them, or let the agent edit them.
 
-Plugin layout lives in `config/runtime.toml`. The installer writes it from the
-distro boot output during `tabula-install`; the running kernel reads the file
-directly and reloads through `run/reload.touch` without re-running boot. See
+Kernel transport lives in `config/kernel.toml`; plugin layout lives in
+`config/runtime.toml`. The installer writes both during `tabula-install`; the
+running kernel reads them directly and reloads plugins through
+`run/reload.touch`. See
 [`docs/DISTRO_CONFIG.md`](docs/DISTRO_CONFIG.md) for the contract.
 
-Inspect the installed runtime surface without executing distro boot:
+Inspect the installed runtime surface:
 
 ```bash
 tabula config inspect
@@ -284,29 +285,11 @@ More about what each distro contains lives in the
 | `tabula-runner`                                     | Start the kernel plus local runtime wrapper  |
 | `tabula-cli`                                        | Connect to a running kernel                  |
 | `tabula-install distro install <path-or-uri>`       | Install or switch the active distro          |
-| `tabula-install distro install … --trust`           | Install and approve in one step              |
-| `tabula distro trust [<id>]`                        | Approve the active distro's boot tree        |
-| `tabula distro trust --list`                        | Show the trust DB                            |
-| `tabula distro untrust <id>`                        | Revoke a trust record                        |
 | `tabula serve`                                      | Low-level kernel entrypoint                  |
 | `tabula run --prompt "..."`                         | One-shot prompt → response                   |
 
 `tabula-runner` is the product wrapper. `tabula serve` is the low-level kernel
 entrypoint and does not supervise a local runtime process.
-
-The kernel refuses to execute a distro's `boot.py` until the user has
-approved its SHA. After `tabula-install distro install`, either pass
-`--trust` to approve in the same step or run `tabula distro trust`
-separately. The first install after this feature lands auto-trusts the
-active distro (one-shot cold-start migration); subsequent installs do
-not. See [`docs/distro-config.md`](docs/distro-config.md) §Trust DB for
-details. `TABULA_TRUST_SKIP=1` bypasses the check in emergencies.
-
-Direct `tabula serve` and `tabula run` need `TABULA_BOOT`:
-
-```bash
-TABULA_BOOT='"$TABULA_HOME/.venv/bin/python3" "$TABULA_HOME/boot.py"' tabula serve
-```
 
 ## Configuration
 
@@ -397,7 +380,6 @@ Useful environment variables:
 | `TABULA_HOME`                              | Home directory, default `~/.tabula`        |
 | `TABULA_WORKSPACE`                         | Assistant workspace, default `~/.agents`   |
 | `TABULA_PROVIDER`                          | Active provider                            |
-| `TABULA_BOOT`                              | Boot command for `tabula serve / run`      |
 | `TABULA_URL`                               | Kernel WebSocket URL                       |
 | `TABULA_MAX_SPAWN_DEPTH`                   | Max nested subagent depth                  |
 | `TABULA_MAX_CHILDREN_PER_SESSION`          | Max child subagents per session            |
@@ -450,7 +432,7 @@ itself — there is no separate "agent-authored skills" path.
 See the
 [`skill-contract`](https://github.com/bamanoz/tabula-bundles/tree/main/base/skill-contract)
 skill in `tabula-bundles` for the current claw skill convention. Contract
-versioning across the wire protocol, boot output, claw skill manifests,
+versioning across the wire protocol, runtime config, claw skill manifests,
 and packaged SDK contracts is still being stabilized; don't rely on temporary
 legacy support-dir internals yet.
 

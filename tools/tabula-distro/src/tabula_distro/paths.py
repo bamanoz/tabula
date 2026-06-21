@@ -111,10 +111,6 @@ def templates_dir() -> Path:
     return tabula_home() / "templates"
 
 
-def flat_boot_file() -> Path:
-    return tabula_home() / "boot.py"
-
-
 # --- tenant resolution ------------------------------------------------------
 
 
@@ -179,26 +175,6 @@ def runtime_config_file() -> Path:
     and read by the kernel and runtime.
     """
     return config_dir() / "runtime.toml"
-
-
-def trust_file() -> Path:
-    """Return ``$TABULA_HOME/state/trust.json``.
-
-    Records SHA256 digests of distros the user has explicitly approved for
-    boot execution. State (not config), local to the machine, not in
-    user-config backups.
-    """
-    return state_dir() / "trust.json"
-
-
-def trust_meta_file() -> Path:
-    """Return ``$TABULA_HOME/state/trust.meta.json``.
-
-    Tracks migration-shim provenance (auto-trust applied to a
-    pre-trust-DB installation). Separate file so the shim can be removed
-    without touching the main trust DB format.
-    """
-    return state_dir() / "trust.meta.json"
 
 
 # --- per-component config / state / logs -----------------------------------

@@ -89,7 +89,7 @@ def migrate_legacy(home: Path, distro_name: str) -> Generation | None:
         return None
     if (root / "generations").exists() or (root / "current").exists():
         return None
-    has_distro_files = any((root / marker).exists() for marker in ("boot.py", "skills", "templates"))
+    has_distro_files = any((root / marker).exists() for marker in ("skills", "templates", "distro.toml"))
     if not has_distro_files:
         return None
     legacy_name = f"{1:0{GENERATION_PREFIX_WIDTH}d}-{LEGACY_MARKER}"

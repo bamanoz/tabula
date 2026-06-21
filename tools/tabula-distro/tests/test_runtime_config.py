@@ -66,6 +66,44 @@ class RuntimeConfigWriteTests(unittest.TestCase):
             data = tomllib.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(data["plugin_dirs"], [str(home / "plugins")])
 
+    def test_kernel_config_write_contains_only_kernel_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            path = runtime_config.write_kernel_config(home, url="ws://127.0.0.1:9090/ws")
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+
+            self.assertEqual(data["kernel"], {"url": "ws://127.0.0.1:9090/ws"})
+            self.assertEqual(data["runtime_wss"], {"enabled": False})
+            self.assertNotIn("meta", data)
+            self.assertNotIn("workspace", data)
+            self.assertNotIn("default_provider", data)
+
+    def test_kernel_config_rewrite_preserves_unknown_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            path = runtime_config.write_kernel_config(home, url="ws://127.0.0.1:8089/ws")
+            path.write_text(path.read_text(encoding="utf-8") + "\n[custom]\nflag = true\n", encoding="utf-8")
+
+            runtime_config.write_kernel_config(home, url="ws://127.0.0.1:9090/ws")
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+
+            self.assertEqual(data["kernel"]["url"], "ws://127.0.0.1:9090/ws")
+            self.assertTrue(data["custom"]["flag"])
+
+    def test_sync_for_distro_uses_generation_layout_without_boot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            generation = home / "distrib" / "demo" / "generations" / "0001"
+            (generation / "plugins").mkdir(parents=True)
+
+            path = runtime_config.sync_for_distro(home, generation)
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+
+            self.assertEqual(data["plugin_dirs"], [str((generation / "plugins").resolve())])
+            self.assertEqual(data["distro"], {"active": "demo", "dir": str(generation.resolve())})
+            kernel = tomllib.loads((home / "config" / "kernel.toml").read_text(encoding="utf-8"))
+            self.assertEqual(kernel["kernel"], {"url": "ws://localhost:8089/ws"})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -168,6 +168,63 @@ func TestLoadEnvFileDoesNotOverrideExistingValues(t *testing.T) {
 	}
 }
 
+func TestLoadKernelConfigUsesKernelOwnedFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kernel.toml")
+	if err := os.WriteFile(path, []byte(`
+[kernel]
+url = "ws://127.0.0.1:9090/ws"
+
+[runtime_wss]
+enabled = true
+listen = "127.0.0.1:9443"
+path = "/runtime/ws"
+origins = ["https://runtime.example"]
+cert_file = "$TABULA_TEST_CERT"
+key_file = "$TABULA_TEST_KEY"
+client_ca = "$TABULA_TEST_CA"
+client_auth = "require"
+`), 0o644); err != nil {
+		t.Fatalf("write kernel config: %v", err)
+	}
+	t.Setenv("TABULA_TEST_CERT", "/cert.pem")
+	t.Setenv("TABULA_TEST_KEY", "/key.pem")
+	t.Setenv("TABULA_TEST_CA", "/ca.pem")
+
+	cfg, err := loadKernelConfig(path)
+	if err != nil {
+		t.Fatalf("loadKernelConfig: %v", err)
+	}
+	if cfg.URL != "ws://127.0.0.1:9090/ws" {
+		t.Fatalf("url = %q", cfg.URL)
+	}
+	endpoint, ok := cfg.runtimeWSSEndpoint()
+	if !ok {
+		t.Fatal("expected runtime wss endpoint")
+	}
+	if endpoint.Listen != "127.0.0.1:9443" || endpoint.Path != "/runtime/ws" || endpoint.CertFile != "/cert.pem" || endpoint.KeyFile != "/key.pem" || endpoint.ClientCA != "/ca.pem" || endpoint.ClientAuth != "require" {
+		t.Fatalf("unexpected endpoint: %+v", endpoint)
+	}
+}
+
+func TestLoadKernelConfigFileReadsInstalledConfig(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "config"), 0o755); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "config", "kernel.toml"), []byte("[kernel]\nurl = \"ws://127.0.0.1:9090/ws\"\n"), 0o644); err != nil {
+		t.Fatalf("write kernel config: %v", err)
+	}
+
+	cfg, err := loadKernelConfigFile(home)
+	if err != nil {
+		t.Fatalf("loadKernelConfigFile: %v", err)
+	}
+	if cfg.URL != "ws://127.0.0.1:9090/ws" {
+		t.Fatalf("url = %q", cfg.URL)
+	}
+}
+
 func TestReloadLocalRuntimeUsesAttachedRuntime(t *testing.T) {
 	fake := &fakeRuntimeReloader{attempted: true}
 	if err := reloadLocalRuntime(t.Context(), fake, "alpha"); err != nil {

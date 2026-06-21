@@ -55,7 +55,6 @@ if [ -d "$TABULA_HOME" ]; then
     "$TABULA_HOME/run" \
     "$TABULA_HOME/.venv" \
     "$TABULA_HOME/logs" \
-    "$TABULA_HOME/boot.py" \
     "$TABULA_HOME/boot-cicd.py"
 
   if [ "$remove_all" = true ]; then

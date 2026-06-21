@@ -320,7 +320,6 @@ for a in data.get('assets', []):
 
   # Remove legacy root-level runtime layout from older installs.
   rm -rf \
-    "$TABULA_HOME/boot.py" \
     "$TABULA_HOME/templates" \
     "$TABULA_HOME/distrib" \
     "$TABULA_HOME/skills" \

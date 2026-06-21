@@ -69,21 +69,14 @@ func TestBuildFailsWhenRuntimeConfigMissing(t *testing.T) {
 	}
 }
 
-func TestBuildDoesNotExecuteBoot(t *testing.T) {
+func TestBuildUsesRuntimeConfigOnly(t *testing.T) {
 	home := t.TempDir()
 	plugins := filepath.Join(home, "plugins")
 	writeInspectFile(t, filepath.Join(plugins, "fs", "plugin.toml"), inspectPluginManifest("fs", "fs_read"))
 	writeRuntimeConfig(t, home, plugins)
-	bootMarker := filepath.Join(home, "boot-ran")
-	writeInspectFile(t, filepath.Join(home, "boot.py"), `#!/usr/bin/env python3
-open("`+bootMarker+`", "w").write("ran")
-`)
 
 	if _, err := Build(Options{Home: home}); err != nil {
 		t.Fatalf("Build: %v", err)
-	}
-	if _, err := os.Stat(bootMarker); !os.IsNotExist(err) {
-		t.Fatalf("inspect executed boot marker: %v", err)
 	}
 }
 

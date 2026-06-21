@@ -68,7 +68,6 @@ Files that exist in both but **differ**:
 - `tests/test_sessions.py`
 - `tests/test_timer.py`
 - `tests/test_workspace_fs_tenant_divergence.py`
-- top-level `boot.py`
 - top-level `generate.py`
 - top-level `testbed.toml`
 

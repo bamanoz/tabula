@@ -108,17 +108,6 @@ func RuntimeConfigFile() string { return filepath.Join(ConfigDir(), "runtime.tom
 // installer touches after switching the active generation.
 func ReloadTouchFile() string { return filepath.Join(RunDir(), "reload.touch") }
 
-// TrustFile returns $TABULA_HOME/state/trust.json. The file records SHA256
-// digests of distros the user has explicitly approved for boot execution.
-// See internal/runtime/trust.
-func TrustFile() string { return filepath.Join(StateDir(), "trust.json") }
-
-// TrustMetaFile returns $TABULA_HOME/state/trust.meta.json. It tracks
-// migration-shim provenance (when auto-trust was applied to an existing
-// installation) and is separate from the user-facing trust DB so the shim
-// can be removed without breaking the main format.
-func TrustMetaFile() string { return filepath.Join(StateDir(), "trust.meta.json") }
-
 // --- tenant resolution ----------------------------------------------------
 
 // TenantRoot returns the explicit $TABULA_TENANT_DIR if set, otherwise an

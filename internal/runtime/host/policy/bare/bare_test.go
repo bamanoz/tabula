@@ -198,7 +198,6 @@ func TestSpawnInjectsTenantKernelAndTargetEnv(t *testing.T) {
 func TestWorkerEnvAddsInstalledPythonLibrary(t *testing.T) {
 	t.Setenv("TABULA_HOME", "/tmp/tabula-home")
 	t.Setenv("TABULA_URL", "ws://127.0.0.1:9999/ws")
-	t.Setenv("TABULA_BOOT_PATH", "/tmp/tabula-home/distrib/claw/current/boot.py")
 	t.Setenv("PYTHONPATH", "/existing")
 	env := workerEnv(policy.SpawnReq{Runtime: "python", KernelID: "main", TenantID: "default", TargetID: "plugin"})
 	got := envValue(env, "PYTHONPATH")
@@ -209,8 +208,8 @@ func TestWorkerEnvAddsInstalledPythonLibrary(t *testing.T) {
 	if got := envValue(env, "TABULA_URL"); got != "ws://127.0.0.1:9999/ws" {
 		t.Fatalf("TABULA_URL = %q", got)
 	}
-	if got := envValue(env, "TABULA_BOOT_PATH"); got != "/tmp/tabula-home/distrib/claw/current/boot.py" {
-		t.Fatalf("TABULA_BOOT_PATH = %q", got)
+	if got := envValue(env, "TABULA_BOOT_PATH"); got != "" {
+		t.Fatalf("TABULA_BOOT_PATH leaked into worker env: %q", got)
 	}
 }
 

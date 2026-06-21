@@ -11,15 +11,14 @@ Tabula has five main concepts:
 
 1. **Kernel** — small Go runtime that owns sessions, routing, hooks, and
    process supervision.
-2. **Boot** — command from `TABULA_BOOT` that inspects the active runtime and
-   prints one JSON config object. In the built-in distros this is currently
-   implemented in Python.
+2. **Kernel config** — installer-written `$TABULA_HOME/config/kernel.toml`
+   containing only kernel transport settings.
 3. **Skills** — prompt/instruction artifacts. They do not publish executable
    tools. Manifest: `SKILL.md` (Markdown + frontmatter).
 4. **Plugins** — long-lived processes with a `register(api)` entry point that
    subscribe to bus events, register tools dynamically, and own their own
    lifecycle. Manifest: `plugin.toml`.
-5. **Distro** — a packaged runtime surface: boot script, templates, and a set
+5. **Distro** — a packaged runtime surface: templates, runtime config, and a set
    of bundles (which themselves are mixed collections of skills and plugins).
 
 Message flow usually looks like this:
@@ -35,11 +34,10 @@ The kernel lives in `cmd/tabula/` and `internal/kernel/`.
 Responsibilities:
 
 - run the WebSocket server
-- run the boot command from `TABULA_BOOT`
-- parse the boot JSON config
+- read `$TABULA_HOME/config/kernel.toml`
 - accept runtime attachments and route tool calls to runtime-hosted workers
 - route messages between session members
-- expose the distro-declared skill/plugin tool catalog
+- expose the runtime-attached skill/plugin tool catalog
 - enforce hook ordering and own level-one process supervision
 
 The kernel intentionally does **not** know about Anthropic, OpenAI, Telegram,
@@ -145,140 +143,55 @@ The shared Python wrapper for low-level clients is
 
 ## Boot
 
-Tabula does not hardcode its runtime in Go. Instead, the kernel runs a boot
-command and expects a JSON object on stdout.
+Tabula does not hardcode its runtime in Go. Installs write kernel-owned startup
+settings to `$TABULA_HOME/config/kernel.toml`.
 
-The boot command comes from `TABULA_BOOT`.
+The preferred kernel config is `$TABULA_HOME/config/kernel.toml`:
 
-In a normal install, `tabula-runner` sets this to something like:
+```toml
+[kernel]
+url = "ws://127.0.0.1:8089/ws"
 
-```text
-"$TABULA_HOME/.venv/bin/python3" "$TABULA_HOME/boot.py"
+[runtime_wss]
+enabled = false
 ```
 
-The active `boot.py` is copied (or symlinked) from the installed distro under
-`$TABULA_HOME/distrib/<distro>/current/boot.py` by `tabula-install`.
-
-`tabula serve` itself is kernel-only: it reads `TABULA_BOOT`, serves the kernel
+`tabula serve` itself is kernel-only: it reads `kernel.toml`, serves the kernel
 endpoints, and accepts runtime attachments. The local product wrapper
 `tabula-runner` is what launches `tabula serve` plus a sibling `tabula-runtime`
 process for the default local stack.
 
 ### `.env` loading
 
-The kernel is the **single canonical loader** of `$TABULA_HOME/.env`. Before
-running the boot command, `tabula serve` reads the file with `loadEnvFile` and
-populates `os.Environ()` for every key that is not already set in the shell
-environment. The boot subprocess and every downstream worker inherit those
-values through normal process inheritance.
+The kernel is the **single canonical loader** of `$TABULA_HOME/.env`. During
+startup, `tabula serve` reads the file with `loadEnvFile` and populates
+`os.Environ()` for every key that is not already set in the shell environment.
+Downstream workers inherit those values through normal process inheritance.
 
 Precedence is fixed:
 
 1. Shell environment (highest — never overridden by the file).
 2. `$TABULA_HOME/.env` (file values, applied with `setdefault` semantics).
 
-Distro boot scripts must read only `os.environ`. They must not load `.env`
-themselves; doing so would either no-op (the kernel already loaded it) or
-violate the precedence rule by re-applying file values after the shell.
-
-### Boot output
-
-The boot script emits one JSON object with fields like:
-
-- `url` — kernel WebSocket URL
-- `skills` — reserved legacy field; current distros leave it empty
-- `plugins` — plugin manifest paths consumed **by the installer only**
-  (`tabula-install` / `tabula-distro`) when it compiles
-  `$TABULA_HOME/config/runtime.toml`. The running kernel ignores this field.
-- `meta` — opaque client-facing metadata forwarded on `init.meta`
-
-Claw and guardian use the same contract, but generate different payloads.
-
 ### Plugin discovery
 
-Boot emits **behavior**. `$TABULA_HOME/config/runtime.toml` defines **layout**.
-Plugin loading goes through `runtime.toml` only.
+`$TABULA_HOME/config/runtime.toml` defines runtime layout. Plugin loading goes
+through `runtime.toml` only.
 
-- `tabula-install <distro>` runs `boot.py` once, reads `plugins[]` from its
-  JSON, and writes `plugin_dirs` (plus `skill_dirs`, `[[kernel]]`, `[pool]`)
-  into `runtime.toml` via the `tomlkit`-based writer. User comments and
-  unknown keys in the file are preserved.
-- `tabula serve` runs `boot.py` to get behavior (URL, prompts, meta), then
+- `tabula-install <distro>` writes `plugin_dirs` (plus `skill_dirs`,
+  `[[kernel]]`, `[pool]`) into `runtime.toml` via the `tomlkit`-based writer.
+  User comments and unknown keys in the file are preserved.
+- `tabula serve` reads `kernel.toml` for kernel transport settings, then
   verifies `runtime.toml` exists. It fails fast with an explicit
   "run `tabula-install <distro>` first" message when the file is missing.
 - `tabula-runtime` reads `runtime.toml` and loads plugins from `plugin_dirs`.
 - After `tabula-install --update` the installer atomically updates
   `$TABULA_HOME/run/reload.touch`. The kernel polls that file and triggers a
-  plugin reload through `runtime.toml` — boot is **not** re-executed.
+  plugin reload through `runtime.toml`.
 
 To add or remove a plugin without going through the installer, edit
 `runtime.toml` directly and `touch run/reload.touch`. The kernel picks up the
 new layout on the next reload tick.
-
-### Claw boot
-
-`claw/boot.py` (in the [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib)
-repo) is the more dynamic boot implementation.
-
-It does the following:
-
-- scans the flat `skills/` and `plugins/` runtime surfaces recursively
-- reads `SKILL.md` frontmatter for skills and `plugin.toml` for plugins
-- builds the system prompt from templates and project files
-- selects the active provider through the unified `drivers/driver` plugin
-- declares long-lived plugins for runtime-managed worker lifecycle
-- writes subagent prompt state under `$TABULA_HOME/state/subagent/`
-
-This is where most of the claw distro behavior is assembled.
-
-### Guardian boot
-
-`guardian/boot.py` (in `tabula-distrib`) is intentionally much simpler.
-
-It builds a fixed runtime around distro-owned prompts plus installed plugins.
-
-Guardian is a good example of a distro with the same kernel contract but a
-completely different runtime philosophy.
-
-### Distro trust
-
-Boot scripts are arbitrary Python that runs unconditionally on kernel start.
-To stop a tampered or unreviewed distro from executing, the kernel gates boot
-on an explicit trust record.
-
-- **Where it lives.** `$TABULA_HOME/state/trust.json` — a small JSON DB owned
-  by the user. Entry shape: `boot_sha256`, `trusted_at`, `trusted_by`.
-- **What gets hashed.** Every `*.py` file plus the top-level `distro.toml`,
-  recursively, in deterministic sorted order. Excluded: `__pycache__`,
-  hidden directories (`.git`, `.venv`, …), symlinks, non-regular files, and
-  any nested `distro.toml`. Markdown, prompts, and templates are excluded
-  because they are inert from a code-execution standpoint.
-- **When it runs.** `tabula serve` and `tabula run` call `trust.Check`
-  before `runBoot`. The kernel reads the active distro id and source dir
-  from `runtime.toml`'s `[distro]` table; legacy installs without that
-  table fall through without a check (one-shot grace period during the
-  migration window).
-- **Failure modes.** `ErrNotTrusted` (no entry) and `ErrSHAMismatch`
-  (entry exists but the tree changed). Both messages tell the operator
-  exactly how to re-trust.
-- **Operator surface.** `tabula distro trust [<id>] [--yes]` reviews the
-  computed SHA and writes an approval. `tabula distro trust --list` prints
-  the DB as JSON. `tabula distro untrust <id>` revokes. The CLI refuses to
-  trust a distro that does not match `runtime.toml`'s active entry.
-- **Installer side.** `tabula-install distro install --trust …` approves
-  the install in the same invocation. Without `--trust`, the installer
-  runs a one-shot **cold-start migration shim**: on the very first install
-  after the trust feature lands it auto-trusts the active distro and drops
-  `state/trust.meta.json` (with `migrated_at`) so the shim can be removed
-  cleanly. Subsequent installs do not auto-trust — the user must approve
-  explicitly.
-- **Cross-language hash pin.** The kernel hash lives in
-  `internal/runtime/trust/HashDir`; the installer's identical
-  implementation lives in `tabula_distro.trust.hash_dir`. Both sides pin
-  the same digest of a shared fixture (`05c8091020bb…`) so silent drift
-  between sides is caught in CI before it can corrupt a user's trust DB.
-- **Emergency override.** `TABULA_TRUST_SKIP=1` bypasses the check, for
-  recovery situations where the user accepts the risk explicitly.
 
 ## Repository layout
 
@@ -299,11 +212,10 @@ A distro never embeds bundle source. It declares dependencies and the
 
 ## Distros
 
-At the kernel level, a distro is just "whatever boot command and runtime layout
-you choose to ship". The built-in `tabula-distro` installer expects a directory
+At the kernel level, a distro is an installed runtime layout. The built-in
+`tabula-distro` installer expects a directory
 with:
 
-- `boot.py`
 - `templates/`
 - `skills/` (distro-specific skills only)
 - `plugins/` (optional distro-specific plugins)
@@ -322,7 +234,6 @@ The selected distro is activated through symlinks/copies under
 ```text
 $TABULA_HOME/distrib/claw/current       -> <generation>
 $TABULA_HOME/distrib/active             -> claw
-$TABULA_HOME/boot.py                    -> distrib/active/current/boot.py
 $TABULA_HOME/templates/*                -> distrib/active/current/templates/*
 $TABULA_HOME/skills/*                   -> distrib/active/current/skills/* + bundle skills
 $TABULA_HOME/plugins/*                  -> distrib/active/current/plugins/* + bundle plugins
@@ -609,15 +520,14 @@ The source tree is split across three repos:
   installer.
 - `tabula-bundles/` — reusable collections of skills, plugins, and clients
   (`base/`, `workspace/`, `drivers/`, `memory/`, `caveman/`, `code/`).
-- `tabula-distrib/` — `code/`, `claw/`, `guardian/` distros, each with
-  its own `boot.py`, `templates/`, optional in-tree `skills/`/`plugins/`,
-  and `distro.toml`.
+- `tabula-distrib/` — product distros, each with `distro.toml`, templates,
+  and optional in-tree `skills/`/`plugins/`.
 
 ### Installed active layout
 
 The running agent sees a flat tree under `$TABULA_HOME/`:
 
-- one active `boot.py`
+- one active `config/kernel.toml`
 - one active `templates/`
 - one active `skills/`
 - one active `plugins/`
@@ -686,9 +596,9 @@ If you are extending Tabula, the important seams are:
 - **runtime <-> plugin** — long-lived stdio NDJSON worker protocol (`init`,
   `call`, `result`, `event`, `event_reply`, `tools_updated`, `send`, `log`,
   `shutdown`).
-- **boot <-> kernel** — one JSON config object on stdout.
-- **distro <-> install** — `tabula-install` expects `boot.py`, `templates/`,
-  optional in-tree components, and `distro.toml`.
+- **kernel config <-> kernel** — `$TABULA_HOME/config/kernel.toml`.
+- **distro <-> install** — `tabula-install` expects `distro.toml`, templates,
+  and optional in-tree components.
 - **kernel runtime contract <-> components** — SDK packages such as
   `tabula_plugin_sdk`, installed into the Tabula venv.
 - **driver/subagent runtime <-> drivers bundle** — bundle-internal support code.

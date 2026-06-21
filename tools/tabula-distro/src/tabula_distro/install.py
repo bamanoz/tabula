@@ -13,6 +13,7 @@ from . import config as cfg
 from . import generations as gens
 from . import lock as lockmod
 from . import requirements as reqmod
+from . import runtime_config as runtimecfg
 from . import sources as srcmod
 from .cache import GitCache
 from .manifest import BundleManifest, ManifestError, load_bundle_manifest
@@ -27,6 +28,10 @@ from .sources import GitSource, LocalSource, Source
 
 
 IGNORE_NAMES = {"__pycache__", ".pytest_cache", ".git", ".DS_Store"}
+
+
+def _write_kernel_config(home: Path) -> None:
+    runtimecfg.write_kernel_config(home, url=os.environ.get("TABULA_URL", "ws://localhost:8089/ws"))
 
 
 def _ignored(_dir: str, names: list[str]) -> set[str]:
@@ -454,6 +459,7 @@ def install(distro_dir: str | Path, home: Path, *,
         _expose_current(home, distro.name)
         _set_active(home, distro.name, expose_global_boot=expose_global_boot)
         _refresh_runtime_surface(home, tenant=tenant)
+        _write_kernel_config(home)
         return InstallResult(current, new_lock, False)
 
     (staging / ".fingerprint").write_text(staging_fp, encoding="utf-8")
@@ -466,6 +472,7 @@ def install(distro_dir: str | Path, home: Path, *,
     _expose_current(home, distro.name)
     _set_active(home, distro.name, expose_global_boot=expose_global_boot)
     _refresh_runtime_surface(home, tenant=tenant)
+    _write_kernel_config(home)
     gens.prune(home, distro.name, keep=keep_generations)
     return InstallResult(new_gen, new_lock, True)
 
@@ -980,7 +987,7 @@ def _bundle_component_candidates(bundle_root: Path, manifest: BundleManifest, *,
 
 def _expose_current(home: Path, distro_name: str) -> None:
     root = gens.distro_root(home, distro_name)
-    for entry in ("boot.py", "skills", "plugins", "clients", "templates", "_lib"):
+    for entry in ("skills", "plugins", "clients", "templates", "_lib"):
         link = root / entry
         if link.exists() or link.is_symlink():
             if link.is_dir() and not link.is_symlink():
@@ -1001,14 +1008,6 @@ def _set_active(home: Path, distro_name: str, *, expose_global_boot: bool = True
             active.unlink()
     active.symlink_to(Path(distro_name))
 
-    boot = home / "boot.py"
-    if not expose_global_boot:
-        if boot.exists() or boot.is_symlink():
-            boot.unlink(missing_ok=True)
-        return
-    if boot.exists() or boot.is_symlink():
-        boot.unlink(missing_ok=True)
-    boot.symlink_to(Path("distrib") / "active" / "boot.py")
 
 
 def _refresh_runtime_surface(home: Path, *, tenant: str | None = None) -> None:

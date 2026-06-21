@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import json
 import os
-import subprocess
-import sys
 from pathlib import Path
 
 import tomlkit
@@ -15,33 +12,31 @@ class RuntimeConfigError(RuntimeError):
     pass
 
 
-def sync_for_distro(home: Path, boot_path: Path) -> Path:
-    boot_path = boot_path.expanduser().resolve()
-    if not boot_path.is_file():
-        raise RuntimeConfigError(f"boot script does not exist at {boot_path}")
-    env = os.environ.copy()
-    env["TABULA_HOME"] = str(home)
-    env.setdefault("TABULA_URL", "ws://localhost:8089/ws")
-    env["PATH"] = env.get("TABULA_PATH") or _default_path(home, env.get("PATH", ""))
-    proc = subprocess.run(
-        [sys.executable, str(boot_path)],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout).strip()
-        if detail:
-            raise RuntimeConfigError(f"boot script failed: {detail}")
-        raise RuntimeConfigError(f"boot script failed with exit code {proc.returncode}")
-    try:
-        payload = json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeConfigError(f"cannot parse boot output: {exc}") from exc
-    plugin_dirs = _plugin_dirs(home, payload)
-    distro = distro_metadata(home, boot_path)
+def sync_for_distro(home: Path, distro_path: Path) -> Path:
+    distro_dir = _distro_dir(distro_path)
+    if not distro_dir.is_dir():
+        raise RuntimeConfigError(f"distro generation does not exist at {distro_dir}")
+    plugin_dirs = [str(distro_dir / "plugins")]
+    distro = distro_metadata(home, distro_dir)
+    write_kernel_config(home, url=os.environ.get("TABULA_URL", "ws://localhost:8089/ws"))
     return write(home, plugin_dirs, distro=distro)
+
+
+def write_kernel_config(home: Path, *, url: str = "ws://localhost:8089/ws") -> Path:
+    path = home / "config" / "kernel.toml"
+    doc = toml_io.load(path)
+    kernel = doc.get("kernel")
+    if not hasattr(kernel, "__setitem__"):
+        kernel = tomlkit.table()
+    kernel["url"] = str(url).strip() or "ws://localhost:8089/ws"
+    doc["kernel"] = kernel
+    runtime_wss = doc.get("runtime_wss")
+    if not hasattr(runtime_wss, "__setitem__"):
+        runtime_wss = tomlkit.table()
+        runtime_wss["enabled"] = False
+        doc["runtime_wss"] = runtime_wss
+    toml_io.dump(path, doc)
+    return path
 
 
 def write(home: Path, plugin_dirs: list[str], *, distro: dict[str, str] | None = None) -> Path:
@@ -84,16 +79,15 @@ def write(home: Path, plugin_dirs: list[str], *, distro: dict[str, str] | None =
     return path
 
 
-def distro_metadata(home: Path, boot_path: Path) -> dict[str, str]:
-    """Resolve distro id and source directory from a boot.py path.
+def distro_metadata(home: Path, distro_dir: Path) -> dict[str, str]:
+    """Resolve distro id and source directory from a generation path.
 
-    The installer lays out boot scripts at
-    ``$TABULA_HOME/distrib/<distro>/generations/<gen>/boot.py``. We trust the
-    parent directory of ``boot.py`` as the distro source tree (it contains
-    ``boot.py``, ``distro.toml``, ``application/``, etc) and lift the distro
-    id from two levels up.
+    The installer lays out generations at
+    ``$TABULA_HOME/distrib/<distro>/generations/<gen>``. We trust the
+    generation directory as the active distro tree and lift the distro id from
+    two levels up.
     """
-    distro_dir = boot_path.parent
+    distro_dir = distro_dir.expanduser().resolve()
     parent = distro_dir.parent
     if parent.name == "generations":
         active = parent.parent.name
@@ -109,32 +103,8 @@ def _string_array(values: list[str]) -> tomlkit.items.Array:
     return array
 
 
-def _plugin_dirs(home: Path, payload: object) -> list[str]:
-    plugins = payload.get("plugins") if isinstance(payload, dict) else None
-    dirs: list[str] = []
-    if isinstance(plugins, list):
-        seen: set[str] = set()
-        for item in plugins:
-            if not isinstance(item, dict):
-                continue
-            manifest_path = str(item.get("manifest_path") or "").strip()
-            if not manifest_path:
-                continue
-            resolved = str(Path(manifest_path).expanduser().resolve())
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            dirs.append(resolved)
-    if dirs:
-        return dirs
-    return [str(home / "plugins")]
-
-
-def _default_path(home: Path, current: str) -> str:
-    extras = [str(home / ".venv" / "bin"), str(home / "bin")]
-    if current:
-        extras.append(current)
-    return os.pathsep.join(extras)
+def _distro_dir(path: Path) -> Path:
+    return path.expanduser().resolve()
 
 
 def _runtime_socket_path(home: Path) -> Path:

@@ -44,8 +44,8 @@ the platform:
 
 The current codebase already shows why this boundary matters:
 
-- `tabula serve` runs one global `TABULA_BOOT`.
-- `$TABULA_HOME/distrib/active`, `$TABULA_HOME/boot.py`, `$TABULA_HOME/plugins`,
+- `tabula serve` reads one global `config/kernel.toml`.
+- `$TABULA_HOME/distrib/active`, `$TABULA_HOME/plugins`,
   `$TABULA_HOME/templates`, `$TABULA_HOME/skills`, and `$TABULA_HOME/clients` are
   global active-distro surfaces.
 - Tenants already isolate config/state/cache/logs/sessions and are used by
@@ -204,7 +204,6 @@ $TABULA_HOME/tenants/<app-id>/
   cache/
   logs/
   distrib/
-  boot.py
   _lib
   clients
   templates

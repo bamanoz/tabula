@@ -25,10 +25,8 @@ type Config struct {
 	Distro     Distro   `toml:"distro"`
 }
 
-// Distro records which distro the installer activated and where its source
-// tree lives on disk. The kernel uses these fields to locate the boot script
-// for the trust check (see internal/runtime/trust). The installer writes
-// them; the kernel only reads them.
+// Distro records which distro generation the installer activated. The
+// installer writes these fields; the kernel treats them as status metadata.
 type Distro struct {
 	Active string `toml:"active"`
 	Dir    string `toml:"dir"`

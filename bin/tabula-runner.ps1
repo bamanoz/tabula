@@ -60,14 +60,6 @@ Load-TabulaEnv
 $binDir = Join-Path $env:TABULA_HOME "bin"
 $tabulaBin = Join-Path $binDir "tabula.exe"
 $runtimeBin = Join-Path $binDir "tabula-runtime.exe"
-if (-not $env:TABULA_BOOT) {
-    $venvPython = Join-Path $env:TABULA_HOME ".venv" "Scripts" "python.exe"
-    $bootScript = Join-Path $env:TABULA_HOME "boot.py"
-    if (-not (Test-Path $bootScript)) {
-        $bootScript = Join-Path $env:TABULA_HOME "distrib" "active" "boot.py"
-    }
-    $env:TABULA_BOOT = "`"$venvPython`" `"$bootScript`""
-}
 if (-not $env:TABULA_PATH) {
     $env:TABULA_PATH = "$(Join-Path $env:TABULA_HOME '.venv' 'Scripts');$binDir;$env:Path"
 }

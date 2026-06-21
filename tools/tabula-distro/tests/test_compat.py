@@ -22,7 +22,6 @@ def _make_skill(root: Path, name: str) -> Path:
 
 def _make_distro(root: Path, *, name: str = "demo", body: str) -> Path:
     dist = root / name
-    _touch(dist / "boot.py")
     (dist / "templates").mkdir(parents=True, exist_ok=True)
     (dist / "skills").mkdir(parents=True, exist_ok=True)
     _touch(dist / "distro.toml", body)

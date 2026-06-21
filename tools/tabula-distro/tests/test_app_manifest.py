@@ -20,14 +20,14 @@ def _write(path: Path, content: str) -> None:
 def _make_distro(root: Path) -> Path:
     distro = root / "claw"
     _write(distro / "distro.toml", '[distro]\nid = "tabula.claw"\nname = "claw"\nversion = "0.1.0"\n')
-    _write(distro / "boot.py", "# boot\n")
+    (distro / "templates").mkdir(parents=True, exist_ok=True)
     return distro
 
 
 def _make_materializing_distro(root: Path) -> Path:
     distro = root / "claw"
     _write(distro / "distro.toml", '[distro]\nid = "tabula.claw"\nname = "claw"\n[application_contract]\nmaterializer = "python3 materialize.py"\n')
-    _write(distro / "boot.py", "# boot\n")
+    (distro / "templates").mkdir(parents=True, exist_ok=True)
     _write(distro / "materialize.py", """
 from pathlib import Path
 import os
@@ -47,7 +47,7 @@ tenant = Path(os.environ['TABULA_TENANT_DIR'])
 def _make_defaults_materializing_distro(root: Path) -> Path:
     distro = root / "claw"
     _write(distro / "distro.toml", '[distro]\nid = "tabula.claw"\nname = "claw"\n[application_contract]\nmaterializer = "python3 materialize.py"\n')
-    _write(distro / "boot.py", "# boot\n")
+    (distro / "templates").mkdir(parents=True, exist_ok=True)
     _write(distro / "materialize.py", """
 from pathlib import Path
 import os
@@ -70,7 +70,7 @@ def _make_requirements_distro(root: Path) -> Path:
         'required_for = ["mcp.demo"]\n'
         'install_hint = "Install demo tool."\n',
     )
-    _write(distro / "boot.py", "# boot\n")
+    (distro / "templates").mkdir(parents=True, exist_ok=True)
     return distro
 
 

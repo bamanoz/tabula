@@ -41,7 +41,7 @@ func TestDotenvKernelLoadsAndBootInheritsEnv(t *testing.T) {
 		t.Fatalf("kernel env TABULA_TEST_FROM_SHELL = %q, want %q", got, "shell_value")
 	}
 
-	// Boot subprocess (same path as runBoot uses) must inherit both vars.
+	// Child subprocesses must inherit both vars.
 	cmd := mainShellCommand(`printf "FROM_FILE=%s\nFROM_SHELL=%s\n" "$TABULA_TEST_FROM_FILE" "$TABULA_TEST_FROM_SHELL"`)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

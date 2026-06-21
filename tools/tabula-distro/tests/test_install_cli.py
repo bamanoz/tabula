@@ -19,12 +19,7 @@ def _write(path: Path, content: str) -> None:
 def _make_distro(root: Path) -> Path:
     distro = root / "demo"
     _write(distro / "distro.toml", '[distro]\nid = "tabula.demo"\nname = "demo"\nversion = "0.1.0"\n')
-    _write(
-        distro / "boot.py",
-        "#!/usr/bin/env python3\n"
-        "import json\n"
-        "print(json.dumps({\"url\": \"ws://localhost:8089/ws\", \"plugins\": [], \"meta\": {}}))\n",
-    )
+    _write(distro / "templates" / "SYSTEM.md", "system v1\n")
     return distro
 
 
@@ -74,19 +69,14 @@ class InstallCliTests(unittest.TestCase):
                 code = install_cli.main(["--home", str(home), "distro", "install", str(distro)])
             self.assertEqual(code, 0, stderr.getvalue())
 
-            _write(
-                distro / "boot.py",
-                "#!/usr/bin/env python3\n"
-                "import json\n"
-                "print(json.dumps({\"url\": \"ws://localhost:8089/ws\", \"plugins\": [], \"meta\": {}}))\n",
-            )
+            _write(distro / "templates" / "SYSTEM.md", "system v2\n")
             stdout = StringIO()
             stderr = StringIO()
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 code = install_cli.main(["--home", str(home), "distro", "reinstall", "demo"])
             self.assertEqual(code, 0, stderr.getvalue())
-            installed_boot = (home / "distrib" / "demo" / "current" / "boot.py").read_text(encoding="utf-8")
-            self.assertIn('print(json.dumps({"url": "ws://localhost:8089/ws", "plugins": [], "meta": {}}))', installed_boot)
+            installed_template = (home / "distrib" / "demo" / "current" / "templates" / "SYSTEM.md").read_text(encoding="utf-8")
+            self.assertEqual(installed_template, "system v2\n")
 
     def test_tabula_install_distro_reinstall_defaults_to_active(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -99,19 +89,14 @@ class InstallCliTests(unittest.TestCase):
                 code = install_cli.main(["--home", str(home), "distro", "install", str(distro)])
             self.assertEqual(code, 0, stderr.getvalue())
 
-            _write(
-                distro / "boot.py",
-                "#!/usr/bin/env python3\n"
-                "import json\n"
-                "print(json.dumps({\"url\": \"ws://localhost:8089/ws\", \"plugins\": [], \"meta\": {}}))\n",
-            )
+            _write(distro / "templates" / "SYSTEM.md", "system v2\n")
             stdout = StringIO()
             stderr = StringIO()
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 code = install_cli.main(["--home", str(home), "distro", "reinstall"])
             self.assertEqual(code, 0, stderr.getvalue())
-            installed_boot = (home / "distrib" / "demo" / "current" / "boot.py").read_text(encoding="utf-8")
-            self.assertIn('print(json.dumps({"url": "ws://localhost:8089/ws", "plugins": [], "meta": {}}))', installed_boot)
+            installed_template = (home / "distrib" / "demo" / "current" / "templates" / "SYSTEM.md").read_text(encoding="utf-8")
+            self.assertEqual(installed_template, "system v2\n")
 
     def test_tabula_install_distro_use_discovers_sibling_checkout(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -179,12 +164,6 @@ class InstallCliTests(unittest.TestCase):
                 '[distro]\nid = "tabula.demo"\nname = "demo"\nversion = "0.1.0"\n'
                 '[sources.bundles]\nsource = "git+https://example.invalid/bundles.git@main"\n'
                 '[[bundles]]\nname = "base"\nsource = "source:bundles#path=base"\ncomponents = ["hello"]\n',
-            )
-            _write(
-                distro / "boot.py",
-                "#!/usr/bin/env python3\n"
-                "import json\n"
-                "print(json.dumps({\"url\": \"ws://localhost:8089/ws\", \"plugins\": [], \"meta\": {}}))\n",
             )
             _make_bundle(workspace / "bundles", "base", "hello")
             prev_cwd = Path.cwd()

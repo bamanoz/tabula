@@ -20,7 +20,6 @@ def _touch(p: Path, content: str = "") -> None:
 
 def _make_distro(root: Path, *, body: str) -> Path:
     dist = root / "demo"
-    _touch(dist / "boot.py")
     (dist / "templates").mkdir(parents=True, exist_ok=True)
     _touch(dist / "distro.toml", body)
     return dist

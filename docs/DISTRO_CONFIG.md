@@ -228,7 +228,6 @@ $TABULA_HOME/distrib/claw/
     0001-2026-04-21T10-00-00Z/   # full staged tree
     0002-2026-04-21T14-30-00Z/
   current  -> generations/0002-...
-  boot.py  -> current/boot.py
   skills   -> current/skills
   plugins  -> current/plugins
   templates-> current/templates
@@ -258,83 +257,40 @@ distro's lockfile.
 ## CLI summary
 
 ```
-tabula-install distro install <source> [--frozen] [--update] [--update-only NAME] [--trust]
+tabula-install distro install <source> [--frozen] [--update] [--update-only NAME]
 tabula-install distro use <name> [--source-root DIR] [--update]
 tabula-install distro reinstall [<name>]
 tabula-install distro list
 tabula-install distro lock [<name>]
 tabula-install distro gc
 
-tabula distro trust [<id>] [--yes]   # approve the active distro's boot tree
-tabula distro trust --list           # print the trust DB
-tabula distro untrust <id>           # revoke a trust record
 ```
 
 `<source>` is the path to a distro source directory (the one containing
-`boot.py` and optionally `distro.toml`).
-
-## Trust DB
-
-The kernel refuses to execute a distro's `boot.py` until the user has
-approved it. The approval records a SHA256 of the distro source tree in
-`$TABULA_HOME/state/trust.json`. On every kernel start, the SHA is
-recomputed and compared; any drift halts boot with an explicit message.
-
-What gets hashed:
-
-- every `*.py` file under the active distro directory, recursively
-- the top-level `distro.toml`
-
-Excluded by design (so prose changes do not invalidate trust):
-
-- `__pycache__/`, hidden directories (`.git`, `.venv`, …), symlinks, and
-  non-regular files
-- markdown, prompts, templates, nested `distro.toml`
-
-The active distro id and source directory live in `runtime.toml`'s
-`[distro]` table; the installer writes them on every install/reinstall.
-
-Operator workflow:
-
-1. `tabula-install distro install <source>` — install the distro.
-2. `tabula distro trust` — review the printed SHA and approve.
-3. `tabula serve` / `tabula run` — kernel checks the SHA before boot.
-
-Shortcuts:
-
-- `tabula-install distro install <source> --trust` skips step 2.
-- The first install after this feature lands auto-trusts the active
-  distro (cold-start migration shim). A marker at
-  `state/trust.meta.json` records the migration timestamp so the shim
-  can be removed cleanly in a future release. Subsequent installs do
-  not auto-trust — the user must approve explicitly.
-
-Emergency override: `TABULA_TRUST_SKIP=1 tabula serve` bypasses the check.
-Use only when you accept the risk consciously (e.g. recovering from a
-corrupt trust DB).
+`distro.toml`).
 
 ## Plugin discovery contract
 
-Boot emits **behavior**. `$TABULA_HOME/config/runtime.toml` defines **layout**.
-Distro authors should keep these two surfaces separate:
+`$TABULA_HOME/config/kernel.toml` defines kernel transport settings.
+`$TABULA_HOME/config/runtime.toml` defines runtime layout. Distro authors should
+keep these two surfaces separate:
 
-- `boot.py` may emit a `plugins` array (each entry `{"manifest_path": "..."}`).
-  This field is consumed **only by the installer** at install time. The
-  installer (`tabula-install` / `tabula-distro`) reads it, dedupes the
-  manifest paths, and writes them to `plugin_dirs` in `runtime.toml`.
-- The running kernel does not look at `plugins` in the boot JSON. It reads
-  `runtime.toml` directly and fails fast if the file is missing.
+- `kernel.toml` is installer-owned and should contain only kernel-owned fields
+  such as `[kernel].url` and optional `[runtime_wss]` listener settings. It must
+  not contain workspace, provider, prompt, plugin, or skill policy.
+
+- The installer writes `plugin_dirs` from the installed generation's plugin
+  surface and writes kernel transport settings to `kernel.toml`.
+- The running kernel reads `kernel.toml` for its own transport settings and
+  `runtime.toml` for runtime layout, and fails fast if either is missing.
 - Hot reload happens through `$TABULA_HOME/run/reload.touch`. The installer
   touches it after a successful install; the kernel polls the file and
-  rereads `runtime.toml` — boot is **not** re-executed during reload.
+  rereads `runtime.toml`.
 
 Implications for distro authors:
 
 - Adding or removing a plugin is an installer-time change. Re-run
   `tabula-install <distro>` (or edit `runtime.toml` directly and
   `touch run/reload.touch`).
-- Do not rely on per-spawn boot output to influence plugin layout. Anything
-  layout-shaped that needs to change at runtime should live in
-  `runtime.toml`, not in boot JSON.
-- The `plugins` field in boot JSON remains a documented installer-input.
-  Future renames (for clarity) will be coordinated across distros.
+- Anything layout-shaped that needs to change at runtime should live in
+  `runtime.toml`.

@@ -30,7 +30,6 @@ class ServiceScriptTests(unittest.TestCase):
         env["HOME"] = str(Path(self.tempdir) / "user-home")
         env["TABULA_HOME"] = str(Path(self.tempdir) / "home")
         env["TABULA_BIN"] = str(shim / "tabula")
-        env["TABULA_BOOT"] = f"{env['TABULA_HOME']}/.venv/bin/python3 {env['TABULA_HOME']}/boot.py"
         return log, env
 
     def render(self, *, uname: str = "Linux", id_u: str = "1000", args: list[str] | None = None) -> str:

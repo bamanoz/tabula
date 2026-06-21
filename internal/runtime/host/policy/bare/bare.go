@@ -269,16 +269,14 @@ func prependPythonPath(env []string, path string) []string {
 
 func passthroughEnv(current []string) []string {
 	allowed := map[string]struct{}{
-		"TABULA_HOME":      {},
-		"TABULA_URL":       {},
-		"TABULA_BOOT":      {},
-		"TABULA_BOOT_PATH": {},
-		"PATH":             {},
-		"PYTHONPATH":       {},
-		"HOME":             {},
-		"LANG":             {},
-		"LC_ALL":           {},
-		"TMPDIR":           {},
+		"TABULA_HOME": {},
+		"TABULA_URL":  {},
+		"PATH":        {},
+		"PYTHONPATH":  {},
+		"HOME":        {},
+		"LANG":        {},
+		"LC_ALL":      {},
+		"TMPDIR":      {},
 	}
 	out := make([]string, 0, len(allowed))
 	for _, item := range current {

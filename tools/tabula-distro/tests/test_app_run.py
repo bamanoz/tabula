@@ -23,7 +23,7 @@ def _write(path: Path, content: str) -> None:
 def _make_distro(root: Path) -> None:
     distro = root / "claw"
     _write(distro / "distro.toml", '[distro]\nid = "tabula.claw"\nname = "claw"\n')
-    _write(distro / "boot.py", "# boot\n")
+    (distro / "templates").mkdir(parents=True, exist_ok=True)
 
 
 def _manifest(root: Path, *, kernel_mode: str = "managed", runtime_mode: str = "managed", backend: str = "bare") -> str:
@@ -206,13 +206,12 @@ dir = "{stale}"
             _write(manifest_path, _manifest(root))
             manifest = appmod.load(manifest_path, tabula_home=home)
             appmod.materialize_metadata(manifest, appmod.create_lock(manifest, home), home)
-            boot_path = root / "claw" / "boot.py"
             tabula_bin = root / "bin" / "tabula"
             _write(tabula_bin, "#!/bin/sh\n")
             _write(root / "bin" / "tabula-runner", "#!/bin/sh\n")
             runmod.write_runtime_config(manifest, home)
             with mock.patch.object(runmod, "kernel_healthy", return_value=False), mock.patch.object(runmod.os, "execvpe") as execvpe:
-                runmod.execute(manifest, home, tabula_bin=str(tabula_bin), foreground=True, boot_path=boot_path)
+                runmod.execute(manifest, home, tabula_bin=str(tabula_bin), foreground=True)
 
             execvpe.assert_called_once()
             _file, argv, env = execvpe.call_args.args
@@ -221,7 +220,8 @@ dir = "{stale}"
             self.assertEqual(env["TABULA_APP_ID"], "claw-tabula")
             self.assertEqual(env["TABULA_TENANT_ID"], "claw-tabula")
             self.assertEqual(env["TABULA_TENANT_DIR"], str(home / "tenants" / "claw-tabula"))
-            self.assertEqual(env["TABULA_BOOT_PATH"], str(boot_path))
+            self.assertNotIn("TABULA_BOOT", env)
+            self.assertNotIn("TABULA_BOOT_PATH", env)
 
     def test_runtime_config_merges_existing_app_tenants(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -300,7 +300,6 @@ tenants = ["claw-tabula"]
 ''')
             _write(venv_dir / "python3", "#!/bin/sh\nexec python3 \"$@\"\n")
             os.chmod(venv_dir / "python3", 0o755)
-            _write(home / "boot.py", "# boot\n")
             _write(bin_dir / "tabula-runtime", "#!/bin/sh\nexit 0\n")
             os.chmod(bin_dir / "tabula-runtime", 0o755)
             _write(bin_dir / "tabula", f'''#!/bin/sh

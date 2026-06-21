@@ -471,6 +471,19 @@ def verify_runtime_sidecar_layout(home: Path, bin_dir: Path, logs_dir: Path) -> 
     write_diagnostic(manifest_summary, "\n".join(sections).rstrip() + "\n")
 
 
+def verify_kernel_config(home: Path, expected_url: str) -> None:
+    kernel_toml = home / "config" / "kernel.toml"
+    if not kernel_toml.is_file():
+        raise SystemExit(f"missing kernel config: {kernel_toml}")
+    cfg = load_toml(kernel_toml)
+    kernel = cfg.get("kernel") if isinstance(cfg.get("kernel"), dict) else {}
+    if str(kernel.get("url") or "") != expected_url:
+        raise SystemExit(f"kernel config url is unexpected: {kernel.get('url')!r} (want {expected_url!r})")
+    forbidden = sorted(set(cfg) & {"meta", "workspace", "default_provider", "prompt_skills", "external_skills"})
+    if forbidden:
+        raise SystemExit(f"kernel config contains non-kernel fields: {', '.join(forbidden)}")
+
+
 def attached_runtime_pid(body: dict[str, Any]) -> int:
     runtimes = body.get("runtimes", [])
     for runtime in runtimes:
@@ -763,13 +776,13 @@ def main(argv: list[str] | None = None) -> int:
             "TABULA_CRON_DISABLE_OS_CRONTAB": "1",
             "TABULA_CRON_POLL_INTERVAL": "1",
             "TABULA_PROVIDER": "anthropic",
-            "TABULA_BOOT": f'"{python}" "{home / "boot.py"}"',
             "TABULA_PATH": f"{venv / 'bin'}:{bin_dir}:{env.get('PATH', '')}",
         })
         if args.bootstrap_check:
             log("==> Running bootstrap readiness check")
             run([str(repo_root / "scripts" / "bootstrap.sh"), "--tabula-home", str(home), "--timeout", "20"], env=env, cwd=repo_root)
         set_runtime_tenants(home / "config" / "runtime.toml", runtime_tenants)
+        verify_kernel_config(home, kernel_url)
         log("==> Starting isolated kernel")
         out = (logs_dir / "kernel.out.log").open("w", encoding="utf-8")
         err = (logs_dir / "kernel.err.log").open("w", encoding="utf-8")

@@ -4,9 +4,7 @@ from __future__ import annotations
 import os
 import hashlib
 import json
-import shlex
 import subprocess
-import sys
 import time
 import tomllib
 from dataclasses import dataclass
@@ -19,6 +17,7 @@ from urllib.request import urlopen
 import tomlkit
 
 from tabula_distro import toml_io
+from tabula_distro import runtime_config
 
 from .app_manifest import AppManifest, RuntimeTopology
 
@@ -78,22 +77,11 @@ def execute(manifest: AppManifest, home: Path, *, tabula_bin: str = "tabula", ti
             return RunResult(plan=run_plan, reused_kernel=True, runtime_ready=True)
         return RunResult(plan=run_plan, reused_kernel=True, runtime_ready=False)
 
-    boot_cmd = os.environ.get("TABULA_BOOT")
-    if not boot_cmd:
-        if boot_path is None:
-            raise AppRunError("TABULA_BOOT is not set and no app boot path was provided")
-        if not boot_path.is_file():
-            raise AppRunError(f"app boot script does not exist at {boot_path}")
-        boot_cmd = f"{shlex.quote(sys.executable)} {shlex.quote(str(boot_path))}"
-
     env = os.environ.copy()
     env["TABULA_HOME"] = str(home)
     env["TABULA_APP_ID"] = manifest.application.id
     env["TABULA_TENANT_ID"] = manifest.application.id
     env["TABULA_TENANT_DIR"] = str(home / "tenants" / manifest.application.id)
-    if boot_path is not None:
-        env["TABULA_BOOT_PATH"] = str(boot_path)
-    env["TABULA_BOOT"] = boot_cmd
     env["TABULA_URL"] = manifest.kernel.url
     env.setdefault("TABULA_PATH", os.environ.get("PATH", ""))
     env["TABULA_PRESERVE_RUNTIME_CONFIG"] = "1"
@@ -303,6 +291,7 @@ def write_runtime_config(manifest: AppManifest, home: Path, *, distro_dir: Path 
         doc["distro"] = _distro_table(distro_dir)
 
     toml_io.dump(path, doc)
+    runtime_config.write_kernel_config(home, url=manifest.kernel.url)
     return path
 
 

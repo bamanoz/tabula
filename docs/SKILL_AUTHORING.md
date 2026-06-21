@@ -222,4 +222,4 @@ most new executable capabilities, start with a plugin.
 
 - skill: `tabula-guide/` and plugin: `workspace/fs/` in
   [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles);
-- minimal fixed distro boot: `guardian/boot.py` in `tabula-distrib`.
+- minimal fixed distro materialization: `guardian` in `tabula-distrib`.

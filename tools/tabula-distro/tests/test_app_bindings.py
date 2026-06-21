@@ -19,7 +19,7 @@ def _write(path: Path, content: str) -> None:
 def _make_distro(root: Path) -> None:
     distro = root / "claw"
     _write(distro / "distro.toml", '[distro]\nid = "tabula.claw"\nname = "claw"\n')
-    _write(distro / "boot.py", "# boot\n")
+    (distro / "templates").mkdir(parents=True, exist_ok=True)
 
 
 def _manifest(root: Path) -> str:
@@ -28,8 +28,6 @@ def _manifest(root: Path) -> str:
 id = "claw-tabula"
 
 [distro]
-id = "tabula.claw"
-name = "claw"
 source = "local:{root / 'claw'}"
 
 [kernel]

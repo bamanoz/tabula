@@ -19,6 +19,7 @@ from tabula_testbed_runner.runner import (
     selected_bundles,
     set_runtime_tenants,
     SuiteSpec,
+    verify_kernel_config,
     verify_runtime_sidecar_layout,
     wait_for_supervised_runtime,
 )
@@ -208,6 +209,26 @@ class RunnerProtocolMarkerTests(unittest.TestCase):
             self.assertIn("entry:m2-worker-tools-updated", summary)
             self.assertIn("sdk:api.py:legacy-register-request", summary)
             self.assertIn("protocol_version = 1", summary)
+
+    def test_verify_kernel_config_accepts_transport_only_config(self) -> None:
+        with TemporaryDirectory() as raw:
+            home = Path(raw)
+            config = home / "config" / "kernel.toml"
+            config.parent.mkdir(parents=True)
+            config.write_text('[kernel]\nurl = "ws://127.0.0.1:8091/ws"\n\n[runtime_wss]\nenabled = false\n', encoding="utf-8")
+
+            verify_kernel_config(home, "ws://127.0.0.1:8091/ws")
+
+    def test_verify_kernel_config_rejects_product_policy_fields(self) -> None:
+        with TemporaryDirectory() as raw:
+            home = Path(raw)
+            config = home / "config" / "kernel.toml"
+            config.parent.mkdir(parents=True)
+            config.write_text('[kernel]\nurl = "ws://127.0.0.1:8091/ws"\n\n[workspace]\npath = "/repo"\n', encoding="utf-8")
+
+            with self.assertRaises(SystemExit) as ctx:
+                verify_kernel_config(home, "ws://127.0.0.1:8091/ws")
+            self.assertIn("non-kernel fields", str(ctx.exception))
 
     def test_attached_runtime_pid_accepts_embedded_runtime_shape(self) -> None:
         body = {

@@ -4,6 +4,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import os
 import tempfile
+import tomllib
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
@@ -92,12 +93,6 @@ def _make_python_package(root: Path, package: str, content: str = "VALUE = 1\n")
 def _make_minimal_distro(root: Path, name: str = "demo") -> Path:
     dist = root / name
     _touch(dist / "distro.toml", f'[distro]\nid = "tabula.{name}"\nname = "{name}"\n')
-    _touch(
-        dist / "boot.py",
-        "#!/usr/bin/env python3\n"
-        "import json\n"
-        "print(json.dumps({\"url\": \"ws://localhost:8089/ws\", \"plugins\": [], \"meta\": {}}))\n",
-    )
     (dist / "templates").mkdir(parents=True, exist_ok=True)
     (dist / "skills").mkdir(parents=True, exist_ok=True)
     _touch(dist / "templates" / "SYSTEM.md", "hello\n")
@@ -292,8 +287,11 @@ class InstallTests(unittest.TestCase):
             self.assertTrue((home / "distrib" / "demo" / "_lib" / "python" / "src" / "pkg" / "__init__.py").exists())
             self.assertTrue((home / "_lib" / "python" / "src" / "pkg" / "__init__.py").exists())
 
-            self.assertTrue((home / "boot.py").is_symlink())
+            self.assertFalse((home / "boot.py").exists())
             self.assertTrue((home / "distrib" / "active").is_symlink())
+            kernel_config = tomllib.loads((home / "config" / "kernel.toml").read_text(encoding="utf-8"))
+            self.assertEqual(kernel_config["kernel"], {"url": "ws://localhost:8089/ws"})
+            self.assertEqual(kernel_config["runtime_wss"], {"enabled": False})
 
             self.assertIn("memory", lock.bundles)
             self.assertIn("weather", lock.skills)

@@ -76,7 +76,7 @@ esac
 
 TABULA_HOME="$(cd "$(dirname "$TABULA_HOME")" && pwd)/$(basename "$TABULA_HOME")"
 BIN_DIR="$TABULA_HOME/bin"
-BOOT_FILE="$TABULA_HOME/boot.py"
+KERNEL_CONFIG="$TABULA_HOME/config/kernel.toml"
 LOG_DIR="$TABULA_HOME/logs"
 KERNEL_STDOUT="$LOG_DIR/bootstrap-kernel.out.log"
 KERNEL_STDERR="$LOG_DIR/bootstrap-kernel.err.log"
@@ -212,7 +212,7 @@ RUNTIME_BIN="$(resolve_binary tabula-runtime)" || die "tabula-runtime binary not
 info "Checking Tabula home: $TABULA_HOME"
 [ -x "$TABULA_BIN" ] || die "tabula is not executable: $TABULA_BIN"
 [ -x "$RUNTIME_BIN" ] || die "tabula-runtime is not executable: $RUNTIME_BIN"
-[ -f "$BOOT_FILE" ] || die "missing boot.py at $BOOT_FILE; install a distro before bootstrap"
+[ -f "$KERNEL_CONFIG" ] || die "missing kernel config at $KERNEL_CONFIG; install a distro before bootstrap"
 
 "$TABULA_BIN" --version >/dev/null
 ok "tabula --version"
@@ -240,7 +240,6 @@ else
 fi
 
 export TABULA_HOME
-export TABULA_BOOT="${TABULA_BOOT:-\"$TABULA_HOME/.venv/bin/python3\" \"$BOOT_FILE\"}"
 export TABULA_PATH="${TABULA_PATH:-$TABULA_HOME/.venv/bin:$BIN_DIR:$PATH}"
 export PATH="$BIN_DIR:$PATH"
 TABULA_RUNNER_BIN="${TABULA_RUNNER_BIN:-$BIN_DIR/tabula-runner}"
