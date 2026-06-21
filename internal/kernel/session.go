@@ -36,6 +36,50 @@ type Session struct {
 	inflightTurn    bool
 	cancelRequested bool
 	pendingInputs   []queuedInput
+	pendingSteers   []queuedInput
+	activeToolCalls int
+}
+
+func (s *Session) BeginToolCall() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.activeToolCalls++
+	s.State = SessionActive
+	s.touchLocked()
+}
+
+func (s *Session) CompleteToolCall() []queuedInput {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeToolCalls > 0 {
+		s.activeToolCalls--
+	}
+	if s.activeToolCalls > 0 || len(s.pendingSteers) == 0 {
+		s.touchLocked()
+		return nil
+	}
+	steers := append([]queuedInput(nil), s.pendingSteers...)
+	s.pendingSteers = nil
+	s.touchLocked()
+	return steers
+}
+
+func (s *Session) HasActiveToolCalls() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.activeToolCalls > 0
+}
+
+func (s *Session) EnqueueSteer(msg *Message, exclude *Client) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.State == SessionClosing || len(s.pendingSteers) >= maxPendingInputs {
+		return false
+	}
+	s.pendingSteers = append(s.pendingSteers, queuedInput{message: cloneMessage(msg), exclude: exclude})
+	s.State = SessionActive
+	s.touchLocked()
+	return true
 }
 
 func (s *Session) SetInitContext(context string) {
@@ -170,6 +214,8 @@ func (s *Session) RequestCancel() bool {
 		return false
 	}
 	s.cancelRequested = true
+	s.pendingInputs = nil
+	s.pendingSteers = nil
 	s.touchLocked()
 	return true
 }

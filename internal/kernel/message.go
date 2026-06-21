@@ -102,7 +102,7 @@ func eventText(msg *Message) string {
 }
 
 func messageText(msg *Message) string {
-	if msg == nil || msg.Topic != TopicMessageUser {
+	if msg == nil || (msg.Topic != TopicMessageUser && msg.Topic != TopicTurnSteer) {
 		return ""
 	}
 	return eventText(msg)

@@ -43,6 +43,10 @@ func (h *Hub) handleSessionMessage(sender *Client, msg *Message) {
 			h.handleUserMessage(sender, msg)
 			return
 		}
+		if msg.Topic == TopicTurnSteer {
+			h.handleTurnSteer(sender, msg)
+			return
+		}
 		if msg.Topic == TopicTurnCancel {
 			h.handleCancel(tenantID, h.targetSession(sender, msg))
 			return
@@ -97,6 +101,8 @@ func (h *Hub) queueMessagePlan(sender *Client, msg *Message, plan messagePlan) b
 	}
 	queued := cloneMessage(msg)
 	setMessageText(queued, plan.text)
+	queued.Session = plan.targetSession
+	queued.TenantID = plan.tenantID
 	return sess.EnqueueInput(queued, sender)
 }
 
@@ -114,6 +120,29 @@ func (h *Hub) handleUserMessage(sender *Client, msg *Message) {
 		}
 	}
 	h.applyMessagePlan(sender, msg, plan)
+}
+
+func (h *Hub) handleTurnSteer(sender *Client, msg *Message) {
+	msg.Meta, _ = ensureTurnCorrelationMeta(msg.Meta)
+	plan := h.buildMessagePlan(sender, msg)
+	if plan.blocked {
+		sender.SendMsg(&Message{Type: string(MsgError), Text: "message blocked"})
+		return
+	}
+	setMessageText(msg, plan.text)
+	steer := cloneMessage(msg)
+	steer.Topic = TopicTurnSteer
+	steer.Session = plan.targetSession
+	steer.TenantID = plan.tenantID
+	if sess, ok := h.sessions.Get(plan.targetSession, plan.tenantID); ok && sess.HasActiveToolCalls() {
+		if sess.EnqueueSteer(steer, sender) {
+			h.persistSessionState(plan.tenantID, plan.targetSession)
+			return
+		}
+		sender.SendMsg(&Message{Type: string(MsgError), Text: "session steer queue full"})
+		return
+	}
+	h.broadcastToSessionFrom(plan.tenantID, plan.targetSession, TopicTurnSteer, steer, sender, sender)
 }
 
 func (h *Hub) forwardSessionMessage(sender *Client, msg *Message) {
@@ -187,5 +216,24 @@ func (h *Hub) dispatchQueuedInput(tenantID, session string, input queuedInput) {
 	if input.message == nil {
 		return
 	}
-	h.broadcastToSession(tenantID, session, messageCapability(input.message), input.message, input.exclude)
+	if input.message.TenantID != "" {
+		tenantID = input.message.TenantID
+	}
+	if input.message.Session != "" {
+		session = input.message.Session
+	}
+	h.broadcastToSession(tenantID, session, messageCapability(input.message), input.message, nil)
+}
+
+func (h *Hub) dispatchQueuedSteer(tenantID, session string, input queuedInput) {
+	if input.message == nil {
+		return
+	}
+	if input.message.TenantID != "" {
+		tenantID = input.message.TenantID
+	}
+	if input.message.Session != "" {
+		session = input.message.Session
+	}
+	h.broadcastToSession(tenantID, session, TopicTurnSteer, input.message, nil)
 }

@@ -231,6 +231,10 @@ func turnCancel() Message {
 	return Message{Type: string(MsgEvent), Topic: TopicTurnCancel}
 }
 
+func turnSteer(text string) Message {
+	return Message{Type: string(MsgEvent), Topic: TopicTurnSteer, Data: mustMarshalRaw(map[string]any{"text": text})}
+}
+
 func isToolResult(msg any) bool {
 	switch m := msg.(type) {
 	case Message:
@@ -1246,6 +1250,63 @@ func TestSessionBusyQueuesConcurrentRootMessagesAndDispatchesAfterDone(t *testin
 	}
 }
 
+func TestQueuedFollowUpBroadcastsBackToOriginalSenderWhenDispatched(t *testing.T) {
+	hub := NewHub(nil, 3, 5, nil)
+	gateway := addCaptureClient(t, hub, "gateway", "main", []string{TopicMessageUser}, nil)
+	driver := addCaptureClient(t, hub, "driver", "main", []string{TopicMessageUser}, nil)
+	queued := userMessage("queued")
+	queued.Session = "main"
+	queued.TenantID = "default"
+
+	hub.dispatchQueuedInput("default", "main", queuedInput{message: &queued, exclude: gateway})
+
+	queuedEcho := waitForMessage(t, gateway.recvCh)
+	if !isUserMessage(queuedEcho) || messageText(queuedEcho) != "queued" {
+		t.Fatalf("expected queued message echo for original sender, got %+v", queuedEcho)
+	}
+	queuedForDriver := waitForMessage(t, driver.recvCh)
+	if !isUserMessage(queuedForDriver) || messageText(queuedForDriver) != "queued" {
+		t.Fatalf("expected queued message for driver, got %+v", queuedForDriver)
+	}
+}
+
+func TestTurnCancelClearsQueuedFollowUpMessages(t *testing.T) {
+	env := newTestEnv(t)
+	gateway := env.connectAndJoin("gateway", "main",
+		[]string{TopicMessageUser, TopicTurnCancel},
+		[]string{"error"})
+	driver := env.connectAndJoin("driver", "main",
+		[]string{TopicTurnDone},
+		[]string{TopicMessageUser, TopicTurnCancel})
+
+	writeJSON(t, gateway, userMessage("first"))
+	_ = readMsg(t, driver)
+	writeJSON(t, gateway, userMessage("queued"))
+
+	sess, ok := env.Hub.sessions.Get("main", "default")
+	if !ok {
+		t.Fatal("session main should exist")
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for sess.PendingInputCount() != 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := sess.PendingInputCount(); got != 1 {
+		t.Fatalf("pending input count before cancel = %d, want 1", got)
+	}
+
+	writeJSON(t, gateway, turnCancel())
+	_ = readMsg(t, driver)
+	if got := sess.PendingInputCount(); got != 0 {
+		t.Fatalf("pending input count after cancel = %d, want 0", got)
+	}
+
+	writeJSON(t, driver, turnDone())
+	if msg := readMsgTimeout(t, driver, 100*time.Millisecond); msg != nil {
+		t.Fatalf("queued follow-up should not dispatch after cancel, got %+v", *msg)
+	}
+}
+
 func TestTurnCancelUsesExplicitTargetSession(t *testing.T) {
 	env := newTestEnv(t)
 	gateway := env.connectAndJoin("gateway", "main", []string{TopicTurnCancel}, []string{"error"})
@@ -1293,6 +1354,54 @@ func TestQueuedMessagesPreserveEnvelope(t *testing.T) {
 	}
 	if _, ok := gotMeta["kernel"].(map[string]any); !ok {
 		t.Fatalf("queued message missing kernel meta: %+v", gotMeta)
+	}
+}
+
+func TestTurnSteerBypassesSessionQueueDuringActiveTurn(t *testing.T) {
+	env := newTestEnv(t)
+	gateway := env.connectAndJoin("gateway", "main",
+		[]string{TopicMessageUser, TopicTurnSteer},
+		[]string{"error"})
+	driver := env.connectAndJoin("driver", "main",
+		[]string{TopicTurnDone},
+		[]string{TopicMessageUser, TopicTurnSteer})
+
+	writeJSON(t, gateway, userMessage("first"))
+	_ = readMsg(t, driver)
+
+	steer := turnSteer("steer now")
+	steer.ID = "steer-1"
+	writeJSON(t, gateway, steer)
+
+	routed := readMsg(t, driver)
+	if routed.Type != string(MsgEvent) || routed.Topic != TopicTurnSteer || routed.ID != "steer-1" || messageText(&routed) != "steer now" {
+		t.Fatalf("expected steer to bypass queue, got %+v", routed)
+	}
+
+	writeJSON(t, driver, turnDone())
+	if msg := readMsgTimeout(t, driver, 100*time.Millisecond); msg != nil {
+		t.Fatalf("steer should not be redispatched after turn.done, got %+v", *msg)
+	}
+}
+
+func TestTurnSteerWaitsForActiveToolCallToFinish(t *testing.T) {
+	hub := NewHub(nil, 3, 5, nil)
+	gateway := addTenantCaptureClient(t, hub, "default", "gateway", "main", nil, nil)
+	driver := addTenantCaptureClient(t, hub, "default", "driver", "main", []string{TopicTurnSteer}, nil)
+
+	hub.recordToolStarted("default", "main", "tool-1", "subagent_spawn")
+	steer := turnSteer("after tool")
+	steer.ID = "steer-1"
+	hub.handleTurnSteer(gateway, &steer)
+
+	if msg := readCaptureMessageTimeout(driver.recvCh, 100*time.Millisecond); msg != nil {
+		t.Fatalf("steer should wait while tool call is active, got %+v", msg)
+	}
+
+	hub.recordToolTerminal("default", "main", "tool-1", "subagent_spawn", "completed")
+	msg := waitForMessage(t, driver.recvCh)
+	if msg.Topic != TopicTurnSteer || msg.ID != "steer-1" || messageText(msg) != "after tool" {
+		t.Fatalf("expected deferred steer after tool terminal, got %+v", msg)
 	}
 }
 

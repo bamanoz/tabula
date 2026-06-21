@@ -30,6 +30,13 @@ func newKernelRunID() string {
 }
 
 func (h *Hub) recordToolStarted(tenantID, session, toolID, toolName string) {
+	if h != nil && session != "" {
+		resolvedTenant := tenantID
+		if resolvedTenant == "" {
+			resolvedTenant = h.sessionTenantID("", session)
+		}
+		h.sessions.GetOrCreate(session, resolvedTenant).BeginToolCall()
+	}
 	h.recordToolLifecycle(tenantID, session, toolID, toolName, "started", nil)
 }
 
@@ -41,6 +48,16 @@ func (h *Hub) recordToolSuspended(tenantID, session, toolID, toolName, approvalI
 func (h *Hub) recordToolTerminal(tenantID, session, toolID, toolName, status string) {
 	extra := map[string]any{"status": status}
 	h.recordToolLifecycle(tenantID, session, toolID, toolName, "terminal", extra)
+	if h == nil || session == "" {
+		return
+	}
+	resolvedTenant := tenantID
+	if resolvedTenant == "" {
+		resolvedTenant = h.sessionTenantID("", session)
+	}
+	for _, steer := range h.sessions.GetOrCreate(session, resolvedTenant).CompleteToolCall() {
+		h.dispatchQueuedSteer(resolvedTenant, session, steer)
+	}
 }
 
 func (h *Hub) recordToolLifecycle(tenantID, session, toolID, toolName, state string, extra map[string]any) {

@@ -47,6 +47,7 @@ const (
 	TopicSessionMemberJoined = "session.member_joined"
 	TopicTurnDone            = "turn.done"
 	TopicTurnCancel          = "turn.cancel"
+	TopicTurnSteer           = "turn.steer"
 )
 
 func isExchangeTopic(topic string) bool {

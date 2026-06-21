@@ -172,6 +172,11 @@ set = "empty"
 components = ["base:sessions", "drivers:driver", "gateways:gateway-web"]
 tests = ["tests/test_tool_lifecycle.py"]
 
+[suites.turn-steer]
+set = "empty"
+components = ["base:sessions", "base:deferred-tools", "drivers:driver", "gateways:gateway-web"]
+tests = ["tests/test_turn_steer.py"]
+
 [suites.deferred-tools]
 set = "empty"
 components = ["base:deferred-tools", "base:hook-permissions", "workspace:exec"]
