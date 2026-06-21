@@ -54,6 +54,7 @@ type activeRuntimeCall struct {
 type pendingToolCall struct {
 	ApprovalID        string
 	ApprovalData      json.RawMessage
+	BlockedDecision   *HookDispatchDecision
 	TenantID          string
 	Session           string
 	ToolID            string
@@ -81,24 +82,30 @@ func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 	effectiveInput, blocked := s.hub.policy.CanUseTool(sender, toolName, toolID, msg.Input, msg.Meta, session)
 	if blocked != nil {
 		if blocked.Pending {
-			s.suspendForApproval(tenantID, session, toolID, toolName, msg.Input, msg.Meta, turnCorrelationID, blocked)
+			s.suspendForApproval(tenantID, session, toolID, toolName, effectiveInput, msg.Meta, turnCorrelationID, blocked)
 			return
 		}
 		s.hub.Logger.Warn("tool call blocked by policy", "tool", toolName, "tool_call_id", toolID, "turn_correlation_id", turnCorrelationID, "tenant_id", tenantID, "session", session, "input_bytes", len(msg.Input))
 		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, buildNotInvokedToolResult(blocked), nil, false)
 		return
 	}
-	msg.Input = effectiveInput
+	s.executeFinalizedToolCall(tenantID, session, toolID, toolName, effectiveInput, msg.Meta, turnCorrelationID, sender)
+}
+
+func (s *ToolService) executeFinalizedToolCall(tenantID, session, toolID, toolName string, input, meta json.RawMessage, turnCorrelationID string, sender *Client) {
+	s.broadcastFinalizedToolCall(tenantID, session, toolID, toolName, input, meta, sender)
+	s.handleDynamicTool(tenantID, session, toolID, toolName, input, turnCorrelationID)
+}
+
+func (s *ToolService) broadcastFinalizedToolCall(tenantID, session, toolID, toolName string, input, meta json.RawMessage, sender *Client) {
 	s.hub.broadcastToSessionFrom(tenantID, session, TopicToolCall, &Message{
 		Type:  string(MsgRequest),
 		Topic: TopicToolCall,
 		ID:    toolID,
 		Name:  toolName,
-		Input: msg.Input,
-		Meta:  msg.Meta,
+		Input: input,
+		Meta:  meta,
 	}, sender, sender)
-
-	s.handleDynamicTool(tenantID, session, toolID, toolName, msg.Input, turnCorrelationID)
 }
 
 func (s *ToolService) suspendForApproval(tenantID, session, toolID, toolName string, input, meta json.RawMessage, turnCorrelationID string, blocked *HookDispatchDecision) {
@@ -109,6 +116,7 @@ func (s *ToolService) suspendForApproval(tenantID, session, toolID, toolName str
 	pending := pendingToolCall{
 		ApprovalID:        approvalID,
 		ApprovalData:      approvalRequestDataFromDecision(toolName, blocked),
+		BlockedDecision:   blocked,
 		TenantID:          tenantID,
 		Session:           session,
 		ToolID:            toolID,
@@ -142,10 +150,36 @@ func (s *ToolService) resolvePendingApproval(approvalID string, approved bool, c
 		return true
 	}
 	s.emitApprovalResolved(pending, choice, true)
-	input := markToolInputApproved(pending.Input)
 	s.hub.broadcastToSession(pending.TenantID, pending.Session, "tool.resumed", &Message{Type: string(MsgEvent), Topic: "tool.resumed", ID: pending.ToolID, Name: pending.ToolName, Data: mustMarshalRaw(map[string]any{"approval_id": approvalID, "tool_call_id": pending.ToolID, "tool": pending.ToolName, "choice": choice})}, nil)
+	effectivePayload, ok, blocked := s.hub.hooks.ResumeModifying(pending.BlockedDecision)
+	effectiveInput := inputFromToolHookPayload(effectivePayload, pending.Input)
+	if blocked != nil {
+		if blocked.Pending {
+			s.suspendForApproval(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, effectiveInput, pending.Meta, pending.TurnCorrelationID, blocked)
+			return true
+		}
+		s.hub.Logger.Warn("tool call blocked by policy after approval", "tool", pending.ToolName, "tool_call_id", pending.ToolID, "turn_correlation_id", pending.TurnCorrelationID, "tenant_id", pending.TenantID, "session", pending.Session, "input_bytes", len(pending.Input))
+		s.hub.sendToolResultForTool(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, buildNotInvokedToolResult(blocked), nil, false)
+		return true
+	}
+	if !ok {
+		s.hub.sendToolResultForTool(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, buildNotInvokedToolResult(&HookDispatchDecision{Reason: "tool hook dispatch did not complete after approval"}), nil, false)
+		return true
+	}
+	s.broadcastFinalizedToolCall(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, effectiveInput, pending.Meta, nil)
+	input := markToolInputApproved(effectiveInput)
 	s.handleDynamicTool(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, input, pending.TurnCorrelationID)
 	return true
+}
+
+func inputFromToolHookPayload(raw json.RawMessage, fallback json.RawMessage) json.RawMessage {
+	var payload struct {
+		Input json.RawMessage `json:"input"`
+	}
+	if len(raw) > 0 && json.Unmarshal(raw, &payload) == nil && len(payload.Input) > 0 {
+		return payload.Input
+	}
+	return fallback
 }
 
 func (s *ToolService) emitApprovalResolved(pending pendingToolCall, choice string, approved bool) {

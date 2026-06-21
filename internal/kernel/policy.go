@@ -150,18 +150,18 @@ func (pe *PolicyEngine) CanUseTool(sender *Client, toolName string, toolID strin
 		"tool": toolName, "id": toolID, "input": input, "meta": meta, "tenant_id": sender.tenantID,
 	})
 	result, ok, blocked := pe.hub.hooks.DispatchDetailedExcept("before_tool_call", hookPayload, sender.tenantID, session, sender)
-	if !ok {
-		return nil, blocked
-	}
 
 	var modified struct {
 		Input json.RawMessage `json:"input"`
 	}
 	if err := json.Unmarshal(result, &modified); err != nil {
-		return input, nil
+		return input, blocked
 	}
 	if modified.Input == nil {
-		return input, nil
+		return input, blocked
+	}
+	if !ok {
+		return modified.Input, blocked
 	}
 	return modified.Input, nil
 }

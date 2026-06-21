@@ -106,7 +106,7 @@ func TestBeforeToolCallHookCanSuspendForApprovalAndResume(t *testing.T) {
 	env := newTestEnvWithSkillTool(t)
 	hook := env.connectHook("approval", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
 	resolvedHook := env.connectHook("approval-recorder", []HookSubscription{{Event: "approval_resolved", Priority: 0}})
-	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult, "tool.suspended", "tool.resumed"})
+	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolCall, TopicToolResult, "tool.suspended", "tool.resumed"})
 	ui := env.connectAndJoin("ui", "main", []string{TopicExchangeApprove}, []string{TopicExchangeApprove})
 
 	go func() {
@@ -146,6 +146,69 @@ func TestBeforeToolCallHookCanSuspendForApprovalAndResume(t *testing.T) {
 		}
 		if !strings.Contains(msg.Output, "needs approval") {
 			t.Fatalf("expected resumed tool result, got %q", msg.Output)
+		}
+		return
+	}
+	t.Fatal("expected resumed tool result")
+}
+
+func TestSuspendedBeforeToolCallResumesLaterRewriteHookAfterApproval(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	env := newTestEnvWithSkillTool(t)
+	approval := env.connectHook("approval", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
+	rewriter := env.connectHook("rewriter", []HookSubscription{{Event: "before_tool_call", Priority: 10}})
+	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolCall, TopicToolResult, "tool.suspended", "tool.resumed"})
+	ui := env.connectAndJoin("ui", "main", []string{TopicExchangeApprove}, []string{TopicExchangeApprove})
+
+	go func() {
+		writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-suspend-rewrite", Input: json.RawMessage(`{"text":"original"}`)})
+	}()
+
+	approvalMsg := readMsg(t, approval)
+	if approvalMsg.Type != "hook" || approvalMsg.Name != "before_tool_call" {
+		t.Fatalf("expected approval before_tool_call, got %+v", approvalMsg)
+	}
+	writeJSON(t, approval, Message{Type: string(MsgHookReply), ID: approvalMsg.ID, Action: string(ActionSuspend), Reason: "approve rewritten"})
+
+	approvalReq := readMsg(t, ui)
+	if approvalReq.Type != string(MsgRequest) || approvalReq.Topic != TopicExchangeApprove {
+		t.Fatalf("expected approval request, got %+v", approvalReq)
+	}
+	if !strings.Contains(string(approvalReq.Data), `"text":"original"`) || strings.Contains(string(approvalReq.Data), `"text":"rewritten"`) {
+		t.Fatalf("expected approval request to include pre-suspend input only, got %s", string(approvalReq.Data))
+	}
+
+	writeJSON(t, ui, Message{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: approvalReq.ID, Data: json.RawMessage(`{"choice":"allow once"}`)})
+
+	rewriteMsg := readMsg(t, rewriter)
+	if rewriteMsg.Type != "hook" || rewriteMsg.Name != "before_tool_call" {
+		t.Fatalf("expected rewrite before_tool_call after approval, got %+v", rewriteMsg)
+	}
+	env.Hub.hooks.HandleRuntimeResult("", &Message{ID: rewriteMsg.ID, Action: string(ActionModify), Data: json.RawMessage(`{"input":{"text":"rewritten"}}`)})
+
+	var called Message
+	for i := 0; i < 4; i++ {
+		called = readMsg(t, drv)
+		if called.Topic == TopicToolCall {
+			break
+		}
+	}
+	if called.Topic != TopicToolCall {
+		t.Fatalf("expected finalized tool.call broadcast, got %+v", called)
+	}
+	if !strings.Contains(string(called.Input), "rewritten") {
+		t.Fatalf("expected finalized tool.call to include rewritten input, got %s", string(called.Input))
+	}
+	for i := 0; i < 3; i++ {
+		msg := readMsg(t, drv)
+		if msg.Topic != TopicToolResult {
+			continue
+		}
+		if !strings.Contains(msg.Output, "rewritten") {
+			t.Fatalf("expected resumed tool result to use rewritten input, got %q", msg.Output)
 		}
 		return
 	}

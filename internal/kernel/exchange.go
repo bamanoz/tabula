@@ -152,7 +152,7 @@ func approvalRequestData(pending pendingToolCall, blocked *HookDispatchDecision)
 		if len(blocked.Payload) > 0 {
 			var payload map[string]any
 			if json.Unmarshal(blocked.Payload, &payload) == nil {
-				for _, key := range []string{"question", "details", "options"} {
+				for _, key := range []string{"question", "options"} {
 					if value, ok := payload[key]; ok {
 						data[key] = value
 					}
