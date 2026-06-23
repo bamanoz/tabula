@@ -266,11 +266,12 @@ For development, clone `tabula-distrib` next to this repo and run
 `tabula-install distro install ../tabula-distrib/<name>`.
 
 For app-manifest development, keep `tabula.app.toml` in the workspace root and
-use `tabula-install app prepare` to install/materialize the agent without
-launching it. Then use `tabula-install app run` to start or reuse the configured
-kernel/runtime. If the manifest uses a `git+` distro source, this flow works in
-a fresh workspace without local distro or bundle checkouts. Pass an explicit
-manifest path only when it is not at `./tabula.app.toml` or `./.tabula/app.toml`.
+use `tabula-install app install --workspace .` to install/materialize the agent
+without launching it. Then use `tabula-install app run` to start or reuse the
+configured kernel/runtime. If the manifest uses a `git+` distro source, this
+flow works in a fresh workspace without local distro or bundle checkouts. Pass
+an explicit manifest path only when it is not at `./tabula.app.toml` or
+`./.tabula/app.toml`.
 
 The repository Makefile keeps thin development aliases for the same commands:
 `make agent-prepare`, `make agent-run`, and `make agent-connect`. The

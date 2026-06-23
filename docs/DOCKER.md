@@ -62,7 +62,7 @@ The entrypoint runs the normal source installer if `$TABULA_HOME/bin/tabula-inst
 is missing, then runs:
 
 ```bash
-tabula-install app prepare /workspace/tabula.app.toml --update
+tabula-install app install /workspace/tabula.app.toml --workspace /workspace --update
 tabula-runner
 ```
 

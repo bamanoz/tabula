@@ -174,6 +174,66 @@ dir = "{stale}"
             self.assertIn('id = "claw-tabula"', runtime_cfg)
             self.assertIn(str(home / "tenants" / "claw-tabula" / "plugins"), runtime_cfg)
 
+    def test_install_global_sets_default_binding_without_launching(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            _make_distro(root)
+            manifest_path = root / "tabula.app.toml"
+            _write(manifest_path, _manifest(root))
+
+            with mock.patch.object(runmod, "execute") as execute:
+                code, out, err = self._run_cli(["--home", str(home), "app", "install", str(manifest_path), "--global"])
+
+            self.assertEqual(code, 0, err)
+            execute.assert_not_called()
+            self.assertIn("installed app claw-tabula", out)
+            bindings = (home / "app-bindings.toml").read_text(encoding="utf-8")
+            self.assertIn("[default]", bindings)
+            self.assertIn('app = "claw-tabula"', bindings)
+            self.assertNotIn("[[directory]]", bindings)
+            applied_lock = json.loads((home / "tenants" / "claw-tabula" / "app.lock.json").read_text(encoding="utf-8"))
+            self.assertEqual(applied_lock["bindings"]["default"]["app"], "claw-tabula")
+            self.assertNotIn("directory", applied_lock["bindings"])
+            runtime_cfg = (home / "config" / "runtime.toml").read_text(encoding="utf-8")
+            self.assertIn('id = "claw-tabula"', runtime_cfg)
+
+    def test_install_workspace_sets_directory_binding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            workspace = root / "workspace"
+            _make_distro(root)
+            manifest_path = root / "tabula.app.toml"
+            _write(manifest_path, _manifest(root))
+
+            code, _out, err = self._run_cli(["--home", str(home), "app", "install", str(manifest_path), "--workspace", str(workspace)])
+
+            self.assertEqual(code, 0, err)
+            bindings = (home / "app-bindings.toml").read_text(encoding="utf-8")
+            self.assertIn("[[directory]]", bindings)
+            self.assertIn(f'root = "{workspace.resolve()}"', bindings)
+            self.assertNotIn("[default]", bindings)
+
+    def test_install_no_bind_materializes_without_binding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            _make_distro(root)
+            manifest_path = root / "tabula.app.toml"
+            _write(manifest_path, _manifest(root))
+
+            code, out, err = self._run_cli(["--home", str(home), "app", "install", str(manifest_path), "--no-bind"])
+
+            self.assertEqual(code, 0, err)
+            self.assertIn("unchanged", out)
+            self.assertTrue((home / "tenants" / "claw-tabula" / "app.lock.json").is_file())
+            bindings = (home / "app-bindings.toml").read_text(encoding="utf-8")
+            self.assertNotIn("[default]", bindings)
+            self.assertNotIn("[[directory]]", bindings)
+            applied_lock = json.loads((home / "tenants" / "claw-tabula" / "app.lock.json").read_text(encoding="utf-8"))
+            self.assertEqual(applied_lock["bindings"], {})
+
     def test_dry_run_clears_stale_materializer_config_without_contract(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -44,22 +44,29 @@ If omitted, the installer defaults to a managed local kernel at
 `ws://127.0.0.1:8089/ws`, one managed bare runtime for `application.id`, and a
 directory binding from `${project_root}` to the app.
 
-Run it:
+Install it for the current workspace without launching the kernel/runtime:
+
+```bash
+tabula-install app install --workspace .
+```
+
+Install it as the fallback app outside more specific workspace bindings:
+
+```bash
+tabula-install app install --global
+```
+
+`app install` resolves and installs the distro from the manifest, creates the
+tenant metadata, runs the distro materializer, compiles tenant plugin config,
+writes runtime config, and records the requested binding target. `--global` and
+`--workspace` are installer UX aliases for default and directory bindings; they
+are not platform-level agent scopes.
+
+Start or reuse the configured kernel/runtime:
 
 ```bash
 tabula-install app run
 ```
-
-Prepare it without launching the kernel/runtime:
-
-```bash
-tabula-install app prepare
-```
-
-`app prepare` resolves and installs the distro from the manifest, creates the
-tenant metadata, runs the distro materializer in dry-run mode, compiles tenant
-plugin config, writes runtime config, and records bindings. It is the
-installer-native replacement for Makefile-only prepare flows.
 
 On a fresh machine, the release installer can install Tabula and then forward to
 `tabula-install` in the same command:
@@ -120,8 +127,8 @@ config. Lockfiles must not contain raw credentials.
 
 ## Bindings
 
-`app apply` and `app run` materialize manifest bindings into
-`$TABULA_HOME/app-bindings.toml`.
+`app install --global`, `app install --workspace`, `app apply`, and `app run`
+materialize bindings into `$TABULA_HOME/app-bindings.toml`.
 
 ```toml
 [[bindings.directory]]
@@ -130,6 +137,9 @@ root = "${project_root}"
 
 When `app` or `kernel` are omitted, they default to `application.id` and the
 selected kernel id.
+
+Use `app install --no-bind` to materialize tenant/runtime state without changing
+selection. The app can still be selected explicitly by id.
 
 Launchers resolve in this order:
 

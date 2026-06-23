@@ -89,6 +89,16 @@ def main(argv: list[str] | None = None, *, prog: str = "tabula-distro") -> int:
     p_app_apply.add_argument("--update", action="store_true", help="refresh resolved app lock data")
     p_app_apply.set_defaults(func=_cmd_app_apply)
 
+    p_app_install = app_sub.add_parser("install", help="install and bind an app without launching")
+    _app_manifest_arg(p_app_install)
+    p_app_install.add_argument("--frozen", action="store_true", help="require existing lockfile; no network access")
+    p_app_install.add_argument("--update", action="store_true", help="refresh resolved app lock data")
+    install_binding = p_app_install.add_mutually_exclusive_group()
+    install_binding.add_argument("--global", dest="global_bind", action="store_true", help="install as the fallback app binding")
+    install_binding.add_argument("--workspace", help="install for a specific workspace directory")
+    install_binding.add_argument("--no-bind", action="store_true", help="install without changing app bindings")
+    p_app_install.set_defaults(func=_cmd_app_install)
+
     p_app_prepare = app_sub.add_parser("prepare", help="install and materialize an app manifest without launching")
     _app_manifest_arg(p_app_prepare)
     p_app_prepare.add_argument("--frozen", action="store_true", help="require existing lockfile; no network access")
@@ -410,6 +420,37 @@ def _cmd_app_apply(args: argparse.Namespace, home: Path) -> int:
     return 0
 
 
+def _cmd_app_install(args: argparse.Namespace, home: Path) -> int:
+    manifest, lock_path, lock = _resolve_app_lock(args, home)
+    bindings = _install_binding_override(args, manifest)
+    if bindings is not None:
+        manifest = appmod.with_bindings(manifest, bindings)
+        lock = appmod.with_lock_bindings(lock, bindings)
+    appmod.save_lock(lock_path, lock)
+    tenant_dir = appmod.materialize_metadata(manifest, lock, home)
+    install_result = _install_with_local_alias_overrides(
+        manifest.distro.source,
+        home,
+        base_dir=manifest.path.parent,
+        offline=bool(args.frozen),
+        update=bool(args.update),
+        tenant=manifest.application.id,
+        expose_global_boot=False,
+    )
+    materialized = appmod.run_materializer(manifest, home, lock_path=lock_path, phase="apply")
+    appmod.compile_plugin_configs(home, tenant_dir)
+    registry = bindmod.apply_manifest_bindings(home, manifest.bindings)
+    runmod.write_runtime_config(manifest, home, distro_dir=install_result.generation.path)
+    installmod.touch_reload_trigger(home, tenant=manifest.application.id)
+    print(f"installed app {manifest.application.id}")
+    print(f"  tenant: {tenant_dir}")
+    print(f"  lock:   {lock_path}")
+    if materialized:
+        print("  materializer: ran")
+    print(f"  bindings: {bindmod.registry_path(home)} ({_binding_summary(manifest.bindings, registry)})")
+    return 0
+
+
 def _cmd_app_prepare(args: argparse.Namespace, home: Path) -> int:
     manifest, lock_path, lock = _resolve_app_lock(args, home)
     appmod.save_lock(lock_path, lock)
@@ -437,6 +478,35 @@ def _cmd_app_prepare(args: argparse.Namespace, home: Path) -> int:
     print(f"  bindings: {bindmod.registry_path(home)} ({len(registry.directories)} director{'y' if len(registry.directories) == 1 else 'ies'})")
     _print_run_plan(runmod.plan(manifest), tenant_dir)
     return 0
+
+
+def _install_binding_override(args: argparse.Namespace, manifest: appmod.AppManifest) -> appmod.Bindings | None:
+    if getattr(args, "global_bind", False):
+        return appmod.Bindings(
+            default=appmod.DefaultBinding(app=manifest.application.id, kernel=manifest.kernel.id)
+        )
+    workspace = getattr(args, "workspace", None)
+    if workspace:
+        root = str(Path(workspace).expanduser().resolve())
+        return appmod.Bindings(
+            directories=(appmod.DirectoryBinding(root=root, app=manifest.application.id, kernel=manifest.kernel.id),)
+        )
+    if getattr(args, "no_bind", False):
+        return appmod.Bindings()
+    return None
+
+
+def _binding_summary(bindings: appmod.Bindings, registry: bindmod.Registry) -> str:
+    parts: list[str] = []
+    if bindings.default is not None:
+        parts.append("default")
+    if bindings.directories:
+        count = len(bindings.directories)
+        parts.append(f"{count} director{'y' if count == 1 else 'ies'}")
+    if not parts:
+        parts.append("unchanged")
+    count = len(registry.directories)
+    return ", ".join(parts) + f"; registry has {count} director{'y' if count == 1 else 'ies'}"
 
 
 def _cmd_app_run(args: argparse.Namespace, home: Path) -> int:

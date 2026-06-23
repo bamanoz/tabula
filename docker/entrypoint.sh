@@ -175,7 +175,7 @@ prepare_runtime() {
     install_tabula
   fi
   ensure_user_files
-  "$TABULA_HOME/bin/tabula-install" app prepare "$TABULA_APP_MANIFEST" --update
+  "$TABULA_HOME/bin/tabula-install" app install "$TABULA_APP_MANIFEST" --workspace "$TABULA_WORKSPACE" --update
   write_docker_runtime_config
   write_docker_gateway_config
   export_app_env

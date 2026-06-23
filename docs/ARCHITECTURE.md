@@ -505,8 +505,9 @@ on `HEAD`, for example `v0.9.3` when `VERSION` is `0.9.3`.
 Same follow-up: install a distro with `tabula-install distro install <path-or-uri>`.
 
 Both paths intentionally stop at the local runtime layer. Distro composition is
-always done by `tabula-install distro install` or `tabula-install app run/apply`, which resolves a distro plus its
-declared bundles into the active runtime surface.
+always done by `tabula-install distro install` or `tabula-install app install/run/apply`,
+which resolves a distro plus its declared bundles into the active runtime
+surface.
 
 ## Runtime surfaces
 

@@ -9,7 +9,7 @@ import shlex
 import shutil
 import subprocess
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -252,6 +252,14 @@ def default_lock_path(manifest_path: Path) -> Path:
     if manifest_path.name.endswith(".toml"):
         return manifest_path.with_suffix(".lock")
     return manifest_path.with_name(manifest_path.name + ".lock")
+
+
+def with_bindings(manifest: AppManifest, bindings: Bindings) -> AppManifest:
+    return replace(manifest, bindings=bindings)
+
+
+def with_lock_bindings(lock: AppLock, bindings: Bindings) -> AppLock:
+    return replace(lock, bindings=_bindings_json(bindings))
 
 
 def materialize_metadata(manifest: AppManifest, lock: AppLock, home: Path) -> Path:

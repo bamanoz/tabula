@@ -115,16 +115,13 @@ bash scripts/install-dev.sh                                        # installs ta
 # then install a distro or run an app manifest:
 tabula-install distro install ../tabula-distrib/claw                       # local checkout
 tabula-install distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=guardian'
-tabula-install app prepare
+tabula-install app install --workspace .
 tabula-install app run
 
 # local dev flow
 make agent-prepare
 make agent-run
 make agent-connect
-
-# force-refresh git refs only when needed
-make agent-prepare APP_PREPARE_FLAGS=--update
 
 # installed CLI shortcuts
 tabula-install use code
@@ -402,7 +399,7 @@ curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install
 If Tabula is already installed:
 
 ```bash
-tabula-install app prepare
+tabula-install app install --workspace .
 tabula-install app run
 ```
 

@@ -11,6 +11,3 @@ path = "${project_root}"
 [values.prompt]
 project_files = ["AGENTS.md"]
 create_missing_project_files = false
-
-[[bindings.directory]]
-root = "${project_root}"

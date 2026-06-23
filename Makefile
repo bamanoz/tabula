@@ -121,7 +121,7 @@ agent-prepare:
 	TABULA_HOME="$(AGENT_HOME)" \
 	TABULA_SOURCE_ALIAS_TABULA_DISTRIB="local:$(LOCAL_TABULA_DISTRIB)" \
 	TABULA_SOURCE_ALIAS_TABULA_BUNDLES="local:$(LOCAL_TABULA_BUNDLES)" \
-	"$(AGENT_HOME)/bin/tabula-install" app run "$(CURDIR)/tabula.app.toml" --dry-run --update
+	"$(AGENT_HOME)/bin/tabula-install" app install "$(CURDIR)/tabula.app.toml" --workspace "$(CURDIR)" --update
 
 agent-run:
 	TABULA_HOME="$(AGENT_HOME)" TABULA_LOG_LEVEL="$${TABULA_LOG_LEVEL:-info}" "$(AGENT_HOME)/bin/tabula-runner"

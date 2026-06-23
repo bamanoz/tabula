@@ -75,6 +75,17 @@ and shared development tooling. Distro-specific product policy belongs in
   without a manual kernel restart. Keep this trigger best-effort: a missing or
   unwritable `run/` directory must not fail an install.
 
+## Architecture Decisions
+
+- Maintain ADRs for architecture-level decisions, especially changes to kernel
+  contracts, installer behavior, runtime layout, config surfaces, protocol
+  semantics, or repo boundaries.
+- Treat existing ADRs as immutable decision log entries. Do not rewrite old ADRs
+  to match current behavior.
+- If a decision changes, add a new ADR and use `Supersedes` / `Superseded by`
+  metadata to link the records. Update mutable docs separately for current
+  usage.
+
 ## Collaboration
 
 - Prefer the smallest correct change.

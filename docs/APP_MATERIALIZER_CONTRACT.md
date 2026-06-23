@@ -4,9 +4,10 @@ Status: accepted
 
 ## Purpose
 
-`tabula-install app apply` and `tabula-install app run` invoke an optional
-distro-owned application materializer after the installer has resolved the app
-manifest, written app metadata, and refreshed the app tenant's runtime surface.
+`tabula-install app install`, `tabula-install app apply`, and
+`tabula-install app run` invoke an optional distro-owned application
+materializer after the installer has resolved the app manifest, written app
+metadata, and refreshed the app tenant's runtime surface.
 
 The materializer is where a distro maps opaque `[values]` into tenant-local
 config, prompt/boot metadata, plugin config, client config, and state defaults.
@@ -23,8 +24,8 @@ materializer = "python3 materialize.py"
 ```
 
 The command is parsed with shell-style quoting and executed with the distro root
-as the working directory. If no materializer is declared, app apply/run still
-materializes generic app metadata and bindings.
+as the working directory. If no materializer is declared, app install/apply/run
+still materializes generic app metadata and bindings.
 
 ## Installer Responsibilities
 
@@ -41,8 +42,8 @@ Before invoking the materializer, the installer owns these mechanical steps:
   re-apply/run cannot inherit stale distro-specific config;
 - install or refresh the distro runtime surface for the app tenant;
 - apply app binding registry entries;
-- for `app run`, write managed runtime topology config and start/reuse the
-  requested kernel/runtime.
+- for `app install` and `app run`, write managed runtime topology config;
+- for `app run`, start/reuse the requested kernel/runtime.
 
 ## Materializer Responsibilities
 
@@ -64,8 +65,8 @@ it deep-merges each tenant plugin `defaults.toml` with the user-owned global
 `TABULA_TENANT_DIR/config/plugins/<plugin-id>/config.toml`. Plugin code reads
 that effective tenant file when it exists.
 
-Materializers must be idempotent. Re-running `app apply` or `app run` with the
-same manifest should converge on the same tenant config.
+Materializers must be idempotent. Re-running `app install`, `app apply`, or
+`app run` with the same manifest should converge on the same tenant config.
 
 ## Environment
 
@@ -83,6 +84,9 @@ TABULA_APP_VALUES        TABULA_TENANT_DIR/values.toml
 TABULA_APP_PHASE         apply | run | audit
 TABULA_APP_DRY_RUN       1 when app run --dry-run is active, otherwise 0
 ```
+
+`app install` uses `TABULA_APP_PHASE=apply` because it materializes durable
+tenant config without launching a session.
 
 The materializer should read values from `TABULA_APP_VALUES`. It may read the
 manifest or lock when it needs topology or source metadata, but `[values]` remain
@@ -108,7 +112,8 @@ side effects when this flag is set.
 
 ## Boundaries
 
-- Do not add `app apply` or `app run` behavior to the `tabula` kernel binary.
+- Do not add `app install`, `app apply`, or `app run` behavior to the `tabula`
+  kernel binary.
 - Do not add workspace, project, prompt, memory, or tool policy semantics to the
   kernel.
 - Do not introduce generic platform sections such as `[instructions]`,
