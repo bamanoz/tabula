@@ -54,10 +54,8 @@ func isExchangeTopic(topic string) bool {
 	return topic == TopicExchangeChoose || topic == TopicExchangeApprove
 }
 
-// MinPluginProtocolVersion and MaxPluginProtocolVersion remain as exported
-// compatibility metadata for health/status surfaces. M2 runtime-owned workers
-// use the Runtime API + worker wire protocol instead of the removed kernel
-// register_request/register stdio path.
+// MinPluginProtocolVersion and MaxPluginProtocolVersion describe the worker
+// protocol generation accepted through the runtime-owned plugin path.
 const (
 	MinPluginProtocolVersion = 1
 	MaxPluginProtocolVersion = 1

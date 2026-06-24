@@ -1,4 +1,4 @@
 [bundle]
 name = "my-bundle"
 version = "0.1.0"
-components = ["my-skill"]
+components = ["my-plugin"]

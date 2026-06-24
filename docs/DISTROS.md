@@ -208,8 +208,8 @@ Smallest extension units.
 
 - **Skill** (`SKILL.md`): prompt/instruction artifact. Examples:
   `tabula-guide`, `skill-contract`.
-- **Plugin** (`plugin.toml` + `register(api)`): long-lived process; subscribes
-  to events; owns executable tools; has state. Examples: `mcp`,
+- **Plugin** (`plugin.toml`): runtime worker process; subscribes to events;
+  owns executable tools; has state. Examples: `mcp`,
   `hook-permissions`, `drivers/driver`, `timer`, `memory-save`, `code/git`.
 
 See [SKILL_AUTHORING.md](SKILL_AUTHORING.md) and

@@ -157,9 +157,8 @@ if __name__ == "__main__":
 
 `KernelConnection.send()` injects the protocol version automatically.
 
-For plugin authors: do **not** open WebSocket directly. Use the
-`register(api)` API instead — the plugin runtime owns the kernel transport
-for you.
+For plugin authors: do **not** open WebSocket directly. Use the runtime worker
+protocol via `tabula-runtime`; the runtime owns the kernel transport for you.
 
 ---
 

@@ -1,9 +1,10 @@
 # Protocols
 
-Tabula speaks two distinct wire protocols:
+Tabula speaks three distinct wire protocols:
 
 1. **WebSocket protocol** — kernel ↔ client (gateways, TUIs, drivers).
-2. **Runtime worker protocol** — `tabula-runtime` ↔ plugin worker (NDJSON over stdin/stdout).
+2. **Runtime API protocol** — kernel ↔ `tabula-runtime`.
+3. **Runtime worker protocol** — `tabula-runtime` ↔ plugin worker (NDJSON over stdin/stdout).
 
 This document is the authoritative reference for both. If wire behavior
 disagrees with this file, treat it as a bug in the code or in this file —
@@ -12,7 +13,8 @@ fix one of them.
 Companion code:
 
 - WS message types and constants: `internal/kernel/protocol.go`
-- Plugin stdio messages, framing, helpers: `internal/kernel/plugin/protocol.go`
+- Runtime API frames: `internal/runtime/wire/types.go`
+- Runtime worker frames: `internal/runtime/worker/wire/types.go`
 
 ---
 
@@ -91,22 +93,50 @@ received the matching `hook` frame.
 
 ---
 
-## 2. Plugin stdio protocol (kernel ↔ plugin)
+## 2. Runtime API protocol (kernel ↔ runtime)
+
+The kernel does not start or speak directly to plugin workers. It accepts
+authenticated runtime attachments, then routes tool calls and hook events to the
+attached runtime.
 
 ### Transport
 
-NDJSON: one JSON object per line, `\n`-terminated. Per-line cap: `MaxLineSize`
-= 10 MiB (`internal/kernel/plugin/protocol.go`). Blank lines are skipped.
-Lines exceeding the cap return `ErrLineTooLong`.
+Runtime API frames use JSON over a transport-independent codec. The supported
+attachment transports are local unix socket, runtime WebSocket/WSS, and stdio
+when a runtime is launched through the SSH backend.
 
-Malformed lines do not kill the plugin immediately. The kernel logs a
-warning and tolerates up to `malformedThreshold` (3) malformed lines within
-`malformedWindow` (10s). Past that, the plugin process is terminated with a
-non-restartable error.
+### Operations
 
-There is no JSON-RPC `id` field. Request/reply correlation uses `callId`
-inside the params payload. See `Message` and methods in
-`internal/runtime/worker/wire`.
+See `internal/runtime/wire/types.go` for the authoritative Go structs.
+
+| Operation | Direction | Purpose |
+|-----------|-----------|---------|
+| `hello` | runtime → kernel | authenticate and preview capabilities |
+| `hello_ack` | kernel → runtime | accept or reject runtime attachment |
+| `invoke` | kernel → runtime | invoke one plugin tool |
+| `invoke_result` | runtime → kernel | terminal invoke result |
+| `invoke_result_start` / `invoke_result_delta` / `invoke_result_end` | runtime → kernel | streamed successful invoke result |
+| `cancel` / `cancel_ack` | kernel ↔ runtime | cancel one in-flight call |
+| `health` / `health_resp` | kernel ↔ runtime | runtime liveness |
+| `list_capabilities` / `list_capabilities_resp` | kernel ↔ runtime | current plugin capability catalog |
+| `reload` / `reload_ack` | kernel ↔ runtime | refresh manifests/workers |
+| `hook_event` / `hook_event_reply` | kernel ↔ runtime | deliver and answer plugin hook events |
+| `catalog_update` | runtime → kernel | replace one plugin target capability |
+| `plugin_send` | runtime → kernel | emit a bus message |
+| `plugin_log` | runtime → kernel | emit structured diagnostics |
+| `lifecycle_notice` | runtime → kernel | report plugin target lifecycle state |
+
+Only plugin targets are invokable. Skills are instruction artifacts and do not
+publish executable Runtime API capabilities.
+
+---
+
+## 3. Runtime worker protocol (runtime ↔ plugin worker)
+
+### Transport
+
+NDJSON: one JSON object per line, `\n`-terminated. There is no JSON-RPC `id`
+field. Request/reply correlation uses `call_id` in the frame payload.
 
 ### Versioning
 
@@ -155,7 +185,7 @@ changes rather than kernel-managed plugin restarts.
 
 ---
 
-## 3. Plugin manifest `[requires]`
+## 4. Plugin manifest `[requires]`
 
 Every `plugin.toml` **must** declare a `[requires]` block. Missing or
 malformed → manifest parse error, plugin refused.
@@ -183,7 +213,7 @@ live tool catalog.
 
 ---
 
-## 4. SDK ↔ protocol mapping
+## 5. SDK ↔ protocol mapping
 
 The SDK package version is independent of the worker protocol generation, but
 the installed SDK must implement the current `op`-based worker frames.
@@ -198,7 +228,7 @@ in lockstep.
 
 ---
 
-## 5. Lock file fields
+## 6. Lock file fields
 
 `tools/tabula-distro/src/tabula_distro/lock.py` records install-time
 versions for reproducibility. Lock schema version `3` adds:
@@ -216,7 +246,7 @@ staging.
 
 ---
 
-## 6. Changelog
+## 7. Changelog
 
 - **2026-05-05**: Updated for M2 runtime-owned worker protocol and removal of
   kernel-managed plugin stdio lifecycle.

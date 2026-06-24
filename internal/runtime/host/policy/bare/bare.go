@@ -14,9 +14,6 @@ import (
 	"sync"
 	"time"
 
-	bashharness "github.com/bamanoz/tabula/internal/runtime/host/harness/bash"
-	nodeharness "github.com/bamanoz/tabula/internal/runtime/host/harness/node"
-	pythonharness "github.com/bamanoz/tabula/internal/runtime/host/harness/python"
 	"github.com/bamanoz/tabula/internal/runtime/host/policy"
 	runtimewire "github.com/bamanoz/tabula/internal/runtime/wire"
 	workerwire "github.com/bamanoz/tabula/internal/runtime/worker/wire"
@@ -53,16 +50,7 @@ func (p *Policy) Spawn(ctx context.Context, req policy.SpawnReq) (policy.Worker,
 		return nil, err
 	}
 	if req.TargetKind == runtimewire.TargetKindSkill {
-		switch req.HarnessKind {
-		case runtimewire.HarnessKindPython:
-			return pythonharness.New(req)
-		case runtimewire.HarnessKindNode:
-			return nodeharness.New(req)
-		case runtimewire.HarnessKindBash:
-			return bashharness.New(req)
-		default:
-			return nil, fmt.Errorf("bare policy: unsupported skill harness kind %q", req.HarnessKind)
-		}
+		return nil, fmt.Errorf("bare policy: skill targets are prompt-only and cannot be spawned")
 	}
 	cmd, err := p.buildCommand(ctx, req)
 	if err != nil {

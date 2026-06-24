@@ -1042,6 +1042,9 @@ func TestPoolRejectsSkillInvokes(t *testing.T) {
 	if resp.Error == nil || resp.Error.Code != wire.ErrorTargetForbidden {
 		t.Fatalf("expected target_forbidden, got %#v", resp)
 	}
+	if resp.Error.Message != "target skill/skill:testbed-echo is not an invokable plugin target" {
+		t.Fatalf("unexpected error message: %#v", resp.Error)
+	}
 }
 
 func invoke(callID, tenantID, tool string) wire.Invoke {

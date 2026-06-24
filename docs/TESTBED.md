@@ -93,8 +93,8 @@ Put tests next to the bundle:
 ```text
 my-bundle/
   bundle.toml
-  my-skill/
-    SKILL.md
+  my-plugin/
+    plugin.toml
     run.py
   tests/
     testbed.toml
@@ -134,6 +134,10 @@ client.connect_join("testbed-my-suite")
 client.wait_tools({"my_tool"})
 result = client.call_tool("my_tool", {"text": "hello"}).json()
 ```
+
+`client.wait_tools()` and `client.call_tool()` exercise plugin-published tools.
+Instruction-only skills are installed as files but do not appear in the runtime
+tool catalog.
 
 ## Pass Levels
 

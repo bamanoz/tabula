@@ -565,7 +565,16 @@ func (p Plugin) Capability() wire.Capability {
 		State:       wire.CapabilityStateManifestLoaded,
 		Source:      wire.CapabilitySourceManifest,
 		WorkerMode:  p.WorkerMode,
-		HarnessKind: detectHarnessKind(p.Runtime),
+		HarnessKind: detectPluginHarnessKind(p.Runtime),
+	}
+}
+
+func detectPluginHarnessKind(runtime string) wire.HarnessKind {
+	switch strings.TrimSpace(runtime) {
+	case "python":
+		return wire.HarnessKindPython
+	default:
+		return wire.HarnessKindUnknown
 	}
 }
 

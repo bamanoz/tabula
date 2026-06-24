@@ -1,0 +1,15 @@
+id = "my-plugin"
+name = "My Plugin"
+version = "0.1.0"
+runtime = "python"
+entry = "run.py"
+
+[[tools]]
+name = "my_echo"
+description = "Echo text for example tests."
+schema_json = '''{"type":"object","properties":{"text":{"type":"string","description":"Text to echo."}},"required":[]}'''
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"

@@ -15,7 +15,7 @@ func TestBeforeToolCallHookCanModifyToolInput(t *testing.T) {
 		t.Skip("skipping on windows")
 	}
 
-	env := newTestEnvWithSkillTool(t)
+	env := newTestEnvWithPluginTool(t)
 
 	hook := env.connectHook("perm", []HookSubscription{
 		{Event: "before_tool_call", Priority: 100},
@@ -66,7 +66,7 @@ func TestBeforeToolCallHookReceivesToolMeta(t *testing.T) {
 		t.Skip("skipping on windows")
 	}
 
-	env := newTestEnvWithSkillTool(t)
+	env := newTestEnvWithPluginTool(t)
 	hook := env.connectHook("perm", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
 
@@ -103,7 +103,7 @@ func TestBeforeToolCallHookCanSuspendForApprovalAndResume(t *testing.T) {
 		t.Skip("skipping on windows")
 	}
 
-	env := newTestEnvWithSkillTool(t)
+	env := newTestEnvWithPluginTool(t)
 	hook := env.connectHook("approval", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
 	resolvedHook := env.connectHook("approval-recorder", []HookSubscription{{Event: "approval_resolved", Priority: 0}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolCall, TopicToolResult, "tool.suspended", "tool.resumed"})
@@ -157,7 +157,7 @@ func TestSuspendedBeforeToolCallResumesLaterRewriteHookAfterApproval(t *testing.
 		t.Skip("skipping on windows")
 	}
 
-	env := newTestEnvWithSkillTool(t)
+	env := newTestEnvWithPluginTool(t)
 	approval := env.connectHook("approval", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
 	rewriter := env.connectHook("rewriter", []HookSubscription{{Event: "before_tool_call", Priority: 10}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolCall, TopicToolResult, "tool.suspended", "tool.resumed"})
@@ -220,7 +220,7 @@ func TestSuspendedApprovalResendsWhenUIRejoins(t *testing.T) {
 		t.Skip("skipping on windows")
 	}
 
-	env := newTestEnvWithSkillTool(t)
+	env := newTestEnvWithPluginTool(t)
 	hook := env.connectHook("approval", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
 	ui := env.connectAndJoin("ui", "main", []string{TopicExchangeApprove}, []string{TopicExchangeApprove})
@@ -253,7 +253,7 @@ func TestBeforeToolCallHook_InfiniteTimeout_RepliesAfterDelay(t *testing.T) {
 		t.Skip("skipping on windows")
 	}
 
-	env := newTestEnvWithSkillTool(t)
+	env := newTestEnvWithPluginTool(t)
 
 	infinite := 0
 	hook := env.connectHook("approval", []HookSubscription{
@@ -306,7 +306,7 @@ func TestBeforeToolCallHook_InfiniteTimeout_DisconnectBlocks(t *testing.T) {
 		t.Skip("skipping on windows")
 	}
 
-	env := newTestEnvWithSkillTool(t)
+	env := newTestEnvWithPluginTool(t)
 
 	infinite := 0
 	hook := env.connectHook("approval", []HookSubscription{
@@ -361,7 +361,7 @@ func TestBeforeToolCallHookTimeoutThenNextSubscriberDisconnect(t *testing.T) {
 		t.Skip("skipping on windows")
 	}
 
-	env := newTestEnvWithSkillTool(t)
+	env := newTestEnvWithPluginTool(t)
 	permTimeout := 20
 	infinite := 0
 	perm := env.connectHook("hook-permissions", []HookSubscription{
@@ -425,7 +425,7 @@ func TestBeforeToolCallHookTimeoutThenNextSubscriberDisconnect(t *testing.T) {
 }
 
 func TestBeforeToolCallHookBlockCarriesGenericRetryableDetails(t *testing.T) {
-	env := newTestEnvWithSkillTool(t)
+	env := newTestEnvWithPluginTool(t)
 	hook := env.connectHook("policy", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
 
@@ -468,7 +468,7 @@ func TestBeforeToolCallHookSkipsSenderHookSubscription(t *testing.T) {
 		t.Skip("skipping on windows")
 	}
 
-	env := newTestEnvWithSkillTool(t)
+	env := newTestEnvWithPluginTool(t)
 	infinite := 0
 
 	// The same client both subscribes to before_tool_call and sends a tool.call.
@@ -519,7 +519,7 @@ func TestBeforeToolResultHookTimeoutFailsOpenForSmallResult(t *testing.T) {
 		t.Skip("skipping on windows")
 	}
 
-	env := newTestEnvWithSkillTool(t)
+	env := newTestEnvWithPluginTool(t)
 	timeout := 10
 	hook := env.connectHook("tool-results", []HookSubscription{{Event: "before_tool_result", Priority: 100, TimeoutMs: &timeout}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
@@ -549,7 +549,7 @@ func TestBeforeToolResultHookCanRewriteLargeResultFromSpool(t *testing.T) {
 		t.Skip("skipping on windows")
 	}
 
-	env := newTestEnvWithSkillTool(t)
+	env := newTestEnvWithPluginTool(t)
 	hook := env.connectHook("tool-results", []HookSubscription{{Event: "before_tool_result", Priority: 100}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
 	large := strings.Repeat("x", 13000)
@@ -626,7 +626,7 @@ func TestBeforeToolCallHookWritesDispatchAuditEvents(t *testing.T) {
 	}
 
 	home := t.TempDir()
-	env := newTestEnvWithSkillToolHome(t, home)
+	env := newTestEnvWithPluginToolHome(t, home)
 	hook := env.connectHook("perm", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
 
@@ -669,7 +669,7 @@ func TestDispatchHookWritesMissingAuditEvent(t *testing.T) {
 
 func TestDispatchHookWritesTimeoutAuditEvent(t *testing.T) {
 	home := t.TempDir()
-	env := newTestEnvWithSkillToolHome(t, home)
+	env := newTestEnvWithPluginToolHome(t, home)
 	hook := env.connectHook("perm", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
 	defer hook.Close()
 	env.Hub.dispatchHook("before_tool_call", json.RawMessage(`{"tool":"echo_tool","id":"t-timeout","input":{"text":"ok"}}`), "default", "main")

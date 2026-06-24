@@ -149,48 +149,46 @@ Supported worker operations:
 The worker protocol is versioned by the Runtime API / SDK release pair. See
 `docs/PROTOCOL.md` for the current wire shapes.
 
-## Python SDK example
+## Minimal Python worker example
 
-The Phase 3 reference SDK lives in `examples/plugin-sdk-python/`, and the live
-reference plugin is `examples/plugin-hello/`.
+The packaged Python SDK lives in the bundle `_lib` surface. A plugin can also
+implement the worker protocol directly; this is the smallest complete shape:
 
 ```python
-from tabula_plugin_sdk import PluginAPI, run
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import sys
+
+TOOLS = [{"name": "hello_ping", "description": "Return a greeting"}]
 
 
-def configure(api: PluginAPI) -> None:
-    @api.tool(
-        "hello_ping",
-        description="Return a greeting",
-        schema={"type": "object", "properties": {"name": {"type": "string"}}},
-        deadline_ms=5000,
-    )
-    def hello_ping(args, ctx):
-        name = args.get("name") or "world"
-        api.send("hello_plugin_event", {"name": name}, session=ctx.get("session", ""))
-        api.log(
-            "hello_ping_called",
-            metric_name="hello_ping_total",
-            metric_value=1,
-            metric_kind="counter",
-        )
-        return f"hello, {name}"
-
-    @api.on("before_tool_call", priority=50)
-    def before_tool_call(data, _ctx):
-        if data.get("tool") == "hello_ping" and data.get("input", {}).get("name") == "blocked":
-            return {"action": "deny", "reason": "blocked by hello plugin"}
-        return {"action": "ok"}
+def send(frame: dict) -> None:
+    sys.stdout.write(json.dumps(frame, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
 
 
-if __name__ == "__main__":
-    run(configure)
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    frame = json.loads(line)
+    if frame.get("op") == "init":
+        send({"op": "init_ack", "ready": True, "tools": TOOLS, "subscriptions": []})
+    elif frame.get("op") == "call":
+        args = frame.get("args") or {}
+        send({
+            "op": "result",
+            "call_id": frame.get("call_id", ""),
+            "ok": True,
+            "data": {"ok": True, "text": "hello, " + (args.get("name") or "world")},
+        })
+    elif frame.get("op") == "shutdown":
+        break
 ```
 
-The SDK currently exposes the minimal runtime surface used by the live tests:
-`api.tool`, `api.on`, `api.on_shutdown`, `api.send`, `api.log`,
-`api.update_tools`, and `run(configure)`. Future packaged SDK authority moves to
-`tabula-bundles` during the library relocation phase.
+The installed SDK may wrap this protocol with higher-level helpers, but the
+`op`-based frames above are the runtime contract.
 
 ## Hook event replies
 
@@ -215,8 +213,7 @@ before exiting. The kernel owns level-one plugin supervision and kills the
 plugin process group when necessary, but it does not reach into plugin-internal
 state.
 
-`examples/plugin-hello` demonstrates this with `hello_spawn_child` and an
-`api.on_shutdown` cleanup callback.
+Plugins should handle `shutdown` and clean up before exiting.
 
 ## Metrics convention
 
@@ -237,15 +234,8 @@ Telemetry plugins can subscribe to log/bus events and export them elsewhere.
 
 ## Local validation
 
-Run the reference plugin smoke tests:
+Run focused runtime and manifest checks:
 
 ```sh
-scripts/test-plugin-hello.sh
-go test ./internal/kernel/ -run 'TestPluginHello' -count=1 -timeout 30s
-```
-
-For manifest/parser and runtime-level checks:
-
-```sh
-go test ./internal/kernel/plugin/ -count=1
+go test ./internal/runtime/host/manifest ./internal/runtime/host/pool ./internal/runtime/worker/wire -count=1
 ```

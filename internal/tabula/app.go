@@ -1005,51 +1005,6 @@ func isLocalOrigin(origin, requestHost string) bool {
 	return strings.EqualFold(u.Hostname(), reqURL.Hostname())
 }
 
-type skillToolExec struct {
-	Name string `json:"name"`
-	Exec string `json:"exec"`
-}
-
-func parseSkillExecMap(raw json.RawMessage) ([]skillToolExec, error) {
-	var parsed []skillToolExec
-	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return nil, err
-	}
-	return parsed, nil
-}
-
-func validateBootSkillTools(raw json.RawMessage) ([]json.RawMessage, []skillToolExec, error) {
-	var bootTools []json.RawMessage
-	if err := json.Unmarshal(raw, &bootTools); err != nil {
-		return nil, nil, err
-	}
-	parsed, err := parseSkillExecMap(raw)
-	if err != nil {
-		return nil, nil, err
-	}
-	if len(parsed) != len(bootTools) {
-		return nil, nil, fmt.Errorf("skills metadata count mismatch")
-	}
-	seen := make(map[string]int, len(parsed))
-	for i, t := range parsed {
-		name := strings.TrimSpace(t.Name)
-		exec := strings.TrimSpace(t.Exec)
-		if name == "" {
-			return nil, nil, fmt.Errorf("skills[%d].name is required", i)
-		}
-		if exec == "" {
-			return nil, nil, fmt.Errorf("skills[%d].exec is required", i)
-		}
-		if first, ok := seen[name]; ok {
-			return nil, nil, fmt.Errorf("skills[%d].name duplicates skills[%d].name %q", i, first, name)
-		}
-		seen[name] = i
-		parsed[i].Name = name
-		parsed[i].Exec = exec
-	}
-	return bootTools, parsed, nil
-}
-
 // loadEnvFile loads KEY=VALUE entries from a .env file without overriding shell env.
 func loadEnvFile(path string) {
 	f, err := os.Open(path)

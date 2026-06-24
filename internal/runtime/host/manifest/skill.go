@@ -1,18 +1,14 @@
 package manifest
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
-
-	"github.com/bamanoz/tabula/internal/runtime/wire"
 )
 
 const skillTargetPrefix = "skill:"
@@ -21,36 +17,14 @@ const skillTargetPrefix = "skill:"
 // Skill target ids are namespaced as skill:<name> so they cannot collide with plugins
 // in kernel/runtime maps that still key by target id.
 type Skill struct {
-	Name        string           `json:"name"`
-	Description string           `json:"description,omitempty"`
-	Tools       []SkillTool      `json:"tools,omitempty"`
-	RootDir     string           `json:"-"`
-	WorkerMode  wire.WorkerMode  `json:"worker_mode"`
-	HarnessKind wire.HarnessKind `json:"harness_kind"`
-}
-
-// SkillTool is the normalized tool metadata extracted from SKILL.md frontmatter.
-type SkillTool struct {
-	Name        string           `json:"name"`
-	Description string           `json:"description,omitempty"`
-	Schema      json.RawMessage  `json:"schema,omitempty"`
-	Required    []string         `json:"required,omitempty"`
-	Exec        string           `json:"exec"`
-	HarnessKind wire.HarnessKind `json:"harness_kind"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	RootDir     string `json:"-"`
 }
 
 type skillFrontmatter struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Tools       []skillToolRaw `json:"tools"`
-}
-
-type skillToolRaw struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Params      map[string]any `json:"params"`
-	Required    []string       `json:"required"`
-	Exec        string         `json:"exec"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 // LoadSkill reads and validates one SKILL.md file.
@@ -78,43 +52,7 @@ func LoadSkill(path string) (Skill, error) {
 	skill := Skill{
 		Name:        strings.TrimSpace(parsed.Name),
 		Description: strings.TrimSpace(parsed.Description),
-		Tools:       make([]SkillTool, 0, len(parsed.Tools)),
 		RootDir:     filepath.Dir(abs),
-		WorkerMode:  wire.WorkerModeCold,
-		HarnessKind: wire.HarnessKindUnknown,
-	}
-	for i, tool := range parsed.Tools {
-		name := strings.TrimSpace(tool.Name)
-		if name == "" {
-			return Skill{}, fmt.Errorf("tools[%d].name is required", i)
-		}
-		execText := strings.TrimSpace(tool.Exec)
-		if execText == "" {
-			return Skill{}, fmt.Errorf("tools[%d].exec is required", i)
-		}
-		kind := detectHarnessKind(execText)
-		if kind == wire.HarnessKindUnknown {
-			slog.Warn("skip skill tool with unsupported harness kind", "skill", skill.Name, "tool", name, "exec", execText, "path", abs)
-			continue
-		}
-		schema, err := toolSchema(tool.Params, tool.Required)
-		if err != nil {
-			return Skill{}, fmt.Errorf("tools[%d].schema: %w", i, err)
-		}
-		st := SkillTool{
-			Name:        name,
-			Description: strings.TrimSpace(tool.Description),
-			Schema:      schema,
-			Required:    normalizeStrings(tool.Required),
-			Exec:        execText,
-			HarnessKind: kind,
-		}
-		skill.Tools = append(skill.Tools, st)
-		if skill.HarnessKind == wire.HarnessKindUnknown {
-			skill.HarnessKind = kind
-		} else if skill.HarnessKind != kind {
-			skill.HarnessKind = wire.HarnessKindUnknown
-		}
 	}
 	if err := skill.Validate(); err != nil {
 		return Skill{}, fmt.Errorf("skill manifest %s: %w", abs, err)
@@ -126,50 +64,11 @@ func (s Skill) Validate() error {
 	if !pluginIDPattern.MatchString(s.Name) {
 		return fmt.Errorf("invalid skill name %q", s.Name)
 	}
-	for i, tool := range s.Tools {
-		if tool.Name == "" {
-			return fmt.Errorf("tools[%d].name is required", i)
-		}
-		if strings.TrimSpace(tool.Exec) == "" {
-			return fmt.Errorf("tools[%d].exec is required", i)
-		}
-	}
 	return nil
 }
 
 func (s Skill) TargetID() string {
 	return skillTargetPrefix + s.Name
-}
-
-func (s Skill) RawJSON() json.RawMessage {
-	data, _ := json.Marshal(s)
-	return data
-}
-
-func (s Skill) Tool(name string) (SkillTool, bool) {
-	for _, tool := range s.Tools {
-		if tool.Name == name {
-			return tool, true
-		}
-	}
-	return SkillTool{}, false
-}
-
-func (s Skill) Capability() wire.Capability {
-	tools := make([]wire.ToolSpec, 0, len(s.Tools))
-	for _, tool := range s.Tools {
-		tools = append(tools, wire.ToolSpec{Name: tool.Name, Description: tool.Description, Schema: tool.Schema})
-	}
-	sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
-	return wire.Capability{
-		Target:      wire.Target{Kind: wire.TargetKindSkill, ID: s.TargetID()},
-		Tools:       tools,
-		Revision:    1,
-		State:       wire.CapabilityStateManifestLoaded,
-		Source:      wire.CapabilitySourceManifest,
-		WorkerMode:  wire.WorkerModeCold,
-		HarnessKind: s.HarnessKind,
-	}
 }
 
 func extractFrontmatter(text string) (string, error) {
@@ -195,29 +94,7 @@ func parseSkillFrontmatter(frontmatter string) (skillFrontmatter, error) {
 	}
 	name, _ := parsed["name"].(string)
 	description, _ := parsed["description"].(string)
-	rawTools, _ := parsed["tools"].([]any)
-	tools := make([]skillToolRaw, 0, len(rawTools))
-	for i, raw := range rawTools {
-		m, ok := raw.(map[string]any)
-		if !ok {
-			return skillFrontmatter{}, fmt.Errorf("tools[%d] must be a mapping", i)
-		}
-		tool := skillToolRaw{
-			Name:        stringValue(m["name"]),
-			Description: stringValue(m["description"]),
-			Exec:        stringValue(m["exec"]),
-			Required:    stringSliceValue(m["required"]),
-		}
-		if params, ok := m["params"].(map[string]any); ok {
-			tool.Params = params
-		} else if m["params"] == nil {
-			tool.Params = map[string]any{}
-		} else {
-			return skillFrontmatter{}, fmt.Errorf("tools[%d].params must be a mapping", i)
-		}
-		tools = append(tools, tool)
-	}
-	return skillFrontmatter{Name: name, Description: description, Tools: tools}, nil
+	return skillFrontmatter{Name: name, Description: description}, nil
 }
 
 type manifestLine struct {
@@ -454,85 +331,6 @@ func splitTopLevel(value string) []string {
 		parts = append(parts, strings.TrimSpace(current.String()))
 	}
 	return parts
-}
-
-func toolSchema(params map[string]any, required []string) (json.RawMessage, error) {
-	if params == nil {
-		params = map[string]any{}
-	}
-	schema := map[string]any{
-		"type":       "object",
-		"properties": params,
-		"required":   normalizeStrings(required),
-	}
-	raw, err := json.Marshal(schema)
-	if err != nil {
-		return nil, err
-	}
-	return raw, nil
-}
-
-func stringValue(value any) string {
-	if s, ok := value.(string); ok {
-		return strings.TrimSpace(s)
-	}
-	return ""
-}
-
-func stringSliceValue(value any) []string {
-	items, ok := value.([]any)
-	if !ok {
-		return nil
-	}
-	result := make([]string, 0, len(items))
-	for _, item := range items {
-		if s, ok := item.(string); ok {
-			result = append(result, strings.TrimSpace(s))
-		}
-	}
-	return normalizeStrings(result)
-}
-
-func normalizeStrings(items []string) []string {
-	if len(items) == 0 {
-		return []string{}
-	}
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		item = strings.TrimSpace(item)
-		if item == "" {
-			continue
-		}
-		if _, ok := seen[item]; ok {
-			continue
-		}
-		seen[item] = struct{}{}
-		out = append(out, item)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func detectHarnessKind(execText string) wire.HarnessKind {
-	fields := strings.Fields(strings.TrimSpace(execText))
-	if len(fields) == 0 {
-		return wire.HarnessKindUnknown
-	}
-	first := strings.ToLower(filepath.Base(fields[0]))
-	switch first {
-	case "python", "python3", "python3.11", "python3.12", "python3.13":
-		return wire.HarnessKindPython
-	case "bash", "sh":
-		return wire.HarnessKindBash
-	case "node", "nodejs":
-		return wire.HarnessKindNode
-	default:
-		if strings.HasPrefix(first, "node") {
-			return wire.HarnessKindNode
-		}
-		return wire.HarnessKindUnknown
-	}
 }
 
 func skillManifestPaths(root string) ([]string, error) {

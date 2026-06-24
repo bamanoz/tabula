@@ -15,9 +15,9 @@ Tabula has five main concepts:
    containing only kernel transport settings.
 3. **Skills** — prompt/instruction artifacts. They do not publish executable
    tools. Manifest: `SKILL.md` (Markdown + frontmatter).
-4. **Plugins** — long-lived processes with a `register(api)` entry point that
-   subscribe to bus events, register tools dynamically, and own their own
-   lifecycle. Manifest: `plugin.toml`.
+4. **Plugins** — runtime worker processes that subscribe to bus events,
+   publish executable tools, and own their own lifecycle. Manifest:
+   `plugin.toml`.
 5. **Distro** — a packaged runtime surface: templates, runtime config, and a set
    of bundles (which themselves are mixed collections of skills and plugins).
 
@@ -138,8 +138,8 @@ subscriber identity that received the hook; another client cannot answer a hook
 by reusing its id.
 
 The shared Python wrapper for low-level clients is
-`tabula_plugin_sdk.kernel_client`. Plugins should use the runtime-owned
-`register(api)` worker API instead.
+`tabula_plugin_sdk.kernel_client`. Plugins should use the runtime worker
+protocol through `tabula-runtime` instead of opening kernel WebSockets directly.
 
 ## Boot
 
@@ -274,10 +274,10 @@ user-invocable: true
 
 ### Plugin (`plugin.toml`)
 
-A **long-lived** process with a `register(api)` entry point. Plugins:
+A runtime worker process. Plugins:
 
-- subscribe to bus events (`api.on(...)`),
-- register tools dynamically (`api.registerTool(...)`),
+- subscribe to bus events through worker `event` frames,
+- publish tools with `init_ack` and `tools_updated`,
 - spawn and supervise their own children under their own process group,
 - hold state for as long as they run.
 
@@ -287,7 +287,7 @@ Manifest is TOML; an optional `README.md` provides human docs (not parsed).
 id = "mcp"
 name = "MCP bridge"
 version = "0.3.0"
-runtime = "python"      # python | node
+runtime = "python"      # python
 entry = "run.py"
 tags = ["mcp_bridge"]   # optional, free strings, kernel-ignored
 ```

@@ -607,13 +607,13 @@ func TestHookNone_MessagePassesThrough(t *testing.T) {
 
 // --- Universal before_tool_call tests ---
 
-// newTestEnvWithSkillTool creates a test env with one runtime-hosted plugin tool.
-func newTestEnvWithSkillTool(t *testing.T) *testEnv {
+// newTestEnvWithPluginTool creates a test env with one runtime-hosted plugin tool.
+func newTestEnvWithPluginTool(t *testing.T) *testEnv {
 	t.Helper()
-	return newTestEnvWithSkillToolHome(t, t.TempDir())
+	return newTestEnvWithPluginToolHome(t, t.TempDir())
 }
 
-func newTestEnvWithSkillToolHome(t *testing.T, home string) *testEnv {
+func newTestEnvWithPluginToolHome(t *testing.T, home string) *testEnv {
 	t.Helper()
 	toolsJSON := json.RawMessage(`[{"name":"echo_tool","description":"echo","params":{"text":{"type":"string","description":"text"},"command":{"type":"string","description":"command text"}},"required":[]}]`)
 	hub := NewHub(toolsJSON, 3, 5, nil)
@@ -638,11 +638,11 @@ func newTestEnvWithSkillToolHome(t *testing.T, home string) *testEnv {
 	return &testEnv{Hub: hub, Server: server, t: t, Token: "test-kernel-token"}
 }
 
-func TestBeforeToolCallHookFiresForDynamicSkillTool(t *testing.T) {
+func TestBeforeToolCallHookFiresForDynamicPluginTool(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on windows")
 	}
-	env := newTestEnvWithSkillTool(t)
+	env := newTestEnvWithPluginTool(t)
 
 	hook := env.connectHook("perm", []HookSubscription{
 		{Event: "before_tool_call", Priority: 100},
@@ -691,8 +691,8 @@ func TestBeforeToolCallHookFiresForDynamicSkillTool(t *testing.T) {
 	}
 }
 
-func TestBeforeToolCallHookFiresForSkillTool(t *testing.T) {
-	env := newTestEnvWithSkillTool(t)
+func TestBeforeToolCallHookFiresForPluginTool(t *testing.T) {
+	env := newTestEnvWithPluginTool(t)
 
 	hook := env.connectHook("perm", []HookSubscription{
 		{Event: "before_tool_call", Priority: 100},
@@ -740,8 +740,8 @@ func TestBeforeToolCallHookFiresForSkillTool(t *testing.T) {
 	}
 }
 
-func TestBeforeToolCallHookCanBlockDynamicSkillTool(t *testing.T) {
-	env := newTestEnvWithSkillTool(t)
+func TestBeforeToolCallHookCanBlockDynamicPluginTool(t *testing.T) {
+	env := newTestEnvWithPluginTool(t)
 
 	hook := env.connectHook("perm", []HookSubscription{
 		{Event: "before_tool_call", Priority: 100},
@@ -795,8 +795,8 @@ func TestBeforeToolCallHookCanBlockDynamicSkillTool(t *testing.T) {
 	}
 }
 
-func TestBeforeToolCallHookCanBlockSkillTool(t *testing.T) {
-	env := newTestEnvWithSkillTool(t)
+func TestBeforeToolCallHookCanBlockPluginTool(t *testing.T) {
+	env := newTestEnvWithPluginTool(t)
 
 	hook := env.connectHook("perm", []HookSubscription{
 		{Event: "before_tool_call", Priority: 100},
@@ -848,7 +848,7 @@ func TestBeforeToolCallHookCanBlockSkillTool(t *testing.T) {
 // --- Hook classification tests ---
 
 func TestSecurityHookTimeoutBlocksToolCall(t *testing.T) {
-	env := newTestEnvWithSkillTool(t)
+	env := newTestEnvWithPluginTool(t)
 
 	// Hook that never responds on before_tool_call (security event)
 	_ = env.connectHook("slow-perm", []HookSubscription{

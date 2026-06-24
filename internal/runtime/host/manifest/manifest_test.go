@@ -430,25 +430,6 @@ func TestLoadDirsDiscoversSkillsAndReportsMetadata(t *testing.T) {
 	writeSkill(t, filepath.Join(dir, "skills", "timer", "SKILL.md"), `---
 name: timer
 description: "Short timers"
-tools:
-  - name: timer_start
-    description: "Start a timer"
-    params:
-      after: { type: string }
-      message: { type: string }
-    required: [after, message]
-    exec: "python3 skills/timer/scripts/run.py tool timer_start"
-  - name: timer_list
-    description: "List timers"
-    params: {}
-    required: []
-    exec: "python3 skills/timer/scripts/run.py tool timer_list"
-  - name: timer_cancel
-    description: "Cancel timer"
-    params:
-      id: { type: string }
-    required: [id]
-    exec: "python3 skills/timer/scripts/run.py tool timer_cancel"
 ---
 `)
 
@@ -460,7 +441,7 @@ tools:
 	if !ok {
 		t.Fatal("expected timer skill")
 	}
-	if skill.WorkerMode != wire.WorkerModeCold || skill.HarnessKind != wire.HarnessKindPython || len(skill.Tools) != 3 {
+	if skill.Name != "timer" || skill.Description != "Short timers" {
 		t.Fatalf("unexpected skill manifest: %#v", skill)
 	}
 	caps := idx.Capabilities()
@@ -475,12 +456,6 @@ func TestLoadSearchDirsReadsExplicitSkillDirs(t *testing.T) {
 	writeSkill(t, filepath.Join(skillDir, "cold", "SKILL.md"), `---
 name: cold
 description: "Cold skill"
-tools:
-  - name: cold_tool
-    description: "Cold"
-    params: {}
-    required: []
-    exec: "python3 ${SKILL_DIR}/scripts/run.py tool cold_tool"
 ---
 `)
 
@@ -502,12 +477,6 @@ func TestLoadSearchDirsFollowsSymlinkedSkillDirectories(t *testing.T) {
 	writeSkill(t, filepath.Join(source, "cold", "SKILL.md"), `---
 name: cold
 description: "Cold skill"
-tools:
-  - name: cold_tool
-    description: "Cold"
-    params: {}
-    required: []
-    exec: "python3 ${SKILL_DIR}/scripts/run.py tool cold_tool"
 ---
 `)
 	installed := t.TempDir()
@@ -533,12 +502,6 @@ func TestLoadDirsSkipsMalformedSkillsAndKeepsOthers(t *testing.T) {
 	writeSkill(t, filepath.Join(dir, "skills", "good", "SKILL.md"), `---
 name: good
 description: "Good skill"
-tools:
-  - name: good_tool
-    description: "Good"
-    params: {}
-    required: []
-    exec: "python3 skills/good/scripts/run.py tool good_tool"
 ---
 `)
 	writeSkill(t, filepath.Join(dir, "skills", "bad", "SKILL.md"), `---
@@ -576,12 +539,28 @@ description: >
 	if err != nil {
 		t.Fatalf("LoadSkill: %v", err)
 	}
-	if len(skill.Tools) != 0 {
-		t.Fatalf("expected zero tools: %#v", skill)
+	if skill.Name != "guide" || skill.TargetID() != "skill:guide" {
+		t.Fatalf("unexpected skill: %#v", skill)
 	}
-	cap := skill.Capability()
-	if cap.Target.ID != "skill:guide" || len(cap.Tools) != 0 || cap.WorkerMode != wire.WorkerModeCold {
-		t.Fatalf("unexpected zero-tool capability: %#v", cap)
+}
+
+func TestLoadSkillIgnoresLegacyToolFrontmatter(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "skills", "legacy", "SKILL.md")
+	writeSkill(t, path, `---
+name: legacy
+description: "Legacy tool metadata should be ignored"
+tools:
+  - name: old_tool
+    exec: "python3 run.py"
+---
+`)
+	skill, err := LoadSkill(path)
+	if err != nil {
+		t.Fatalf("LoadSkill: %v", err)
+	}
+	if skill.Name != "legacy" || skill.Description != "Legacy tool metadata should be ignored" {
+		t.Fatalf("unexpected skill: %#v", skill)
 	}
 }
 
@@ -606,12 +585,6 @@ func TestStoreReloadPicksUpAddedAndRemovedSkills(t *testing.T) {
 	writeSkill(t, filepath.Join(dir, "skills", "one", "SKILL.md"), `---
 name: one
 description: "One"
-tools:
-  - name: one_tool
-    description: "One"
-    params: {}
-    required: []
-    exec: "python3 skills/one/scripts/run.py tool one_tool"
 ---
 `)
 	store, err := NewStore([]string{dir})
@@ -627,12 +600,6 @@ tools:
 	writeSkill(t, filepath.Join(dir, "skills", "two", "SKILL.md"), `---
 name: two
 description: "Two"
-tools:
-  - name: two_tool
-    description: "Two"
-    params: {}
-    required: []
-    exec: "python3 skills/two/scripts/run.py tool two_tool"
 ---
 `)
 	if err := store.Reload(); err != nil {

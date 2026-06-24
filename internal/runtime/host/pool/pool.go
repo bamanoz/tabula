@@ -177,10 +177,8 @@ func (p *Pool) Invoke(ctx context.Context, in wire.Invoke) (result wire.InvokeRe
 			}
 			return failed(in.CallID, wire.ErrorCancelled, "invoke cancelled"), nil
 		}
-	case wire.TargetKindSkill:
-		return failed(in.CallID, wire.ErrorTargetForbidden, "skill targets are prompt-only and cannot be invoked"), nil
 	default:
-		return failed(in.CallID, wire.ErrorTargetUnknown, fmt.Sprintf("target %s/%s is not hosted by runtime", in.Target.Kind, in.Target.ID)), nil
+		return failed(in.CallID, wire.ErrorTargetForbidden, fmt.Sprintf("target %s/%s is not an invokable plugin target", in.Target.Kind, in.Target.ID)), nil
 	}
 }
 
@@ -222,12 +220,12 @@ func (p *Pool) HookEvent(ctx context.Context, in wire.HookEvent) (*wire.HookEven
 		return nil, errors.New(safeWorkerErrorMessage("worker initialization failed", err))
 	}
 	reply, err := worker.HookEvent(ctx, workerwire.WorkerEvent{
-		CallID:    in.CallID,
-		Event:     in.Event,
-		ReplyMode: workerwire.ReplyMode(in.ReplyMode),
-		SessionID: in.SessionID,
+		CallID:            in.CallID,
+		Event:             in.Event,
+		ReplyMode:         workerwire.ReplyMode(in.ReplyMode),
+		SessionID:         in.SessionID,
 		TurnCorrelationID: in.TurnCorrelationID,
-		Data:      in.Data,
+		Data:              in.Data,
 	})
 	if err != nil {
 		return nil, errors.New(safeWorkerErrorMessage("worker hook event failed", err))
@@ -369,71 +367,6 @@ func (p *Pool) pluginTool(tenantID string, plugin manifest.Plugin, name string) 
 		ExecutionGroup:      spec.ExecutionGroup,
 		ConflictsWithGroups: append([]string(nil), spec.ConflictsWithGroups...),
 	}, true
-}
-
-func (p *Pool) invokeSkill(ctx context.Context, skill manifest.Skill, in wire.Invoke) wire.InvokeResult {
-	if !p.targetHasTool(in.TenantID, in.Target.ID, in.Tool) {
-		return failed(in.CallID, wire.ErrorToolNotFound, fmt.Sprintf("tool %q not found on target %q", in.Tool, in.Target.ID))
-	}
-	release, err := p.acquireColdWorkerSlot(ctx, in.TenantID)
-	if err != nil {
-		if errors.Is(err, errColdWorkerBusy) {
-			return failed(in.CallID, wire.ErrorRuntimeBusy, fmt.Sprintf("runtime busy: tenant %q reached %d concurrent cold workers", in.TenantID, p.coldWorkerLimit(in.TenantID)))
-		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			return failed(in.CallID, wire.ErrorTimeout, "invoke timed out")
-		}
-		if errors.Is(err, context.Canceled) {
-			return failed(in.CallID, wire.ErrorCancelled, "invoke cancelled")
-		}
-		return failed(in.CallID, wire.ErrorInternal, err.Error())
-	}
-	defer release()
-	worker, err := p.policy.Spawn(ctx, policy.SpawnReq{
-		KernelID:    p.kernelID,
-		TenantID:    in.TenantID,
-		TargetID:    in.Target.ID,
-		TargetKind:  wire.TargetKindSkill,
-		HarnessKind: skill.HarnessKind,
-		Runtime:     string(skill.HarnessKind),
-		Entry:       "SKILL.md",
-		Manifest:    skill.RawJSON(),
-		Env:         p.spawnEnv(in.TenantID),
-		WorkingDir:  skill.RootDir,
-		Mode:        policy.SpawnModeCold,
-	})
-	if err != nil {
-		return failed(in.CallID, wire.ErrorInternal, err.Error())
-	}
-	defer func() {
-		_ = worker.Shutdown(context.Background())
-		_, _ = worker.Wait()
-	}()
-	if _, err := worker.Init(ctx, workerwire.WorkerInit{Op: workerwire.OpInit, KernelID: p.kernelID, TenantID: in.TenantID, TargetID: in.Target.ID, Manifest: skill.RawJSON()}); err != nil {
-		return failed(in.CallID, wire.ErrorInternal, err.Error())
-	}
-	result, err := worker.Call(ctx, workerwire.WorkerCall{Op: workerwire.OpCall, CallID: in.CallID, Tool: in.Tool, Args: in.Args, SessionID: in.SessionID, TurnCorrelationID: in.TurnCorrelationID})
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return failed(in.CallID, wire.ErrorTimeout, "invoke timed out")
-		}
-		if errors.Is(err, context.Canceled) {
-			return failed(in.CallID, wire.ErrorCancelled, "invoke cancelled")
-		}
-		return failed(in.CallID, wire.ErrorInternal, err.Error())
-	}
-	if !result.OK {
-		code := wire.ErrorInternal
-		message := "skill call failed"
-		if result.Error != nil {
-			message = result.Error.Message
-			if wire.IsErrorCode(wire.ErrorCode(result.Error.Code)) {
-				code = wire.ErrorCode(result.Error.Code)
-			}
-		}
-		return failed(in.CallID, code, message)
-	}
-	return wire.InvokeResult{Op: wire.OpInvokeResult, CallID: in.CallID, OK: true, Data: append(json.RawMessage(nil), result.Data...)}
 }
 
 func (p *Pool) invokeColdPlugin(ctx context.Context, plugin manifest.Plugin, in wire.Invoke) wire.InvokeResult {
