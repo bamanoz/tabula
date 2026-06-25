@@ -34,6 +34,22 @@ class SessionsPluginSmoke(unittest.TestCase):
             info = client.call_tool("session_info", {"session": "testbed-sessions"}, timeout=10).json()
             self.assertEqual(info.get("session"), "testbed-sessions")
 
+    def test_kernel_sessions_snapshot_exposes_liveness_fields(self):
+        client = TestbedClient(self.url, name="testbed-session-liveness")
+        client.connect_join(
+            "testbed-session-liveness",
+            sends=["message.user", "tool.call", "kernel.sessions.snapshot"],
+            receives=["session.init", "message.user", "tool.result", "error", "kernel.sessions.snapshot"],
+        )
+        with client:
+            client._send({"type": "request", "topic": "kernel.sessions.snapshot", "id": "liveness-snapshot"})
+            reply = client.recv(type="reply", timeout=10)
+        sessions = reply.get("data") or {}
+        info = sessions.get("default/testbed-session-liveness") or sessions.get("testbed-session-liveness") or {}
+        self.assertIn("active_tool_calls", info)
+        self.assertIn("restart_observations", info)
+        self.assertIn("stuck_suspended", info)
+
     def test_hook_dispatch_audit_reads_recent_events(self):
         session = "testbed-hook-audit"
         ledger_dir = Path(self.tabula_home) / "data" / "sessions" / session

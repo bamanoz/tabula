@@ -109,6 +109,10 @@ func (h *Hub) queueMessagePlan(sender *Client, msg *Message, plan messagePlan) b
 func (h *Hub) handleUserMessage(sender *Client, msg *Message) {
 	msg.Meta, _ = ensureTurnCorrelationMeta(msg.Meta)
 	plan := h.buildMessagePlan(sender, msg)
+	if !plan.blocked && h.sessionStuckSuspended(plan.tenantID, plan.targetSession) {
+		sender.SendMsg(&Message{Type: string(MsgError), Text: "session suspended_stuck"})
+		return
+	}
 	if !plan.blocked && h.shouldStartSessionTurn(sender, plan.tenantID, plan.targetSession) {
 		if !h.tryBeginSessionTurn(plan.tenantID, plan.targetSession) {
 			if h.queueMessagePlan(sender, msg, plan) {
@@ -120,6 +124,14 @@ func (h *Hub) handleUserMessage(sender *Client, msg *Message) {
 		}
 	}
 	h.applyMessagePlan(sender, msg, plan)
+}
+
+func (h *Hub) sessionStuckSuspended(tenantID, session string) bool {
+	if h == nil || h.sessions == nil || session == "" {
+		return false
+	}
+	sess, ok := h.sessions.Get(session, tenantID)
+	return ok && sess.IsStuckSuspended()
 }
 
 func (h *Hub) handleTurnSteer(sender *Client, msg *Message) {

@@ -337,7 +337,7 @@ Claude Code combines several memory channels:
 Tabula has:
 
 - project prompt files through distro builders;
-- memory bundles backed by MemPalace;
+- MemPalace bundles for persistent memory;
 - skills and persistent memory tools;
 - driver-side compaction summaries.
 

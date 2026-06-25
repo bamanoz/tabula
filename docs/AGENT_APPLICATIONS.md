@@ -110,16 +110,16 @@ Use `.tabula/local.toml` for machine-specific values. Do not commit this file.
 host = "makbook.local"
 user = "mak"
 
-[memory]
-personal_path = "/Users/mak/.tabula/shared-memory/personal"
+[mempalace]
+personal_path = "/Users/mak/.tabula/shared-mempalace/personal"
 ```
 
 Reference local values from the manifest:
 
 ```toml
-[values.memory]
+[values.mempalace]
 mode = "shared"
-path = "${local.memory.personal_path}"
+path = "${local.mempalace.personal_path}"
 ```
 
 Secrets should use environment variables, the local secret store, or local-only
@@ -169,22 +169,22 @@ materializer output, and missing/stale issues.
 Claw memory is tenant-local by default:
 
 ```toml
-[values.memory]
+[values.mempalace]
 mode = "project"
 ```
 
 The materializer writes each memory plugin to:
 
 ```text
-$TABULA_HOME/tenants/<app-id>/state/plugins/memory
+$TABULA_HOME/tenants/<app-id>/state/plugins/mempalace
 ```
 
 Shared memory is explicit and distro/plugin-owned:
 
 ```toml
-[values.memory]
+[values.mempalace]
 mode = "shared"
-path = "${local.memory.personal_path}"
+path = "${local.mempalace.personal_path}"
 ```
 
 Multiple apps can point at the same shared path when that is desired.
@@ -195,7 +195,7 @@ Multiple applications can run against one kernel when each app has its own
 tenant id and runtime catalog surface. The local runtime config contains one
 `[[tenant]]` catalog per app, and reload coalesces rapid app updates by reloading
 the full local tenant set. Duplicate plugin ids such as `fs`, `exec`, and
-`memory-save` are scoped by tenant.
+`mempalace-save` are scoped by tenant.
 
 Installed coverage verifies two live Claw apps in one kernel with isolated
 `fs_write`/`fs_read`, tenant-specific `exec` cwd, project memory for one app, and

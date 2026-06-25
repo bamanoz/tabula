@@ -12,7 +12,7 @@ metadata, and refreshed the app tenant's runtime surface.
 The materializer is where a distro maps opaque `[values]` into tenant-local
 config, prompt/boot metadata, plugin config, client config, and state defaults.
 The generic installer must not interpret distro-specific names such as
-`values.workspace`, `values.prompt`, `values.tools`, or `values.memory`.
+`values.workspace`, `values.prompt`, `values.tools`, or `values.mempalace`.
 
 ## Distro Declaration
 

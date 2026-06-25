@@ -210,7 +210,7 @@ Smallest extension units.
   `tabula-guide`, `skill-contract`.
 - **Plugin** (`plugin.toml`): runtime worker process; subscribes to events;
   owns executable tools; has state. Examples: `mcp`,
-  `hook-permissions`, `drivers/driver`, `timer`, `memory-save`, `code/git`.
+  `hook-permissions`, `drivers/driver`, `timer`, `mempalace-save`, `code/git`.
 
 See [SKILL_AUTHORING.md](SKILL_AUTHORING.md) and
 [PLUGIN_AUTHORING.md](PLUGIN_AUTHORING.md).

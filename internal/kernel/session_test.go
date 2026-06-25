@@ -1,6 +1,7 @@
 package kernel
 
 import (
+	"log/slog"
 	"testing"
 )
 
@@ -35,6 +36,75 @@ func TestSessionLifecycle(t *testing.T) {
 	s.RemoveClient("bob")
 	if s.State != SessionIdle {
 		t.Fatalf("session with no clients should be idle, got %s", s.State)
+	}
+}
+
+func TestSessionRestartObservationSuspendsAfterThreshold(t *testing.T) {
+	hub := NewHub(nil, 0, 0, slog.Default())
+	home := t.TempDir()
+	store := NewDiskSessionStore(home)
+	hub.SetSessionStore(store)
+
+	previous := newSession("stuck", "default")
+	previous.AddClient("driver")
+	if !previous.BeginTurn() {
+		t.Fatal("expected previous turn to begin")
+	}
+	previous.restartObservations = stuckSessionRestartThreshold - 1
+	if err := store.Save(previous); err != nil {
+		t.Fatalf("save previous session: %v", err)
+	}
+
+	next := newSession("stuck", "default")
+	hub.observePersistedSessionRestart(next)
+
+	if !next.IsStuckSuspended() {
+		t.Fatal("session should be stuck suspended at threshold")
+	}
+	if next.BeginTurn() {
+		t.Fatal("stuck suspended session must not start turns")
+	}
+	if next.RestartObservations() != stuckSessionRestartThreshold {
+		t.Fatalf("unexpected restart observations: %d", next.RestartObservations())
+	}
+}
+
+func TestSessionRestartObservationIgnoresIdleSnapshot(t *testing.T) {
+	hub := NewHub(nil, 0, 0, slog.Default())
+	store := NewDiskSessionStore(t.TempDir())
+	hub.SetSessionStore(store)
+
+	previous := newSession("idle", "default")
+	previous.restartObservations = stuckSessionRestartThreshold - 1
+	if err := store.Save(previous); err != nil {
+		t.Fatalf("save previous session: %v", err)
+	}
+
+	next := newSession("idle", "default")
+	hub.observePersistedSessionRestart(next)
+
+	if next.IsStuckSuspended() {
+		t.Fatal("idle snapshot must not suspend session")
+	}
+	if next.RestartObservations() != 0 {
+		t.Fatalf("idle snapshot should reset observations, got %d", next.RestartObservations())
+	}
+}
+
+func TestSessionCancelClearsStuckSuspension(t *testing.T) {
+	s := newSession("stuck", "default")
+	s.observeRestart(true, stuckSessionRestartThreshold-1, stuckSessionRestartThreshold)
+	if !s.IsStuckSuspended() {
+		t.Fatal("expected stuck suspended session")
+	}
+	if !s.RequestCancel() {
+		t.Fatal("cancel should clear stuck suspension")
+	}
+	if s.IsStuckSuspended() {
+		t.Fatal("stuck suspension should be cleared")
+	}
+	if s.RestartObservations() != 0 {
+		t.Fatalf("restart observations should reset, got %d", s.RestartObservations())
 	}
 }
 

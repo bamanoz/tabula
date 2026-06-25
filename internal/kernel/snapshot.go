@@ -16,15 +16,18 @@ type snapshotProcessInfo struct {
 }
 
 type snapshotSessionInfo struct {
-	TenantID        string                `json:"tenant_id"`
-	State           SessionState          `json:"state"`
-	CreatedAt       string                `json:"created_at"`
-	LastActiveAt    string                `json:"last_active_at"`
-	Busy            bool                  `json:"busy"`
-	CancelRequested bool                  `json:"cancel_requested"`
-	PendingInputs   int                   `json:"pending_inputs"`
-	Clients         []snapshotClientInfo  `json:"clients"`
-	Processes       []snapshotProcessInfo `json:"processes"`
+	TenantID            string                `json:"tenant_id"`
+	State               SessionState          `json:"state"`
+	CreatedAt           string                `json:"created_at"`
+	LastActiveAt        string                `json:"last_active_at"`
+	Busy                bool                  `json:"busy"`
+	CancelRequested     bool                  `json:"cancel_requested"`
+	PendingInputs       int                   `json:"pending_inputs"`
+	ActiveToolCalls     int                   `json:"active_tool_calls"`
+	RestartObservations int                   `json:"restart_observations"`
+	StuckSuspended      bool                  `json:"stuck_suspended"`
+	Clients             []snapshotClientInfo  `json:"clients"`
+	Processes           []snapshotProcessInfo `json:"processes"`
 }
 
 type snapshotClientInfo struct {
@@ -71,15 +74,18 @@ func (h *Hub) SnapshotSessions() []byte {
 	for _, sess := range h.sessions.All() {
 		sess.mu.RLock()
 		info := &snapshotSessionInfo{
-			TenantID:        sess.TenantID,
-			State:           sess.State,
-			CreatedAt:       sess.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
-			LastActiveAt:    sess.LastActiveAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
-			Busy:            sess.inflightTurn,
-			CancelRequested: sess.cancelRequested,
-			PendingInputs:   len(sess.pendingInputs),
-			Clients:         []snapshotClientInfo{},
-			Processes:       []snapshotProcessInfo{},
+			TenantID:            sess.TenantID,
+			State:               sess.State,
+			CreatedAt:           sess.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			LastActiveAt:        sess.LastActiveAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			Busy:                sess.inflightTurn,
+			CancelRequested:     sess.cancelRequested,
+			PendingInputs:       len(sess.pendingInputs),
+			ActiveToolCalls:     sess.activeToolCalls,
+			RestartObservations: sess.restartObservations,
+			StuckSuspended:      sess.stuckSuspended,
+			Clients:             []snapshotClientInfo{},
+			Processes:           []snapshotProcessInfo{},
 		}
 		sess.mu.RUnlock()
 		for _, c := range h.sessionClients(sess.TenantID, sess.ID) {

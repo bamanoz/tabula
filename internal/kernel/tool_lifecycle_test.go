@@ -85,6 +85,8 @@ type memoryToolLifecycleStore struct {
 
 func (s *memoryToolLifecycleStore) Save(*Session) error { return nil }
 
+func (s *memoryToolLifecycleStore) Load(string, string) (*sessionFile, error) { return nil, nil }
+
 func (s *memoryToolLifecycleStore) Delete(string, string) error { return nil }
 
 func (s *memoryToolLifecycleStore) AppendToolLifecycle(_ string, _ string, event toolLifecycleEvent) error {

@@ -13,9 +13,9 @@ Schema (all sections optional; absent file = empty config, legacy behavior):
     source = "git+https://github.com/bamanoz/tabula-bundles.git@main"
 
     [[bundles]]
-    name       = "memory"
-    source     = "source:tabula-bundles#path=memory"
-    components = ["memory-save", "memory-search"] # optional allowlist
+    name       = "mempalace"
+    source     = "source:tabula-bundles#path=mempalace"
+    components = ["mempalace-save", "mempalace-search"] # optional allowlist
     override   = false                            # explicit conflict override
 
     [[skills]]

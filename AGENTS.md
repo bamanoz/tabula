@@ -25,6 +25,10 @@ and shared development tooling. Distro-specific product policy belongs in
   `config/plugins/<plugin-id>/config.toml`, and installer-compiled tenant
   `tenants/<tenant>/config/plugins/<plugin-id>/config.toml`; do not add new
   `plugin.toml` runtime config blocks.
+- Keep `tabula-guide` in `tabula-bundles/base/tabula-guide` current whenever
+  runtime layout, config semantics, tool access, skills, plugins, tenants,
+  installation, or troubleshooting behavior changes. This guide is the primary
+  installed reference that lets agents understand and debug Tabula itself.
 
 ## No Legacy / No Backward Compatibility
 

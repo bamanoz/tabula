@@ -321,9 +321,11 @@ def compile_plugin_configs(home: Path, tenant_dir: Path) -> tuple[str, ...]:
         defaults_path = plugin_dir / "defaults.toml"
         if not defaults_path.is_file():
             continue
-        merged = _merge_toml(
+        schema = _plugin_config_schema(home, plugin_dir.name)
+        merged = _merge_component_toml(
             _read_toml(defaults_path),
             _read_toml(home / "config" / "plugins" / plugin_dir.name / "config.toml"),
+            schema,
         )
         config_path = plugin_dir / "config.toml"
         if merged:
@@ -370,6 +372,57 @@ def _merge_toml(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
             continue
         merged[str(key)] = _clone_toml(value)
     return merged
+
+
+def _merge_component_toml(base: dict[str, Any], overlay: dict[str, Any], schema: dict[str, str]) -> dict[str, Any]:
+    merged = _clone_toml(base)
+    replace_keys = _replace_keys(overlay.get("__replace"))
+    for key, value in overlay.items():
+        if key == "__replace":
+            continue
+        existing = merged.get(key)
+        if key not in replace_keys and schema.get(str(key)) in {"string_list", "int_list"} and isinstance(existing, list) and isinstance(value, list):
+            merged[str(key)] = _prepend_unique(value, existing)
+            continue
+        if key not in replace_keys and isinstance(existing, dict) and isinstance(value, dict):
+            merged[str(key)] = _merge_toml(existing, value)
+            continue
+        merged[str(key)] = _clone_toml(value)
+    return merged
+
+
+def _plugin_config_schema(home: Path, plugin_id: str) -> dict[str, str]:
+    data = _read_toml(home / "plugins" / plugin_id / "plugin.schema.toml")
+    entries: dict[str, str] = {}
+    for key, value in data.items():
+        if not isinstance(key, str) or not key.startswith("entry.") or not isinstance(value, dict):
+            continue
+        field = key.split(".", 1)[1]
+        field_type = value.get("type")
+        if isinstance(field_type, str):
+            entries[field] = field_type
+    entry = data.get("entry")
+    if isinstance(entry, dict):
+        for field, value in entry.items():
+            if isinstance(field, str) and isinstance(value, dict) and isinstance(value.get("type"), str):
+                entries[field] = value["type"]
+    return entries
+
+
+def _replace_keys(value: Any) -> set[str]:
+    if isinstance(value, str):
+        return {value} if value else set()
+    if isinstance(value, list):
+        return {item for item in value if isinstance(item, str) and item}
+    return set()
+
+
+def _prepend_unique(incoming: list[Any], existing: list[Any]) -> list[Any]:
+    result = [_clone_toml(item) for item in incoming]
+    for item in existing:
+        if item not in result:
+            result.append(_clone_toml(item))
+    return result
 
 
 def _resolve_distro_source(value: str, base_dir: Path, home: Path, *, offline: bool) -> tuple[Path, str]:

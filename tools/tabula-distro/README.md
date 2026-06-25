@@ -32,8 +32,8 @@ id = "tabula.claw"
 name = "claw"
 
 [[bundles]]
-name   = "memory"
-source = "git+https://github.com/bamanoz/tabula-bundles.git@main#path=memory"
+name   = "mempalace"
+source = "git+https://github.com/bamanoz/tabula-bundles.git@main#path=mempalace"
 
 [[bundles]]
 name   = "caveman"

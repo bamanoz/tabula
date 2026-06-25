@@ -23,6 +23,9 @@ class FSPluginSmoke(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.workspace_root = Path(cls.tabula_home) / "workspace-root"
         cls.workspace_root.mkdir(parents=True, exist_ok=True)
+        cls.shared_root = Path(cls.tabula_home) / "shared-skill-root"
+        cls.shared_root.mkdir(parents=True, exist_ok=True)
+        (cls.shared_root / "guide.txt").write_text("shared skill root\n", encoding="utf-8")
         env = os.environ.copy()
         env["TABULA_HOME"] = cls.tabula_home
         subprocess.run(
@@ -38,6 +41,9 @@ class FSPluginSmoke(unittest.TestCase):
             'roots = ["${project_root}"]\ndeny_globs = ["**/.env", "blocked", "blocked/**"]\nmax_read_bytes = 1048576\nfollow_symlinks = false\n',
             encoding="utf-8",
         )
+        global_config = Path(cls.tabula_home) / "config" / "global.toml"
+        existing = global_config.read_text(encoding="utf-8") if global_config.is_file() else ""
+        global_config.write_text(existing + f'\n[plugins.fs]\nroots = ["{cls.shared_root}"]\n', encoding="utf-8")
 
     def make_client(self) -> TestbedClient:
         client = TestbedClient(self.url, name="testbed-fs")
@@ -149,6 +155,16 @@ class FSPluginSmoke(unittest.TestCase):
             self.call_json(client, "fs_write", {"path": str(after), "content": "after"})
             denied = client.call_tool("fs_read", {"path": str(before)}, timeout=10)
             self.assertIn("path is outside configured roots", denied.output)
+
+    def test_global_plugin_roots_compose_with_tenant_workspace_root(self) -> None:
+        with self.make_client() as client:
+            client.wait_tools({"fs_read", "fs_write"}, session="testbed-fs", tenant_id="default")
+            relative = self.workspace_root / "relative.txt"
+            self.call_json(client, "fs_write", {"path": "relative.txt", "content": "workspace default"})
+            self.assertEqual(relative.read_text(encoding="utf-8"), "workspace default")
+
+            shared = self.call_json(client, "fs_read", {"path": str(self.shared_root / "guide.txt")})
+            self.assertEqual(shared, {"content": "shared skill root\n", "truncated": False})
 
 
 def main() -> int:

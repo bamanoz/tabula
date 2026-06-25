@@ -766,8 +766,6 @@ def main(argv: list[str] | None = None) -> int:
         log("==> Generating concrete testbed distro")
         run(generate_args)
 
-        log(f"==> Installing generated testbed distro from {generated}")
-        run([str(venv / "bin" / "tabula-distro"), "--home", str(home), "install", str(generated)])
         env = os.environ.copy()
         env.update({
             "TABULA_HOME": str(home),
@@ -778,6 +776,8 @@ def main(argv: list[str] | None = None) -> int:
             "TABULA_PROVIDER": "anthropic",
             "TABULA_PATH": f"{venv / 'bin'}:{bin_dir}:{env.get('PATH', '')}",
         })
+        log(f"==> Installing generated testbed distro from {generated}")
+        run([str(venv / "bin" / "tabula-distro"), "--home", str(home), "install", str(generated)], env=env)
         if args.bootstrap_check:
             log("==> Running bootstrap readiness check")
             run([str(repo_root / "scripts" / "bootstrap.sh"), "--tabula-home", str(home), "--timeout", "20"], env=env, cwd=repo_root)

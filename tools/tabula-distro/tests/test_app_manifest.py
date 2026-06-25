@@ -48,13 +48,15 @@ def _make_defaults_materializing_distro(root: Path) -> Path:
     distro = root / "claw"
     _write(distro / "distro.toml", '[distro]\nid = "tabula.claw"\nname = "claw"\n[application_contract]\nmaterializer = "python3 materialize.py"\n')
     (distro / "templates").mkdir(parents=True, exist_ok=True)
+    _write(distro / "plugins" / "demo" / "plugin.toml", '[plugin]\nid = "demo"\nname = "demo"\nversion = "0.1.0"\n')
+    _write(distro / "plugins" / "demo" / "plugin.schema.toml", 'id = "demo"\n\n[entry.extra_roots]\ntype = "string_list"\ndefault = []\n')
     _write(distro / "materialize.py", """
 from pathlib import Path
 import os
 tenant = Path(os.environ['TABULA_TENANT_DIR'])
 plugin_dir = tenant / 'config' / 'plugins' / 'demo'
 plugin_dir.mkdir(parents=True, exist_ok=True)
-(plugin_dir / 'defaults.toml').write_text('''[servers.context7]\ntransport = "stdio"\ncommand = ["npx", "context7-default"]\n\n[limits]\ncount = 1\nmode = "default"\n''', encoding='utf-8')
+(plugin_dir / 'defaults.toml').write_text('''extra_roots = ["/runtime/skills"]\n\n[servers.context7]\ntransport = "stdio"\ncommand = ["npx", "context7-default"]\n\n[limits]\ncount = 1\nmode = "default"\n''', encoding='utf-8')
 """)
     return distro
 
@@ -86,9 +88,9 @@ source = "{source}"
 [values.workspace]
 path = "${{project_root}}"
 
-[values.memory]
+[values.mempalace]
 mode = "shared"
-path = "${{local.memory.path}}"
+path = "${{local.mempalace.path}}"
 '''
 
 
@@ -97,7 +99,7 @@ class AppManifestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _make_distro(root)
-            _write(root / ".tabula" / "local.toml", '[memory]\npath = "/tmp/shared-memory"\n')
+            _write(root / ".tabula" / "local.toml", '[mempalace]\npath = "/tmp/shared-mempalace"\n')
             manifest_path = root / "tabula.app.toml"
             _write(manifest_path, _manifest("local:./claw"))
 
@@ -106,7 +108,7 @@ class AppManifestTests(unittest.TestCase):
             self.assertEqual(manifest.application.id, "claw-tabula")
             self.assertEqual(manifest.bindings.directories[0].root, str(root.resolve()))
             self.assertEqual(manifest.values["workspace"]["path"], str(root.resolve()))
-            self.assertEqual(manifest.values["memory"]["path"], "/tmp/shared-memory")
+            self.assertEqual(manifest.values["mempalace"]["path"], "/tmp/shared-mempalace")
 
     def test_missing_local_override_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -140,7 +142,7 @@ source = "local:./claw"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _make_distro(root)
-            _write(root / ".tabula" / "local.toml", '[memory]\npath = "/tmp/shared-memory"\n')
+            _write(root / ".tabula" / "local.toml", '[mempalace]\npath = "/tmp/shared-mempalace"\n')
             manifest_path = root / "tabula.app.toml"
             _write(manifest_path, _manifest("local:./claw"))
             manifest = appmod.load(manifest_path, tabula_home=root / "home")
@@ -166,7 +168,7 @@ class AppCLITests(unittest.TestCase):
             root = Path(tmp)
             home = root / "home"
             _make_distro(root)
-            _write(root / ".tabula" / "local.toml", '[memory]\npath = "/tmp/shared-memory"\n')
+            _write(root / ".tabula" / "local.toml", '[mempalace]\npath = "/tmp/shared-mempalace"\n')
             manifest_path = root / "tabula.app.toml"
             _write(manifest_path, _manifest("local:./claw"))
 
@@ -189,7 +191,7 @@ class AppCLITests(unittest.TestCase):
             root = Path(tmp)
             home = root / "home"
             _make_distro(root)
-            _write(root / ".tabula" / "local.toml", '[memory]\npath = "/tmp/shared-memory"\n')
+            _write(root / ".tabula" / "local.toml", '[mempalace]\npath = "/tmp/shared-mempalace"\n')
             _write(root / "tabula.app.toml", _manifest("local:./claw"))
             prev_cwd = Path.cwd()
             try:
@@ -208,7 +210,7 @@ class AppCLITests(unittest.TestCase):
             root = Path(tmp)
             home = root / "home"
             _make_distro(root)
-            _write(root / ".tabula" / "local.toml", '[memory]\npath = "/tmp/shared-memory"\n')
+            _write(root / ".tabula" / "local.toml", '[mempalace]\npath = "/tmp/shared-mempalace"\n')
             _write(root / ".tabula" / "app.toml", _manifest("local:../claw"))
             prev_cwd = Path.cwd()
             try:
@@ -242,7 +244,7 @@ class AppCLITests(unittest.TestCase):
             root = Path(tmp)
             home = root / "home"
             _make_requirements_distro(root)
-            _write(root / ".tabula" / "local.toml", '[memory]\npath = "/tmp/shared-memory"\n')
+            _write(root / ".tabula" / "local.toml", '[mempalace]\npath = "/tmp/shared-mempalace"\n')
             manifest_path = root / "tabula.app.toml"
             _write(manifest_path, _manifest("local:./claw"))
 
@@ -259,7 +261,7 @@ class AppCLITests(unittest.TestCase):
             root = Path(tmp)
             home = root / "home"
             _make_requirements_distro(root)
-            _write(root / ".tabula" / "local.toml", '[memory]\npath = "/tmp/shared-memory"\n')
+            _write(root / ".tabula" / "local.toml", '[mempalace]\npath = "/tmp/shared-mempalace"\n')
             manifest_path = root / "tabula.app.toml"
             _write(manifest_path, _manifest("local:./claw"))
 
@@ -274,7 +276,7 @@ class AppCLITests(unittest.TestCase):
             root = Path(tmp)
             home = root / "home"
             _make_materializing_distro(root)
-            _write(root / ".tabula" / "local.toml", '[memory]\npath = "/tmp/shared-memory"\n')
+            _write(root / ".tabula" / "local.toml", '[mempalace]\npath = "/tmp/shared-mempalace"\n')
             manifest_path = root / "tabula.app.toml"
             _write(manifest_path, _manifest("local:./claw"))
 
@@ -308,7 +310,7 @@ class AppCLITests(unittest.TestCase):
             root = Path(tmp)
             home = root / "home"
             _make_distro(root)
-            _write(root / ".tabula" / "local.toml", '[memory]\npath = "/tmp/shared-memory"\n')
+            _write(root / ".tabula" / "local.toml", '[mempalace]\npath = "/tmp/shared-mempalace"\n')
             manifest_path = root / "tabula.app.toml"
             _write(manifest_path, _manifest("local:./claw"))
 
@@ -321,14 +323,14 @@ class AppCLITests(unittest.TestCase):
             self.assertTrue((tenant / "plugins").is_dir())
             self.assertTrue((tenant / "skills").is_dir())
             self.assertFalse((home / "boot.py").exists())
-            self.assertIn("/tmp/shared-memory", (tenant / "values.toml").read_text(encoding="utf-8"))
+            self.assertIn("/tmp/shared-mempalace", (tenant / "values.toml").read_text(encoding="utf-8"))
 
     def test_app_apply_runs_distro_materializer(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
             _make_materializing_distro(root)
-            _write(root / ".tabula" / "local.toml", '[memory]\npath = "/tmp/shared-memory"\n')
+            _write(root / ".tabula" / "local.toml", '[mempalace]\npath = "/tmp/shared-mempalace"\n')
             manifest_path = root / "tabula.app.toml"
             _write(manifest_path, _manifest("local:./claw"))
 
@@ -347,10 +349,10 @@ class AppCLITests(unittest.TestCase):
             root = Path(tmp)
             home = root / "home"
             _make_defaults_materializing_distro(root)
-            _write(root / ".tabula" / "local.toml", '[memory]\npath = "/tmp/shared-memory"\n')
+            _write(root / ".tabula" / "local.toml", '[mempalace]\npath = "/tmp/shared-mempalace"\n')
             _write(
                 home / "config" / "plugins" / "demo" / "config.toml",
-                '[servers.context7]\ncommand = ["npx", "context7-user"]\n\n[servers.mycorp]\ntransport = "stdio"\ncommand = ["mycorp"]\n\n[limits]\ncount = 2\n',
+                'extra_roots = ["/user/skills"]\n\n[servers.context7]\ncommand = ["npx", "context7-user"]\n\n[servers.mycorp]\ntransport = "stdio"\ncommand = ["mycorp"]\n\n[limits]\ncount = 2\n',
             )
             manifest_path = root / "tabula.app.toml"
             _write(manifest_path, _manifest("local:./claw"))
@@ -364,13 +366,14 @@ class AppCLITests(unittest.TestCase):
             self.assertEqual(compiled["servers"]["mycorp"]["command"], ["mycorp"])
             self.assertEqual(compiled["limits"]["count"], 2)
             self.assertEqual(compiled["limits"]["mode"], "default")
+            self.assertEqual(compiled["extra_roots"], ["/user/skills", "/runtime/skills"])
 
     def test_frozen_requires_existing_lock(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
             _make_distro(root)
-            _write(root / ".tabula" / "local.toml", '[memory]\npath = "/tmp/shared-memory"\n')
+            _write(root / ".tabula" / "local.toml", '[mempalace]\npath = "/tmp/shared-mempalace"\n')
             manifest_path = root / "tabula.app.toml"
             _write(manifest_path, _manifest("local:./claw"))
 

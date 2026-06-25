@@ -109,6 +109,9 @@ func (h *Hub) finalizeJoinPlan(c *Client, plan *joinPlan) {
 	}
 	if h.sessions != nil {
 		sess, created := h.sessions.GetOrCreateStatus(plan.session, plan.tenantID)
+		if created {
+			h.observePersistedSessionRestart(sess)
+		}
 		sess.AddClient(c.name)
 		if created {
 			context, blocked := h.policy.StartSession(plan.session, plan.tenantID, c.name)

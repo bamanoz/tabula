@@ -21,23 +21,26 @@ const (
 	SessionActive  SessionState = "active"
 	SessionIdle    SessionState = "idle"
 	SessionClosing SessionState = "closing"
+	SessionStuck   SessionState = "suspended_stuck"
 )
 
 // Session represents an active session with its own lifecycle and metadata.
 type Session struct {
-	mu              sync.RWMutex
-	ID              string
-	TenantID        string
-	InitContext     string
-	State           SessionState
-	CreatedAt       time.Time
-	LastActiveAt    time.Time
-	clients         map[string]bool // client name → true
-	inflightTurn    bool
-	cancelRequested bool
-	pendingInputs   []queuedInput
-	pendingSteers   []queuedInput
-	activeToolCalls int
+	mu                  sync.RWMutex
+	ID                  string
+	TenantID            string
+	InitContext         string
+	State               SessionState
+	CreatedAt           time.Time
+	LastActiveAt        time.Time
+	clients             map[string]bool // client name → true
+	inflightTurn        bool
+	cancelRequested     bool
+	pendingInputs       []queuedInput
+	pendingSteers       []queuedInput
+	activeToolCalls     int
+	restartObservations int
+	stuckSuspended      bool
 }
 
 func (s *Session) BeginToolCall() {
@@ -124,7 +127,11 @@ func (s *Session) AddClient(name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.clients[name] = true
-	s.State = SessionActive
+	if s.stuckSuspended {
+		s.State = SessionStuck
+	} else {
+		s.State = SessionActive
+	}
 	s.touchLocked()
 }
 
@@ -132,7 +139,7 @@ func (s *Session) RemoveClient(name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.clients, name)
-	if len(s.clients) == 0 && !s.inflightTurn {
+	if len(s.clients) == 0 && !s.inflightTurn && !s.stuckSuspended {
 		s.State = SessionIdle
 	}
 	s.touchLocked()
@@ -147,7 +154,7 @@ func (s *Session) ClientCount() int {
 func (s *Session) BeginTurn() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.State == SessionClosing || s.inflightTurn {
+	if s.State == SessionClosing || s.stuckSuspended || s.inflightTurn {
 		return false
 	}
 	s.inflightTurn = true
@@ -162,7 +169,9 @@ func (s *Session) EndTurn() {
 	defer s.mu.Unlock()
 	s.inflightTurn = false
 	s.cancelRequested = false
-	if s.State != SessionClosing && len(s.clients) == 0 {
+	if s.stuckSuspended {
+		s.State = SessionStuck
+	} else if s.State != SessionClosing && len(s.clients) == 0 {
 		s.State = SessionIdle
 	}
 	s.touchLocked()
@@ -182,7 +191,9 @@ func (s *Session) CompleteTurn() (queuedInput, bool) {
 		return input, true
 	}
 	s.inflightTurn = false
-	if s.State != SessionClosing && len(s.clients) == 0 {
+	if s.stuckSuspended {
+		s.State = SessionStuck
+	} else if s.State != SessionClosing && len(s.clients) == 0 {
 		s.State = SessionIdle
 	}
 	s.touchLocked()
@@ -192,7 +203,7 @@ func (s *Session) CompleteTurn() (queuedInput, bool) {
 func (s *Session) EnqueueInput(msg *Message, exclude *Client) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.State == SessionClosing || len(s.pendingInputs) >= maxPendingInputs {
+	if s.State == SessionClosing || s.stuckSuspended || len(s.pendingInputs) >= maxPendingInputs {
 		return false
 	}
 	s.pendingInputs = append(s.pendingInputs, queuedInput{message: cloneMessage(msg), exclude: exclude})
@@ -210,6 +221,13 @@ func (s *Session) PendingInputCount() int {
 func (s *Session) RequestCancel() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.stuckSuspended {
+		s.stuckSuspended = false
+		s.restartObservations = 0
+		s.State = SessionIdle
+		s.touchLocked()
+		return true
+	}
 	if s.State == SessionClosing || !s.inflightTurn || s.cancelRequested {
 		return false
 	}
@@ -224,6 +242,33 @@ func (s *Session) IsBusy() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.inflightTurn
+}
+
+func (s *Session) IsStuckSuspended() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.stuckSuspended || s.State == SessionStuck
+}
+
+func (s *Session) RestartObservations() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.restartObservations
+}
+
+func (s *Session) observeRestart(active bool, previousObservations int, threshold int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !active {
+		s.restartObservations = 0
+		return
+	}
+	s.restartObservations = previousObservations + 1
+	if threshold > 0 && s.restartObservations >= threshold {
+		s.stuckSuspended = true
+		s.State = SessionStuck
+	}
+	s.touchLocked()
 }
 
 func (s *Session) CancelRequested() bool {
