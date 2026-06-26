@@ -207,3 +207,17 @@ In a monorepo, run only against the affected module — not from the root.
 - Ignoring errors: `_ = f.Close()` is acceptable only with a comment explaining why.
 - `interface{}` parameters in a public API without strong justification.
 - Copying `sync.Mutex`, `sync.WaitGroup`, `bytes.Buffer` (use a pointer).
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs live in GitHub Issues for `bamanoz/tabula`; use the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default triage labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout: root `CONTEXT.md` when present plus `docs/adr/`. See `docs/agents/domain.md`.
