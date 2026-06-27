@@ -10,7 +10,7 @@ import unittest
 from tabula_testbed import TestbedClient
 
 
-class ArtifactsPluginSmoke(unittest.TestCase):
+class ToolResultStorePluginSmoke(unittest.TestCase):
     url = "ws://localhost:8089/ws"
     tabula_home = ""
 
@@ -19,11 +19,11 @@ class ArtifactsPluginSmoke(unittest.TestCase):
         client.connect_join(session)
         return client
 
-    def test_artifacts_plugin_is_installed_and_reads_bounded_chunks(self):
+    def test_tool_result_store_plugin_is_installed_and_reads_bounded_chunks(self):
         home = Path(self.tabula_home)
-        self.assertFalse((home / "skills" / "artifacts").exists(), "artifacts must not be installed as a skill")
-        self.assertTrue((home / "plugins" / "artifacts" / "plugin.toml").is_file(), "artifacts plugin manifest missing")
-        session = "testbed-artifacts"
+        self.assertFalse((home / "skills" / "tool-result-store").exists(), "tool-result-store must not be installed as a skill")
+        self.assertTrue((home / "plugins" / "tool-result-store" / "plugin.toml").is_file(), "tool-result-store plugin manifest missing")
+        session = "testbed-tool-result-store"
         ref = "artifact://exec_run-call-1-demo"
         artifact_dir = home / "data" / "sessions" / session / "artifacts"
         artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -49,10 +49,10 @@ class ArtifactsPluginSmoke(unittest.TestCase):
                 },
             },
         }), encoding="utf-8")
-        with self.make_client("testbed-artifacts-client", session) as client:
-            client.wait_tools({"artifact_read"}, session=session)
-            result = client.call_tool("artifact_read", {"session": session, "ref": ref, "limit_chars": 64}, timeout=10).json()
-            next_result = client.call_tool("artifact_read", {"session": session, "ref": ref, "offset": result["next_offset"], "limit_chars": 32}, timeout=10).json()
+        with self.make_client("testbed-tool-result-store-client", session) as client:
+            client.wait_tools({"tool_result_read"}, session=session)
+            result = client.call_tool("tool_result_read", {"session": session, "ref": ref, "limit_chars": 64}, timeout=10).json()
+            next_result = client.call_tool("tool_result_read", {"session": session, "ref": ref, "offset": result["next_offset"], "limit_chars": 32}, timeout=10).json()
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["content"], content[:64])
         self.assertEqual(result["returned_chars"], 64)
@@ -62,14 +62,14 @@ class ArtifactsPluginSmoke(unittest.TestCase):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run artifacts testbed smoke tests")
+    parser = argparse.ArgumentParser(description="Run tool-result-store testbed smoke tests")
     parser.add_argument("--url", default="ws://localhost:8089/ws")
     parser.add_argument("--observer-url", default="http://127.0.0.1:8091/metrics")
     parser.add_argument("--home", default=os.environ.get("TABULA_HOME", ""))
     args = parser.parse_args()
-    ArtifactsPluginSmoke.url = args.url
-    ArtifactsPluginSmoke.tabula_home = args.home
-    result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(ArtifactsPluginSmoke))
+    ToolResultStorePluginSmoke.url = args.url
+    ToolResultStorePluginSmoke.tabula_home = args.home
+    result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(ToolResultStorePluginSmoke))
     return 0 if result.wasSuccessful() else 1
 
 

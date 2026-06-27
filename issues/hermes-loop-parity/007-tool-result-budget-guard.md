@@ -8,8 +8,8 @@ type: AFK
 ## What to build
 
 Add a driver-side safety net for oversized tool results before they are added to
-provider history. This complements the existing `tool-result-artifacts` plugin:
-the hook remains the preferred artifact path, but the driver should still guard
+provider history. This complements the existing `tool-result-store` plugin:
+the hook remains the preferred storage path, but the driver should still guard
 against provider-history blowups when the hook is absent, disabled, or misses a
 result shape.
 

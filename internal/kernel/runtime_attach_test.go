@@ -274,7 +274,7 @@ func TestRuntimeHookSubscriberConnectsManifestLoadedHookOnlyTarget(t *testing.T)
 		RuntimeID: runtimeauth.LocalRuntimeID,
 		Conn:      runtimemock.New(),
 		Capability: wire.Capability{
-			Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "tool-result-artifacts"},
+			Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "tool-result-store"},
 			Hooks:  []wire.HookSpec{{Event: "before_tool_result", Priority: 10}},
 			State:  wire.CapabilityStateManifestLoaded,
 			Source: wire.CapabilitySourceManifest,

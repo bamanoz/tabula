@@ -10,7 +10,7 @@ should produce a demoable end-to-end behavior and keep the Tabula kernel generic
 
 1. `001-session-ledger-harness-events.md`
 2. `002-context-accounting-inspect-tool.md`
-3. `003-tool-result-artifacts.md`
+3. `003-tool-result-store.md`
 4. `004-background-task-ledger-for-subagents.md`
 5. `005-isolated-worktree-subagent-tasks.md`
 6. `006-structured-edit-diff-ledger.md`

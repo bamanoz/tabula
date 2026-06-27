@@ -126,7 +126,7 @@ func addKnownInputSummary(summary map[string]any, tool string, input map[string]
 				summary[key] = value
 			}
 		}
-	case tool == "artifact_read":
+	case tool == "tool_result_read":
 		for _, key := range []string{"ref", "session"} {
 			if value, ok := stringField(input, key); ok {
 				summary[key] = value

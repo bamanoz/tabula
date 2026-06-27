@@ -182,10 +182,10 @@ set = "empty"
 components = ["base:deferred-tools", "base:hook-permissions", "workspace:exec"]
 tests = ["tests/test_deferred_tools.py"]
 
-[suites.artifacts]
+[suites.tool-result-store]
 set = "empty"
-components = ["base:artifacts"]
-tests = ["tests/test_artifacts.py"]
+components = ["base:tool-result-store"]
+tests = ["tests/test_tool_result_store.py"]
 
 [suites.memory]
 set = "empty"

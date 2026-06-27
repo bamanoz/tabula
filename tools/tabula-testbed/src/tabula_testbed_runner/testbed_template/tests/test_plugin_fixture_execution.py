@@ -42,16 +42,16 @@ class PluginFixtureExecutionSmoke(unittest.TestCase):
     def test_large_fixture_payload_survives_runtime_transport(self):
         requested = (1 << 20) + 8192
         with self.make_client("testbed-plugin-fixture-large") as client:
-            client.wait_tools({"artifact_read", "testbed_cold_python_large"}, session="testbed-plugin-fixture")
+            client.wait_tools({"tool_result_read", "testbed_cold_python_large"}, session="testbed-plugin-fixture")
             output = client.call_tool("testbed_cold_python_large", {"bytes": requested}, timeout=30).output
             self.assertTrue(output.startswith("large:"), len(output))
             self.assertNotIn("[truncated: runtime tool result exceeded", output)
             self.assertIn("artifact://", output)
-            self.assertIn("Use artifact_read", output)
+            self.assertIn("Use tool_result_read", output)
             match = re.search(r"artifact://[A-Za-z0-9_.-]+", output)
             self.assertIsNotNone(match, output)
             artifact_ref = match.group(0).rstrip(".")
-            artifact = client.call_tool("artifact_read", {"session": "testbed-plugin-fixture", "ref": artifact_ref, "limit_chars": 64}, timeout=10).json()
+            artifact = client.call_tool("tool_result_read", {"session": "testbed-plugin-fixture", "ref": artifact_ref, "limit_chars": 64}, timeout=10).json()
             self.assertTrue(artifact.get("ok"), artifact)
             self.assertEqual(artifact["content"], output[:64])
             self.assertTrue(artifact["truncated"], artifact)
