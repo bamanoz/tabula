@@ -1,4 +1,4 @@
-.PHONY: build test test-unit test-smoke test-e2e test-contract test-go test-go-unit test-go-smoke test-python test-python-unit test-python-smoke test-python-e2e test-python-contract lint vet release-local release-local-dry-run install install-agent agent agent-prepare agent-run agent-connect clean
+.PHONY: build test test-unit test-smoke test-e2e test-contract test-go test-go-unit test-go-smoke test-python test-python-unit test-python-smoke test-python-e2e test-python-contract lint vet release-local release-local-dry-run push install install-agent agent agent-prepare agent-run agent-connect clean
 
 TABULA_HOME ?= .
 VENV_PYTHON = .venv/bin/python3
@@ -94,6 +94,11 @@ release-local:
 
 release-local-dry-run:
 	DRY_RUN=1 scripts/release-local.sh
+
+push:
+	git push
+	git -C "$(LOCAL_TABULA_BUNDLES)" push
+	git -C "$(LOCAL_TABULA_DISTRIB)" push
 
 # Agent
 
