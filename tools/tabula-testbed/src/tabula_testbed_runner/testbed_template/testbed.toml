@@ -60,7 +60,7 @@ tests = ["tests/test_plugin_fixture_execution.py"]
 
 [suites.plugin-failure-modes]
 set = "base"
-components = ["test-fixtures:testbed-cold-python", "test-fixtures:testbed-fail"]
+components = ["test-fixtures:testbed-cold-python", "test-fixtures:testbed-cold-node", "test-fixtures:testbed-fail"]
 tests = ["tests/test_skill_failure_modes.py"]
 
 [suites.plugin-concurrency]
@@ -222,6 +222,10 @@ tests = ["tests/test_runtime_remote_backends.py"]
 [suites.runtime-token-revoke]
 set = "empty"
 tests = ["tests/test_runtime_remote_backends.py"]
+
+[suites.runtime-instance-metadata]
+set = "empty"
+tests = ["tests/test_runtime_instance_metadata.py"]
 
 [suites.runtime-multi-backend]
 set = "empty"

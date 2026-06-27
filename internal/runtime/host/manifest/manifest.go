@@ -34,6 +34,12 @@ type Tool struct {
 	ConflictsWithGroups []string             `toml:"conflicts_with_groups" json:"conflicts_with_groups,omitempty"`
 }
 
+// Worker mirrors a canonical [worker] block from plugin.toml.
+type Worker struct {
+	Command []string        `json:"command,omitempty"`
+	Mode    wire.WorkerMode `json:"mode,omitempty"`
+}
+
 type toolTOML struct {
 	Name                string               `toml:"name"`
 	Description         string               `toml:"description"`
@@ -52,6 +58,7 @@ type Plugin struct {
 	Runtime     string          `json:"runtime"`
 	Entry       string          `json:"entry"`
 	Description string          `json:"description,omitempty"`
+	Worker      *Worker         `json:"worker,omitempty"`
 	WorkerMode  wire.WorkerMode `json:"worker_mode,omitempty"`
 	Tools       []Tool          `json:"tools,omitempty"`
 	Hooks       []Hook          `json:"hooks,omitempty"`
@@ -84,10 +91,16 @@ type pluginTOML struct {
 	Runtime     string          `toml:"runtime"`
 	Entry       string          `toml:"entry"`
 	Description string          `toml:"description"`
+	Worker      *workerTOML     `toml:"worker"`
 	WorkerMode  wire.WorkerMode `toml:"worker_mode"`
 	Tools       []toolTOML      `toml:"tools"`
 	Hooks       []Hook          `toml:"hooks"`
 	Requires    *requiresTOML   `toml:"requires"`
+}
+
+type workerTOML struct {
+	Command []string        `toml:"command"`
+	Mode    wire.WorkerMode `toml:"mode"`
 }
 
 type requiresTOML struct {
@@ -287,6 +300,13 @@ func Load(path string) (Plugin, error) {
 	if _, err := toml.DecodeFile(abs, &raw); err != nil {
 		return Plugin{}, fmt.Errorf("load plugin manifest %s: %w", abs, err)
 	}
+	workerMode := raw.WorkerMode
+	if raw.Worker != nil && raw.Worker.Mode != "" {
+		if workerMode != "" && workerMode != raw.Worker.Mode {
+			return Plugin{}, fmt.Errorf("plugin manifest %s: worker.mode %q conflicts with worker_mode %q", abs, raw.Worker.Mode, workerMode)
+		}
+		workerMode = raw.Worker.Mode
+	}
 	plugin := Plugin{
 		ID:          strings.TrimSpace(raw.ID),
 		Name:        strings.TrimSpace(raw.Name),
@@ -294,13 +314,16 @@ func Load(path string) (Plugin, error) {
 		Runtime:     strings.TrimSpace(raw.Runtime),
 		Entry:       strings.TrimSpace(raw.Entry),
 		Description: strings.TrimSpace(raw.Description),
-		WorkerMode:  raw.WorkerMode,
+		WorkerMode:  workerMode,
 		Tools:       make([]Tool, 0, len(raw.Tools)),
 		Hooks:       make([]Hook, 0, len(raw.Hooks)),
 		RootDir:     filepath.Dir(abs),
 	}
 	if plugin.WorkerMode == "" {
 		plugin.WorkerMode = wire.WorkerModeWarm
+	}
+	if raw.Worker != nil {
+		plugin.Worker = &Worker{Command: trimNonemptyStrings(raw.Worker.Command), Mode: plugin.WorkerMode}
 	}
 	for i, tool := range raw.Tools {
 		parsed, err := parseTool(tool)
@@ -335,21 +358,43 @@ func (p Plugin) Validate() error {
 	if !semverPattern.MatchString(p.Version) {
 		return fmt.Errorf("version %q must be SemVer X.Y.Z[-pre]", p.Version)
 	}
-	switch p.Runtime {
-	case "python":
-	default:
-		return fmt.Errorf("unsupported runtime %q (expected python)", p.Runtime)
-	}
-	if p.Entry == "" {
-		return fmt.Errorf("entry is required")
-	}
 	switch p.WorkerMode {
 	case wire.WorkerModeWarm, wire.WorkerModeCold:
 	default:
 		return fmt.Errorf("worker_mode %q must be warm or cold", p.WorkerMode)
 	}
-	if err := validateRelativePath("entry", p.Entry); err != nil {
-		return err
+	hasWorkerCommand := p.hasWorkerCommand()
+	if p.Worker != nil {
+		if err := validateWorkerCommand(p.Worker.Command); err != nil {
+			return err
+		}
+	}
+	if hasWorkerCommand {
+		if p.Runtime != "" || p.Entry != "" {
+			switch p.Runtime {
+			case "python":
+			default:
+				return fmt.Errorf("unsupported runtime %q (expected python)", p.Runtime)
+			}
+			if p.Entry == "" {
+				return fmt.Errorf("entry is required")
+			}
+			if err := validateRelativePath("entry", p.Entry); err != nil {
+				return err
+			}
+		}
+	} else {
+		switch p.Runtime {
+		case "python":
+		default:
+			return fmt.Errorf("unsupported runtime %q (expected python)", p.Runtime)
+		}
+		if p.Entry == "" {
+			return fmt.Errorf("entry is required")
+		}
+		if err := validateRelativePath("entry", p.Entry); err != nil {
+			return err
+		}
 	}
 	for i, tool := range p.Tools {
 		if tool.Name == "" {
@@ -388,8 +433,36 @@ func (p Plugin) Validate() error {
 	if p.WorkerMode == wire.WorkerModeCold && len(p.Hooks) > 0 {
 		return fmt.Errorf("worker_mode cold does not support hooks")
 	}
-	if err := validateRequires(p.Requires); err != nil {
+	if err := validateRequires(p.Requires, !hasWorkerCommand); err != nil {
 		return err
+	}
+	return nil
+}
+
+func trimNonemptyStrings(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]string, len(items))
+	for i, item := range items {
+		out[i] = strings.TrimSpace(item)
+	}
+	return out
+}
+
+func validateWorkerCommand(command []string) error {
+	if len(command) == 0 {
+		return fmt.Errorf("worker.command must be a non-empty argv list")
+	}
+	for i, arg := range command {
+		if arg == "" {
+			return fmt.Errorf("worker.command[%d] must be a non-empty string", i)
+		}
+		if i == 0 && strings.ContainsAny(arg, `/\\`) && !filepath.IsAbs(arg) {
+			if err := validateRelativePath("worker.command[0]", arg); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -411,9 +484,9 @@ func validateRelativePath(field, value string) error {
 	return nil
 }
 
-func validateRequires(r *Requires) error {
+func validateRequires(r *Requires, sdkRequired bool) error {
 	if r == nil {
-		return fmt.Errorf("[requires] block is required (declare kernel, protocol_version, sdk per docs/PROTOCOL.md §3)")
+		return fmt.Errorf("[requires] block is required (declare kernel, protocol_version%s per docs/PROTOCOL.md §3)", requiresSDKSuffix(sdkRequired))
 	}
 	if strings.TrimSpace(r.Kernel) == "" {
 		return fmt.Errorf("requires.kernel is required")
@@ -422,12 +495,22 @@ func validateRequires(r *Requires) error {
 		return err
 	}
 	if strings.TrimSpace(r.SDK) == "" {
+		if !sdkRequired {
+			return nil
+		}
 		return fmt.Errorf("requires.sdk is required")
 	}
 	if err := validateSDKRequirement(r.SDK); err != nil {
 		return err
 	}
 	return nil
+}
+
+func requiresSDKSuffix(required bool) string {
+	if required {
+		return ", sdk"
+	}
+	return ""
 }
 
 func validateProtocolVersion(value any) error {
@@ -532,6 +615,43 @@ func (p Plugin) RawJSON() json.RawMessage {
 	return data
 }
 
+// LaunchCommand returns the argv used to spawn the plugin worker.
+func (p Plugin) LaunchCommand() []string {
+	if p.hasWorkerCommand() {
+		return append([]string(nil), p.Worker.Command...)
+	}
+	return nil
+}
+
+// LaunchPath returns the most relevant plugin-owned launch path for diagnostics.
+func (p Plugin) LaunchPath() string {
+	if p.hasWorkerCommand() {
+		if len(p.Worker.Command) > 1 {
+			kind := detectHarnessKindFromCommand(p.Worker.Command)
+			candidate := strings.TrimSpace(p.Worker.Command[1])
+			if kind != wire.HarnessKindUnknown && candidate != "" && !strings.HasPrefix(candidate, "-") {
+				if filepath.IsAbs(candidate) || p.RootDir == "" {
+					return candidate
+				}
+				return filepath.Join(p.RootDir, candidate)
+			}
+		}
+		argv0 := p.Worker.Command[0]
+		if filepath.IsAbs(argv0) || p.RootDir == "" || !strings.ContainsAny(argv0, `/\\`) {
+			return argv0
+		}
+		return filepath.Join(p.RootDir, argv0)
+	}
+	if filepath.IsAbs(p.Entry) || p.RootDir == "" {
+		return p.Entry
+	}
+	return filepath.Join(p.RootDir, p.Entry)
+}
+
+func (p Plugin) hasWorkerCommand() bool {
+	return p.Worker != nil && len(p.Worker.Command) > 0
+}
+
 // Capability returns the Runtime API capability view for this plugin.
 func (p Plugin) Capability() wire.Capability {
 	tools := make([]wire.ToolSpec, 0, len(p.Tools))
@@ -565,14 +685,34 @@ func (p Plugin) Capability() wire.Capability {
 		State:       wire.CapabilityStateManifestLoaded,
 		Source:      wire.CapabilitySourceManifest,
 		WorkerMode:  p.WorkerMode,
-		HarnessKind: detectPluginHarnessKind(p.Runtime),
+		HarnessKind: detectPluginHarnessKind(p.Runtime, p.LaunchCommand()),
 	}
 }
 
-func detectPluginHarnessKind(runtime string) wire.HarnessKind {
+func detectPluginHarnessKind(runtime string, command []string) wire.HarnessKind {
+	if kind := detectHarnessKindFromCommand(command); kind != wire.HarnessKindUnknown {
+		return kind
+	}
 	switch strings.TrimSpace(runtime) {
 	case "python":
 		return wire.HarnessKindPython
+	default:
+		return wire.HarnessKindUnknown
+	}
+}
+
+func detectHarnessKindFromCommand(command []string) wire.HarnessKind {
+	if len(command) == 0 {
+		return wire.HarnessKindUnknown
+	}
+	base := strings.ToLower(filepath.Base(strings.TrimSpace(command[0])))
+	switch base {
+	case "python", "python3":
+		return wire.HarnessKindPython
+	case "bash", "sh", "zsh", "dash":
+		return wire.HarnessKindBash
+	case "node", "nodejs":
+		return wire.HarnessKindNode
 	default:
 		return wire.HarnessKindUnknown
 	}

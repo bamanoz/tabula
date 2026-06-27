@@ -76,6 +76,14 @@ class ExecutableRequirement:
 
 
 @dataclass(frozen=True)
+class PythonPackageExport:
+    name: str
+    path: str
+    public: bool = False
+    owner: str = ""
+
+
+@dataclass(frozen=True)
 class DistroConfig:
     path: Path  # directory containing distro.toml (the distro root)
     name: str
@@ -86,6 +94,7 @@ class DistroConfig:
     bundles: tuple[BundleEntry, ...] = ()
     skills: tuple[SkillEntry, ...] = ()
     plugins: tuple[SkillEntry, ...] = ()
+    exports_python_packages: tuple[PythonPackageExport, ...] = ()
     executable_requirements: tuple[ExecutableRequirement, ...] = ()
 
 
@@ -129,6 +138,7 @@ def load(distro_dir: Path, *, override_name: str | None = None) -> DistroConfig:
         bundles=tuple(_parse_bundle(entry) for entry in merged.get("bundles", [])),
         skills=tuple(_parse_skill(entry) for entry in merged.get("skills", [])),
         plugins=tuple(_parse_skill(entry) for entry in merged.get("plugins", [])),
+        exports_python_packages=_parse_python_package_exports(distro_dir / "distro.toml", _section(merged, "exports").get("python_packages")),
         executable_requirements=_parse_executable_requirements(merged),
     )
 
@@ -259,6 +269,31 @@ def _parse_skill(entry: dict) -> SkillEntry:
         source=entry["source"],
         override=bool(entry.get("override", False)),
     )
+
+
+def _parse_python_package_exports(manifest_path: Path, raw: object) -> tuple[PythonPackageExport, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ConfigError(f"{manifest_path}: exports.python_packages must be an array of tables")
+    exports: list[PythonPackageExport] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise ConfigError(f"{manifest_path}: exports.python_packages entries must be tables")
+        name = str(entry.get("name") or "").strip()
+        path = str(entry.get("path") or "").strip()
+        if not name or not path:
+            raise ConfigError(f"{manifest_path}: exports.python_packages entries require name and path")
+        rel = Path(path)
+        if rel.is_absolute() or ".." in rel.parts:
+            raise ConfigError(f"{manifest_path}: exports.python_packages path must stay inside distro: {path!r}")
+        if Path(name).name != name:
+            raise ConfigError(f"{manifest_path}: exports.python_packages name must be a single package name: {name!r}")
+        public = entry.get("public", False)
+        if not isinstance(public, bool):
+            raise ConfigError(f"{manifest_path}: exports.python_packages public must be a boolean")
+        exports.append(PythonPackageExport(name=name, path=rel.as_posix(), public=public, owner=str(entry.get("owner") or "").strip()))
+    return tuple(exports)
 
 
 def _parse_sources(section: dict) -> dict[str, SourceAlias]:

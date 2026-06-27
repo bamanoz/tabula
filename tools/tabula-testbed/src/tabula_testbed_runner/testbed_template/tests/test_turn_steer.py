@@ -158,7 +158,7 @@ class TurnSteerInstalled(unittest.TestCase):
 
     def setUp(self):
         home = Path(self.tabula_home)
-        sys.path.insert(0, str(home / "_lib" / "python" / "src"))
+        sys.path.insert(0, str(home / "packages" / "python" / "src"))
         sys.path.insert(0, str(home / "plugins" / "sessions" / "sdk" / "python" / "src"))
         websocket_stub = types.ModuleType("websocket")
         websocket_stub.WebSocketTimeoutException = TimeoutError

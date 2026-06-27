@@ -265,8 +265,7 @@ def bootstrap_sys_path() -> None:
 
     Adds, in order:
 
-    - ``$TABULA_HOME/_lib/python/src`` (so ``tabula_plugin_sdk`` and other
-      shared libraries are importable in flat-installed layouts).
+    - ``$TABULA_HOME/packages/python/src`` (declared package exports).
     - ``$TABULA_HOME`` itself (so distro boot modules sitting directly under
       ``$TABULA_HOME`` are importable).
 
@@ -274,8 +273,8 @@ def bootstrap_sys_path() -> None:
     """
     home = tabula_home()
     # Insert in reverse priority so the final order is
-    # [_lib/python/src, home, ...existing].
-    candidates = [home, home / "_lib" / "python" / "src"]
+    # [packages/python/src, home, ...existing].
+    candidates = [home, home / "packages" / "python" / "src"]
     for candidate in candidates:
         entry = str(candidate)
         if entry not in sys.path:

@@ -678,8 +678,9 @@ func writeDialerInvokePlugin(t *testing.T, root string) {
 	if err := os.WriteFile(filepath.Join(dir, "plugin.toml"), []byte(`id = "fs"
 name = "Filesystem"
 version = "0.1.0"
-runtime = "python"
-entry = "worker.py"
+[worker]
+command = ["python3", "worker.py"]
+mode = "warm"
 
 [[tools]]
 name = "read_file"

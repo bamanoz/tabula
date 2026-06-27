@@ -108,6 +108,55 @@ func TestSessionCancelClearsStuckSuspension(t *testing.T) {
 	}
 }
 
+func TestSessionPreferredRuntimeBindsFirstValueOnly(t *testing.T) {
+	s := newSession("runtime-affinity", "default")
+	if !s.BindPreferredRuntime("remote") {
+		t.Fatal("expected first preferred runtime bind to succeed")
+	}
+	if got := s.PreferredRuntime(); got != "remote" {
+		t.Fatalf("preferred runtime = %q, want remote", got)
+	}
+	if s.BindPreferredRuntime("local") {
+		t.Fatal("expected second preferred runtime bind to be ignored")
+	}
+	if got := s.PreferredRuntime(); got != "remote" {
+		t.Fatalf("preferred runtime changed to %q, want remote", got)
+	}
+}
+
+func TestSessionPreferredRuntimeCanBeUpdated(t *testing.T) {
+	s := newSession("runtime-affinity", "default")
+	s.BindPreferredRuntime("remote")
+	if !s.SetPreferredRuntime("local") {
+		t.Fatal("expected preferred runtime update to succeed")
+	}
+	if got := s.PreferredRuntime(); got != "local" {
+		t.Fatalf("preferred runtime = %q, want local", got)
+	}
+	if s.SetPreferredRuntime("local") {
+		t.Fatal("expected same preferred runtime update to be ignored")
+	}
+}
+
+func TestSessionRestartObservationRestoresPreferredRuntime(t *testing.T) {
+	hub := NewHub(nil, 0, 0, slog.Default())
+	store := NewDiskSessionStore(t.TempDir())
+	hub.SetSessionStore(store)
+
+	previous := newSession("preferred", "default")
+	previous.BindPreferredRuntime("remote")
+	if err := store.Save(previous); err != nil {
+		t.Fatalf("save previous session: %v", err)
+	}
+
+	next := newSession("preferred", "default")
+	hub.observePersistedSessionRestart(next)
+
+	if got := next.PreferredRuntime(); got != "remote" {
+		t.Fatalf("preferred runtime = %q, want remote", got)
+	}
+}
+
 func TestSessionTurnLifecycle(t *testing.T) {
 	s := newSession("turn-1", "")
 	s.AddClient("gateway")

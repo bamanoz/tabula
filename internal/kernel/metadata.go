@@ -2,13 +2,14 @@ package kernel
 
 import (
 	"crypto/rand"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"strconv"
 	"time"
 )
 
 const turnCorrelationMetaKey = "turn_correlation_id"
+const preferredRuntimeKernelMetaKey = "preferred_runtime_id"
 
 func (h *Hub) prepareRoutedMessage(sender *Client, session string, scope string, msg *Message) *Message {
 	routed := cloneMessage(msg)
@@ -41,6 +42,9 @@ func (h *Hub) kernelMeta(sender *Client, tenantID, session string, scope string,
 		"sender":      kernelClientMeta(sender),
 		"route":       kernelRouteMeta(scope, session, h.sessionTenantID(tenantID, session)),
 		"received_at": time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if runtimeID := h.sessionPreferredRuntime(tenantID, session); runtimeID != "" {
+		meta[preferredRuntimeKernelMetaKey] = runtimeID
 	}
 	if recipient != nil {
 		meta["recipient"] = kernelClientMeta(recipient)
@@ -82,6 +86,26 @@ func withKernelMeta(raw json.RawMessage, kernel map[string]any) json.RawMessage 
 	return encoded
 }
 
+func withKernelPreferredRuntime(raw json.RawMessage, runtimeID string) json.RawMessage {
+	if runtimeID == "" {
+		return raw
+	}
+	meta := metaMap(raw)
+	kernel := map[string]any{}
+	if existing, ok := meta["kernel"].(map[string]any); ok {
+		for key, value := range existing {
+			kernel[key] = value
+		}
+	}
+	kernel[preferredRuntimeKernelMetaKey] = runtimeID
+	meta["kernel"] = kernel
+	encoded, err := json.Marshal(meta)
+	if err != nil {
+		return raw
+	}
+	return encoded
+}
+
 func metaMap(raw json.RawMessage) map[string]any {
 	meta := map[string]any{}
 	if len(raw) > 0 {
@@ -107,6 +131,16 @@ func withMetaString(raw json.RawMessage, key, value string) json.RawMessage {
 		return raw
 	}
 	return encoded
+}
+
+func kernelPreferredRuntime(raw json.RawMessage) string {
+	meta := metaMap(raw)
+	kernel, ok := meta["kernel"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	runtimeID, _ := kernel[preferredRuntimeKernelMetaKey].(string)
+	return normalizeClientRuntimeID(runtimeID)
 }
 
 func ensureTurnCorrelationMeta(raw json.RawMessage) (json.RawMessage, string) {

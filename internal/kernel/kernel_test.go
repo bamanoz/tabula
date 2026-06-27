@@ -215,6 +215,20 @@ func isSessionInit(msg *Message) bool {
 	return msg != nil && msg.Type == string(MsgEvent) && msg.Topic == TopicSessionInit
 }
 
+func preferredRuntimeFromMeta(t *testing.T, raw json.RawMessage) string {
+	t.Helper()
+	var meta map[string]any
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		t.Fatalf("invalid meta: %v", err)
+	}
+	kernel, ok := meta["kernel"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing kernel meta: %+v", meta)
+	}
+	runtimeID, _ := kernel[preferredRuntimeKernelMetaKey].(string)
+	return runtimeID
+}
+
 func userMessage(text string) Message {
 	return Message{Type: string(MsgEvent), Topic: TopicMessageUser, Data: mustMarshalRaw(map[string]any{"text": text})}
 }
@@ -436,6 +450,7 @@ func TestInitIncludesRuntimeManifestLoadedTools(t *testing.T) {
 
 func TestInitSyncsAttachedRuntimeCapabilities(t *testing.T) {
 	hub := NewHub(nil, 3, 5, nil)
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
 	conn := runtimemock.New().WithCapabilities(wire.Capability{
 		Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "cron"},
 		Tools:  []wire.ToolSpec{{Name: "cron_add"}, {Name: "cron_list"}},
@@ -455,6 +470,7 @@ func TestInitSyncsAttachedRuntimeCapabilities(t *testing.T) {
 func TestRuntimeCatalogUpdateRefreshesJoinedClients(t *testing.T) {
 	env := newTestEnv(t)
 	env.Hub.runtimes = NewRuntimeRegistry()
+	ensureRuntimeDefinitionsForTest(t, env.Hub, RuntimeDefinition{ID: "local", Backend: "local"})
 	conn := runtimemock.New().WithCapabilities(wire.Capability{
 		Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "mcp"},
 		Tools:  []wire.ToolSpec{{Name: "mcp_call"}},
@@ -686,6 +702,64 @@ func TestUserMessagesGetTurnCorrelationID(t *testing.T) {
 	}
 	if !strings.HasPrefix(turnCorrelationID, "tc-") {
 		t.Fatalf("expected generated turn correlation id, got %q", turnCorrelationID)
+	}
+}
+
+func TestUserMessagesStampPreferredRuntimeAndQueuedTurnsUpdateOnDispatch(t *testing.T) {
+	hub := NewHub(nil, 3, 5, nil)
+	gatewayA := addCaptureClient(t, hub, "gateway-a", "main", nil, nil)
+	gatewayA.meta = json.RawMessage(`{"tabula.runtime_id":"rt-aaaaaaaaaaaaaaaaaaaa"}`)
+	gatewayB := addCaptureClient(t, hub, "gateway-b", "main", nil, nil)
+	gatewayB.meta = json.RawMessage(`{"tabula.runtime_id":"rt-bbbbbbbbbbbbbbbbbbbb"}`)
+	driver := addCaptureClient(t, hub, "driver", "main", []string{TopicMessageUser}, nil)
+	driver.sends[TopicTurnDone] = true
+
+	first := userMessage("first")
+	hub.handleUserMessage(gatewayA, &first)
+	routedFirst := waitForMessage(t, driver.recvCh)
+	if got := preferredRuntimeFromMeta(t, routedFirst.Meta); got != "rt-aaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("first routed preferred runtime = %q", got)
+	}
+	if got := hub.sessionPreferredRuntime("default", "main"); got != "rt-aaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("session preferred runtime after first turn = %q", got)
+	}
+
+	second := userMessage("second")
+	hub.handleUserMessage(gatewayB, &second)
+	if got := hub.sessionPreferredRuntime("default", "main"); got != "rt-aaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("queued turn should not change active preferred runtime yet, got %q", got)
+	}
+	if msg := readCaptureMessageTimeout(driver.recvCh, 100*time.Millisecond); msg != nil {
+		t.Fatalf("queued turn should not dispatch before turn.done, got %+v", msg)
+	}
+
+	hub.forwardSessionMessage(driver, &Message{Type: string(MsgEvent), Topic: TopicTurnDone, Session: "main", TenantID: tenant.DefaultID})
+	routedSecond := waitForMessage(t, driver.recvCh)
+	if got := preferredRuntimeFromMeta(t, routedSecond.Meta); got != "rt-bbbbbbbbbbbbbbbbbbbb" {
+		t.Fatalf("queued routed preferred runtime = %q", got)
+	}
+	if got := hub.sessionPreferredRuntime("default", "main"); got != "rt-bbbbbbbbbbbbbbbbbbbb" {
+		t.Fatalf("session preferred runtime after queued dispatch = %q", got)
+	}
+}
+
+func TestTurnSteerStampsPreferredRuntimeMeta(t *testing.T) {
+	hub := NewHub(nil, 3, 5, nil)
+	gateway := addCaptureClient(t, hub, "gateway", "main", nil, nil)
+	gateway.meta = json.RawMessage(`{"tabula.runtime_id":"rt-cccccccccccccccccccc"}`)
+	driver := addCaptureClient(t, hub, "driver", "main", []string{TopicTurnSteer}, nil)
+
+	steer := turnSteer("nudge")
+	hub.handleTurnSteer(gateway, &steer)
+	routed := waitForMessage(t, driver.recvCh)
+	if routed.Topic != TopicTurnSteer {
+		t.Fatalf("expected routed steer, got %+v", routed)
+	}
+	if got := preferredRuntimeFromMeta(t, routed.Meta); got != "rt-cccccccccccccccccccc" {
+		t.Fatalf("steer preferred runtime = %q", got)
+	}
+	if got := hub.sessionPreferredRuntime("default", "main"); got != "rt-cccccccccccccccccccc" {
+		t.Fatalf("session preferred runtime after steer = %q", got)
 	}
 }
 

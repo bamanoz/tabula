@@ -65,7 +65,12 @@ PY
 
 load_app_env
 export TABULA_PATH="${TABULA_PATH:-$TABULA_VENV/bin:$TABULA_HOME/bin:$PATH}"
-export PATH="$TABULA_HOME/bin:$PATH"
+export PATH="$TABULA_PATH"
+if [[ -n "${PYTHONPATH:-}" ]]; then
+  export PYTHONPATH="$TABULA_HOME/packages/python/src:$PYTHONPATH"
+else
+  export PYTHONPATH="$TABULA_HOME/packages/python/src"
+fi
 
 RUNTIME_MODE="external"
 ARGS=()

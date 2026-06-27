@@ -58,6 +58,45 @@ func TestBusMessagePreservesMessageEnvelopeFields(t *testing.T) {
 	}
 }
 
+func TestPickRuntimeForSessionLogsPreferredRuntimeFallbackReason(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, logger)
+	hub.runtimes = NewRuntimeRegistry()
+	if err := hub.runtimes.Configure(
+		[]RuntimeDefinition{{ID: "local", Backend: "local"}, {ID: "remote", Backend: "attach"}},
+		map[string]TenantRuntimeBinding{"alpha": {AllowedRuntimes: []string{"local", "remote"}, DefaultRuntime: "local"}},
+	); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	if err := hub.runtimes.RegisterHello("local", runtimemock.New(), nil, 0, []string{"alpha"}); err != nil {
+		t.Fatalf("RegisterHello local: %v", err)
+	}
+	hub.sessions.GetOrCreate("s1", "alpha").BindPreferredRuntime("remote")
+
+	conn, runtimeID, code, err := hub.pickRuntimeForSession("alpha", "s1")
+	if err != nil {
+		t.Fatalf("pickRuntimeForSession: %v", err)
+	}
+	if conn == nil || runtimeID != "local" || code != "" {
+		t.Fatalf("unexpected runtime pick: conn=%v runtimeID=%q code=%q", conn != nil, runtimeID, code)
+	}
+	got := buf.String()
+	for _, want := range []string{
+		"preferred runtime fallback",
+		"preferred_runtime_id=remote",
+		"selected_runtime_id=local",
+		"reason_code=runtime_unavailable",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected log output to contain %q, got %q", want, got)
+		}
+	}
+	if !strings.Contains(got, `reason="runtime \"remote\" is unavailable"`) {
+		t.Fatalf("expected fallback reason in log output, got %q", got)
+	}
+}
+
 func TestRuntimeCatalogUpdateRebuildsPromptContext(t *testing.T) {
 	env := newTestEnv(t)
 	driver := env.connectAndJoin("driver", "s1", []string{}, []string{TopicSessionInit})
@@ -132,6 +171,7 @@ func TestRuntimeLifecycleNonReadyDoesNotBroadcastTrimmedCatalog(t *testing.T) {
 func TestSnapshotRuntimesSanitizesRuntimeDiagnostics(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.runtimes = NewRuntimeRegistry()
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
 	conn := runtimemock.New()
 	if err := hub.runtimes.RegisterHello("local", conn, []wire.Capability{{
 		Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"},

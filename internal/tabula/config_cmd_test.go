@@ -62,8 +62,9 @@ func writeTabulaPlugin(t *testing.T, path, id, tool string) {
 	body := `id = "` + id + `"
 name = "` + id + `"
 version = "0.1.0"
-runtime = "python"
-entry = "run.py"
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
 
 [[tools]]
 name = "` + tool + `"

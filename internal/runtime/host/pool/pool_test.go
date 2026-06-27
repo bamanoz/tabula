@@ -47,9 +47,9 @@ func TestPoolInvokesColdPluginWithoutBlockingSecondCall(t *testing.T) {
 	body := `id = "question"
 name = "Question"
 version = "0.1.0"
-runtime = "python"
-entry = "run.py"
-worker_mode = "cold"
+[worker]
+command = ["python3", "run.py"]
+mode = "cold"
 
 [[tools]]
 name = "question"
@@ -123,8 +123,9 @@ func TestPoolAllowsParallelWarmToolsInSameExecutionGroup(t *testing.T) {
 	body := `id = "fs"
 name = "Filesystem"
 version = "0.1.0"
-runtime = "python"
-entry = "run.py"
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
 
 [[tools]]
 name = "read_slow"
@@ -207,8 +208,9 @@ func TestPoolDeliversConcurrentCallsToWarmPythonWorker(t *testing.T) {
 	body := `id = "subagents"
 name = "Subagents"
 version = "0.1.0"
-runtime = "python"
-entry = "run.py"
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
 
 [[tools]]
 name = "subagent_spawn"
@@ -279,8 +281,9 @@ func TestPoolBlocksConflictingWarmExecutionGroups(t *testing.T) {
 	body := `id = "fs"
 name = "Filesystem"
 version = "0.1.0"
-runtime = "python"
-entry = "run.py"
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
 
 [[tools]]
 name = "read_slow"
@@ -1116,8 +1119,9 @@ func testPluginDir(t *testing.T) string {
 	body := `id = "fs"
 name = "Filesystem"
 version = "0.1.0"
-runtime = "python"
-entry = "run.py"
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
 
 [[tools]]
 name = "echo"
@@ -1144,8 +1148,9 @@ func writePoolPlugin(t *testing.T, path, id, tool string) {
 	body := `id = "` + id + `"
 name = "Plugin"
 version = "0.1.0"
-runtime = "python"
-entry = "run.py"
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
 
 [[tools]]
 name = "` + tool + `"

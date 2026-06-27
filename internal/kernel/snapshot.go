@@ -17,6 +17,7 @@ type snapshotProcessInfo struct {
 
 type snapshotSessionInfo struct {
 	TenantID            string                `json:"tenant_id"`
+	PreferredRuntimeID  string                `json:"preferred_runtime_id,omitempty"`
 	State               SessionState          `json:"state"`
 	CreatedAt           string                `json:"created_at"`
 	LastActiveAt        string                `json:"last_active_at"`
@@ -75,6 +76,7 @@ func (h *Hub) SnapshotSessions() []byte {
 		sess.mu.RLock()
 		info := &snapshotSessionInfo{
 			TenantID:            sess.TenantID,
+			PreferredRuntimeID:  sess.PreferredRuntimeID,
 			State:               sess.State,
 			CreatedAt:           sess.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
 			LastActiveAt:        sess.LastActiveAt.UTC().Format("2006-01-02T15:04:05Z07:00"),

@@ -8,6 +8,7 @@ import (
 
 	"github.com/bamanoz/tabula/internal/runtime/host/manifest"
 	"github.com/bamanoz/tabula/internal/runtime/host/policy"
+	runtimewire "github.com/bamanoz/tabula/internal/runtime/wire"
 	workerwire "github.com/bamanoz/tabula/internal/runtime/worker/wire"
 )
 
@@ -56,6 +57,9 @@ func TestWorkerStarterSpawnsInitializesAndMarksReady(t *testing.T) {
 	if len(reqs) != 1 || reqs[0].Mode != policy.SpawnModeWarm || reqs[0].Env["TABULA_TENANT_DIR"] != filepath.Join("/tmp/tabula", "tenants", "tenant-a") {
 		t.Fatalf("spawn request = %#v", reqs)
 	}
+	if len(reqs[0].Command) != 2 || reqs[0].Command[0] != "python3" || reqs[0].Command[1] != "run.py" {
+		t.Fatalf("expected canonical python worker command: %#v", reqs[0])
+	}
 }
 
 func TestWorkerStarterInitFailureClearsEntryAndShutsDownWorker(t *testing.T) {
@@ -95,6 +99,31 @@ func TestWorkerStarterSpawnFailureMarksFailed(t *testing.T) {
 	}
 	if !failed {
 		t.Fatal("spawn failure should mark target failed")
+	}
+}
+
+func TestWorkerStarterSpawnReqCarriesCanonicalWorkerCommand(t *testing.T) {
+	starter := newWorkerStarter("kernel", failingPolicy{}, nil)
+	plugin := manifest.Plugin{
+		ID:          "testbed-cold-node",
+		Name:        "Testbed Cold Node",
+		Version:     "0.1.0",
+		Description: "Node fixture",
+		Worker:      &manifest.Worker{Command: []string{"node", "scripts/run.js"}, Mode: runtimewire.WorkerModeCold},
+		WorkerMode:  runtimewire.WorkerModeCold,
+		Tools:       []manifest.Tool{{Name: "testbed_cold_node"}},
+		Requires:    &manifest.Requires{Kernel: ">=0.9.0,<1.0.0", ProtocolVersion: 1},
+		RootDir:     "/tmp/plugin",
+	}
+	req := starter.spawnReq("tenant-a", plugin)
+	if len(req.Command) != 2 || req.Command[0] != "node" || req.Command[1] != "scripts/run.js" {
+		t.Fatalf("command = %#v", req.Command)
+	}
+	if req.HarnessKind != runtimewire.HarnessKindNode {
+		t.Fatalf("harness kind = %q, want node", req.HarnessKind)
+	}
+	if req.Mode != policy.SpawnModeWarm {
+		t.Fatalf("mode = %q, want warm", req.Mode)
 	}
 }
 

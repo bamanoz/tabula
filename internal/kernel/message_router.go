@@ -109,6 +109,7 @@ func (h *Hub) queueMessagePlan(sender *Client, msg *Message, plan messagePlan) b
 func (h *Hub) handleUserMessage(sender *Client, msg *Message) {
 	msg.Meta, _ = ensureTurnCorrelationMeta(msg.Meta)
 	plan := h.buildMessagePlan(sender, msg)
+	h.stampMessagePreferredRuntime(sender, plan.tenantID, plan.targetSession, msg)
 	if !plan.blocked && h.sessionStuckSuspended(plan.tenantID, plan.targetSession) {
 		sender.SendMsg(&Message{Type: string(MsgError), Text: "session suspended_stuck"})
 		return
@@ -123,6 +124,7 @@ func (h *Hub) handleUserMessage(sender *Client, msg *Message) {
 			return
 		}
 	}
+	h.applyMessagePreferredRuntime(plan.tenantID, plan.targetSession, msg)
 	h.applyMessagePlan(sender, msg, plan)
 }
 
@@ -137,6 +139,7 @@ func (h *Hub) sessionStuckSuspended(tenantID, session string) bool {
 func (h *Hub) handleTurnSteer(sender *Client, msg *Message) {
 	msg.Meta, _ = ensureTurnCorrelationMeta(msg.Meta)
 	plan := h.buildMessagePlan(sender, msg)
+	h.stampMessagePreferredRuntime(sender, plan.tenantID, plan.targetSession, msg)
 	if plan.blocked {
 		sender.SendMsg(&Message{Type: string(MsgError), Text: "message blocked"})
 		return
@@ -154,6 +157,7 @@ func (h *Hub) handleTurnSteer(sender *Client, msg *Message) {
 		sender.SendMsg(&Message{Type: string(MsgError), Text: "session steer queue full"})
 		return
 	}
+	h.applyMessagePreferredRuntime(plan.tenantID, plan.targetSession, steer)
 	h.broadcastToSessionFrom(plan.tenantID, plan.targetSession, TopicTurnSteer, steer, sender, sender)
 }
 
@@ -234,6 +238,7 @@ func (h *Hub) dispatchQueuedInput(tenantID, session string, input queuedInput) {
 	if input.message.Session != "" {
 		session = input.message.Session
 	}
+	h.applyMessagePreferredRuntime(tenantID, session, input.message)
 	h.broadcastToSession(tenantID, session, messageCapability(input.message), input.message, nil)
 }
 
@@ -247,5 +252,6 @@ func (h *Hub) dispatchQueuedSteer(tenantID, session string, input queuedInput) {
 	if input.message.Session != "" {
 		session = input.message.Session
 	}
+	h.applyMessagePreferredRuntime(tenantID, session, input.message)
 	h.broadcastToSession(tenantID, session, TopicTurnSteer, input.message, nil)
 }

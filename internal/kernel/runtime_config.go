@@ -12,8 +12,6 @@ import (
 	"github.com/bamanoz/tabula/internal/tenant"
 )
 
-const defaultRuntimeID = "local"
-
 type RuntimeDefinition struct {
 	ID        string   `toml:"id"`
 	Backend   string   `toml:"backend"`
@@ -54,9 +52,6 @@ func LoadRuntimeDefinitions(tabulaHome string) ([]RuntimeDefinition, error) {
 		}
 	} else if !os.IsNotExist(err) {
 		return nil, err
-	}
-	if len(file.Runtimes) == 0 {
-		return []RuntimeDefinition{{ID: defaultRuntimeID, Backend: "local"}}, nil
 	}
 	seen := map[string]struct{}{}
 	out := make([]RuntimeDefinition, 0, len(file.Runtimes))
@@ -102,17 +97,10 @@ func LoadTenantRuntimeBinding(tabulaHome, tenantID string, runtimeIDs map[string
 	}
 	allowed := normalizeRuntimeAllowlist(file.Tenant.AllowedRuntimes)
 	defaultRuntime := strings.TrimSpace(file.Tenant.DefaultRuntime)
-	if defaultRuntime == "" {
-		if len(runtimeIDs) == 1 {
-			for runtimeID := range runtimeIDs {
-				defaultRuntime = runtimeID
-			}
-		} else {
-			return TenantRuntimeBinding{}, fmt.Errorf("tenant %q default_runtime is required when multiple runtimes are configured", tenantID)
+	if defaultRuntime != "" {
+		if _, ok := runtimeIDs[defaultRuntime]; !ok {
+			return TenantRuntimeBinding{}, fmt.Errorf("tenant %q references unknown runtime %q", tenantID, defaultRuntime)
 		}
-	}
-	if _, ok := runtimeIDs[defaultRuntime]; !ok {
-		return TenantRuntimeBinding{}, fmt.Errorf("tenant %q references unknown runtime %q", tenantID, defaultRuntime)
 	}
 	wildcard := false
 	for i, runtimeID := range allowed {

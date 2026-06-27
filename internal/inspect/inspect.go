@@ -297,7 +297,7 @@ func pluginReports(pluginDirs []string) ([]PluginReport, error) {
 				continue
 			}
 			seen[plugin.ID] = struct{}{}
-			reports = append(reports, PluginReport{ID: plugin.ID, Name: plugin.Name, Version: plugin.Version, Runtime: plugin.Runtime, PluginDir: plugin.RootDir, ManifestPath: manifestPath, Tools: toolNames(plugin.Tools), Enabled: true})
+			reports = append(reports, PluginReport{ID: plugin.ID, Name: plugin.Name, Version: plugin.Version, Runtime: inspectPluginRuntime(plugin), PluginDir: plugin.RootDir, ManifestPath: manifestPath, Tools: toolNames(plugin.Tools), Enabled: true})
 		}
 	}
 	sort.Slice(reports, func(i, j int) bool { return reports[i].ID < reports[j].ID })
@@ -555,8 +555,9 @@ func invokeHealthTool(ctx context.Context, home, tenantID string, plugin manifes
 		TenantID:    tenantID,
 		TargetID:    plugin.ID,
 		TargetKind:  runtimewire.TargetKindPlugin,
-		HarnessKind: runtimewire.HarnessKindPython,
-		Runtime:     plugin.Runtime,
+		HarnessKind: plugin.Capability().HarnessKind,
+		Command:     plugin.LaunchCommand(),
+		Runtime:     inspectPluginRuntime(plugin),
 		Entry:       plugin.Entry,
 		Manifest:    plugin.RawJSON(),
 		Env:         map[string]string{"TABULA_HOME": home, "TABULA_TENANT_DIR": filepath.Join(home, "tenants", tenantID)},
@@ -589,6 +590,16 @@ func invokeHealthTool(ctx context.Context, home, tenantID string, plugin manifes
 		return PluginHealth{PluginID: plugin.ID, Status: "error", Messages: []HealthMessage{{Level: "error", Text: err.Error()}}}
 	}
 	return parsed
+}
+
+func inspectPluginRuntime(plugin manifest.Plugin) string {
+	if runtime := strings.TrimSpace(plugin.Runtime); runtime != "" {
+		return runtime
+	}
+	if kind := plugin.Capability().HarnessKind; kind != runtimewire.HarnessKindUnknown {
+		return string(kind)
+	}
+	return ""
 }
 
 func parseHealthPayload(pluginID string, data []byte) (PluginHealth, error) {

@@ -7,15 +7,16 @@ import (
 	"testing"
 
 	runtimemock "github.com/bamanoz/tabula/internal/runtime/mock"
+	"github.com/bamanoz/tabula/internal/runtime/wire"
 	"github.com/bamanoz/tabula/internal/tenant"
 )
 
-func TestLoadRuntimeDefinitionsSynthesizesLocal(t *testing.T) {
+func TestLoadRuntimeDefinitionsWithoutConfigReturnsEmpty(t *testing.T) {
 	defs, err := LoadRuntimeDefinitions(t.TempDir())
 	if err != nil {
 		t.Fatalf("LoadRuntimeDefinitions: %v", err)
 	}
-	if len(defs) != 1 || defs[0].ID != "local" || defs[0].Backend != "local" {
+	if len(defs) != 0 {
 		t.Fatalf("definitions = %#v", defs)
 	}
 }
@@ -58,6 +59,35 @@ default_runtime = "local"
 	_, err := LoadTenantRuntimeBinding(home, "alpha", map[string]struct{}{"local": {}})
 	if err == nil {
 		t.Fatal("expected unknown runtime error")
+	}
+}
+
+func TestLoadTenantRuntimeBindingAllowsMissingDefaultRuntime(t *testing.T) {
+	home := t.TempDir()
+	writeKernelConfigFile(t, filepath.Join(home, "tenants", "alpha", "config", "tenant.toml"), `[tenant]
+allowed_runtimes = ["local"]
+`)
+	binding, err := LoadTenantRuntimeBinding(home, "alpha", map[string]struct{}{"local": {}})
+	if err != nil {
+		t.Fatalf("LoadTenantRuntimeBinding: %v", err)
+	}
+	if binding.DefaultRuntime != "" || len(binding.AllowedRuntimes) != 1 || binding.AllowedRuntimes[0] != "local" {
+		t.Fatalf("binding = %#v", binding)
+	}
+}
+
+func TestRuntimeForTenantAllowsAttachedRuntimeWithoutConfiguredDefinition(t *testing.T) {
+	hub := NewHub(nil, 0, 0, nil)
+	if err := hub.runtimes.Configure(nil, map[string]TenantRuntimeBinding{"alpha": {AllowedRuntimes: []string{"local"}}}); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	conn := runtimemock.New()
+	if err := hub.runtimes.RegisterHello("local", conn, nil, 0, []string{"alpha"}); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	got, code, err := hub.runtimes.RuntimeForTenant("alpha", "local")
+	if err != nil || code != "" || got == nil {
+		t.Fatalf("RuntimeForTenant = conn:%T code:%q err:%v", got, code, err)
 	}
 }
 
@@ -141,6 +171,27 @@ default_runtime = "remote"
 	}
 	if _, err := conn.Health(context.Background()); err != nil {
 		t.Fatalf("remote conn health through picked runtime: %v", err)
+	}
+}
+
+func TestPickRuntimeDoesNotAutoSelectSingleConfiguredRuntime(t *testing.T) {
+	hub := NewHub(nil, 0, 0, nil)
+	if err := hub.runtimes.Configure(
+		[]RuntimeDefinition{{ID: "local", Backend: "local"}},
+		map[string]TenantRuntimeBinding{},
+	); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	conn := runtimemock.New()
+	if err := hub.runtimes.RegisterHello("local", conn, nil, 0); err != nil {
+		t.Fatalf("RegisterHello local: %v", err)
+	}
+	gotConn, runtimeID, code, err := hub.pickRuntime("alpha")
+	if err == nil || err.Error() != `default runtime is not configured for tenant "alpha"` {
+		t.Fatalf("unexpected error: conn=%T runtime=%q code=%q err=%v", gotConn, runtimeID, code, err)
+	}
+	if gotConn != nil || runtimeID != "" || code != wire.ErrorRuntimeUnavailable {
+		t.Fatalf("unexpected pick result: conn=%T runtime=%q code=%q err=%v", gotConn, runtimeID, code, err)
 	}
 }
 

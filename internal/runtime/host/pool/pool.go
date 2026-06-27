@@ -388,16 +388,18 @@ func (p *Pool) invokeColdPlugin(ctx context.Context, plugin manifest.Plugin, in 
 	}
 	defer release()
 	worker, err := p.policy.Spawn(ctx, policy.SpawnReq{
-		KernelID:   p.kernelID,
-		TenantID:   in.TenantID,
-		TargetID:   in.Target.ID,
-		TargetKind: wire.TargetKindPlugin,
-		Runtime:    plugin.Runtime,
-		Entry:      plugin.Entry,
-		Manifest:   plugin.RawJSON(),
-		Env:        p.spawnEnv(in.TenantID),
-		WorkingDir: plugin.RootDir,
-		Mode:       policy.SpawnModeCold,
+		KernelID:    p.kernelID,
+		TenantID:    in.TenantID,
+		TargetID:    in.Target.ID,
+		TargetKind:  wire.TargetKindPlugin,
+		HarnessKind: plugin.Capability().HarnessKind,
+		Command:     plugin.LaunchCommand(),
+		Runtime:     plugin.Runtime,
+		Entry:       plugin.Entry,
+		Manifest:    plugin.RawJSON(),
+		Env:         p.spawnEnv(in.TenantID),
+		WorkingDir:  plugin.RootDir,
+		Mode:        policy.SpawnModeCold,
 	})
 	if err != nil {
 		return failed(in.CallID, wire.ErrorInternal, err.Error())
@@ -553,10 +555,21 @@ func (p *Pool) logPrimeFailure(plugin manifest.Plugin, err error) {
 	logger.Warn(
 		"runtime target priming failed",
 		"target", plugin.ID,
-		"runtime", plugin.Runtime,
+		"runtime", pluginRuntime(plugin),
 		"entry_path", pluginEntryPath(plugin),
+		"command", strings.Join(plugin.LaunchCommand(), " "),
 		"diagnostic", safeWorkerErrorMessage("worker initialization failed", err),
 	)
+}
+
+func pluginRuntime(plugin manifest.Plugin) string {
+	if runtime := strings.TrimSpace(plugin.Runtime); runtime != "" {
+		return runtime
+	}
+	if kind := plugin.Capability().HarnessKind; kind != wire.HarnessKindUnknown {
+		return string(kind)
+	}
+	return ""
 }
 
 func cloneTenantLimits(in map[string]int) map[string]int {
@@ -610,10 +623,7 @@ func stderrCapturedSummary(message string) string {
 }
 
 func pluginEntryPath(plugin manifest.Plugin) string {
-	if filepath.IsAbs(plugin.Entry) || plugin.RootDir == "" {
-		return plugin.Entry
-	}
-	return filepath.Join(plugin.RootDir, plugin.Entry)
+	return plugin.LaunchPath()
 }
 
 // Reload evicts matching workers and returns their Runtime API targets.

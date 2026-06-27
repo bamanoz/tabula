@@ -253,7 +253,7 @@ class InstallTests(unittest.TestCase):
             home = root / "home"
             distro = _make_minimal_distro(root, "demo")
 
-            # bundle with two skills + packaged support library
+            # bundle with two skills; legacy bundle-local _lib roots are ignored
             bundle = root / "ext" / "bundles" / "mempalace"
             _make_skill(bundle, "mempalace-save", "save-v1")
             _make_skill(bundle, "mempalace-search", "search-v1")
@@ -284,8 +284,7 @@ class InstallTests(unittest.TestCase):
                 home / "distrib" / "demo" / "skills" / "weather" / "marker.txt",
             ):
                 self.assertTrue(p.exists(), p)
-            self.assertTrue((home / "distrib" / "demo" / "_lib" / "python" / "src" / "pkg" / "__init__.py").exists())
-            self.assertTrue((home / "_lib" / "python" / "src" / "pkg" / "__init__.py").exists())
+            self.assertFalse((home / "_lib").exists())
 
             self.assertFalse((home / "boot.py").exists())
             self.assertTrue((home / "distrib" / "active").is_symlink())
@@ -326,7 +325,8 @@ class InstallTests(unittest.TestCase):
                 self.assertTrue((tenant_root / "skills" / "mempalace-save" / "marker.txt").exists())
                 self.assertTrue((tenant_root / "plugins" / "sessions" / "marker.txt").exists())
                 self.assertTrue((tenant_root / "clients" / "client-probe" / "run.py").exists())
-                self.assertTrue((tenant_root / "_lib" / "python" / "src" / "pkg" / "__init__.py").exists())
+                self.assertTrue((tenant_root / "packages").exists())
+                self.assertFalse((tenant_root / "_lib").exists())
             self.assertTrue(os.path.samefile(home / "tenants" / "alpha" / "skills" / "mempalace-save" / "marker.txt", home / "tenants" / "beta" / "skills" / "mempalace-save" / "marker.txt"))
 
     def test_install_tenant_filter_refreshes_only_requested_tenant(self):
@@ -351,7 +351,7 @@ class InstallTests(unittest.TestCase):
             self.assertTrue((home / "tenants" / "alpha" / "skills" / "mempalace-save" / "marker.txt").exists())
             self.assertFalse((home / "tenants" / "beta" / "skills" / "mempalace-save" / "marker.txt").exists())
 
-    def test_install_replaces_tenant_lib_symlink_before_refreshing_surface(self):
+    def test_install_removes_legacy_tenant_lib_symlink_when_refreshing_surface(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
@@ -373,9 +373,9 @@ class InstallTests(unittest.TestCase):
 
             installmod.install(distro, home, update=True)
 
-            self.assertFalse((tenant_root / "_lib").is_symlink())
-            self.assertTrue((home / "_lib" / "python" / "src" / "pkg" / "__init__.py").exists())
-            self.assertTrue((tenant_root / "_lib" / "python" / "src" / "pkg" / "__init__.py").exists())
+            self.assertFalse((home / "_lib").exists())
+            self.assertFalse((tenant_root / "_lib").exists())
+            self.assertTrue((tenant_root / "packages").exists())
 
     def test_install_update_keeps_existing_tenants_on_active_surface(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -437,7 +437,8 @@ class InstallTests(unittest.TestCase):
                 tenant_root = home / "tenants" / tenant_name
                 self.assertTrue((tenant_root / "skills" / "mempalace-save" / "marker.txt").exists())
                 self.assertTrue((tenant_root / "plugins" / "sessions" / "marker.txt").exists())
-                self.assertTrue((tenant_root / "_lib" / "python" / "src" / "pkg" / "__init__.py").exists())
+                self.assertTrue((tenant_root / "packages").exists())
+                self.assertFalse((tenant_root / "_lib").exists())
 
     def test_source_alias_installs_multiple_bundles_with_shared_lib_once(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -462,12 +463,12 @@ class InstallTests(unittest.TestCase):
             _gen, lock = installmod.install(distro, home)
             self.assertTrue((home / "skills" / "shell" / "marker.txt").exists())
             self.assertTrue((home / "skills" / "caveman-compress" / "marker.txt").exists())
-            self.assertTrue((home / "_lib" / "python" / "src" / "shared" / "__init__.py").exists())
+            self.assertFalse((home / "_lib").exists())
             self.assertEqual(lock.bundles["base"].source, "local:../tabula-bundles#path=base")
             self.assertEqual(lock.bundles["caveman"].source, "local:../tabula-bundles#path=caveman")
             self.assertEqual(lock.bundles["base"].resolved_path, str((repo / "base").resolve()))
 
-    def test_mixed_bundle_sources_with_identical_shared_lib_pass(self):
+    def test_mixed_bundle_sources_with_identical_legacy_shared_lib_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
@@ -488,14 +489,11 @@ class InstallTests(unittest.TestCase):
             )
 
             installmod.install(distro, home)
-            self.assertEqual(
-                (home / "_lib" / "python" / "src" / "shared" / "__init__.py").read_text(encoding="utf-8"),
-                "X=1\n",
-            )
+            self.assertFalse((home / "_lib").exists())
             self.assertTrue((home / "skills" / "shell" / "marker.txt").exists())
             self.assertTrue((home / "skills" / "caveman-compress" / "marker.txt").exists())
 
-    def test_mixed_bundle_sources_with_different_shared_lib_fail_clearly(self):
+    def test_mixed_bundle_sources_with_different_legacy_shared_lib_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
@@ -516,14 +514,8 @@ class InstallTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaises(installmod.InstallError) as cm:
-                installmod.install(distro, home)
-            message = str(cm.exception)
-            self.assertIn("shared lib _lib/python differs between bundle sources", message)
-            self.assertIn("bundle: base", message)
-            self.assertIn("bundle: caveman", message)
-            self.assertIn("hash: sha256:", message)
-            self.assertNotIn("set override = true", message)
+            installmod.install(distro, home)
+            self.assertFalse((home / "_lib").exists())
 
     def test_bundle_install_mixed_skills_and_plugins(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -699,7 +691,90 @@ class InstallTests(unittest.TestCase):
             )
 
             installmod.install(distro, home)
-            self.assertTrue((home / "_lib" / "python" / "src" / "tabula_session_sdk" / "__init__.py").is_file())
+            self.assertTrue((home / "packages" / "python" / "src" / "tabula_session_sdk" / "__init__.py").is_file())
+
+    def test_distro_exported_python_package_is_installed_into_package_surface(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+            _touch(distro / "_lib" / "python" / "src" / "demo_prompt" / "__init__.py", "VALUE = 1\n")
+            with (distro / "distro.toml").open("a", encoding="utf-8") as f:
+                f.write(
+                    '[[exports.python_packages]]\n'
+                    'name="demo_prompt"\n'
+                    'path="_lib/python/src/demo_prompt"\n'
+                    'owner="demo"\n'
+                )
+
+            installmod.install(distro, home)
+
+            self.assertTrue((home / "packages" / "python" / "src" / "demo_prompt" / "__init__.py").is_file())
+            self.assertFalse((home / "_lib").exists())
+
+    def test_bundle_exported_python_packages_from_multiple_bundles_install(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            base = root / "ext" / "bundles" / "base"
+            _make_plugin(base, "sessions")
+            _make_python_package(base / "sessions" / "sdk" / "python" / "src", "tabula_session_sdk")
+            _touch(base / "bundle.toml", (
+                '[bundle]\nname="base"\ncomponents=["sessions"]\n'
+                '[[exports.python_packages]]\n'
+                'name="tabula_session_sdk"\n'
+                'path="sessions/sdk/python/src/tabula_session_sdk"\n'
+            ))
+
+            drivers = root / "ext" / "bundles" / "drivers"
+            _make_plugin(drivers, "driver")
+            _make_python_package(drivers / "driver" / "sdk" / "python" / "src", "tabula_driver_sdk")
+            _touch(drivers / "bundle.toml", (
+                '[bundle]\nname="drivers"\ncomponents=["driver"]\n'
+                '[[exports.python_packages]]\n'
+                'name="tabula_driver_sdk"\n'
+                'path="driver/sdk/python/src/tabula_driver_sdk"\n'
+            ))
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
+                '[[bundles]]\nname="base"\nsource="local:../ext/bundles/base"\n'
+                '[[bundles]]\nname="drivers"\nsource="local:../ext/bundles/drivers"\n',
+                encoding="utf-8",
+            )
+
+            installmod.install(distro, home)
+
+            self.assertTrue((home / "packages" / "python" / "src" / "tabula_session_sdk" / "__init__.py").is_file())
+            self.assertTrue((home / "packages" / "python" / "src" / "tabula_driver_sdk" / "__init__.py").is_file())
+
+    def test_bundle_exported_python_package_conflict_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            for bundle_name in ("alpha", "beta"):
+                bundle = root / "ext" / "bundles" / bundle_name
+                component = f"{bundle_name}-plugin"
+                _make_plugin(bundle, component)
+                _make_python_package(bundle / component / "sdk" / "python" / "src", "shared_sdk")
+                _touch(bundle / "bundle.toml", (
+                    f'[bundle]\nname="{bundle_name}"\ncomponents=["{component}"]\n'
+                    '[[exports.python_packages]]\n'
+                    'name="shared_sdk"\n'
+                    f'path="{component}/sdk/python/src/shared_sdk"\n'
+                ))
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
+                '[[bundles]]\nname="alpha"\nsource="local:../ext/bundles/alpha"\n'
+                '[[bundles]]\nname="beta"\nsource="local:../ext/bundles/beta"\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(installmod.InstallError, "exported python package 'shared_sdk' conflicts"):
+                installmod.install(distro, home)
 
     def test_bundle_dependency_requires_selected_bundle(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -751,6 +826,62 @@ class InstallTests(unittest.TestCase):
 
             with self.assertRaisesRegex(installmod.InstallError, 'does not export'):
                 installmod.install(distro, home)
+
+    def test_bundle_dependency_requires_exported_typescript_package(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            base = root / "ext" / "bundles" / "base"
+            _make_plugin(base, "skills")
+            _touch(base / "bundle.toml", '[bundle]\nname="base"\ncomponents=["skills"]\n')
+
+            gateway = root / "ext" / "bundles" / "gateway"
+            _make_plugin(gateway, "gateway-node")
+            _touch(gateway / "bundle.toml", (
+                '[bundle]\nname="gateway"\ncomponents=["gateway-node"]\n'
+                '[[dependencies]]\n'
+                'bundle="base"\n'
+                'typescript_packages=["@tabula/skill-sdk"]\n'
+            ))
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
+                '[[bundles]]\nname="base"\nsource="local:../ext/bundles/base"\n'
+                '[[bundles]]\nname="gateway"\nsource="local:../ext/bundles/gateway"\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(installmod.InstallError, 'typescript package'):
+                installmod.install(distro, home)
+
+    def test_bundle_exported_typescript_package_is_installed_and_locked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            base = root / "ext" / "bundles" / "base"
+            _make_plugin(base, "skills")
+            package_root = base / "skills" / "sdk" / "typescript"
+            _touch(package_root / "package.json", '{"name":"@tabula/skill-sdk","version":"0.1.0"}\n')
+            _touch(package_root / "src" / "index.ts", "export const ok = true;\n")
+            _touch(base / "bundle.toml", (
+                '[bundle]\nname="base"\ncomponents=["skills"]\n'
+                '[[exports.typescript_packages]]\n'
+                'name="@tabula/skill-sdk"\n'
+                'path="skills/sdk/typescript"\n'
+            ))
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
+                '[[bundles]]\nname="base"\nsource="local:../ext/bundles/base"\n',
+                encoding="utf-8",
+            )
+
+            result = installmod.install(distro, home)
+
+            self.assertTrue((home / "packages" / "typescript" / "@tabula" / "skill-sdk" / "package.json").is_file())
+            self.assertEqual(result.lock.sdk_versions.get("@tabula/skill-sdk"), "0.1.0")
 
     def test_bundle_dependency_cycle_fails_install(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -104,6 +104,9 @@ func GlobalConfigFile() string { return filepath.Join(ConfigDir(), "global.toml"
 // RuntimeConfigFile returns $TABULA_HOME/config/runtime.toml.
 func RuntimeConfigFile() string { return filepath.Join(ConfigDir(), "runtime.toml") }
 
+// RuntimeInstanceFile returns $TABULA_HOME/run/runtime-instance.json.
+func RuntimeInstanceFile() string { return filepath.Join(RunDir(), "runtime-instance.json") }
+
 // ReloadTouchFile returns $TABULA_HOME/run/reload.touch, the trigger the
 // installer touches after switching the active generation.
 func ReloadTouchFile() string { return filepath.Join(RunDir(), "reload.touch") }

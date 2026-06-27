@@ -305,11 +305,53 @@ def run_materializer(manifest: AppManifest, home: Path, *, lock_path: Path | Non
         "TABULA_APP_PHASE": phase,
         "TABULA_APP_DRY_RUN": "1" if dry_run else "0",
     })
+    _prepend_pythonpath(env, _materializer_python_roots(home))
     proc = subprocess.run(cmd, cwd=distro_path, env=env, capture_output=True, text=True)
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()
         raise AppManifestError(f"app materializer failed ({raw!r})" + (f": {detail}" if detail else ""))
     return True
+
+
+def _materializer_python_roots(home: Path) -> list[Path]:
+    roots = [home / "packages" / "python" / "src"]
+    bundle_root = _local_bundles_root()
+    if bundle_root is not None:
+        roots.extend([
+            bundle_root / "base" / "plugin-sdk" / "sdk" / "python" / "src",
+            bundle_root / "base" / "skills" / "sdk" / "python" / "src",
+            bundle_root / "base" / "tool-result-store" / "sdk" / "python" / "src",
+            bundle_root / "base" / "sessions" / "sdk" / "python" / "src",
+            bundle_root / "base" / "deferred-tools" / "sdk" / "python" / "src",
+            bundle_root / "drivers" / "driver" / "sdk" / "python" / "src",
+            bundle_root / "mempalace" / "mempalace-common" / "sdk" / "python" / "src",
+        ])
+    return [path for path in roots if path.is_dir()]
+
+
+def _local_bundles_root() -> Path | None:
+    direct = os.environ.get("TABULA_BUNDLES_ROOT")
+    if direct:
+        path = Path(direct).expanduser().resolve()
+        if path.is_dir():
+            return path
+    alias = os.environ.get("TABULA_SOURCE_ALIAS_TABULA_BUNDLES", "")
+    if alias.startswith("local:"):
+        raw = alias.removeprefix("local:").split("#", 1)[0]
+        path = Path(raw).expanduser().resolve()
+        if path.is_dir():
+            return path
+    return None
+
+
+def _prepend_pythonpath(env: dict[str, str], roots: list[Path]) -> None:
+    if not roots:
+        return
+    parts = [str(path) for path in roots]
+    current = env.get("PYTHONPATH")
+    if current:
+        parts.append(current)
+    env["PYTHONPATH"] = os.pathsep.join(parts)
 
 
 def compile_plugin_configs(home: Path, tenant_dir: Path) -> tuple[str, ...]:

@@ -22,6 +22,7 @@ type DiskSessionStore struct {
 type sessionFile struct {
 	ID                  string       `json:"id"`
 	TenantID            string       `json:"tenant_id"`
+	PreferredRuntimeID  string       `json:"preferred_runtime_id,omitempty"`
 	State               SessionState `json:"state"`
 	CreatedAt           string       `json:"created_at"`
 	LastActiveAt        string       `json:"last_active_at"`
@@ -48,6 +49,7 @@ func (s *DiskSessionStore) Save(sess *Session) error {
 	record := sessionFile{
 		ID:                  sess.ID,
 		TenantID:            sess.TenantID,
+		PreferredRuntimeID:  sess.PreferredRuntimeID,
 		State:               sess.State,
 		CreatedAt:           formatSnapshotTime(sess.CreatedAt),
 		LastActiveAt:        formatSnapshotTime(sess.LastActiveAt),
@@ -141,6 +143,7 @@ func (h *Hub) observePersistedSessionRestart(sess *Session) {
 	if record == nil {
 		return
 	}
+	sess.RestorePreferredRuntime(record.PreferredRuntimeID)
 	active := record.Busy || record.ActiveToolCalls > 0
 	sess.observeRestart(active, record.RestartObservations, stuckSessionRestartThreshold)
 }

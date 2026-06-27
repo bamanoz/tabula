@@ -111,11 +111,13 @@ func validateSpawnReq(req policy.SpawnReq) error {
 	if strings.TrimSpace(req.TargetID) == "" {
 		return errors.New("bare policy: target id is required")
 	}
-	if strings.TrimSpace(req.Runtime) == "" {
-		return errors.New("bare policy: runtime is required")
-	}
-	if strings.TrimSpace(req.Entry) == "" {
-		return errors.New("bare policy: entry is required")
+	if len(req.Command) == 0 {
+		if strings.TrimSpace(req.Runtime) == "" {
+			return errors.New("bare policy: runtime is required")
+		}
+		if strings.TrimSpace(req.Entry) == "" {
+			return errors.New("bare policy: entry is required")
+		}
 	}
 	if strings.TrimSpace(req.WorkingDir) == "" {
 		return errors.New("bare policy: working dir is required")
@@ -131,6 +133,13 @@ func validateSpawnReq(req policy.SpawnReq) error {
 }
 
 func (p *Policy) buildCommand(_ context.Context, req policy.SpawnReq) (*exec.Cmd, error) {
+	if len(req.Command) > 0 {
+		argv := resolveCommand(req.Command, req.WorkingDir)
+		cmd := exec.Command(argv[0], argv[1:]...)
+		cmd.Dir = req.WorkingDir
+		cmd.Env = workerEnv(req)
+		return cmd, nil
+	}
 	bin := p.runtimeCommand(req.Runtime)
 	if bin == "" {
 		return nil, fmt.Errorf("bare policy: no command configured for runtime %q", req.Runtime)
@@ -145,16 +154,22 @@ func (p *Policy) buildCommand(_ context.Context, req policy.SpawnReq) (*exec.Cmd
 	return cmd, nil
 }
 
+func resolveCommand(command []string, workingDir string) []string {
+	argv := append([]string(nil), command...)
+	if len(argv) == 0 {
+		return argv
+	}
+	if !filepath.IsAbs(argv[0]) && strings.ContainsAny(argv[0], `/\\`) {
+		argv[0] = filepath.Join(workingDir, argv[0])
+	}
+	return argv
+}
+
 func (p *Policy) runtimeCommand(runtime string) string {
 	if p != nil && p.RuntimeCommands != nil && p.RuntimeCommands[runtime] != "" {
 		return p.RuntimeCommands[runtime]
 	}
 	switch runtime {
-	case "python":
-		if python := installedPython(os.Getenv("TABULA_HOME")); python != "" {
-			return python
-		}
-		return "python3"
 	case "bash":
 		return "bash"
 	case "node":
@@ -162,29 +177,6 @@ func (p *Policy) runtimeCommand(runtime string) string {
 	default:
 		return ""
 	}
-}
-
-func installedPython(tabulaHome string) string {
-	if path := installedPythonAt(os.Getenv("TABULA_VENV")); path != "" {
-		return path
-	}
-	tabulaHome = strings.TrimSpace(tabulaHome)
-	if tabulaHome == "" {
-		return ""
-	}
-	return installedPythonAt(filepath.Join(tabulaHome, ".venv"))
-}
-
-func installedPythonAt(venv string) string {
-	venv = strings.TrimSpace(venv)
-	if venv == "" {
-		return ""
-	}
-	path := filepath.Join(venv, "bin", "python3")
-	if info, err := os.Stat(path); err == nil && !info.IsDir() {
-		return path
-	}
-	return ""
 }
 
 func (p *Policy) initTimeout() time.Duration {
@@ -210,9 +202,6 @@ func workerEnv(req policy.SpawnReq) []string {
 		}
 	}
 	env = setEnv(env, "TABULA_TARGET_ID", req.TargetID)
-	if req.Runtime == "python" {
-		env = prependPythonPath(env, filepath.Join(tabulaHome(env), "_lib", "python", "src"))
-	}
 	return env
 }
 
@@ -234,25 +223,6 @@ func envValue(env []string, key string) string {
 		}
 	}
 	return ""
-}
-
-func prependPythonPath(env []string, path string) []string {
-	if strings.TrimSpace(path) == "" {
-		return env
-	}
-	prefix := "PYTHONPATH="
-	for i, item := range env {
-		if strings.HasPrefix(item, prefix) {
-			current := strings.TrimPrefix(item, prefix)
-			if current == "" {
-				env[i] = prefix + path
-			} else {
-				env[i] = prefix + path + string(os.PathListSeparator) + current
-			}
-			return env
-		}
-	}
-	return append(env, prefix+path)
 }
 
 func passthroughEnv(current []string) []string {

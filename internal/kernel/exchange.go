@@ -239,13 +239,7 @@ func exchangeResponderScore(c *Client) int {
 	if c == nil || len(c.meta) == 0 {
 		return 0
 	}
-	var meta struct {
-		Role    string `json:"tabula.client_role"`
-		Managed bool   `json:"tabula.managed"`
-	}
-	if err := json.Unmarshal(c.meta, &meta); err != nil {
-		return 0
-	}
+	meta := decodeClientMeta(c.meta)
 	score := 0
 	if meta.Role == "ui" {
 		score += 2

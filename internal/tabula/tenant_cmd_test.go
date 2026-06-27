@@ -92,7 +92,7 @@ func TestTenantCreateFansOutActiveRuntimeSurface(t *testing.T) {
 		"plugins/test-plugin/plugin.toml",
 		"clients/test-client/client.toml",
 		"templates/SYSTEM.md",
-		"_lib/python/src/pkg/__init__.py",
+		"packages/python/src/pkg/__init__.py",
 	} {
 		path := filepath.Join(home, rel)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -110,7 +110,7 @@ func TestTenantCreateFansOutActiveRuntimeSurface(t *testing.T) {
 		"plugins/test-plugin/plugin.toml",
 		"clients/test-client/client.toml",
 		"templates/SYSTEM.md",
-		"_lib",
+		"packages/python/src/pkg/__init__.py",
 	} {
 		path := filepath.Join(home, "tenants", "alpha", rel)
 		if _, err := os.Lstat(path); err != nil {

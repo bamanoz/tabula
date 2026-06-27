@@ -16,9 +16,16 @@ Schema:
     public = true
     owner = "sessions"
 
+    [[exports.typescript_packages]]
+    name = "@tabula/skill-sdk"
+    path = "skills/sdk/typescript"
+    public = true
+    owner = "skills"
+
     [[dependencies]]
     bundle = "base"
     python_packages = ["tabula_session_sdk"]
+    typescript_packages = ["@tabula/skill-sdk"]
 
 A bundle without a ``bundle.toml`` is treated as an unversioned legacy bundle:
 no compatibility check is performed and ``BundleManifest.version`` is ``None``.
@@ -42,6 +49,7 @@ class BundleManifest:
     # None means legacy walk-discovery; an empty tuple means explicit empty bundle.
     components: tuple[str, ...] | None = None
     exports_python_packages: tuple["PythonPackageExport", ...] = ()
+    exports_typescript_packages: tuple["TypeScriptPackageExport", ...] = ()
     dependencies: tuple["BundleDependency", ...] = ()
 
     @property
@@ -62,9 +70,18 @@ class PythonPackageExport:
 
 
 @dataclass(frozen=True)
+class TypeScriptPackageExport:
+    name: str
+    path: str
+    public: bool = True
+    owner: str = ""
+
+
+@dataclass(frozen=True)
 class BundleDependency:
     bundle: str
     python_packages: tuple[str, ...] = ()
+    typescript_packages: tuple[str, ...] = ()
 
 
 def load_bundle_manifest(bundle_root: Path) -> BundleManifest:
@@ -102,6 +119,7 @@ def load_bundle_manifest(bundle_root: Path) -> BundleManifest:
         path=bundle_root,
         components=components,
         exports_python_packages=_parse_python_package_exports(manifest_path, exports.get("python_packages")),
+        exports_typescript_packages=_parse_typescript_package_exports(manifest_path, exports.get("typescript_packages")),
         dependencies=_parse_dependencies(manifest_path, data.get("dependencies")),
     )
 
@@ -138,10 +156,55 @@ def _parse_python_package_exports(manifest_path: Path, raw: object) -> tuple[Pyt
         rel = Path(path)
         if rel.is_absolute() or ".." in rel.parts:
             raise ManifestError(f"{manifest_path}: exports.python_packages path must stay inside bundle: {path!r}")
-        if Path(name).name != name:
+        if not _valid_python_package_name(name):
             raise ManifestError(f"{manifest_path}: exports.python_packages name must be a single package name: {name!r}")
-        exports.append(PythonPackageExport(name=name, path=rel.as_posix(), public=bool(entry.get("public", True)), owner=str(entry.get("owner") or "").strip()))
+        exports.append(PythonPackageExport(name=name, path=rel.as_posix(), public=_parse_public(manifest_path, "exports.python_packages", entry), owner=str(entry.get("owner") or "").strip()))
     return tuple(exports)
+
+
+def _parse_typescript_package_exports(manifest_path: Path, raw: object) -> tuple[TypeScriptPackageExport, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ManifestError(f"{manifest_path}: exports.typescript_packages must be an array of tables")
+    exports: list[TypeScriptPackageExport] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise ManifestError(f"{manifest_path}: exports.typescript_packages entries must be tables")
+        name = str(entry.get("name") or "").strip()
+        path = str(entry.get("path") or "").strip()
+        if not name or not path:
+            raise ManifestError(f"{manifest_path}: exports.typescript_packages entries require name and path")
+        rel = Path(path)
+        if rel.is_absolute() or ".." in rel.parts:
+            raise ManifestError(f"{manifest_path}: exports.typescript_packages path must stay inside bundle: {path!r}")
+        if not _valid_typescript_package_name(name):
+            raise ManifestError(f"{manifest_path}: exports.typescript_packages name must be an npm package name: {name!r}")
+        exports.append(TypeScriptPackageExport(name=name, path=rel.as_posix(), public=_parse_public(manifest_path, "exports.typescript_packages", entry), owner=str(entry.get("owner") or "").strip()))
+    return tuple(exports)
+
+
+def _parse_public(manifest_path: Path, section: str, entry: dict) -> bool:
+    value = entry.get("public", True)
+    if not isinstance(value, bool):
+        raise ManifestError(f"{manifest_path}: {section} public must be a boolean")
+    return value
+
+
+def _valid_python_package_name(name: str) -> bool:
+    return bool(name) and Path(name).name == name and name.replace("_", "").replace("-", "").isalnum()
+
+
+def _valid_typescript_package_name(name: str) -> bool:
+    if not name or name.endswith("/"):
+        return False
+    parts = name.split("/")
+    if len(parts) == 1:
+        return bool(parts[0]) and not parts[0].startswith("@")
+    if len(parts) == 2:
+        scope, package = parts
+        return scope.startswith("@") and len(scope) > 1 and bool(package)
+    return False
 
 
 def _parse_dependencies(manifest_path: Path, raw: object) -> tuple[BundleDependency, ...]:
@@ -159,5 +222,8 @@ def _parse_dependencies(manifest_path: Path, raw: object) -> tuple[BundleDepende
         pkgs = entry.get("python_packages") or []
         if not isinstance(pkgs, list) or not all(isinstance(item, str) and item.strip() for item in pkgs):
             raise ManifestError(f"{manifest_path}: dependency {bundle!r} python_packages must be list[str]")
-        deps.append(BundleDependency(bundle=bundle, python_packages=tuple(str(item).strip() for item in pkgs)))
+        ts_pkgs = entry.get("typescript_packages") or []
+        if not isinstance(ts_pkgs, list) or not all(isinstance(item, str) and item.strip() for item in ts_pkgs):
+            raise ManifestError(f"{manifest_path}: dependency {bundle!r} typescript_packages must be list[str]")
+        deps.append(BundleDependency(bundle=bundle, python_packages=tuple(str(item).strip() for item in pkgs), typescript_packages=tuple(str(item).strip() for item in ts_pkgs)))
     return tuple(deps)

@@ -224,12 +224,12 @@ func tenantRecords(items []tenant.Tenant) []tenantCLIRecord {
 
 func refreshTenantRuntimeSurface(tabulaHome, tenantID string) error {
 	tenantRoot := filepath.Join(tabulaHome, "tenants", tenantID)
-	for _, name := range []string{"clients", "templates", "plugins", "skills"} {
+	for _, name := range []string{"clients", "templates", "plugins", "skills", "packages"} {
 		if err := mirrorRuntimeSurface(filepath.Join(tabulaHome, name), filepath.Join(tenantRoot, name)); err != nil {
 			return err
 		}
 	}
-	return linkSharedTree(filepath.Join(tabulaHome, "_lib"), filepath.Join(tenantRoot, "_lib"))
+	return nil
 }
 
 func mirrorRuntimeSurface(srcDir, dstDir string) error {

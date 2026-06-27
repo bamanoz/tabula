@@ -14,8 +14,10 @@ func TestLoadDirsDiscoversPluginManifestsAndCapabilities(t *testing.T) {
 	writePlugin(t, filepath.Join(dir, "fs", "plugin.toml"), `id = "fs"
 name = "Filesystem"
 version = "0.1.0"
-runtime = "python"
-entry = "run.py"
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
 
 [[tools]]
 name = "fs_write"
@@ -42,7 +44,7 @@ sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 	if !ok {
 		t.Fatal("expected fs plugin")
 	}
-	if plugin.RootDir != filepath.Join(dir, "fs") || plugin.Runtime != "python" || plugin.Entry != "run.py" {
+	if plugin.RootDir != filepath.Join(dir, "fs") || plugin.Worker == nil || len(plugin.Worker.Command) != 2 || plugin.Worker.Command[0] != "python3" || plugin.Worker.Command[1] != "run.py" {
 		t.Fatalf("unexpected plugin: %#v", plugin)
 	}
 	if len(plugin.Hooks) != 1 || plugin.Hooks[0].Event != "before_tool_call" || plugin.Requires == nil || plugin.Requires.SDK == "" {
@@ -84,8 +86,10 @@ func TestLoadDirsRejectsDuplicateTargetIDs(t *testing.T) {
 	body := `id = "fs"
 name = "Filesystem"
 version = "0.1.0"
-runtime = "python"
-entry = "run.py"
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
 
 [[tools]]
 name = "read_file"
@@ -125,9 +129,10 @@ func TestLoadAcceptsColdWorkerModeForToolOnlyPlugin(t *testing.T) {
 	body := `id = "question"
 name = "Question"
 version = "0.1.0"
-runtime = "python"
-entry = "run.py"
-worker_mode = "cold"
+
+[worker]
+command = ["python3", "run.py"]
+mode = "cold"
 
 [[tools]]
 name = "question"
@@ -158,14 +163,73 @@ sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 	}
 }
 
+func TestLoadAcceptsWorkerCommandWithoutSDKRequirement(t *testing.T) {
+	dir := t.TempDir()
+	body := `id = "testbed-cold-node"
+name = "Testbed Cold Node"
+version = "0.1.0"
+description = "Deterministic node fixture"
+
+[worker]
+command = ["node", "scripts/run.js"]
+mode = "cold"
+
+[[tools]]
+name = "testbed_cold_node"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+`
+	path := filepath.Join(dir, "testbed-cold-node", "plugin.toml")
+	writePlugin(t, path, body)
+	plugin, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if plugin.Worker == nil || plugin.WorkerMode != wire.WorkerModeCold {
+		t.Fatalf("expected canonical worker config, got %#v", plugin)
+	}
+	if got := plugin.Worker.Command; len(got) != 2 || got[0] != "node" || got[1] != "scripts/run.js" {
+		t.Fatalf("worker.command = %#v", got)
+	}
+	if plugin.Requires == nil || plugin.Requires.SDK != "" {
+		t.Fatalf("expected optional sdk requirement, got %#v", plugin.Requires)
+	}
+	if cap := plugin.Capability(); cap.HarnessKind != wire.HarnessKindNode || cap.WorkerMode != wire.WorkerModeCold {
+		t.Fatalf("unexpected capability: %#v", cap)
+	}
+}
+
+func TestLoadRejectsEmptyWorkerCommand(t *testing.T) {
+	dir := t.TempDir()
+	body := `id = "demo"
+name = "Demo"
+version = "0.1.0"
+
+[worker]
+command = []
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+`
+	path := filepath.Join(dir, "demo", "plugin.toml")
+	writePlugin(t, path, body)
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "worker.command must be a non-empty argv list") {
+		t.Fatalf("expected worker.command validation error, got %v", err)
+	}
+}
+
 func TestLoadRejectsColdWorkerModeForHookPlugin(t *testing.T) {
 	dir := t.TempDir()
 	body := `id = "fs"
 name = "Filesystem"
 version = "0.1.0"
-runtime = "python"
-entry = "run.py"
-worker_mode = "cold"
+
+[worker]
+command = ["python3", "run.py"]
+mode = "cold"
 
 [[tools]]
 name = "fs_read"
@@ -190,8 +254,10 @@ func TestLoadAcceptsExplicitToolExecutionPolicy(t *testing.T) {
 	body := `id = "fs"
 name = "Filesystem"
 version = "0.1.0"
-runtime = "python"
-entry = "run.py"
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
 
 [[tools]]
 name = "fs_grep"
@@ -233,8 +299,10 @@ func TestLoadRejectsInvalidToolExecutionPolicy(t *testing.T) {
 	body := `id = "fs"
 name = "Filesystem"
 version = "0.1.0"
-runtime = "python"
-entry = "run.py"
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
 
 [[tools]]
 name = "fs_grep"
@@ -332,8 +400,10 @@ func TestLoadRejectsSchemaParityDrift(t *testing.T) {
 			body: `id = "fs"
 name = "Filesystem"
 version = "0.1.0"
-runtime = "python"
-entry = "run.py"
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
 `,
 		},
 		{
@@ -355,8 +425,10 @@ sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 			body: `id = "fs"
 name = "Filesystem"
 version = "dev"
-runtime = "python"
-entry = "run.py"
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
 
 [requires]
 kernel = ">=0.9.0,<1.0.0"
@@ -369,8 +441,10 @@ sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 			body: `id = "fs"
 name = "Filesystem"
 version = "0.1.0"
-runtime = "python"
-entry = "run.py"
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
 
 [[hooks]]
 event = ""
@@ -386,8 +460,10 @@ sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 			body: `id = "fs"
 name = "Filesystem"
 version = "0.1.0"
-runtime = "python"
-entry = "run.py"
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
 
 [requires]
 kernel = ">=0.9.0,<1.0.0"
@@ -400,8 +476,10 @@ sdk = "tabula-plugin-sdk>=not-a-version"
 			body: `id = "fs"
 name = "Filesystem"
 version = "0.1.0"
-runtime = "python"
-entry = "run.py"
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
 
 [[tools]]
 name = "fs_read"
@@ -627,8 +705,10 @@ func pluginManifest(id, tool string) string {
 	return `id = "` + id + `"
 name = "Plugin"
 version = "0.1.0"
-runtime = "python"
-entry = "run.py"
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
 
 [[tools]]
 name = "` + tool + `"

@@ -105,6 +105,47 @@ func truncateHookOutput(output string) (string, bool) {
 	return output[:cut], true
 }
 
+func clientPreferredRuntime(c *Client) string {
+	if c == nil {
+		return ""
+	}
+	return normalizeClientRuntimeID(decodeClientMeta(c.meta).RuntimeID)
+}
+
+func (h *Hub) preferredRuntimeForMessage(sender *Client, tenantID, session string) string {
+	if runtimeID := clientPreferredRuntime(sender); runtimeID != "" {
+		return runtimeID
+	}
+	return h.sessionPreferredRuntime(tenantID, session)
+}
+
+func (h *Hub) stampMessagePreferredRuntime(sender *Client, tenantID, session string, msg *Message) {
+	if msg == nil {
+		return
+	}
+	if runtimeID := h.preferredRuntimeForMessage(sender, tenantID, session); runtimeID != "" {
+		msg.Meta = withKernelPreferredRuntime(msg.Meta, runtimeID)
+	}
+}
+
+func (h *Hub) applyMessagePreferredRuntime(tenantID, session string, msg *Message) {
+	if h == nil || h.sessions == nil || msg == nil || session == "" {
+		return
+	}
+	runtimeID := kernelPreferredRuntime(msg.Meta)
+	if runtimeID == "" {
+		return
+	}
+	sess, ok := h.sessions.Get(session, tenantID)
+	if !ok || sess == nil {
+		return
+	}
+	if sess.SetPreferredRuntime(runtimeID) {
+		h.persistSessionState(tenantID, session)
+	}
+	msg.Meta = withKernelPreferredRuntime(msg.Meta, runtimeID)
+}
+
 func (h *Hub) emitSessionEnd(tenantID, session string) {
 	payload, _ := json.Marshal(map[string]string{"session": session, "tenant_id": tenantID})
 	h.dispatchHook("session_end", payload, tenantID, session)

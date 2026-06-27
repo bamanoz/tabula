@@ -113,6 +113,7 @@ func (h *Hub) finalizeJoinPlan(c *Client, plan *joinPlan) {
 			h.observePersistedSessionRestart(sess)
 		}
 		sess.AddClient(c.name)
+		sess.BindPreferredRuntime(decodeClientMeta(c.meta).RuntimeID)
 		if created {
 			context, blocked := h.policy.StartSession(plan.session, plan.tenantID, c.name)
 			if blocked {

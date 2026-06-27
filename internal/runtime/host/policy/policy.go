@@ -67,6 +67,7 @@ type SpawnReq struct {
 	TargetID    string
 	TargetKind  runtimewire.TargetKind
 	HarnessKind runtimewire.HarnessKind
+	Command     []string
 	Runtime     string
 	Entry       string
 	Manifest    []byte

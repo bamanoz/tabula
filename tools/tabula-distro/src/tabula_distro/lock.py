@@ -142,7 +142,7 @@ def _migrate_v2_to_v3(data: dict) -> dict:
 
     v2 has no plugin protocol or SDK metadata. We don't fabricate values
     on read — leaving them ``None`` simply means the next install will
-    populate them from the live kernel/staged ``_lib`` and rewrite the lock
+    populate them from the live kernel/staged package surface and rewrite the lock
     at v3.
     """
     migrated = dict(data)

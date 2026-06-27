@@ -98,6 +98,23 @@ components = ["driver", "subagent", "mcp"]
 
 [requires]
 kernel = ">=0.8.0,<1.0.0"
+
+[[exports.python_packages]]
+name = "tabula_session_sdk"
+path = "sessions/sdk/python/src/tabula_session_sdk"
+public = true
+owner = "sessions"
+
+[[exports.typescript_packages]]
+name = "@tabula/skill-sdk"
+path = "skills/sdk/typescript"
+public = true
+owner = "skills"
+
+[[dependencies]]
+bundle = "base"
+python_packages = ["tabula_session_sdk"]
+typescript_packages = ["@tabula/skill-sdk"]
 ```
 
 When present, `[requires].kernel` is enforced just like the distro-level
@@ -108,6 +125,24 @@ walking immediate child directories and selecting those with `SKILL.md` or
 `plugin.toml` or `client.toml`. If `components` is present, only those relative component paths
 are installed; missing entries fail the install instead of being silently
 skipped.
+
+`[[exports.python_packages]]` and `[[exports.typescript_packages]]` declare
+component-owned SDK/runtime packages. `name` is the import/package name, `path`
+is a bundle-relative source path, `owner` identifies the owning component, and
+`public` marks whether the package is a stable SDK surface (`true`) or an
+internal shared package declared for installation/dependency validation
+(`false`). `[[dependencies]]` entries can require packages exported by another
+selected bundle through `python_packages` and `typescript_packages`.
+
+Declared Python exports are staged into `$TABULA_HOME/packages/python/src`, and
+declared TypeScript exports are staged by package name under
+`$TABULA_HOME/packages/typescript/<package-name>`, for example
+`$TABULA_HOME/packages/typescript/@tabula/skill-sdk`. Bundle-local `_lib` roots
+are ignored by the installer; SDK/shared packages must be declared with
+`[[exports.python_packages]]` or `[[exports.typescript_packages]]`.
+`requires.sdk` checks and `distro.lock.json` `sdk_versions` are read through the
+installed SDK package-surface resolver, which supports Python `__version__` and
+TypeScript `package.json` metadata without coupling callers to source layout.
 
 ### Source URI grammar
 

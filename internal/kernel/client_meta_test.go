@@ -1,0 +1,70 @@
+package kernel
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/bamanoz/tabula/internal/tenant"
+)
+
+func TestDecodeClientMetaNormalizesRuntimeID(t *testing.T) {
+	meta := decodeClientMeta(json.RawMessage(`{"tabula.client_role":"ui","tabula.managed":true,"tabula.runtime_id":" remote "}`))
+	if meta.Role != "ui" || !meta.Managed || meta.RuntimeID != "remote" {
+		t.Fatalf("unexpected client meta: %+v", meta)
+	}
+	if got := decodeClientMeta(json.RawMessage(`{"tabula.runtime_id":"bad runtime"}`)).RuntimeID; got != "" {
+		t.Fatalf("invalid runtime id should be ignored, got %q", got)
+	}
+}
+
+func TestJoinBindsSessionPreferredRuntimeFromFirstClientMeta(t *testing.T) {
+	hub := NewHub(nil, 0, 0, nil)
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+
+	first := &Client{hub: hub, name: "ui-1", meta: json.RawMessage(`{"tabula.client_role":"ui","tabula.managed":true,"tabula.runtime_id":"remote"}`), recvCh: make(chan *Message, 4), receives: map[string]bool{}, sends: map[string]bool{}, state: ClientProtocolReady, done: make(chan struct{})}
+	second := &Client{hub: hub, name: "ui-2", meta: json.RawMessage(`{"tabula.client_role":"ui","tabula.managed":true,"tabula.runtime_id":"local"}`), recvCh: make(chan *Message, 4), receives: map[string]bool{}, sends: map[string]bool{}, state: ClientProtocolReady, done: make(chan struct{})}
+	if !hub.addClient(first) || !hub.addClient(second) {
+		t.Fatal("addClient failed")
+	}
+
+	hub.applyJoinPlan(first, hub.buildJoinPlan(first, "s1", "alpha"))
+	hub.applyJoinPlan(second, hub.buildJoinPlan(second, "s1", "alpha"))
+
+	sess, ok := hub.sessions.Get("s1", "alpha")
+	if !ok {
+		t.Fatal("expected joined session")
+	}
+	if got := sess.PreferredRuntime(); got != "remote" {
+		t.Fatalf("preferred runtime = %q, want remote", got)
+	}
+}
+
+func TestConnectPreservesRuntimeAffinityMeta(t *testing.T) {
+	hub := NewHub(nil, 0, 0, nil)
+	hub.SetClientAuthToken("test-kernel-token")
+	client := &Client{hub: hub, recvCh: make(chan *Message, 1), done: make(chan struct{})}
+	if !hub.addClient(client) {
+		t.Fatal("addClient failed")
+	}
+
+	plan := hub.buildConnectPlan(client, &Message{V: ProtocolVersion, Type: string(MsgHello), ID: "hello-1", Data: mustMarshalRaw(map[string]any{
+		"name":           "ui",
+		"send_topics":    []string{TopicMessageUser},
+		"receive_topics": []string{TopicMessageUser},
+		"auth_token":     "test-kernel-token",
+		"meta": map[string]any{
+			"tabula.client_role": "ui",
+			"tabula.runtime_id":  "remote",
+		},
+	})})
+	hub.applyConnectPlan(client, plan)
+	if plan.errorMsg != "" {
+		t.Fatalf("connect rejected: %s", plan.errorMsg)
+	}
+
+	meta := decodeClientMeta(client.meta)
+	if meta.Role != "ui" || meta.RuntimeID != "remote" {
+		t.Fatalf("unexpected client meta: %+v", meta)
+	}
+}

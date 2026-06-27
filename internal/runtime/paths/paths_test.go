@@ -133,6 +133,9 @@ func TestWellKnownFiles(t *testing.T) {
 	if got, want := RuntimeConfigFile(), filepath.Join(dir, "config", "runtime.toml"); got != want {
 		t.Errorf("RuntimeConfigFile = %q, want %q", got, want)
 	}
+	if got, want := RuntimeInstanceFile(), filepath.Join(dir, "run", "runtime-instance.json"); got != want {
+		t.Errorf("RuntimeInstanceFile = %q, want %q", got, want)
+	}
 	if got, want := ReloadTouchFile(), filepath.Join(dir, "run", "reload.touch"); got != want {
 		t.Errorf("ReloadTouchFile = %q, want %q", got, want)
 	}

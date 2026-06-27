@@ -194,7 +194,7 @@ malformed → manifest parse error, plugin refused.
 [requires]
 kernel           = ">=0.9.0,<1.0.0"
 protocol_version = 1                                  # int or [1, 2]
-sdk              = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+# sdk            = "tabula-plugin-sdk>=1.0.0,<2.0.0" # only for SDK-backed workers
 ```
 
 Fields:
@@ -203,9 +203,10 @@ Fields:
   or the running binary's `VERSION`) must satisfy this range.
 - **`protocol_version`** — current worker protocol generation understood by the
   runtime and SDK. M2 currently uses `1`.
-- **`sdk`** — `<name><range>`. The installed SDK package version (read
-  from `_lib/<runtime>/`) must satisfy this range. `name` is one of
-  `tabula-plugin-sdk` (Python) or `@tabula/skill-sdk` (TypeScript).
+- **`sdk`** *(optional)* — `<name><range>`. Declare this only when the worker
+  intentionally depends on a Tabula SDK package. When present, the installed SDK
+  package version (read from `_lib/<runtime>/`) must satisfy this range. `name`
+  is one of `tabula-plugin-sdk` (Python) or `@tabula/skill-sdk` (TypeScript).
 
 The distro installer and `tabula-runtime` manifest loader enforce this block at
 install/load time. Runtime worker initialization remains authoritative for the
@@ -222,7 +223,7 @@ the installed SDK must implement the current `op`-based worker frames.
 |-----------------------------|---------|-------------------|
 | `tabula-plugin-sdk` (Python)| `1.x`   | `1`               |
 
-The Python SDK surface lives in `tabula-bundles/_lib/python/src/tabula_plugin_sdk`.
+The Python SDK source lives in `tabula-bundles/base/plugin-sdk/sdk/python/src/tabula_plugin_sdk` and installs through bundle package exports.
 Bumping the worker protocol requires updating both `tabula-runtime` and the SDK
 in lockstep.
 

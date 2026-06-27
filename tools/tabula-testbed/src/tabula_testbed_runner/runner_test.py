@@ -13,6 +13,7 @@ from tabula_testbed_runner.runner import (
     entry_protocol_markers,
     format_protocol_markers,
     lint_selection,
+    manifest_launch_details,
     prune_old_testbed_homes,
     resolve_selection,
     runtime_tenants_for_suites,
@@ -136,7 +137,7 @@ class RunnerProtocolMarkerTests(unittest.TestCase):
             entry.parent.mkdir(parents=True)
             entry.write_text("from tabula_plugin_sdk import run\n", encoding="utf-8")
 
-            sdk_dir = tmp_path / "_lib" / "python" / "src" / "tabula_plugin_sdk"
+            sdk_dir = tmp_path / "packages" / "python" / "src" / "tabula_plugin_sdk"
             sdk_dir.mkdir(parents=True)
             (sdk_dir / "api.py").write_text(
                 "raise RuntimeError('expected register_request as first plugin message')\n",
@@ -144,7 +145,7 @@ class RunnerProtocolMarkerTests(unittest.TestCase):
             )
             (sdk_dir / "protocol.py").write_text("METHOD_REGISTER_REQUEST = 'register_request'\n", encoding="utf-8")
 
-            markers = entry_protocol_markers(entry, tmp_path / "_lib" / "python" / "src")
+            markers = entry_protocol_markers(entry, tmp_path / "packages" / "python" / "src")
 
             self.assertIn("sdk:api.py:legacy-register-request", markers)
             self.assertIn("sdk:api.py:legacy-register-request-error", markers)
@@ -162,6 +163,26 @@ class RunnerProtocolMarkerTests(unittest.TestCase):
 
             self.assertEqual(markers, ["entry:m2-worker-init-ack", "entry:m2-worker-tools-updated"])
 
+    def test_manifest_launch_details_supports_worker_command(self) -> None:
+        with TemporaryDirectory() as raw:
+            tmp_path = Path(raw)
+            manifest_path = tmp_path / "plugins" / "demo" / "plugin.toml"
+            worker_path = manifest_path.parent / "scripts" / "run.js"
+            worker_path.parent.mkdir(parents=True)
+            worker_path.write_text("console.log('init_ack'); console.log('tools_updated')\n", encoding="utf-8")
+
+            details = manifest_launch_details(
+                manifest_path,
+                {"worker": {"command": ["node", "scripts/run.js"], "mode": "cold"}},
+            )
+
+            summary = "\n".join(details["summary"])
+            self.assertIn("worker.command = ['node', 'scripts/run.js']", summary)
+            self.assertIn("worker.mode = cold", summary)
+            self.assertIn(f"entry_path = {worker_path.resolve()}", summary)
+            self.assertIn("entry:m2-worker-init-ack", summary)
+            self.assertIn("entry:m2-worker-tools-updated", summary)
+
     @unittest.skipIf(os.name == "nt", "test creates a POSIX executable shim")
     def test_runtime_sidecar_layout_writes_protocol_marker_summary(self) -> None:
         with TemporaryDirectory() as raw:
@@ -169,7 +190,7 @@ class RunnerProtocolMarkerTests(unittest.TestCase):
             bin_dir = home / "bin"
             logs_dir = home / "logs"
             plugin_dir = home / "plugins" / "demo"
-            sdk_dir = home / "_lib" / "python" / "src" / "tabula_plugin_sdk"
+            sdk_dir = home / "packages" / "python" / "src" / "tabula_plugin_sdk"
             bin_dir.mkdir(parents=True)
             logs_dir.mkdir()
             plugin_dir.mkdir(parents=True)

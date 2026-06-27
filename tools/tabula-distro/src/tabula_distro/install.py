@@ -55,6 +55,13 @@ class InstallError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class SDKPackageSurface:
+    name: str
+    language: str
+    root: Path
+
+
 _FINGERPRINT_FILE = ".fingerprint"
 
 
@@ -182,47 +189,68 @@ def _read_kernel_protocol_range(home: Path) -> tuple[int, int] | None:
     return lo, hi
 
 
-def _read_installed_sdk_version(staging: Path, sdk_name: str) -> Version | None:
-    """Read installed SDK version from the staged ``_lib`` tree.
+def _sdk_package_surfaces(staging: Path) -> dict[str, SDKPackageSurface]:
+    """Return installed SDK package roots keyed by SDK requirement name.
 
-    For ``tabula-plugin-sdk`` we read ``__version__`` from the package
-    ``__init__.py``. Returns ``None`` if the SDK isn't present (the plugin's
-    own bundle may carry it) — caller decides whether to fail.
+    Declared package exports install under `packages/`; bundle-local `_lib`
+    roots are not package inputs.
     """
-    if sdk_name == "tabula-plugin-sdk":
-        init = staging / "_lib" / "python" / "src" / "tabula_plugin_sdk" / "__init__.py"
-        if not init.is_file():
-            return None
-        text = init.read_text(encoding="utf-8")
-        import re as _re
-        m = _re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', text, _re.M)
-        if m is None:
-            raise InstallError(
-                f"_lib/python/src/tabula_plugin_sdk/__init__.py is missing __version__"
-            )
-        try:
-            return Version.parse(m.group(1))
-        except VersionError as exc:
-            raise InstallError(
-                f"_lib/python/src/tabula_plugin_sdk/__init__.py __version__ is malformed: {exc}"
-            ) from exc
-    if sdk_name == "@tabula/skill-sdk":
-        pkg = staging / "_lib" / "typescript" / "package.json"
-        if not pkg.is_file():
-            return None
-        import json as _json
-        try:
-            data = _json.loads(pkg.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise InstallError(f"_lib/typescript/package.json is malformed: {exc}") from exc
-        version_raw = data.get("version")
-        if not isinstance(version_raw, str):
-            raise InstallError(f"_lib/typescript/package.json missing version")
-        try:
-            return Version.parse(version_raw)
-        except VersionError as exc:
-            raise InstallError(f"_lib/typescript/package.json version is malformed: {exc}") from exc
+    return {
+        "tabula-plugin-sdk": SDKPackageSurface(
+            name="tabula-plugin-sdk",
+            language="python",
+            root=staging / "packages" / "python" / "src" / "tabula_plugin_sdk",
+        ),
+        "@tabula/skill-sdk": SDKPackageSurface(
+            name="@tabula/skill-sdk",
+            language="typescript",
+            root=staging / "packages" / "typescript" / "@tabula" / "skill-sdk",
+        ),
+    }
+
+
+def _read_installed_sdk_version(staging: Path, sdk_name: str) -> Version | None:
+    surface = _sdk_package_surfaces(staging).get(sdk_name)
+    if surface is None or not surface.root.exists():
+        return None
+    if surface.language == "python":
+        return _read_python_sdk_version(surface)
+    if surface.language == "typescript":
+        return _read_typescript_sdk_version(surface)
     return None
+
+
+def _read_python_sdk_version(surface: SDKPackageSurface) -> Version:
+    init = surface.root / "__init__.py"
+    if not init.is_file():
+        raise InstallError(f"installed SDK {surface.name} is missing __init__.py at {surface.root}")
+    text = init.read_text(encoding="utf-8")
+    import re as _re
+    m = _re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', text, _re.M)
+    if m is None:
+        raise InstallError(f"installed SDK {surface.name} is missing __version__ at {init}")
+    try:
+        return Version.parse(m.group(1))
+    except VersionError as exc:
+        raise InstallError(f"installed SDK {surface.name} __version__ is malformed at {init}: {exc}") from exc
+
+
+def _read_typescript_sdk_version(surface: SDKPackageSurface) -> Version:
+    pkg = surface.root / "package.json"
+    if not pkg.is_file():
+        raise InstallError(f"installed SDK {surface.name} is missing package.json at {surface.root}")
+    import json as _json
+    try:
+        data = _json.loads(pkg.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise InstallError(f"installed SDK {surface.name} package.json is malformed at {pkg}: {exc}") from exc
+    version_raw = data.get("version")
+    if not isinstance(version_raw, str):
+        raise InstallError(f"installed SDK {surface.name} package.json missing version at {pkg}")
+    try:
+        return Version.parse(version_raw)
+    except VersionError as exc:
+        raise InstallError(f"installed SDK {surface.name} package.json version is malformed at {pkg}: {exc}") from exc
 
 
 def _check_plugin_compat(plugin_name: str, plugin_dir: Path, *,
@@ -235,7 +263,8 @@ def _check_plugin_compat(plugin_name: str, plugin_dir: Path, *,
 
     1. ``requires.kernel`` against the installed kernel version
     2. ``requires.protocol_version`` intersects the kernel's range
-    3. ``requires.sdk`` matches the SDK version installed under ``_lib/``
+    3. ``requires.sdk`` matches the SDK version reported by the installed
+       package surface
 
     Returns the parsed :class:`PluginRequires` (for callers that want to
     record it) or ``None`` if the plugin has no ``[requires]`` block (rollout
@@ -286,7 +315,7 @@ def _check_plugin_compat(plugin_name: str, plugin_dir: Path, *,
             raise InstallError(
                 f"plugin {plugin_name!r} requires {requires.sdk.name}"
                 f"{requires.sdk.constraint.raw}, but no copy of {requires.sdk.name} "
-                f"is staged under _lib/ (ensure a bundle ships it)"
+                f"is staged under packages/ (ensure a selected bundle exports it)"
             )
         if not requires.sdk.constraint.matches(installed):
             raise InstallError(
@@ -359,15 +388,6 @@ class InstalledBundleComponents:
 
 
 @dataclass(frozen=True)
-class InstalledSharedLib:
-    name: str
-    fingerprint: str
-    source_path: Path
-    source_uri: str
-    bundle_name: str
-
-
-@dataclass(frozen=True)
 class ResolvedBundleInstall:
     entry: cfg.BundleEntry
     resolved_dir: Path
@@ -434,10 +454,9 @@ def install(distro_dir: str | Path, home: Path, *,
     if kernel_version is not None:
         new_lock.kernel_version = str(kernel_version)
 
-    # Snapshot the live plugin protocol / SDK surface into the lock. These
-    # come from the kernel install (PROTOCOL file) and the staged `_lib/`
-    # tree, so they reflect the contract that this generation actually
-    # satisfies.
+    # Snapshot the live plugin protocol / SDK surface into the lock. These come
+    # from the kernel install (PROTOCOL file) and the staged package surface, so
+    # they reflect the contract that this generation actually satisfies.
     proto_range = _read_kernel_protocol_range(home)
     if proto_range is not None:
         new_lock.plugin_protocol_version = proto_range[1]
@@ -494,14 +513,16 @@ def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lock
     plugins_dir.mkdir(parents=True, exist_ok=True)
     clients_dir = staging / "clients"
     clients_dir.mkdir(parents=True, exist_ok=True)
-    lib_dir = staging / "_lib"
-    lib_dir.mkdir(parents=True, exist_ok=True)
+    packages_dir = staging / "packages"
+    packages_dir.mkdir(parents=True, exist_ok=True)
 
     cache = GitCache(plan.home / "cache")
     prior_lock = lockmod.load(gens.distro_root(plan.home, distro.name) / "distro.lock.json")
     new_lock = lockmod.Lock(distro=distro.name)
-    installed_libs: dict[str, InstalledSharedLib] = {}
     installed_python_packages: dict[str, tuple[str, Path]] = {}
+    installed_typescript_packages: dict[str, tuple[str, Path]] = {}
+
+    _install_distro_python_exports(distro.path, distro.exports_python_packages, packages_dir, installed_python_packages, distro_name=distro.name)
 
     for entry in distro.skills:
         resolved_dir, lock_entry = _resolve(entry.source, distro.path, cache, plan,
@@ -536,7 +557,7 @@ def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lock
     for resolved in resolved_bundles:
         entry = resolved.entry
         lock_entry = resolved.lock_entry
-        installed = _install_bundle(resolved.resolved_dir, skills_dir, plugins_dir, clients_dir, lib_dir, installed_libs, installed_python_packages, manifest=resolved.manifest,
+        installed = _install_bundle(resolved.resolved_dir, skills_dir, plugins_dir, clients_dir, packages_dir, installed_python_packages, installed_typescript_packages, manifest=resolved.manifest,
                                       allowlist=entry.components, override=entry.override,
                                       bundle_name=entry.name, source_uri=lock_entry.source)
         new_lock.bundles[entry.name] = lock_entry
@@ -547,7 +568,7 @@ def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lock
         for name in installed.clients:
             new_lock.clients[name] = replace(lock_entry)
 
-    # Plugin compat checks run last so the staged `_lib/` tree is fully
+    # Plugin compat checks run last so staged package exports are fully
     # populated by all bundles. We re-walk `staging/plugins` rather than
     # tracking install-time paths because bundle-sourced plugins are copied
     # into the staging tree by `_install_bundle`.
@@ -751,8 +772,9 @@ def _validate_client_manifest(src: Path, *, label: str) -> None:
                 raise InstallError(f"{label}: bus.{key} must be an array of strings")
 
 
-def _install_bundle(bundle_root: Path, skills_dir: Path, plugins_dir: Path, clients_dir: Path, lib_dir: Path,
-                    installed_libs: dict[str, InstalledSharedLib], installed_python_packages: dict[str, tuple[str, Path]], *,
+def _install_bundle(bundle_root: Path, skills_dir: Path, plugins_dir: Path, clients_dir: Path, packages_dir: Path,
+                    installed_python_packages: dict[str, tuple[str, Path]],
+                    installed_typescript_packages: dict[str, tuple[str, Path]], *,
                     manifest: BundleManifest, allowlist: tuple[str, ...] | None,
                     override: bool, bundle_name: str, source_uri: str) -> InstalledBundleComponents:
     if not bundle_root.is_dir():
@@ -792,22 +814,29 @@ def _install_bundle(bundle_root: Path, skills_dir: Path, plugins_dir: Path, clie
             installed_clients.append(name)
         else:
             raise InstallError(f"bundle {bundle_name}: component {name!r} has no SKILL.md, plugin.toml or client.toml")
-    _install_bundle_lib(bundle_root, lib_dir, installed_libs, bundle_name=bundle_name, source_uri=source_uri)
-    _install_bundle_python_exports(bundle_root, manifest, lib_dir, installed_python_packages, bundle_name=bundle_name)
+    _install_bundle_python_exports(bundle_root, manifest, packages_dir, installed_python_packages, bundle_name=bundle_name)
+    _install_bundle_typescript_exports(bundle_root, manifest, packages_dir, installed_typescript_packages, bundle_name=bundle_name)
     return InstalledBundleComponents(skills=tuple(installed_skills), plugins=tuple(installed_plugins), clients=tuple(installed_clients))
 
 
 def _validate_bundle_dependencies(bundle_manifests: dict[str, BundleManifest]) -> None:
-    export_map = {bundle_name: {item.name for item in manifest.exports_python_packages} for bundle_name, manifest in bundle_manifests.items()}
+    python_export_map = {bundle_name: {item.name for item in manifest.exports_python_packages} for bundle_name, manifest in bundle_manifests.items()}
+    typescript_export_map = {bundle_name: {item.name for item in manifest.exports_typescript_packages} for bundle_name, manifest in bundle_manifests.items()}
     for bundle_name, manifest in bundle_manifests.items():
         for dependency in manifest.dependencies:
             target = bundle_manifests.get(dependency.bundle)
             if target is None:
                 raise InstallError(f"bundle {bundle_name!r} depends on bundle {dependency.bundle!r}, but it is not selected")
-            missing = [pkg for pkg in dependency.python_packages if pkg not in export_map.get(dependency.bundle, set())]
+            missing = [pkg for pkg in dependency.python_packages if pkg not in python_export_map.get(dependency.bundle, set())]
             if missing:
                 raise InstallError(
                     f"bundle {bundle_name!r} depends on python package(s) {', '.join(missing)} from bundle {dependency.bundle!r}, "
+                    f"but bundle {dependency.bundle!r} does not export them"
+                )
+            missing = [pkg for pkg in dependency.typescript_packages if pkg not in typescript_export_map.get(dependency.bundle, set())]
+            if missing:
+                raise InstallError(
+                    f"bundle {bundle_name!r} depends on typescript package(s) {', '.join(missing)} from bundle {dependency.bundle!r}, "
                     f"but bundle {dependency.bundle!r} does not export them"
                 )
     graph = {bundle_name: [dependency.bundle for dependency in manifest.dependencies] for bundle_name, manifest in bundle_manifests.items()}
@@ -830,10 +859,10 @@ def _validate_bundle_dependencies(bundle_manifests: dict[str, BundleManifest]) -
         visit(node)
 
 
-def _install_bundle_python_exports(bundle_root: Path, manifest: BundleManifest, lib_dir: Path,
+def _install_bundle_python_exports(bundle_root: Path, manifest: BundleManifest, packages_dir: Path,
                                    installed_python_packages: dict[str, tuple[str, Path]], *, bundle_name: str) -> None:
     root = bundle_root.resolve()
-    python_src_root = lib_dir / "python" / "src"
+    python_src_root = packages_dir / "python" / "src"
     python_src_root.mkdir(parents=True, exist_ok=True)
     for export in manifest.exports_python_packages:
         src = (bundle_root / export.path).resolve()
@@ -859,105 +888,64 @@ def _install_bundle_python_exports(bundle_root: Path, manifest: BundleManifest, 
         installed_python_packages[export.name] = (bundle_name, src)
 
 
-def _install_bundle_lib(bundle_root: Path, lib_dir: Path, installed_libs: dict[str, InstalledSharedLib], *,
-                        bundle_name: str, source_uri: str) -> None:
-    roots = []
-    for src in (bundle_root / "_lib", bundle_root.parent / "_lib"):
-        if src.is_dir() and src not in roots:
-            roots.append(src)
-    for src in roots:
-        _install_lib_root(src, lib_dir, installed_libs, bundle_name=bundle_name, source_uri=source_uri)
-
-
-def _install_lib_root(src: Path, lib_dir: Path, installed_libs: dict[str, InstalledSharedLib], *,
-                      bundle_name: str, source_uri: str) -> None:
-    for entry in sorted(src.iterdir()):
-        if not entry.is_dir() or entry.name.startswith(".") or entry.name in IGNORE_NAMES:
-            continue
-        dst = lib_dir / entry.name
-        fingerprint = _fingerprint_tree(entry)
-        existing = installed_libs.get(entry.name)
-        if existing is None and dst.exists():
-            existing = InstalledSharedLib(
-                name=entry.name,
-                fingerprint=_fingerprint_tree(dst),
-                source_path=dst,
-                source_uri="in-tree",
-                bundle_name="in-tree distro",
+def _install_distro_python_exports(distro_root: Path, exports: tuple[cfg.PythonPackageExport, ...], packages_dir: Path,
+                                   installed_python_packages: dict[str, tuple[str, Path]], *, distro_name: str) -> None:
+    root = distro_root.resolve()
+    python_src_root = packages_dir / "python" / "src"
+    python_src_root.mkdir(parents=True, exist_ok=True)
+    for export in exports:
+        src = (distro_root / export.path).resolve()
+        try:
+            src.relative_to(root)
+        except ValueError as exc:
+            raise InstallError(f"distro {distro_name}: exported python package path escapes distro root: {export.path}") from exc
+        if not src.is_dir():
+            raise InstallError(f"distro {distro_name}: exported python package path not found: {export.path}")
+        init = src / "__init__.py"
+        if not init.is_file():
+            raise InstallError(f"distro {distro_name}: exported python package {export.name!r} is missing __init__.py")
+        if export.name in installed_python_packages:
+            existing_owner, existing_path = installed_python_packages[export.name]
+            raise InstallError(
+                f"distro {distro_name}: exported python package {export.name!r} conflicts with {existing_owner!r} at {existing_path}"
             )
-            installed_libs[entry.name] = existing
-        if existing is not None:
-            if existing.fingerprint == fingerprint:
-                continue
-            if _shared_lib_can_merge(existing.source_path, entry):
-                _copytree_merge(entry, dst)
-                installed_libs[entry.name] = InstalledSharedLib(
-                    name=entry.name,
-                    fingerprint=_fingerprint_tree(dst),
-                    source_path=dst,
-                    source_uri=existing.source_uri + ", " + source_uri,
-                    bundle_name=existing.bundle_name + ", " + bundle_name,
-                )
-                continue
-            raise InstallError(_shared_lib_conflict_message(entry.name, existing, entry, fingerprint, bundle_name, source_uri))
-        _copytree(entry, dst)
-        installed_libs[entry.name] = InstalledSharedLib(
-            name=entry.name,
-            fingerprint=fingerprint,
-            source_path=entry.resolve(),
-            source_uri=source_uri,
-            bundle_name=bundle_name,
-        )
+        dst = python_src_root / export.name
+        if dst.exists():
+            raise InstallError(f"distro {distro_name}: exported python package target already exists: {dst}")
+        _copytree(src, dst)
+        installed_python_packages[export.name] = (f"distro {distro_name}", src)
 
 
-def _shared_lib_conflict_message(lib_name: str, existing: InstalledSharedLib, candidate_path: Path,
-                                 candidate_fingerprint: str, bundle_name: str, source_uri: str) -> str:
-    return (
-        f"shared lib _lib/{lib_name} differs between bundle sources:\n"
-        f"existing:\n"
-        f"  bundle: {existing.bundle_name}\n"
-        f"  source: {existing.source_uri}\n"
-        f"  lib: {existing.source_path}\n"
-        f"  hash: sha256:{existing.fingerprint}\n"
-        f"candidate:\n"
-        f"  bundle: {bundle_name}\n"
-        f"  source: {source_uri}\n"
-        f"  lib: {candidate_path.resolve()}\n"
-        f"  hash: sha256:{candidate_fingerprint}\n"
-        f"Use a shared source alias if these bundles should share one repo checkout, "
-        f"or align the shared _lib/{lib_name} contents."
-    )
+def _install_bundle_typescript_exports(bundle_root: Path, manifest: BundleManifest, packages_dir: Path,
+                                       installed_typescript_packages: dict[str, tuple[str, Path]], *, bundle_name: str) -> None:
+    root = bundle_root.resolve()
+    typescript_root = packages_dir / "typescript"
+    typescript_root.mkdir(parents=True, exist_ok=True)
+    for export in manifest.exports_typescript_packages:
+        src = (bundle_root / export.path).resolve()
+        try:
+            src.relative_to(root)
+        except ValueError as exc:
+            raise InstallError(f"bundle {bundle_name}: exported typescript package path escapes bundle root: {export.path}") from exc
+        if not src.is_dir():
+            raise InstallError(f"bundle {bundle_name}: exported typescript package path not found: {export.path}")
+        package_json = src / "package.json"
+        if not package_json.is_file():
+            raise InstallError(f"bundle {bundle_name}: exported typescript package {export.name!r} is missing package.json")
+        if export.name in installed_typescript_packages:
+            existing_bundle, existing_path = installed_typescript_packages[export.name]
+            raise InstallError(
+                f"bundle {bundle_name}: exported typescript package {export.name!r} conflicts with bundle {existing_bundle!r} at {existing_path}"
+            )
+        dst = typescript_root / _typescript_package_path(export.name)
+        if dst.exists():
+            raise InstallError(f"bundle {bundle_name}: exported typescript package target already exists: {dst}")
+        _copytree(src, dst)
+        installed_typescript_packages[export.name] = (bundle_name, src)
 
 
-def _shared_lib_can_merge(existing: Path, candidate: Path) -> bool:
-    existing_files = _relative_file_hashes(existing)
-    candidate_files = _relative_file_hashes(candidate)
-    for rel, fingerprint in candidate_files.items():
-        if rel in existing_files and existing_files[rel] != fingerprint:
-            return False
-    return True
-
-
-def _relative_file_hashes(root: Path) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.name in IGNORE_NAMES or path.name.endswith(".pyc"):
-            continue
-        h = hashlib.sha256()
-        with path.open("rb") as f:
-            while chunk := f.read(65536):
-                h.update(chunk)
-        out[str(path.relative_to(root))] = h.hexdigest()
-    return out
-
-
-def _copytree_merge(src: Path, dst: Path) -> None:
-    for path in sorted(src.rglob("*")):
-        if not path.is_file() or path.name in IGNORE_NAMES or path.name.endswith(".pyc"):
-            continue
-        target = dst / path.relative_to(src)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target)
+def _typescript_package_path(name: str) -> Path:
+    return Path(*name.split("/"))
 
 
 def _bundle_component_candidates(bundle_root: Path, manifest: BundleManifest, *,
@@ -987,7 +975,7 @@ def _bundle_component_candidates(bundle_root: Path, manifest: BundleManifest, *,
 
 def _expose_current(home: Path, distro_name: str) -> None:
     root = gens.distro_root(home, distro_name)
-    for entry in ("skills", "plugins", "clients", "templates", "_lib"):
+    for entry in ("skills", "plugins", "clients", "templates", "packages"):
         link = root / entry
         if link.exists() or link.is_symlink():
             if link.is_dir() and not link.is_symlink():
@@ -1011,13 +999,13 @@ def _set_active(home: Path, distro_name: str, *, expose_global_boot: bool = True
 
 
 def _refresh_runtime_surface(home: Path, *, tenant: str | None = None) -> None:
-    for obsolete in (home / "drivers", home / "gateways"):
+    for obsolete in (home / "drivers", home / "gateways", home / "_lib"):
         if obsolete.exists() or obsolete.is_symlink():
             if obsolete.is_dir() and not obsolete.is_symlink():
                 shutil.rmtree(obsolete)
             else:
                 obsolete.unlink(missing_ok=True)
-    _link_runtime(home / "distrib" / "active" / "_lib", home / "_lib")
+    _link_runtime(home / "distrib" / "active" / "packages", home / "packages")
     _link_runtime(home / "distrib" / "active" / "clients", home / "clients")
     _link_runtime(home / "distrib" / "active" / "templates", home / "templates")
     _link_runtime(home / "distrib" / "active" / "plugins", home / "plugins")
@@ -1038,7 +1026,13 @@ def _tenant_roots(home: Path, *, tenant: str | None = None) -> list[Path]:
 
 
 def _refresh_tenant_runtime_surface(home: Path, tenant_dir: Path) -> None:
-    _link_runtime(home / "distrib" / "active" / "_lib", tenant_dir / "_lib")
+    obsolete = tenant_dir / "_lib"
+    if obsolete.exists() or obsolete.is_symlink():
+        if obsolete.is_dir() and not obsolete.is_symlink():
+            shutil.rmtree(obsolete)
+        else:
+            obsolete.unlink(missing_ok=True)
+    _link_runtime(home / "distrib" / "active" / "packages", tenant_dir / "packages")
     _link_runtime(home / "distrib" / "active" / "clients", tenant_dir / "clients")
     _link_runtime(home / "distrib" / "active" / "templates", tenant_dir / "templates")
     _link_runtime(home / "distrib" / "active" / "plugins", tenant_dir / "plugins")

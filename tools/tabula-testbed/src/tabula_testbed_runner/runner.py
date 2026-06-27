@@ -131,6 +131,62 @@ def format_protocol_markers(markers: list[str]) -> str:
     return ", ".join(markers)
 
 
+def _plugin_owned_path(root: Path, value: str) -> Path | None:
+    raw = value.strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    if path.is_absolute():
+        return path
+    if "/" not in raw and "\\" not in raw:
+        return None
+    return (root / path).resolve()
+
+
+def manifest_launch_details(manifest_path: Path, manifest: dict[str, Any], python_lib_dir: Path | None = None) -> dict[str, Any]:
+    root = manifest_path.parent
+    worker = manifest.get("worker") if isinstance(manifest.get("worker"), dict) else None
+    if worker is not None:
+        command = worker.get("command")
+        if not isinstance(command, list) or not command:
+            raise SystemExit(f"plugin manifest worker.command must be a non-empty argv list: {manifest_path}")
+        argv = [str(item).strip() for item in command]
+        if any(not item for item in argv):
+            raise SystemExit(f"plugin manifest worker.command contains empty argv item: {manifest_path}")
+        marker_path: Path | None = None
+        for candidate in argv[1:] + argv[:1]:
+            resolved = _plugin_owned_path(root, candidate)
+            if resolved is not None and resolved.is_file():
+                marker_path = resolved
+                break
+        return {
+            "summary": [
+                f"worker.command = {argv!r}",
+                f"worker.mode = {worker.get('mode') or manifest.get('worker_mode') or 'warm'}",
+                f"entry_path = {marker_path or argv[0]}",
+                f"entry_protocol_markers = {format_protocol_markers(entry_protocol_markers(marker_path, python_lib_dir) if marker_path is not None else ['none'])}",
+            ],
+        }
+    runtime_name = str(manifest.get("runtime") or "")
+    entry_name = str(manifest.get("entry") or "")
+    if not runtime_name:
+        raise SystemExit(f"plugin manifest missing runtime field: {manifest_path}")
+    if not entry_name:
+        raise SystemExit(f"plugin manifest missing entry field: {manifest_path}")
+    entry_path = (root / entry_name).resolve()
+    if not entry_path.is_file():
+        raise SystemExit(f"plugin entry file is missing: {entry_path}")
+    markers = entry_protocol_markers(entry_path, python_lib_dir)
+    return {
+        "summary": [
+            f"runtime = {runtime_name}",
+            f"entry = {entry_name}",
+            f"entry_path = {entry_path}",
+            f"entry_protocol_markers = {format_protocol_markers(markers)}",
+        ],
+    }
+
+
 def parse_source(value: str) -> tuple[str, str]:
     alias, sep, source = value.partition("=")
     if not sep or not alias or not source:
@@ -418,7 +474,7 @@ def verify_runtime_sidecar_layout(home: Path, bin_dir: Path, logs_dir: Path) -> 
     if not plugin_dirs:
         raise SystemExit("runtime config plugin_dirs is empty")
     manifest_summary = logs_dir / "runtime-plugin-manifests.txt"
-    python_lib_dir = home / "_lib" / "python" / "src"
+    python_lib_dir = home / "packages" / "python" / "src"
     sections: list[str] = []
     for entry in plugin_dirs:
         manifest_path = Path(str(entry))
@@ -428,44 +484,22 @@ def verify_runtime_sidecar_layout(home: Path, bin_dir: Path, logs_dir: Path) -> 
                 continue
             for child in manifests:
                 manifest = load_toml(child)
-                runtime_name = str(manifest.get("runtime") or "")
-                entry_name = str(manifest.get("entry") or "")
-                if not runtime_name:
-                    raise SystemExit(f"plugin manifest missing runtime field: {child}")
-                if not entry_name:
-                    raise SystemExit(f"plugin manifest missing entry field: {child}")
-                entry_path = (child.parent / entry_name).resolve()
-                if not entry_path.is_file():
-                    raise SystemExit(f"plugin entry file is missing: {entry_path}")
-                markers = entry_protocol_markers(entry_path, python_lib_dir)
+                details = manifest_launch_details(child, manifest, python_lib_dir)
                 sections.append(
                     f"## {child}\n"
-                    f"runtime = {runtime_name}\n"
-                    f"entry = {entry_name}\n"
-                    f"entry_path = {entry_path}\n"
-                    f"entry_protocol_markers = {format_protocol_markers(markers)}\n\n"
+                    + "\n".join(details["summary"])
+                    + "\n\n"
                     f"{child.read_text(encoding='utf-8').rstrip()}\n"
                 )
             continue
         if not manifest_path.is_file():
             raise SystemExit(f"runtime config plugin_dirs entry is missing: {manifest_path}")
         manifest = load_toml(manifest_path)
-        runtime_name = str(manifest.get("runtime") or "")
-        entry_name = str(manifest.get("entry") or "")
-        if not runtime_name:
-            raise SystemExit(f"plugin manifest missing runtime field: {manifest_path}")
-        if not entry_name:
-            raise SystemExit(f"plugin manifest missing entry field: {manifest_path}")
-        entry_path = (manifest_path.parent / entry_name).resolve()
-        if not entry_path.is_file():
-            raise SystemExit(f"plugin entry file is missing: {entry_path}")
-        markers = entry_protocol_markers(entry_path, python_lib_dir)
+        details = manifest_launch_details(manifest_path, manifest, python_lib_dir)
         sections.append(
             f"## {manifest_path}\n"
-            f"runtime = {runtime_name}\n"
-            f"entry = {entry_name}\n"
-            f"entry_path = {entry_path}\n"
-            f"entry_protocol_markers = {format_protocol_markers(markers)}\n\n"
+            + "\n".join(details["summary"])
+            + "\n\n"
             f"{manifest_path.read_text(encoding='utf-8').rstrip()}\n"
         )
     write_diagnostic(manifest_summary, "\n".join(sections).rstrip() + "\n")
@@ -801,7 +835,7 @@ def main(argv: list[str] | None = None) -> int:
         runner_lib = Path(__file__).resolve().parents[1]
         smoke_env = env.copy()
         smoke_env["TABULA_TESTBED_LIVE"] = "1"
-        smoke_env["PYTHONPATH"] = f"{runner_lib}:{home / '_lib' / 'python' / 'src'}:{testbed_dir / 'tests'}"
+        smoke_env["PYTHONPATH"] = f"{runner_lib}:{home / 'packages' / 'python' / 'src'}:{testbed_dir / 'tests'}"
         for test in tests:
             run([
                 str(python), str(test),

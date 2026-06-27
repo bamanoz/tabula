@@ -29,6 +29,8 @@ def _make_plugin(root: Path, name: str, manifest_body: str) -> Path:
     d = root / name
     _touch(d / "plugin.toml", manifest_body)
     _touch(d / "run.py", "# placeholder\n")
+    if 'scripts/run.js' in manifest_body:
+        _touch(d / "scripts" / "run.js", "// placeholder\n")
     return d
 
 
@@ -43,8 +45,8 @@ def _seed_kernel(home: Path, *, version: str = "0.9.0",
 
 
 def _seed_sdk_in_bundle(bundle_root: Path, version: str = "0.1.0") -> None:
-    """Place a fake tabula-plugin-sdk under ``<bundle>/_lib/python``."""
-    init = bundle_root / "_lib" / "python" / "src" / "tabula_plugin_sdk" / "__init__.py"
+    """Place a fake component-owned tabula-plugin-sdk export."""
+    init = bundle_root / "plugin-sdk" / "sdk" / "python" / "src" / "tabula_plugin_sdk" / "__init__.py"
     _touch(init, f'__version__ = "{version}"\n')
 
 
@@ -52,6 +54,12 @@ _VALID_REQUIRES = (
     '[plugin]\nid="hello"\nruntime="python"\nentry="run.py"\n'
     '[requires]\nkernel=">=0.9.0,<1.0.0"\nprotocol_version=1\n'
     'sdk="tabula-plugin-sdk>=0.1.0,<0.2.0"\n'
+)
+
+_DIRECT_NODE_REQUIRES = (
+    'id="hello-node"\nname="Hello Node"\nversion="0.1.0"\n'
+    '[worker]\ncommand=["node","scripts/run.js"]\nmode="cold"\n'
+    '[requires]\nkernel=">=0.9.0,<1.0.0"\nprotocol_version=1\n'
 )
 
 
@@ -104,15 +112,25 @@ class PluginManifestParseTests(unittest.TestCase):
 class PluginInstallCompatTests(unittest.TestCase):
     """End-to-end checks via installmod.install() with bundle-sourced plugin."""
 
-    def _build(self, root: Path, *, plugin_body: str, sdk_version: str = "0.1.0",
+    def _build(self, root: Path, *, plugin_body: str, sdk_version: str | None = "0.1.0",
                 kernel_version: str = "0.9.0", proto_min: int = 1, proto_max: int = 1) -> Path:
         home = root / "home"
         _seed_kernel(home, version=kernel_version, proto_min=proto_min, proto_max=proto_max)
 
         bundle = root / "ext" / "kit"
         _make_plugin(bundle, "hello", plugin_body)
-        _touch(bundle / "bundle.toml", '[bundle]\nname="kit"\nversion="0.1.0"\n[requires]\nkernel=">=0.9.0,<1.0.0"\n')
-        _seed_sdk_in_bundle(bundle, sdk_version)
+        manifest = '[bundle]\nname="kit"\nversion="0.1.0"\ncomponents=["hello"]\n'
+        if sdk_version is not None:
+            manifest += (
+                '[[exports.python_packages]]\n'
+                'name="tabula_plugin_sdk"\n'
+                'path="plugin-sdk/sdk/python/src/tabula_plugin_sdk"\n'
+                'owner="plugin-sdk"\n'
+            )
+        manifest += '[requires]\nkernel=">=0.9.0,<1.0.0"\n'
+        _touch(bundle / "bundle.toml", manifest)
+        if sdk_version is not None:
+            _seed_sdk_in_bundle(bundle, sdk_version)
 
         distro = _make_distro(root, body=(
             '[distro]\nid="tabula.demo"\nname="demo"\n'
@@ -124,6 +142,12 @@ class PluginInstallCompatTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home, distro = self._build(root, plugin_body=_VALID_REQUIRES)
+            installmod.install(distro, home)
+
+    def test_install_passes_for_protocol_direct_plugin_without_sdk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home, distro = self._build(root, plugin_body=_DIRECT_NODE_REQUIRES)
             installmod.install(distro, home)
 
     def test_install_fails_when_kernel_too_old(self):
@@ -155,6 +179,22 @@ class PluginInstallCompatTests(unittest.TestCase):
                 installmod.install(distro, home)
             self.assertIn("tabula-plugin-sdk", str(cm.exception))
 
+    def test_install_fails_when_required_sdk_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home, distro = self._build(root, plugin_body=_VALID_REQUIRES, sdk_version=None)
+            with self.assertRaises(installmod.InstallError) as cm:
+                installmod.install(distro, home)
+            self.assertIn("no copy of tabula-plugin-sdk", str(cm.exception))
+
+    def test_install_fails_when_sdk_version_malformed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home, distro = self._build(root, plugin_body=_VALID_REQUIRES, sdk_version="not-a-version")
+            with self.assertRaises(installmod.InstallError) as cm:
+                installmod.install(distro, home)
+            self.assertIn("installed SDK tabula-plugin-sdk __version__ is malformed", str(cm.exception))
+
     def test_install_fails_when_protocol_file_absent(self):
         body = _VALID_REQUIRES
         with tempfile.TemporaryDirectory() as tmp:
@@ -165,7 +205,14 @@ class PluginInstallCompatTests(unittest.TestCase):
             # Note: NO PROTOCOL file.
             bundle = root / "ext" / "kit"
             _make_plugin(bundle, "hello", body)
-            _touch(bundle / "bundle.toml", '[bundle]\nname="kit"\n[requires]\nkernel=">=0.9.0,<1.0.0"\n')
+            _touch(bundle / "bundle.toml", (
+                '[bundle]\nname="kit"\ncomponents=["hello"]\n'
+                '[[exports.python_packages]]\n'
+                'name="tabula_plugin_sdk"\n'
+                'path="plugin-sdk/sdk/python/src/tabula_plugin_sdk"\n'
+                'owner="plugin-sdk"\n'
+                '[requires]\nkernel=">=0.9.0,<1.0.0"\n'
+            ))
             _seed_sdk_in_bundle(bundle)
             distro = _make_distro(root, body=(
                 '[distro]\nid="tabula.demo"\nname="demo"\n'

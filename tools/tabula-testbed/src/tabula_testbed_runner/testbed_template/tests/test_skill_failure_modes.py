@@ -19,13 +19,17 @@ class SkillFailureModesSmoke(unittest.TestCase):
 
     def test_nonzero_and_sdk_failure_envelopes_surface_to_caller(self):
         with self.make_client("testbed-skill-failure") as client:
-            client.wait_tools({"testbed_fail", "testbed_cold_python_sdk_fail"}, session="testbed-skill-failure")
+            client.wait_tools({"testbed_fail", "testbed_cold_python_sdk_fail", "testbed_cold_node"}, session="testbed-skill-failure")
 
             nonzero = client.call_tool("testbed_fail", {"message": "boom"}, timeout=10).json()
             self.assertEqual(nonzero, {"ok": False, "error": "boom"})
 
-            sdk = client.call_tool("testbed_cold_python_sdk_fail", {"message": "structured boom"}, timeout=10).output
-            self.assertIn("ERROR: structured boom", sdk)
+            node = client.call_tool("testbed_cold_node", {"fail": True, "message": "node boom"}, timeout=10).json()
+            self.assertEqual(node, {"ok": False, "error": "node boom", "tool": "testbed_cold_node", "input": {"fail": True, "message": "node boom"}, "pid": node["pid"], "tenant_id": "default", "target_id": "testbed-cold-node"})
+            self.assertGreater(int(node["pid"]), 0, node)
+
+            sdk = client.call_tool("testbed_cold_python_sdk_fail", {"message": "structured boom"}, timeout=10).json()
+            self.assertEqual(sdk, {"ok": False, "error": "structured boom", "source": "testbed"})
 
     def test_timed_out_skill_call_returns_timeout(self):
         with self.make_client("testbed-skill-timeout") as client:

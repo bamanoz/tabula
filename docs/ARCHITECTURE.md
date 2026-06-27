@@ -287,8 +287,11 @@ Manifest is TOML; an optional `README.md` provides human docs (not parsed).
 id = "mcp"
 name = "MCP bridge"
 version = "0.3.0"
-runtime = "python"      # python
-entry = "run.py"
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+
 tags = ["mcp_bridge"]   # optional, free strings, kernel-ignored
 ```
 

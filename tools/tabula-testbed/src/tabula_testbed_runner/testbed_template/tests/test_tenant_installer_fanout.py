@@ -53,12 +53,12 @@ class TenantInstallerFanoutSmoke(unittest.TestCase):
         client.connect_join(session, tenant_id=tenant_id)
         return client
 
-    def assert_tenant_skill_surface(self, tenant_id: str) -> None:
+    def assert_tenant_runtime_surface(self, tenant_id: str) -> None:
         tenant_root = Path(self.tabula_home) / "tenants" / tenant_id
-        skill_doc = tenant_root / "skills" / "testbed-cold-python" / "SKILL.md"
-        lib_root = tenant_root / "_lib" / "python" / "src" / "tabula_skill_sdk"
-        self.assertTrue(skill_doc.is_file(), f"missing tenant skill surface: {skill_doc}")
-        self.assertTrue(lib_root.is_dir(), f"missing tenant shared lib surface: {lib_root}")
+        plugin_manifest = tenant_root / "plugins" / "testbed-cold-python" / "plugin.toml"
+        lib_root = tenant_root / "packages" / "python" / "src" / "tabula_skill_sdk"
+        self.assertTrue(plugin_manifest.is_file(), f"missing tenant plugin surface: {plugin_manifest}")
+        self.assertTrue(lib_root.is_dir(), f"missing tenant package surface: {lib_root}")
 
     def assert_tenant_invoke(self, tenant_id: str, note: str) -> dict:
         with self.make_client(f"testbed-fanout-{tenant_id}", tenant_id) as client:
@@ -73,11 +73,11 @@ class TenantInstallerFanoutSmoke(unittest.TestCase):
     def test_tenant_created_after_install_gets_runtime_surface_and_survives_update(self) -> None:
         tenant_id = "gamma"
         self.create_tenant(tenant_id)
-        self.assert_tenant_skill_surface(tenant_id)
+        self.assert_tenant_runtime_surface(tenant_id)
 
         before = self.assert_tenant_invoke(tenant_id, "before-update")
         self.update_distro()
-        self.assert_tenant_skill_surface(tenant_id)
+        self.assert_tenant_runtime_surface(tenant_id)
         after = self.assert_tenant_invoke(tenant_id, "after-update")
 
         self.assertEqual(Path(before["path"]), Path(after["path"]))

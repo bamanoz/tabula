@@ -38,6 +38,7 @@ func TestResolveToolDeadlineCapsAtFifteenMinutes(t *testing.T) {
 func TestHandleDynamicTool_RuntimeSourceInvokesAttachedRuntime(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
 	rc := runtimemock.New()
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
 	rc.OnInvoke("alpha", target, "mcp__echo").Return([]byte(`"ok"`))
@@ -76,6 +77,7 @@ func TestHandleDynamicTool_RuntimeSourceInvokesAttachedRuntime(t *testing.T) {
 func TestHandleCancelCancelsInFlightRuntimeTool(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
 	rc := runtimemock.New()
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
 	rc.OnInvoke("alpha", target, "mcp__slow").Delay(30 * time.Second).Return([]byte(`"late"`))
@@ -112,6 +114,7 @@ func TestHandleDynamicTool_LargeRuntimeResultWithoutRewriteFailsExplicitly(t *te
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.SetSessionStore(NewDiskSessionStore(t.TempDir()))
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
 	rc := runtimemock.New()
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
 	rc.OnInvoke("alpha", target, "mcp__echo").Return([]byte(`"` + strings.Repeat("x", 13000) + `"`))
@@ -141,6 +144,7 @@ func TestHandleDynamicTool_InvokeStreamCleansKernelSpool(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.SetSessionStore(NewDiskSessionStore(home))
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
 	rc := runtimemock.New()
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
 	rc.OnInvoke("alpha", target, "mcp__echo").Return([]byte(`"ok"`))
@@ -170,6 +174,7 @@ func TestHandleDynamicTool_BroadcastsBoundedToolResultStreamEvents(t *testing.T)
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.SetSessionStore(NewDiskSessionStore(home))
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
 	rc := runtimemock.New()
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
 	rc.OnInvoke("alpha", target, "mcp__echo").Return([]byte(`"` + strings.Repeat("x", toolResultInlineLimitBytes+100) + `"`))
@@ -205,6 +210,7 @@ func TestHandleDynamicTool_FailedRuntimeResultDoesNotBroadcastStreamEnd(t *testi
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.SetSessionStore(NewDiskSessionStore(t.TempDir()))
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
 	rc := runtimemock.New()
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
 	rc.OnInvoke("alpha", target, "mcp__echo").ReturnError(wire.Error{Code: wire.ErrorInternal, Message: "boom"})
@@ -343,6 +349,7 @@ func TestInvokeResultSpoolIdleTimeoutCancelsStartedStream(t *testing.T) {
 func TestBusyRuntimeTargetIsSkippedForPromptBuildHooks(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "subagents"}
 	capability := wire.Capability{
 		Target: target,
@@ -383,6 +390,7 @@ func TestBusyRuntimeTargetIsSkippedForPromptBuildHooks(t *testing.T) {
 func TestBusyRuntimeTargetIsNotSkippedForSecurityHooks(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
 	timeout := int64(20)
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-permissions"}
 	capability := wire.Capability{
@@ -462,6 +470,7 @@ func TestRuntimeHookSendErrorClosesConnAndBlocksQuickly(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: tenant.DefaultID, CreatedAt: time.Now()}))
 	hub.runtimes = NewRuntimeRegistry()
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
 	timeout := int64(20)
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-permissions"}
 	capability := wire.Capability{
@@ -559,6 +568,7 @@ func TestTenantScopedCapabilityUpdateDoesNotEvictSiblingTenantDispatch(t *testin
 		tenant.Tenant{ID: "alpha", CreatedAt: time.Now()},
 		tenant.Tenant{ID: "beta", CreatedAt: time.Now()},
 	))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
 	if err := hub.runtimes.RegisterHello("local", runtimemock.New(), nil, 0, []string{"alpha", "beta"}); err != nil {
 		t.Fatalf("RegisterHello: %v", err)
 	}
@@ -583,6 +593,7 @@ func TestTenantScopedCatalogUpdateExtendsRuntimeTenants(t *testing.T) {
 		tenant.Tenant{ID: "bootstrap", CreatedAt: time.Now()},
 		tenant.Tenant{ID: "alpha", CreatedAt: time.Now()},
 	))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
 	if err := hub.runtimes.RegisterHello("local", runtimemock.New(), nil, 0, []string{"bootstrap"}); err != nil {
 		t.Fatalf("RegisterHello: %v", err)
 	}
@@ -618,6 +629,7 @@ func TestInitRefreshesAttachedRuntimeCapabilitiesAfterLateTenantAppears(t *testi
 		tenant.Tenant{ID: "bootstrap", CreatedAt: time.Now()},
 		tenant.Tenant{ID: "alpha", CreatedAt: time.Now()},
 	))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
 	bootstrapTarget := wire.Target{Kind: wire.TargetKindPlugin, ID: "bootstrap-fs"}
 	alphaTarget := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
 	bootstrapCapability := wire.Capability{Target: bootstrapTarget, Tenants: []string{"bootstrap"}, Tools: []wire.ToolSpec{{Name: "bootstrap_read"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker, Revision: 1}
@@ -672,6 +684,122 @@ func TestHandleDynamicTool_FallsBackToTenantDefaultRuntimeForGlobalDispatch(t *t
 	recorded := remote.RecordedInvokes()
 	if len(recorded) != 1 || recorded[0].TenantID != "alpha" {
 		t.Fatalf("unexpected remote runtime invokes: %+v", recorded)
+	}
+}
+
+func TestHandleDynamicTool_PrefersSessionRuntimeForGlobalDispatch(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.runtimes = NewRuntimeRegistry()
+	if err := hub.runtimes.Configure(
+		[]RuntimeDefinition{{ID: "local", Backend: "local"}, {ID: "remote", Backend: "attach"}},
+		map[string]TenantRuntimeBinding{"alpha": {AllowedRuntimes: []string{"local", "remote"}, DefaultRuntime: "local"}},
+	); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	local := runtimemock.New()
+	remote := runtimemock.New()
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
+	local.OnInvoke("alpha", target, "mcp__echo").Return([]byte(`"local"`))
+	remote.OnInvoke("alpha", target, "mcp__echo").Return([]byte(`"remote"`))
+	if err := hub.runtimes.RegisterHello("local", local, nil, 0, []string{"alpha"}); err != nil {
+		t.Fatalf("RegisterHello local: %v", err)
+	}
+	if err := hub.runtimes.RegisterHello("remote", remote, nil, 0, []string{"alpha"}); err != nil {
+		t.Fatalf("RegisterHello remote: %v", err)
+	}
+	hub.toolExec[toolExecKey("alpha", "mcp__echo")] = runtimeDispatch("", "alpha", target, nil, 0)
+
+	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	if !hub.addClient(c) {
+		t.Fatal("addClient failed")
+	}
+	sess := hub.sessions.GetOrCreate("s1", "alpha")
+	sess.AddClient(c.name)
+	sess.BindPreferredRuntime("remote")
+
+	hub.tools.handleDynamicTool("alpha", "s1", "tid-rt", "mcp__echo", json.RawMessage(`{}`), "")
+	msg := waitForMessage(t, c.recvCh)
+	if !isToolResult(msg) || msg.Output != "remote" {
+		t.Fatalf("unexpected runtime tool result: %+v", msg)
+	}
+	if len(local.RecordedInvokes()) != 0 {
+		t.Fatalf("local default runtime should not be invoked: %+v", local.RecordedInvokes())
+	}
+	if recorded := remote.RecordedInvokes(); len(recorded) != 1 || recorded[0].TenantID != "alpha" {
+		t.Fatalf("unexpected remote runtime invokes: %+v", recorded)
+	}
+}
+
+func TestHandleDynamicTool_FallsBackWhenSessionRuntimeUnavailable(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.runtimes = NewRuntimeRegistry()
+	if err := hub.runtimes.Configure(
+		[]RuntimeDefinition{{ID: "local", Backend: "local"}, {ID: "remote", Backend: "attach"}},
+		map[string]TenantRuntimeBinding{"alpha": {AllowedRuntimes: []string{"local", "remote"}, DefaultRuntime: "local"}},
+	); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	local := runtimemock.New()
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
+	local.OnInvoke("alpha", target, "mcp__echo").Return([]byte(`"local"`))
+	if err := hub.runtimes.RegisterHello("local", local, nil, 0, []string{"alpha"}); err != nil {
+		t.Fatalf("RegisterHello local: %v", err)
+	}
+	hub.toolExec[toolExecKey("alpha", "mcp__echo")] = runtimeDispatch("", "alpha", target, nil, 0)
+
+	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	if !hub.addClient(c) {
+		t.Fatal("addClient failed")
+	}
+	sess := hub.sessions.GetOrCreate("s1", "alpha")
+	sess.AddClient(c.name)
+	sess.BindPreferredRuntime("remote")
+
+	hub.tools.handleDynamicTool("alpha", "s1", "tid-rt", "mcp__echo", json.RawMessage(`{}`), "")
+	msg := waitForMessage(t, c.recvCh)
+	if !isToolResult(msg) || msg.Output != "local" {
+		t.Fatalf("unexpected runtime tool result: %+v", msg)
+	}
+	if recorded := local.RecordedInvokes(); len(recorded) != 1 || recorded[0].TenantID != "alpha" {
+		t.Fatalf("unexpected local runtime invokes: %+v", recorded)
+	}
+}
+
+func TestHandleDynamicTool_ReturnsErrorWithoutImplicitKernelDefaultRuntimeFallback(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.runtimes = NewRuntimeRegistry()
+	if err := hub.runtimes.Configure(
+		[]RuntimeDefinition{{ID: "local", Backend: "local"}, {ID: "remote", Backend: "attach"}},
+		map[string]TenantRuntimeBinding{},
+	); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	local := runtimemock.New()
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
+	local.OnInvoke("alpha", target, "mcp__echo").Return([]byte(`"local"`))
+	if err := hub.runtimes.RegisterHello("local", local, nil, 0, []string{"alpha"}); err != nil {
+		t.Fatalf("RegisterHello local: %v", err)
+	}
+	hub.toolExec[toolExecKey("alpha", "mcp__echo")] = runtimeDispatch("", "alpha", target, nil, 0)
+
+	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	if !hub.addClient(c) {
+		t.Fatal("addClient failed")
+	}
+	sess := hub.sessions.GetOrCreate("s1", "alpha")
+	sess.AddClient(c.name)
+	sess.BindPreferredRuntime("remote")
+
+	hub.tools.handleDynamicTool("alpha", "s1", "tid-rt", "mcp__echo", json.RawMessage(`{}`), "")
+	msg := waitForMessage(t, c.recvCh)
+	if !isToolResult(msg) || !strings.Contains(msg.Output, "default runtime is not configured") {
+		t.Fatalf("unexpected runtime tool result: %+v", msg)
+	}
+	if len(local.RecordedInvokes()) != 0 {
+		t.Fatalf("local runtime should not be used as implicit kernel default: %+v", local.RecordedInvokes())
 	}
 }
 
@@ -765,6 +893,7 @@ func TestJoinBindsSessionTenantAndRejectsUnknownTenant(t *testing.T) {
 
 func TestRuntimeSkillCapabilitiesAreIgnored(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
 	rc := runtimemock.New()
 	target := wire.Target{Kind: wire.TargetKindSkill, ID: "skill:timer"}
 	if err := hub.runtimes.RegisterHello("local", rc, nil, 0); err != nil {

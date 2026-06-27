@@ -19,6 +19,8 @@ import (
 	runtimeconn "github.com/bamanoz/tabula/internal/runtime/conn"
 	runtimeconfig "github.com/bamanoz/tabula/internal/runtime/host/config"
 	"github.com/bamanoz/tabula/internal/runtime/host/dialer"
+	runtimeinstance "github.com/bamanoz/tabula/internal/runtime/instance"
+	"github.com/bamanoz/tabula/internal/runtime/paths"
 	"github.com/bamanoz/tabula/internal/runtime/transport/stdio"
 	"github.com/bamanoz/tabula/internal/runtime/transport/unixsock"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
@@ -131,13 +133,43 @@ func TestVersionFlagPrintsRuntimeVersion(t *testing.T) {
 	}
 }
 
+func TestConfiguredRuntimeIDUsesExplicitValue(t *testing.T) {
+	got, err := configuredRuntimeID("remote-1", time.Unix(1, 0))
+	if err != nil {
+		t.Fatalf("configuredRuntimeID: %v", err)
+	}
+	if got != "remote-1" {
+		t.Fatalf("configuredRuntimeID = %q", got)
+	}
+}
+
+func TestConfiguredRuntimeIDBootstrapsMetadata(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TABULA_HOME", home)
+	got, err := configuredRuntimeID("", time.Unix(123, 0).UTC())
+	if err != nil {
+		t.Fatalf("configuredRuntimeID: %v", err)
+	}
+	meta, err := runtimeinstance.Load(paths.RuntimeInstanceFile())
+	if err != nil {
+		t.Fatalf("Load metadata: %v", err)
+	}
+	if got != meta.RuntimeID {
+		t.Fatalf("configuredRuntimeID = %q, metadata runtime id = %q", got, meta.RuntimeID)
+	}
+	if meta.CreatedAt != time.Unix(123, 0).UTC() {
+		t.Fatalf("CreatedAt = %s", meta.CreatedAt)
+	}
+}
+
 func TestNewManifestStoreLoadsTenantCatalogs(t *testing.T) {
 	dir := t.TempDir()
 	writePlugin(t, filepath.Join(dir, "tenants", "alpha", "plugins", "fs", "plugin.toml"), `id = "fs"
 name = "Filesystem"
 version = "0.1.0"
-runtime = "python"
-entry = "run.py"
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
 
 [[tools]]
 name = "fs_read"
@@ -165,8 +197,9 @@ func TestNewManifestStoreSurfacesTenantCatalogErrors(t *testing.T) {
 	writePlugin(t, filepath.Join(dir, "tenants", "alpha", "plugins", "broken", "plugin.toml"), `id = "broken"
 name = "Broken"
 version = "0.1.0"
-runtime = "python"
-entry = "run.py"
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
 
 [requires]
 kernel = ">=0.9.0,<1.0.0"
@@ -253,6 +286,118 @@ token_file = "`+tokenPath+`"
 	}
 
 	waitFor(t, connected, "runtime hello handshake")
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatalf("signal helper: %v", err)
+	}
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- cmd.Wait() }()
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Fatalf("helper exit: %v; stderr=%s", err, stderr.String())
+		}
+	case <-time.After(5 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatalf("helper did not exit within 5s; stderr=%s", stderr.String())
+	}
+	waitFor(t, closeObserved, "runtime graceful close")
+	listener.Close()
+	select {
+	case <-serverDone:
+	case <-time.After(time.Second):
+		t.Fatal("fake kernel listener did not stop")
+	}
+}
+
+func TestStartSubprocessBootstrapsRuntimeMetadataWhenRuntimeIDNotProvided(t *testing.T) {
+	if os.Getenv("TABULA_RUNTIME_HELPER") == "1" {
+		return
+	}
+	home := t.TempDir()
+	t.Setenv("TABULA_HOME", home)
+	t.Cleanup(func() { os.Unsetenv("TABULA_HOME") })
+	tokenPath := filepath.Join(home, "run", "runtime-token")
+	if err := os.MkdirAll(filepath.Dir(tokenPath), 0o755); err != nil {
+		t.Fatalf("mkdir run: %v", err)
+	}
+	if err := os.WriteFile(tokenPath, []byte("secret-token\n"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	sock := filepath.Join("/tmp", "tabula-rt-main-meta-"+filepath.Base(home), "runtime.sock")
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(sock)) })
+	listener, err := unixsock.Listen(sock)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer listener.Close()
+
+	connected := make(chan string, 1)
+	closeObserved := make(chan struct{})
+	serverDone := make(chan error, 1)
+	go func() {
+		serverDone <- listener.Serve(func(ctx context.Context, c *codec.Conn) {
+			_, frame, err := c.Read(ctx)
+			if err != nil {
+				t.Errorf("read hello: %v", err)
+				return
+			}
+			hello, ok := frame.(*wire.Hello)
+			if !ok {
+				t.Errorf("expected hello, got %T", frame)
+				return
+			}
+			if hello.Token != "secret-token" {
+				t.Errorf("unexpected hello token: %#v", hello)
+			}
+			connected <- hello.RuntimeID
+			if err := c.Write(ctx, wire.HelloAck{Op: wire.OpHelloAck, Accepted: true, KernelID: "main"}); err != nil {
+				t.Errorf("write hello_ack: %v", err)
+				return
+			}
+			_, _, _ = c.Read(ctx)
+			close(closeObserved)
+		})
+	}()
+
+	configDir := filepath.Join(home, "config")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	configPath := filepath.Join(configDir, "runtime.toml")
+	writeFile(t, configPath, `[[kernel]]
+id = "local"
+url = "unix://`+sock+`"
+token_file = "`+tokenPath+`"
+`)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	cmd := exec.Command(exe, "-test.run=TestRuntimeStartHelperProcess", "--", "start", "--config", configPath)
+	cmd.Env = append(os.Environ(), "TABULA_RUNTIME_HELPER=1", "TABULA_HOME="+home)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper: %v", err)
+	}
+
+	var observedRuntimeID string
+	select {
+	case observedRuntimeID = <-connected:
+	case <-time.After(2 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("timed out waiting for runtime hello handshake")
+	}
+	meta, err := runtimeinstance.Load(filepath.Join(home, "run", "runtime-instance.json"))
+	if err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatalf("Load metadata: %v", err)
+	}
+	if observedRuntimeID != meta.RuntimeID {
+		_ = cmd.Process.Kill()
+		t.Fatalf("hello runtime id = %q, metadata runtime id = %q", observedRuntimeID, meta.RuntimeID)
+	}
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		_ = cmd.Process.Kill()
 		t.Fatalf("signal helper: %v", err)

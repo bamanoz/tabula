@@ -310,7 +310,7 @@ func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName stri
 		var code wire.ErrorCode
 		var pickErr error
 		if pickedRuntimeID == "" {
-			conn, pickedRuntimeID, code, pickErr = s.hub.pickRuntime(tenantID)
+			conn, pickedRuntimeID, code, pickErr = s.hub.pickRuntimeForSession(tenantID, session)
 		} else {
 			conn, code, pickErr = s.hub.runtimeForTenant(tenantID, pickedRuntimeID)
 		}

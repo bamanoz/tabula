@@ -30,6 +30,7 @@ type Session struct {
 	ID                  string
 	TenantID            string
 	InitContext         string
+	PreferredRuntimeID  string
 	State               SessionState
 	CreatedAt           time.Time
 	LastActiveAt        time.Time
@@ -96,6 +97,43 @@ func (s *Session) GetInitContext() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.InitContext
+}
+
+func (s *Session) BindPreferredRuntime(runtimeID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.PreferredRuntimeID != "" || runtimeID == "" {
+		return false
+	}
+	s.PreferredRuntimeID = runtimeID
+	s.touchLocked()
+	return true
+}
+
+func (s *Session) RestorePreferredRuntime(runtimeID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.PreferredRuntimeID != "" || runtimeID == "" {
+		return
+	}
+	s.PreferredRuntimeID = runtimeID
+}
+
+func (s *Session) PreferredRuntime() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.PreferredRuntimeID
+}
+
+func (s *Session) SetPreferredRuntime(runtimeID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if runtimeID == "" || s.PreferredRuntimeID == runtimeID {
+		return false
+	}
+	s.PreferredRuntimeID = runtimeID
+	s.touchLocked()
+	return true
 }
 
 func newSession(id, tenantID string) *Session {

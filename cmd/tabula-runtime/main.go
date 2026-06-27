@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	runtimeconn "github.com/bamanoz/tabula/internal/runtime/conn"
 	runtimeconfig "github.com/bamanoz/tabula/internal/runtime/host/config"
@@ -18,6 +19,7 @@ import (
 	"github.com/bamanoz/tabula/internal/runtime/host/manifest"
 	"github.com/bamanoz/tabula/internal/runtime/host/policy/bare"
 	"github.com/bamanoz/tabula/internal/runtime/host/pool"
+	runtimeinstance "github.com/bamanoz/tabula/internal/runtime/instance"
 	"github.com/bamanoz/tabula/internal/runtime/paths"
 	"github.com/bamanoz/tabula/internal/runtime/transport/stdio"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
@@ -67,7 +69,7 @@ func stdioCmd(args []string, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "", "path to runtime.toml")
 	tokenFile := fs.String("token-file", "", "runtime token file")
-	runtimeID := fs.String("runtime-id", dialer.DefaultRuntimeID, "runtime id sent in Hello")
+	runtimeID := fs.String("runtime-id", "", "runtime id sent in Hello")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -93,6 +95,11 @@ func stdioCmd(args []string, stderr io.Writer) int {
 	if strings.TrimSpace(*tokenFile) != "" {
 		kernelCfg.TokenFile = strings.TrimSpace(*tokenFile)
 	}
+	resolvedRuntimeID, err := configuredRuntimeID(*runtimeID, time.Now())
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
 	manifestStore, err := newManifestStore(cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
@@ -111,7 +118,7 @@ func stdioCmd(args []string, stderr io.Writer) int {
 	}
 	handler := daemon.NewHandler(daemon.Options{Store: manifestStore, Pool: workerPool})
 	capabilities := dialer.InitialCapabilitiesForStdio(context.Background(), handler)
-	ack, err := runtimeconn.Handshake(context.Background(), conn, wire.Hello{Op: wire.OpHello, RuntimeID: strings.TrimSpace(*runtimeID), Token: token, ProtocolVersion: dialer.ProtocolVersion, Capabilities: capabilities, TenantsServed: kernelCfg.Tenants})
+	ack, err := runtimeconn.Handshake(context.Background(), conn, wire.Hello{Op: wire.OpHello, RuntimeID: resolvedRuntimeID, Token: token, ProtocolVersion: dialer.ProtocolVersion, Capabilities: capabilities, TenantsServed: kernelCfg.Tenants})
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
@@ -131,7 +138,7 @@ func startCmd(args []string, stderr io.Writer) int {
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "", "path to runtime.toml")
-	runtimeID := fs.String("runtime-id", dialer.DefaultRuntimeID, "runtime id sent in Hello")
+	runtimeID := fs.String("runtime-id", "", "runtime id sent in Hello")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -150,6 +157,11 @@ func startCmd(args []string, stderr io.Writer) int {
 		return 1
 	}
 	kernelCfg, err := cfg.SingleKernel()
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	resolvedRuntimeID, err := configuredRuntimeID(*runtimeID, time.Now())
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
@@ -173,11 +185,22 @@ func startCmd(args []string, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	defer workerPool.Close()
-	if err := dialer.Run(ctx, dialer.Options{Kernel: kernelCfg, RuntimeID: *runtimeID, Handler: daemon.NewHandler(daemon.Options{Store: manifestStore, Pool: workerPool}), Logger: logger, Reconnect: true}); err != nil {
+	if err := dialer.Run(ctx, dialer.Options{Kernel: kernelCfg, RuntimeID: resolvedRuntimeID, Handler: daemon.NewHandler(daemon.Options{Store: manifestStore, Pool: workerPool}), Logger: logger, Reconnect: true}); err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+func configuredRuntimeID(explicit string, now time.Time) (string, error) {
+	if runtimeID := strings.TrimSpace(explicit); runtimeID != "" {
+		return runtimeID, nil
+	}
+	meta, err := runtimeinstance.Ensure(paths.RuntimeInstanceFile(), now)
+	if err != nil {
+		return "", fmt.Errorf("resolve runtime instance metadata: %w", err)
+	}
+	return meta.RuntimeID, nil
 }
 
 func printUsage(w io.Writer) {

@@ -182,10 +182,16 @@ func TestTenantScopedReloadTriggerStillReloadsAllLocalTenants(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save runtime config: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(tabulaHome, "config", "global.toml"), []byte("[[runtime]]\nid = \"local\"\nbackend = \"local\"\n"), 0o644); err != nil {
+		t.Fatalf("write global runtime config: %v", err)
+	}
 	store := tenant.NewFSStore(tabulaHome)
 	for _, tenantID := range []string{"alpha", "beta"} {
 		if err := store.Create(tenant.Tenant{ID: tenantID, CreatedAt: time.Now()}); err != nil {
 			t.Fatalf("create tenant: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(tabulaHome, "tenants", tenantID, "config", "tenant.toml"), []byte("[tenant]\ndefault_runtime = \"local\"\n"), 0o644); err != nil {
+			t.Fatalf("write tenant runtime config: %v", err)
 		}
 	}
 	got := reloadTriggerTenants(path, tabulaHome)

@@ -3,6 +3,7 @@ package kernel
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -148,6 +149,7 @@ func (testRuntimeConn) Close() error { return nil }
 
 func attachTestRuntime(t *testing.T, hub *Hub, capabilities ...wire.Capability) {
 	t.Helper()
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
 	conn := testRuntimeConn{}
 	if err := hub.runtimes.RegisterHello("local", conn, capabilities, 0); err != nil {
 		t.Fatalf("RegisterHello: %v", err)
@@ -156,6 +158,40 @@ func attachTestRuntime(t *testing.T, hub *Hub, capabilities ...wire.Capability) 
 		hub.syncRuntimeCapability("local", capability)
 	}
 	hub.rebuildHookIndex()
+}
+
+func ensureRuntimeDefinitionsForTest(t *testing.T, hub *Hub, defs ...RuntimeDefinition) {
+	t.Helper()
+	if hub == nil {
+		t.Fatal("hub is nil")
+	}
+	if hub.runtimes == nil {
+		hub.runtimes = NewRuntimeRegistry()
+	}
+	hub.runtimes.mu.RLock()
+	defined := make(map[string]RuntimeDefinition, len(hub.runtimes.defined)+len(defs))
+	for id, def := range hub.runtimes.defined {
+		defined[id] = def
+	}
+	bindings := make(map[string]TenantRuntimeBinding, len(hub.runtimes.tenantBindings))
+	for tenantID, binding := range hub.runtimes.tenantBindings {
+		bindings[tenantID] = TenantRuntimeBinding{
+			AllowedRuntimes: append([]string(nil), binding.AllowedRuntimes...),
+			DefaultRuntime:  binding.DefaultRuntime,
+		}
+	}
+	hub.runtimes.mu.RUnlock()
+	for _, def := range defs {
+		defined[def.ID] = def
+	}
+	merged := make([]RuntimeDefinition, 0, len(defined))
+	for _, def := range defined {
+		merged = append(merged, def)
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i].ID < merged[j].ID })
+	if err := hub.runtimes.Configure(merged, bindings); err != nil {
+		t.Fatalf("Configure runtimes: %v", err)
+	}
 }
 
 func runtimePluginCapability(targetID, toolName string) wire.Capability {

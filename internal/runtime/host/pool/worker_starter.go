@@ -53,14 +53,16 @@ func (s *workerStarter) ensure(ctx context.Context, e *entry, plugin manifest.Pl
 
 func (s *workerStarter) spawnReq(tenantID string, plugin manifest.Plugin) policy.SpawnReq {
 	req := policy.SpawnReq{
-		KernelID:   s.kernelID,
-		TenantID:   tenantID,
-		TargetID:   plugin.ID,
-		Runtime:    plugin.Runtime,
-		Entry:      plugin.Entry,
-		Manifest:   plugin.RawJSON(),
-		WorkingDir: plugin.RootDir,
-		Mode:       policy.SpawnModeWarm,
+		KernelID:    s.kernelID,
+		TenantID:    tenantID,
+		TargetID:    plugin.ID,
+		HarnessKind: plugin.Capability().HarnessKind,
+		Command:     plugin.LaunchCommand(),
+		Runtime:     plugin.Runtime,
+		Entry:       plugin.Entry,
+		Manifest:    plugin.RawJSON(),
+		WorkingDir:  plugin.RootDir,
+		Mode:        policy.SpawnModeWarm,
 	}
 	if s.env != nil {
 		req.Env = s.env(tenantID)

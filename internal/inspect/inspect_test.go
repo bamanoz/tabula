@@ -124,8 +124,9 @@ func inspectPluginManifest(id, tool string) string {
 	return `id = "` + id + `"
 name = "` + id + `"
 version = "0.1.0"
-runtime = "python"
-entry = "run.py"
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
 
 [[tools]]
 name = "` + tool + `"

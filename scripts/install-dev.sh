@@ -67,11 +67,32 @@ fi
 "$VENV/bin/pip" install -q --upgrade pip
 "$VENV/bin/pip" install -q -r "$SCRIPT_DIR/requirements-dev.txt"
 TABULA_BUNDLES_ROOT="${TABULA_BUNDLES_ROOT:-$REPO_ROOT/../tabula-bundles}"
-if [ -d "$TABULA_BUNDLES_ROOT/_lib/python" ]; then
-  "$VENV/bin/pip" install -q -e "$TABULA_BUNDLES_ROOT/_lib/python"
+if [ -d "$TABULA_BUNDLES_ROOT" ]; then
+  "$VENV/bin/python" - "$TABULA_BUNDLES_ROOT" <<'PY'
+import site
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+paths = [
+    root / "base" / "plugin-sdk" / "sdk" / "python" / "src",
+    root / "base" / "skills" / "sdk" / "python" / "src",
+    root / "base" / "tool-result-store" / "sdk" / "python" / "src",
+    root / "base" / "sessions" / "sdk" / "python" / "src",
+    root / "base" / "deferred-tools" / "sdk" / "python" / "src",
+    root / "drivers" / "driver" / "sdk" / "python" / "src",
+    root / "mempalace" / "mempalace-common" / "sdk" / "python" / "src",
+]
+existing = [path for path in paths if path.is_dir()]
+if not existing:
+    raise SystemExit(f"no component-owned Python SDK roots found under {root}")
+site_packages = Path(site.getsitepackages()[0])
+site_packages.mkdir(parents=True, exist_ok=True)
+(site_packages / "tabula-bundles-sdk-roots.pth").write_text("\n".join(str(path) for path in existing) + "\n", encoding="utf-8")
+PY
 else
-  echo "warning: tabula-bundles Python SDK not found at $TABULA_BUNDLES_ROOT/_lib/python" >&2
-  echo "         tabula-install requires tabula_plugin_sdk; set TABULA_BUNDLES_ROOT to your checkout" >&2
+  echo "warning: tabula-bundles checkout not found at $TABULA_BUNDLES_ROOT" >&2
+  echo "         tabula-install app materializers may require tabula_plugin_sdk; set TABULA_BUNDLES_ROOT to your checkout" >&2
 fi
 "$VENV/bin/pip" install -q -e "$REPO_ROOT/tools/tabula-distro"
 echo "    Python dependencies installed"

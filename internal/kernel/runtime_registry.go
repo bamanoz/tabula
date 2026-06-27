@@ -54,15 +54,12 @@ type runtimeHookTarget struct {
 
 // NewRuntimeRegistry creates an empty runtime attachment registry.
 func NewRuntimeRegistry() *RuntimeRegistry {
-	return &RuntimeRegistry{runtimes: make(map[string]*RuntimeAttachment), defined: map[string]RuntimeDefinition{defaultRuntimeID: {ID: defaultRuntimeID, Backend: "local"}}, tenantBindings: map[string]TenantRuntimeBinding{}}
+	return &RuntimeRegistry{runtimes: make(map[string]*RuntimeAttachment), defined: map[string]RuntimeDefinition{}, tenantBindings: map[string]TenantRuntimeBinding{}}
 }
 
 func (r *RuntimeRegistry) Configure(definitions []RuntimeDefinition, bindings map[string]TenantRuntimeBinding) error {
 	if r == nil {
 		return fmt.Errorf("runtime registry is nil")
-	}
-	if len(definitions) == 0 {
-		definitions = []RuntimeDefinition{{ID: defaultRuntimeID, Backend: "local"}}
 	}
 	defined := make(map[string]RuntimeDefinition, len(definitions))
 	for _, definition := range definitions {
@@ -162,7 +159,7 @@ func (r *RuntimeRegistry) Pick(tenantID string) (runtimeapi.RuntimeConn, string,
 	binding := r.bindingForTenantLocked(tenantID)
 	runtimeID := strings.TrimSpace(binding.DefaultRuntime)
 	if runtimeID == "" {
-		runtimeID = defaultRuntimeID
+		return nil, "", wire.ErrorRuntimeUnavailable, fmt.Errorf("default runtime is not configured for tenant %q", tenantID)
 	}
 	conn, code, err := r.runtimeForTenantLocked(tenantID, binding, runtimeID)
 	return conn, runtimeID, code, err
@@ -197,23 +194,17 @@ func (r *RuntimeRegistry) bindingForTenantLocked(tenantID string) TenantRuntimeB
 	if ok {
 		return binding
 	}
-	binding = TenantRuntimeBinding{AllowedRuntimes: []string{"*"}, DefaultRuntime: defaultRuntimeID}
-	if len(r.defined) == 1 {
-		for runtimeID := range r.defined {
-			binding.DefaultRuntime = runtimeID
-		}
-	}
-	return binding
+	return TenantRuntimeBinding{AllowedRuntimes: []string{"*"}}
 }
 
 func (r *RuntimeRegistry) runtimeForTenantLocked(tenantID string, binding TenantRuntimeBinding, runtimeID string) (runtimeapi.RuntimeConn, wire.ErrorCode, error) {
 	if !runtimeAllowed(binding.AllowedRuntimes, runtimeID) {
 		return nil, wire.ErrorTenantForbidden, fmt.Errorf("tenant %q cannot use runtime %q", tenantID, runtimeID)
 	}
-	if _, ok := r.defined[runtimeID]; !ok {
+	attachment := r.runtimes[runtimeID]
+	if _, ok := r.defined[runtimeID]; !ok && attachment == nil {
 		return nil, wire.ErrorRuntimeUnavailable, fmt.Errorf("runtime %q is not configured", runtimeID)
 	}
-	attachment := r.runtimes[runtimeID]
 	if attachment == nil || !attachment.Attached || attachment.conn == nil {
 		return nil, wire.ErrorRuntimeUnavailable, fmt.Errorf("runtime %q is unavailable", runtimeID)
 	}

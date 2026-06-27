@@ -63,7 +63,12 @@ $runtimeBin = Join-Path $binDir "tabula-runtime.exe"
 if (-not $env:TABULA_PATH) {
     $env:TABULA_PATH = "$(Join-Path $env:TABULA_HOME '.venv' 'Scripts');$binDir;$env:Path"
 }
-$env:Path = "$binDir;$env:Path"
+$env:Path = $env:TABULA_PATH
+if ($env:PYTHONPATH) {
+    $env:PYTHONPATH = "$(Join-Path $env:TABULA_HOME 'packages' 'python' 'src');$env:PYTHONPATH"
+} else {
+    $env:PYTHONPATH = "$(Join-Path $env:TABULA_HOME 'packages' 'python' 'src')"
+}
 
 $runtimeMode = "external"
 $forwardArgs = New-Object System.Collections.Generic.List[string]

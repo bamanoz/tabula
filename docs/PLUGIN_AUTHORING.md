@@ -30,9 +30,11 @@ Minimum manifest:
 id = "my-plugin"
 name = "My Plugin"
 version = "0.1.0"
-runtime = "python"          # python (only Python is supported today)
-entry = "run.py"            # relative to this directory
 description = "Optional human summary"
+
+[worker]
+command = ["python3", "run.py"]  # argv; relative paths resolve from plugin root
+mode = "warm"                      # or "cold"
 
 [[tools]]
 name = "my_tool"
@@ -46,15 +48,18 @@ priority = 50
 
 Validation rules enforced by `internal/runtime/host/manifest/manifest.go`:
 
-- `id`, `name`, `version`, `runtime`, and `entry` are required.
+- `id`, `name`, `version`, and `[worker].command` are required.
 - `id` must match `^[a-z0-9_-]+$`.
 - `version` must be SemVer-shaped (`X.Y.Z`, with optional prerelease/build).
-- `runtime` must be `python`. Skill SDKs exist in TypeScript, but plugins are
-  Python-only today.
-- `entry` must be relative and must not contain `..`.
+- `[worker].mode` must be `warm` or `cold`; cold plugins cannot publish hooks.
+- `command` must be a non-empty argv list. Relative paths resolve from the
+  plugin root.
 - advisory `[[tools]]` entries require non-empty `name`; `deadline_ms` must be
   non-negative.
 - advisory `[[hooks]]` entries require non-empty `event`.
+
+Legacy `runtime`/`entry` manifests are still accepted for compatibility, but
+new plugins should use `[worker]`.
 
 Unknown manifest keys are tolerated for forward compatibility. The kernel
 ignores tags/UI hints unless a distro or UI chooses to use them.
