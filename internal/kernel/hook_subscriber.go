@@ -13,6 +13,7 @@ package kernel
 type HookSubscriber interface {
 	Name() string
 	Session() string
+	ServesTenant(string) bool
 	IsConnected() bool
 	IsBusy() bool
 	Hooks() []HookSubscription

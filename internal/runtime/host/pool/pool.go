@@ -594,11 +594,29 @@ func safeWorkerErrorMessage(prefix string, err error) string {
 	errText := err.Error()
 	if stderr := stderrCapturedSummary(errText); stderr != "" {
 		message += "; " + stderr
+	} else if detail := safeWorkerInfrastructureDetail(errText); detail != "" {
+		message += "; " + detail
 	}
 	if strings.Contains(errText, "likely legacy register_request/stdio plugin SDK") {
 		message += "; hint: likely legacy register_request/stdio plugin SDK, not the M2 worker protocol"
 	}
 	return message
+}
+
+func safeWorkerInfrastructureDetail(message string) string {
+	message = strings.TrimSpace(message)
+	for _, prefix := range []string{
+		"bare policy: no command configured for runtime",
+		"bare policy: runtime is required",
+		"bare policy: entry is required",
+		"bare policy: working dir is required",
+		"bare policy: unsupported spawn mode",
+	} {
+		if strings.HasPrefix(message, prefix) {
+			return message
+		}
+	}
+	return ""
 }
 
 func stderrCapturedSummary(message string) string {
@@ -608,18 +626,24 @@ func stderrCapturedSummary(message string) string {
 		return ""
 	}
 	start += len(needle)
-	end := strings.Index(message[start:], ";")
-	if end < 0 {
-		end = strings.Index(message[start:], ")")
-	}
+	end := strings.Index(message[start:], ")")
 	if end < 0 {
 		end = len(message) - start
 	}
-	stats := strings.TrimSpace(message[start : start+end])
+	diagnostic := strings.TrimSpace(message[start : start+end])
+	parts := strings.Split(diagnostic, ";")
+	stats := strings.TrimSpace(parts[0])
 	if stats == "" {
 		return "worker stderr captured"
 	}
-	return "worker stderr captured: " + stats
+	safeParts := []string{"worker stderr captured: " + stats}
+	for _, raw := range parts[1:] {
+		part := strings.TrimSpace(raw)
+		if part == "details truncated" || strings.HasPrefix(part, "stderr sample:") || strings.HasPrefix(part, "hint:") {
+			safeParts = append(safeParts, part)
+		}
+	}
+	return strings.Join(safeParts, "; ")
 }
 
 func pluginEntryPath(plugin manifest.Plugin) string {

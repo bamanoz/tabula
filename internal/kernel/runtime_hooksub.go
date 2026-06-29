@@ -39,6 +39,13 @@ func (s *runtimeHookSubscriber) Name() string {
 
 func (s *runtimeHookSubscriber) Session() string { return "" }
 
+func (s *runtimeHookSubscriber) ServesTenant(tenantID string) bool {
+	if s == nil {
+		return false
+	}
+	return tenantID == "" || len(s.capability.Tenants) == 0 || runtimeServesTenant(s.capability.Tenants, tenantID)
+}
+
 func (s *runtimeHookSubscriber) IsConnected() bool {
 	return s != nil && s.conn != nil && len(s.capability.Hooks) > 0 && (s.capability.State == wire.CapabilityStateReady || s.capability.State == wire.CapabilityStateManifestLoaded)
 }

@@ -22,8 +22,10 @@ import (
 const defaultInitTimeout = 10 * time.Second
 
 const (
-	maxWorkerStderrLines = 8
-	maxWorkerStderrBytes = 8 * 1024
+	maxWorkerStderrLines           = 8
+	maxWorkerStderrBytes           = 8 * 1024
+	maxWorkerStderrSampleLines     = 4
+	maxWorkerStderrSampleLineBytes = 512
 )
 
 // Policy spawns workers directly with os/exec. It is the M2 default policy;
@@ -290,6 +292,7 @@ type worker struct {
 	stderrBytes                 int
 	stderrTruncated             bool
 	stderrLegacyRegisterRequest bool
+	stderrSampleLines           []string
 }
 
 type stderrDiagnostic struct {
@@ -297,6 +300,7 @@ type stderrDiagnostic struct {
 	byteCount             int
 	truncated             bool
 	legacyRegisterRequest bool
+	sampleLines           []string
 }
 
 type initResult struct {
@@ -509,9 +513,39 @@ func (w *worker) recordStderr(line string) {
 	}
 	w.stderrLineCount++
 	w.stderrBytes += len(line)
+	if len(w.stderrSampleLines) < maxWorkerStderrSampleLines {
+		w.stderrSampleLines = append(w.stderrSampleLines, sanitizeWorkerStderrLine(line))
+	}
 	if w.stderrLineCount > maxWorkerStderrLines || w.stderrBytes > maxWorkerStderrBytes {
 		w.stderrTruncated = true
 	}
+}
+
+func sanitizeWorkerStderrLine(line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return ""
+	}
+	if strings.Contains(line, "expected register_request as first plugin message") {
+		return "[legacy plugin protocol stderr line redacted]"
+	}
+	if looksSensitive(line) {
+		return "[redacted sensitive stderr line]"
+	}
+	if len(line) > maxWorkerStderrSampleLineBytes {
+		return line[:maxWorkerStderrSampleLineBytes] + "... [truncated]"
+	}
+	return line
+}
+
+func looksSensitive(line string) bool {
+	lower := strings.ToLower(line)
+	for _, needle := range []string{"secret", "token", "password", "passwd", "api_key", "apikey", "authorization", "bearer", "credential"} {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *worker) annotateErrWithStderr(err error) error {
@@ -541,6 +575,7 @@ func (w *worker) stderrDiagnostic() stderrDiagnostic {
 		byteCount:             w.stderrBytes,
 		truncated:             w.stderrTruncated,
 		legacyRegisterRequest: w.stderrLegacyRegisterRequest,
+		sampleLines:           append([]string(nil), w.stderrSampleLines...),
 	}
 }
 
@@ -552,6 +587,9 @@ func (d stderrDiagnostic) String() string {
 	parts := []string{fmt.Sprintf("worker stderr captured: %d %s, %d bytes", d.lineCount, lineLabel, d.byteCount)}
 	if d.truncated {
 		parts = append(parts, "details truncated")
+	}
+	if sample := strings.TrimSpace(strings.Join(d.sampleLines, " | ")); sample != "" {
+		parts = append(parts, "stderr sample: "+sample)
 	}
 	if d.legacyRegisterRequest {
 		parts = append(parts, "hint: likely legacy register_request/stdio plugin SDK, not the M2 worker protocol")

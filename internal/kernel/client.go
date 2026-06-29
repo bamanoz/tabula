@@ -115,6 +115,10 @@ func (c *Client) Session() string { return c.session }
 
 func (c *Client) TenantID() string { return c.tenantID }
 
+func (c *Client) ServesTenant(tenantID string) bool {
+	return c.tenantID == "" || c.tenantID == tenantID
+}
+
 // Hooks returns the client's hook subscriptions. Implements HookSubscriber.
 func (c *Client) Hooks() []HookSubscription { return c.hooks }
 

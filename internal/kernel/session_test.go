@@ -1,6 +1,7 @@
 package kernel
 
 import (
+	"encoding/json"
 	"log/slog"
 	"testing"
 )
@@ -88,6 +89,38 @@ func TestSessionRestartObservationIgnoresIdleSnapshot(t *testing.T) {
 	}
 	if next.RestartObservations() != 0 {
 		t.Fatalf("idle snapshot should reset observations, got %d", next.RestartObservations())
+	}
+}
+
+func TestSetSessionStoreHydratesPersistedSessions(t *testing.T) {
+	home := t.TempDir()
+	store := NewDiskSessionStore(home)
+	previous := newSession("codegraph", "alpha")
+	previous.SetPreferredRuntime("local")
+	previous.AddClient("driver")
+	if err := store.Save(previous); err != nil {
+		t.Fatalf("save previous session: %v", err)
+	}
+
+	hub := NewHub(nil, 0, 0, slog.Default())
+	hub.SetSessionStore(NewDiskSessionStore(home))
+
+	sess, ok := hub.sessions.Get("codegraph", "alpha")
+	if !ok {
+		t.Fatal("expected persisted session to hydrate")
+	}
+	if got := sess.PreferredRuntime(); got != "local" {
+		t.Fatalf("preferred runtime = %q, want local", got)
+	}
+	if got := sess.ClientCount(); got != 0 {
+		t.Fatalf("hydrated session must not restore stale clients, got %d", got)
+	}
+	var snapshot map[string]json.RawMessage
+	if err := json.Unmarshal(hub.SnapshotSessions(), &snapshot); err != nil {
+		t.Fatalf("snapshot sessions: %v", err)
+	}
+	if _, ok := snapshot["alpha/codegraph"]; !ok {
+		t.Fatalf("snapshot missing hydrated session: %s", string(hub.SnapshotSessions()))
 	}
 }
 

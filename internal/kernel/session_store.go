@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/bamanoz/tabula/internal/tenant"
 )
@@ -13,6 +15,10 @@ type SessionStore interface {
 	Save(*Session) error
 	Load(sessionID, tenantID string) (*sessionFile, error)
 	Delete(sessionID, tenantID string) error
+}
+
+type sessionListStore interface {
+	LoadAll() ([]sessionFile, error)
 }
 
 type DiskSessionStore struct {
@@ -97,6 +103,42 @@ func (s *DiskSessionStore) Load(sessionID, tenantID string) (*sessionFile, error
 	return &record, nil
 }
 
+func (s *DiskSessionStore) LoadAll() ([]sessionFile, error) {
+	if s == nil {
+		return nil, nil
+	}
+	root := filepath.Join(s.home, "tenants")
+	var records []sessionFile
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || filepath.Ext(path) != ".json" || !strings.Contains(path, string(filepath.Separator)+"state"+string(filepath.Separator)+"sessions"+string(filepath.Separator)) {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var record sessionFile
+		if err := json.Unmarshal(data, &record); err != nil {
+			return err
+		}
+		if record.ID == "" {
+			return nil
+		}
+		if record.TenantID == "" {
+			record.TenantID = tenant.DefaultID
+		}
+		records = append(records, record)
+		return nil
+	})
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	return records, err
+}
+
 func (s *DiskSessionStore) Delete(sessionID, tenantID string) error {
 	if s == nil {
 		return nil
@@ -116,6 +158,69 @@ func (s *DiskSessionStore) path(tenantID, sessionID string) string {
 
 func (h *Hub) SetSessionStore(store SessionStore) {
 	h.sessionStore = store
+	h.hydratePersistedSessions(store)
+}
+
+func (h *Hub) hydratePersistedSessions(store SessionStore) {
+	listStore, ok := store.(sessionListStore)
+	if h == nil || h.sessions == nil || !ok {
+		return
+	}
+	records, err := listStore.LoadAll()
+	if err != nil {
+		h.Logger.Warn("load persisted sessions failed", "err", err)
+		return
+	}
+	for _, record := range records {
+		sess, created := h.sessions.GetOrCreateStatus(record.ID, record.TenantID)
+		if !created {
+			continue
+		}
+		sess.restorePersisted(record)
+	}
+	if len(records) > 0 {
+		h.Logger.Info("hydrated persisted sessions", "count", len(records))
+	}
+}
+
+func (s *Session) restorePersisted(record sessionFile) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if record.PreferredRuntimeID != "" {
+		s.PreferredRuntimeID = record.PreferredRuntimeID
+	}
+	if record.State != "" {
+		s.State = record.State
+	}
+	if createdAt := parseSessionTime(record.CreatedAt); !createdAt.IsZero() {
+		s.CreatedAt = createdAt
+	}
+	if lastActiveAt := parseSessionTime(record.LastActiveAt); !lastActiveAt.IsZero() {
+		s.LastActiveAt = lastActiveAt
+	}
+	s.cancelRequested = record.CancelRequested
+	s.restartObservations = record.RestartObservations
+	s.stuckSuspended = record.StuckSuspended
+	// Live-only state is intentionally not restored. Clients and running tool calls
+	// are re-established through joins and runtime lifecycle after kernel restart.
+	s.inflightTurn = false
+	s.activeToolCalls = 0
+	s.pendingInputs = nil
+	s.pendingSteers = nil
+}
+
+func parseSessionTime(value string) time.Time {
+	if value == "" {
+		return time.Time{}
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
 }
 
 func (h *Hub) persistSessionState(tenantID, session string) {

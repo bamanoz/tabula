@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +14,29 @@ import (
 
 	"github.com/bamanoz/tabula/internal/tenant"
 )
+
+type tenantHookProbe struct {
+	name     string
+	tenantID string
+	hooks    []HookSubscription
+	sent     atomic.Int32
+	done     chan struct{}
+}
+
+func newTenantHookProbe(name, tenantID string, hooks []HookSubscription) *tenantHookProbe {
+	return &tenantHookProbe{name: name, tenantID: tenantID, hooks: hooks, done: make(chan struct{})}
+}
+
+func (p *tenantHookProbe) Name() string    { return p.name }
+func (p *tenantHookProbe) Session() string { return "" }
+func (p *tenantHookProbe) ServesTenant(tenantID string) bool {
+	return p.tenantID == "" || p.tenantID == tenantID
+}
+func (p *tenantHookProbe) IsConnected() bool         { return true }
+func (p *tenantHookProbe) IsBusy() bool              { return false }
+func (p *tenantHookProbe) Hooks() []HookSubscription { return p.hooks }
+func (p *tenantHookProbe) SendMsg(*Message)          { p.sent.Add(1) }
+func (p *tenantHookProbe) Done() <-chan struct{}     { return p.done }
 
 // connectHook dials + sends connect with hook subscriptions (no join — global subscriber).
 func (e *testEnv) connectHook(name string, hooks []HookSubscription) *websocket.Conn {
@@ -76,6 +100,24 @@ func TestHookVoid_FireAndForget(t *testing.T) {
 	}
 	if hookMsg.Name != "after_message" {
 		t.Fatalf("expected event after_message, got %s", hookMsg.Name)
+	}
+}
+
+func TestHookDispatchFiltersGlobalSubscribersByTenant(t *testing.T) {
+	engine := NewHookEngine(nil)
+	alpha := newTenantHookProbe("alpha-approval", "alpha", []HookSubscription{{Event: "after_tool_call", Priority: 10}})
+	beta := newTenantHookProbe("beta-approval", "beta", []HookSubscription{{Event: "after_tool_call", Priority: 10}})
+	engine.RebuildIndex([]HookSubscriber{alpha, beta})
+
+	_, ok, _ := engine.DispatchDetailedExcept("after_tool_call", json.RawMessage(`{"tool":"exec_run"}`), "alpha", "main", nil)
+	if !ok {
+		t.Fatal("after_tool_call should continue")
+	}
+	if got := alpha.sent.Load(); got != 1 {
+		t.Fatalf("alpha hook sends = %d, want 1", got)
+	}
+	if got := beta.sent.Load(); got != 0 {
+		t.Fatalf("beta hook sends = %d, want 0", got)
 	}
 }
 

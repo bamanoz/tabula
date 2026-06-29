@@ -380,8 +380,45 @@ sys.exit(1)
 		if !strings.Contains(got, "likely legacy register_request/stdio plugin SDK") {
 			t.Fatalf("expected legacy-sdk hint in init error, got %q", got)
 		}
+		if !strings.Contains(got, "stderr sample:") {
+			t.Fatalf("expected sanitized stderr sample in init error, got %q", got)
+		}
 		if strings.Contains(got, "super-secret") || strings.Contains(got, "RuntimeError: expected register_request as first plugin message") {
 			t.Fatalf("expected raw worker stderr to be redacted, got %q", got)
+		}
+	}
+	_, _ = worker.Wait()
+}
+
+func TestInitErrorIncludesActionableWorkerStderrSample(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "worker.py")
+	writeFile(t, script, `#!/usr/bin/env python3
+import sys
+
+_ = sys.stdin.readline()
+print("Traceback (most recent call last):", file=sys.stderr)
+print("ModuleNotFoundError: No module named '_codegraph'", file=sys.stderr)
+sys.stderr.flush()
+sys.exit(1)
+`)
+	worker, err := New().Spawn(context.Background(), policy.SpawnReq{
+		KernelID:   "main",
+		TenantID:   "default",
+		TargetID:   "codegraph-query",
+		Command:    []string{"./worker.py"},
+		WorkingDir: dir,
+		Mode:       policy.SpawnModeWarm,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if _, err := worker.Init(context.Background(), workerwire.WorkerInit{KernelID: "main", TenantID: "default", TargetID: "codegraph-query"}); err == nil {
+		t.Fatal("expected init error")
+	} else {
+		got := err.Error()
+		if !strings.Contains(got, "stderr sample:") || !strings.Contains(got, "ModuleNotFoundError: No module named '_codegraph'") {
+			t.Fatalf("expected actionable stderr sample in init error, got %q", got)
 		}
 	}
 	_, _ = worker.Wait()

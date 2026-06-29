@@ -252,7 +252,7 @@ Focused coding-agent distro.
 - providers: Anthropic and OpenAI through the shared driver
 - gateway: CLI
 - tools: workspace `fs`/`exec`, MCP defaults for Context7, Playwright, and DuckDuckGo,
-  memory, todo, and approval hooks
+  mempalace, codegraph, todo, and approval hooks
 - runtime requirements: `npx` and `uvx` are required; `rg` is optional for faster grep
 
 ### `guardian`

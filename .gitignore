@@ -25,6 +25,11 @@ opencode.json
 # Tabula files
 .tabula
 tabula.app.lock
+global.toml
+secrets.json
 
 # Immune files
 .immune
+
+# CodeGraph files
+.codegraph

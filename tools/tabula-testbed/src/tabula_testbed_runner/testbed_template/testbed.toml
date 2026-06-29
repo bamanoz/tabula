@@ -6,7 +6,7 @@ source = "git+https://github.com/bamanoz/tabula-distrib.git@main"
 
 [sets]
 empty = []
-baseline = ["base", "drivers", "workspace", "memory", "test-fixtures"]
+baseline = ["base", "drivers", "workspace", "mempalace", "test-fixtures"]
 base = ["base", "test-fixtures"]
 workspace = ["base", "workspace", "test-fixtures"]
 caveman = ["base", "caveman", "test-fixtures"]
@@ -14,7 +14,8 @@ all = [
   "base",
   "drivers",
   "workspace",
-  "memory",
+  "mempalace",
+  "codegraph",
   "caveman",
   "subagents",
   "code",
@@ -33,8 +34,11 @@ source = "source:tabula-bundles#path=gateways"
 [bundles.workspace]
 source = "source:tabula-bundles#path=workspace"
 
-[bundles.memory]
+[bundles.mempalace]
 source = "source:tabula-bundles#path=mempalace"
+
+[bundles.codegraph]
+source = "source:tabula-bundles#path=codegraph"
 
 [bundles.caveman]
 source = "source:tabula-bundles#path=caveman"
@@ -187,10 +191,15 @@ set = "empty"
 components = ["base:tool-result-store"]
 tests = ["tests/test_tool_result_store.py"]
 
-[suites.memory]
+[suites.mempalace]
 set = "empty"
 components = ["mempalace:mempalace-save", "mempalace:mempalace-search", "mempalace:mempalace-admin"]
 tests = ["tests/test_mempalace.py"]
+
+[suites.codegraph]
+set = "empty"
+components = ["codegraph:codegraph-query", "codegraph:codegraph-admin"]
+tests = ["tests/test_codegraph.py"]
 
 [suites.subagents]
 set = "empty"

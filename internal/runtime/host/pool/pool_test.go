@@ -738,7 +738,7 @@ func TestPoolInitFailureMarksTargetFailed(t *testing.T) {
 func TestPoolInitFailureReturnsRedactedWorkerDiagnostics(t *testing.T) {
 	p, fake := testPool(t)
 	w := newFakeWorker()
-	w.initErr = errors.New("bare policy: read worker init ack: worker wire: eof (worker stderr captured: 2 lines, 122 bytes; hint: likely legacy register_request/stdio plugin SDK, not the M2 worker protocol; raw secret_token=super-secret)")
+	w.initErr = errors.New("bare policy: read worker init ack: worker wire: eof (worker stderr captured: 2 lines, 122 bytes; stderr sample: ModuleNotFoundError: No module named '_codegraph' | [redacted sensitive stderr line]; hint: likely legacy register_request/stdio plugin SDK, not the M2 worker protocol; raw secret_token=super-secret)")
 	fake.setNextWorker(w)
 
 	resp, err := p.Invoke(context.Background(), invoke("call-redacted", "tenant-a", "echo"))
@@ -752,15 +752,25 @@ func TestPoolInitFailureReturnsRedactedWorkerDiagnostics(t *testing.T) {
 	if !strings.Contains(message, "likely legacy register_request/stdio plugin SDK") {
 		t.Fatalf("expected legacy hint, got %q", message)
 	}
+	if !strings.Contains(message, "ModuleNotFoundError: No module named '_codegraph'") {
+		t.Fatalf("expected sanitized stderr sample, got %q", message)
+	}
 	if strings.Contains(message, "super-secret") || strings.Contains(message, "worker wire: eof") {
 		t.Fatalf("expected client-facing message to redact raw stderr/error detail, got %q", message)
+	}
+}
+
+func TestSafeWorkerErrorMessageIncludesSafeSpawnConfigurationDetail(t *testing.T) {
+	message := safeWorkerErrorMessage("worker initialization failed", errors.New(`bare policy: no command configured for runtime "python"`))
+	if !strings.Contains(message, `bare policy: no command configured for runtime "python"`) {
+		t.Fatalf("expected safe spawn detail, got %q", message)
 	}
 }
 
 func TestPoolHookEventInitFailureReturnsRedactedWorkerDiagnostics(t *testing.T) {
 	p, fake := testPool(t)
 	w := newFakeWorker()
-	w.initErr = errors.New("bare policy: read worker init ack: worker wire: eof (worker stderr captured: 2 lines, 122 bytes; hint: likely legacy register_request/stdio plugin SDK, not the M2 worker protocol; raw api_key=super-secret)")
+	w.initErr = errors.New("bare policy: read worker init ack: worker wire: eof (worker stderr captured: 2 lines, 122 bytes; stderr sample: ModuleNotFoundError: No module named '_codegraph' | [redacted sensitive stderr line]; hint: likely legacy register_request/stdio plugin SDK, not the M2 worker protocol; raw api_key=super-secret)")
 	fake.setNextWorker(w)
 
 	_, err := p.HookEvent(context.Background(), wire.HookEvent{Op: wire.OpHookEvent, CallID: "hook-redacted", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Event: "before_tool_call", ReplyMode: wire.HookReplyModeModifying, Data: json.RawMessage(`{"tool":"echo"}`)})
@@ -773,6 +783,9 @@ func TestPoolHookEventInitFailureReturnsRedactedWorkerDiagnostics(t *testing.T) 
 	}
 	if !strings.Contains(message, "likely legacy register_request/stdio plugin SDK") {
 		t.Fatalf("expected legacy hint, got %q", message)
+	}
+	if !strings.Contains(message, "ModuleNotFoundError: No module named '_codegraph'") {
+		t.Fatalf("expected sanitized stderr sample, got %q", message)
 	}
 	if strings.Contains(message, "super-secret") || strings.Contains(message, "worker wire: eof") {
 		t.Fatalf("expected hook init message to redact raw stderr/error detail, got %q", message)

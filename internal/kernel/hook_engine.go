@@ -167,6 +167,9 @@ func (e *HookEngine) DispatchDetailedExcept(event string, payload json.RawMessag
 		if !entry.sub.IsConnected() {
 			continue
 		}
+		if !entry.sub.ServesTenant(tenantID) {
+			continue
+		}
 		if entry.sub.IsBusy() && e.eventType(event) != HookSecurity {
 			continue
 		}

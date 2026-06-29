@@ -763,9 +763,9 @@ func TestTurnSteerStampsPreferredRuntimeMeta(t *testing.T) {
 	}
 }
 
-func TestExchangeReplyRequiresChosenResponder(t *testing.T) {
-	testExchangeReplyRequiresChosenResponder(t, TopicExchangeChoose)
-	testExchangeReplyRequiresChosenResponder(t, TopicExchangeApprove)
+func TestExchangeReplyRequiresEligibleResponder(t *testing.T) {
+	testExchangeReplyRequiresEligibleResponder(t, TopicExchangeChoose)
+	testExchangeReplyRequiresEligibleResponder(t, TopicExchangeApprove)
 }
 
 func TestExchangeApproveHelperReachesTenantSessionResponder(t *testing.T) {
@@ -833,13 +833,15 @@ func TestTenantSessionsWithSameIDAreIsolated(t *testing.T) {
 	}
 }
 
-func testExchangeReplyRequiresChosenResponder(t *testing.T, topic string) {
+func testExchangeReplyRequiresEligibleResponder(t *testing.T, topic string) {
 	hub := NewHub(nil, 3, 5, nil)
 	requester := addCaptureClient(t, hub, "requester", "main", []string{topic}, []string{topic, string(MsgError)})
 	responder := addCaptureClient(t, hub, "responder", "main", []string{topic}, []string{topic, string(MsgError)})
+	secondResponder := addCaptureClient(t, hub, "second", "main", []string{topic}, []string{topic, string(MsgError)})
 	attacker := addCaptureClient(t, hub, "attacker", "main", []string{string(MsgError)}, []string{string(MsgError)})
 	requester.sends[topic] = true
 	responder.sends[topic] = true
+	secondResponder.sends[topic] = true
 	attacker.sends[topic] = true
 
 	hub.HandleMessage(requester, &Message{
@@ -853,6 +855,10 @@ func testExchangeReplyRequiresChosenResponder(t *testing.T, topic string) {
 	req := waitForMessage(t, responder.recvCh)
 	if req.Type != string(MsgRequest) || req.Topic != topic || req.ID != "ex-1" {
 		t.Fatalf("expected exchange request for responder, got %+v", req)
+	}
+	secondReq := waitForMessage(t, secondResponder.recvCh)
+	if secondReq.Type != string(MsgRequest) || secondReq.Topic != topic || secondReq.ID != "ex-1" {
+		t.Fatalf("expected exchange request for second responder, got %+v", secondReq)
 	}
 	if msg := readCaptureMessageTimeout(attacker.recvCh, 100*time.Millisecond); msg != nil {
 		t.Fatalf("attacker should not receive exchange request, got %+v", msg)
@@ -868,6 +874,15 @@ func testExchangeReplyRequiresChosenResponder(t *testing.T, topic string) {
 	reply := waitForMessage(t, requester.recvCh)
 	if reply.Type != string(MsgReply) || reply.Topic != topic || reply.ID != "ex-1" {
 		t.Fatalf("expected exchange reply for requester, got %+v", reply)
+	}
+	resolved := waitForMessage(t, secondResponder.recvCh)
+	if resolved.Type != string(MsgEvent) || resolved.Topic != topic || resolved.ID != "ex-1" {
+		t.Fatalf("expected exchange resolved event for other responder, got %+v", resolved)
+	}
+	hub.HandleMessage(secondResponder, &Message{V: ProtocolVersion, Type: string(MsgReply), Topic: topic, ID: "ex-1", Data: mustMarshalRaw(map[string]any{"choice": "no"})})
+	errorMsg := waitForMessage(t, secondResponder.recvCh)
+	if errorMsg.Type != string(MsgError) || errorMsg.Text != "client not allowed to answer exchange" {
+		t.Fatalf("expected stale exchange reply rejection, got %+v", errorMsg)
 	}
 }
 
@@ -939,7 +954,7 @@ func TestPickExchangeResponderPrefersManagedUIClient(t *testing.T) {
 	}
 }
 
-func TestPickExchangeResponderPrefersNewestManagedUIClient(t *testing.T) {
+func TestPickExchangeResponderFansOutToAllEqualPreferredUIClients(t *testing.T) {
 	hub := NewHub(nil, 3, 5, nil)
 	requester := addCaptureClient(t, hub, "requester", "main", []string{TopicExchangeChoose}, []string{TopicExchangeChoose, string(MsgError)})
 	older := addCaptureClient(t, hub, "gateway-old", "main", []string{TopicExchangeChoose}, nil)
@@ -964,8 +979,9 @@ func TestPickExchangeResponderPrefersNewestManagedUIClient(t *testing.T) {
 	if req.ID != "ex-newest" || req.Topic != TopicExchangeChoose {
 		t.Fatalf("expected newest managed UI responder to receive exchange, got %+v", req)
 	}
-	if msg := readCaptureMessageTimeout(older.recvCh, 100*time.Millisecond); msg != nil {
-		t.Fatalf("older UI responder should not receive exchange when a newer one exists, got %+v", msg)
+	olderReq := waitForMessage(t, older.recvCh)
+	if olderReq.ID != "ex-newest" || olderReq.Topic != TopicExchangeChoose {
+		t.Fatalf("expected older managed UI responder to also receive exchange, got %+v", olderReq)
 	}
 }
 

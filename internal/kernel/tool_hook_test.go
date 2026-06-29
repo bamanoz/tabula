@@ -108,6 +108,7 @@ func TestBeforeToolCallHookCanSuspendForApprovalAndResume(t *testing.T) {
 	resolvedHook := env.connectHook("approval-recorder", []HookSubscription{{Event: "approval_resolved", Priority: 0}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolCall, TopicToolResult, "tool.suspended", "tool.resumed"})
 	ui := env.connectAndJoin("ui", "main", []string{TopicExchangeApprove}, []string{TopicExchangeApprove})
+	ui2 := env.connectAndJoin("telegram-ui", "main", []string{TopicExchangeApprove}, []string{TopicExchangeApprove, string(MsgError)})
 
 	go func() {
 		writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-suspend", Input: json.RawMessage(`{"text":"needs approval"}`)})
@@ -129,11 +130,24 @@ func TestBeforeToolCallHookCanSuspendForApprovalAndResume(t *testing.T) {
 	if approvalReq.Type != string(MsgRequest) || approvalReq.Topic != TopicExchangeApprove || approvalReq.ID == "" {
 		t.Fatalf("expected approval request, got %+v", approvalReq)
 	}
+	approvalReq2 := readMsg(t, ui2)
+	if approvalReq2.Type != string(MsgRequest) || approvalReq2.Topic != TopicExchangeApprove || approvalReq2.ID != approvalReq.ID {
+		t.Fatalf("expected approval request for second UI, got %+v", approvalReq2)
+	}
 	if msg := readMsgTimeout(t, drv, 100*time.Millisecond); msg != nil && msg.Topic == TopicToolResult {
 		t.Fatalf("tool result should not be emitted while approval is pending: %+v", msg)
 	}
 
 	writeJSON(t, ui, Message{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: approvalReq.ID, Data: json.RawMessage(`{"choice":"allow once"}`)})
+	resolvedEvent := readMsg(t, ui2)
+	if resolvedEvent.Type != string(MsgEvent) || resolvedEvent.Topic != TopicExchangeApprove || resolvedEvent.ID != approvalReq.ID || !strings.Contains(string(resolvedEvent.Data), "exchange.resolved") {
+		t.Fatalf("expected exchange resolved for second UI, got %+v", resolvedEvent)
+	}
+	writeJSON(t, ui2, Message{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: approvalReq.ID, Data: json.RawMessage(`{"choice":"deny once"}`)})
+	stale := readMsg(t, ui2)
+	if stale.Type != string(MsgError) || stale.Text != "client not allowed to answer exchange" {
+		t.Fatalf("expected stale approval reply rejection, got %+v", stale)
+	}
 	resolved := readMsg(t, resolvedHook)
 	if resolved.Type != "hook" || resolved.Name != "approval_resolved" || !strings.Contains(string(resolved.Payload), "allow once") {
 		t.Fatalf("expected approval_resolved hook, got %+v", resolved)
@@ -146,6 +160,59 @@ func TestBeforeToolCallHookCanSuspendForApprovalAndResume(t *testing.T) {
 		}
 		if !strings.Contains(msg.Output, "needs approval") {
 			t.Fatalf("expected resumed tool result, got %q", msg.Output)
+		}
+		return
+	}
+	t.Fatal("expected resumed tool result")
+}
+
+func TestBeforeToolCallHookCanSuspendForExchangeChooseAndResume(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	env := newTestEnvWithPluginTool(t)
+	hook := env.connectHook("question", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
+	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolCall, TopicToolResult, "tool.suspended", "tool.resumed"})
+	ui := env.connectAndJoin("ui", "main", []string{TopicExchangeChoose}, []string{TopicExchangeChoose})
+
+	go func() {
+		writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-question", Input: json.RawMessage(`{"questions":[{"question":"Ready?","options":[{"label":"yes"}]}]}`)})
+	}()
+
+	hookMsg := readMsg(t, hook)
+	if hookMsg.Type != "hook" || hookMsg.Name != "before_tool_call" {
+		t.Fatalf("expected hook/before_tool_call, got %+v", hookMsg)
+	}
+	writeJSON(t, hook, Message{
+		Type:   string(MsgHookReply),
+		ID:     hookMsg.ID,
+		Action: string(ActionSuspend),
+		Reason: "ask user",
+		Payload: json.RawMessage(`{
+			"kind":"question",
+			"topic":"exchange.choose",
+			"questions":[{"question":"Ready?","options":[{"label":"yes"}]}]
+		}`),
+	})
+
+	chooseReq := readMsg(t, ui)
+	if chooseReq.Type != string(MsgRequest) || chooseReq.Topic != TopicExchangeChoose || chooseReq.ID == "" {
+		t.Fatalf("expected exchange.choose request, got %+v", chooseReq)
+	}
+	if !strings.Contains(string(chooseReq.Data), `"Ready?"`) {
+		t.Fatalf("expected choose request to include questions, got %s", string(chooseReq.Data))
+	}
+
+	writeJSON(t, ui, Message{Type: string(MsgReply), Topic: TopicExchangeChoose, ID: chooseReq.ID, Data: json.RawMessage(`{"answers":[["yes"]],"dismissed":false}`)})
+
+	for i := 0; i < 4; i++ {
+		msg := readMsg(t, drv)
+		if msg.Topic != TopicToolResult {
+			continue
+		}
+		if !strings.Contains(msg.Output, `__tabula_exchange_reply`) || !strings.Contains(msg.Output, `"yes"`) {
+			t.Fatalf("expected resumed tool result to include exchange reply, got %q", msg.Output)
 		}
 		return
 	}
