@@ -205,7 +205,7 @@ func (h *Hub) broadcastRuntimeCatalogRefreshForTenants(tenants []string) {
 		}
 	}
 	if sessionCount > 0 || clientCount > 0 {
-		h.Logger.Info("runtime catalog refresh broadcast", "tenants", tenants, "sessions", sessionCount, "clients", clientCount)
+		h.Logger.Info("runtime catalog refresh broadcast", "tenants", tenants, "sessions", sessionCount, "apps", clientCount)
 	}
 }
 

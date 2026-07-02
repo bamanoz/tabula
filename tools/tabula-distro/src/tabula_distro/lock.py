@@ -15,7 +15,7 @@ Format (version 3)::
       "bundles": { ... },
       "skills":  { ... },
       "plugins": { ... },
-      "clients": { ... }
+      "apps":    { ... }
     }
 
 The ``plugin_protocol_version`` and ``sdk_versions`` fields snapshot the
@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-LOCK_VERSION = 3
+LOCK_VERSION = 4
 
 
 @dataclass
@@ -73,7 +73,7 @@ class Lock:
     bundles: dict[str, LockEntry] = field(default_factory=dict)
     skills: dict[str, LockEntry] = field(default_factory=dict)
     plugins: dict[str, LockEntry] = field(default_factory=dict)
-    clients: dict[str, LockEntry] = field(default_factory=dict)
+    apps: dict[str, LockEntry] = field(default_factory=dict)
     generated_at: str | None = None
     distro_source: str | None = None  # original URI passed to install (for `update`)
     distro_version: str | None = None  # [distro].version, if declared
@@ -89,7 +89,7 @@ class Lock:
             "bundles": {k: v.to_json() for k, v in self.bundles.items()},
             "skills": {k: v.to_json() for k, v in self.skills.items()},
             "plugins": {k: v.to_json() for k, v in self.plugins.items()},
-            "clients": {k: v.to_json() for k, v in self.clients.items()},
+            "apps": {k: v.to_json() for k, v in self.apps.items()},
         }
         if self.distro_source is not None:
             out["distro_source"] = self.distro_source
@@ -112,6 +112,9 @@ class Lock:
         if version == 2:
             data = _migrate_v2_to_v3(data)
             version = data.get("version")
+        if version == 3:
+            data = _migrate_v3_to_v4(data)
+            version = data.get("version")
         if version != LOCK_VERSION:
             raise LockError(f"unsupported lock version: {version}")
         return cls(
@@ -119,7 +122,7 @@ class Lock:
             bundles={k: LockEntry.from_json(v) for k, v in data.get("bundles", {}).items()},
             skills={k: LockEntry.from_json(v) for k, v in data.get("skills", {}).items()},
             plugins={k: LockEntry.from_json(v) for k, v in data.get("plugins", {}).items()},
-            clients={k: LockEntry.from_json(v) for k, v in data.get("clients", data.get("drivers", {})).items()},
+            apps={k: LockEntry.from_json(v) for k, v in data.get("apps", data.get("apps", data.get("drivers", {}))).items()},
             generated_at=data.get("generated_at"),
             distro_source=data.get("distro_source"),
             distro_version=data.get("distro_version"),
@@ -133,7 +136,7 @@ def _migrate_v1_to_v2(data: dict) -> dict:
     migrated = dict(data)
     migrated["version"] = 2
     migrated.setdefault("plugins", {})
-    migrated.setdefault("clients", {})
+    migrated.setdefault("apps", {})
     return migrated
 
 
@@ -149,6 +152,13 @@ def _migrate_v2_to_v3(data: dict) -> dict:
     migrated["version"] = LOCK_VERSION
     migrated.setdefault("plugin_protocol_version", None)
     migrated.setdefault("sdk_versions", {})
+    return migrated
+
+
+def _migrate_v3_to_v4(data: dict) -> dict:
+    migrated = dict(data)
+    migrated["version"] = LOCK_VERSION
+    migrated.setdefault("apps", migrated.pop("apps", migrated.get("drivers", {})))
     return migrated
 
 

@@ -71,6 +71,123 @@ sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 	}
 }
 
+func TestLoadDirsParsesPluginKind(t *testing.T) {
+	dir := t.TempDir()
+	writePlugin(t, filepath.Join(dir, "driver", "plugin.toml"), `id = "driver"
+name = "Driver"
+version = "0.1.0"
+
+[kind]
+name = "driver"
+singleton = true
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`)
+
+	idx, err := LoadDirs([]string{dir})
+	if err != nil {
+		t.Fatalf("LoadDirs: %v", err)
+	}
+	plugin, ok := idx.Get("driver")
+	if !ok || plugin.Kind == nil || plugin.Kind.Name != "driver" || !plugin.Kind.Singleton {
+		t.Fatalf("kind not parsed: %#v ok=%v", plugin, ok)
+	}
+}
+
+func TestLoadDirsRejectsDuplicateSingletonPluginKind(t *testing.T) {
+	dir := t.TempDir()
+	body := func(id string) string {
+		return `id = "` + id + `"
+name = "Driver"
+version = "0.1.0"
+
+[kind]
+name = "driver"
+singleton = true
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`
+	}
+	writePlugin(t, filepath.Join(dir, "driver-a", "plugin.toml"), body("driver-a"))
+	writePlugin(t, filepath.Join(dir, "driver-b", "plugin.toml"), body("driver-b"))
+
+	_, err := LoadDirs([]string{dir})
+	if err == nil || !strings.Contains(err.Error(), `plugin kind "driver" is singleton`) {
+		t.Fatalf("expected singleton kind error, got %v", err)
+	}
+}
+
+func TestNewTenantStoreAllowsSameSingletonPluginIDAcrossTenants(t *testing.T) {
+	alphaDir := t.TempDir()
+	betaDir := t.TempDir()
+	body := `id = "driver"
+name = "Driver"
+version = "0.1.0"
+
+[kind]
+name = "driver"
+singleton = true
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`
+	writePlugin(t, filepath.Join(alphaDir, "driver", "plugin.toml"), body)
+	writePlugin(t, filepath.Join(betaDir, "driver", "plugin.toml"), body)
+	if _, err := NewTenantStore(map[string]SearchDirs{"alpha": {PluginDirs: []string{alphaDir}}, "beta": {PluginDirs: []string{betaDir}}}); err != nil {
+		t.Fatalf("NewTenantStore: %v", err)
+	}
+}
+
+func TestNewTenantStoreRejectsDifferentSingletonPluginIDsAcrossTenants(t *testing.T) {
+	alphaDir := t.TempDir()
+	betaDir := t.TempDir()
+	body := func(id string) string {
+		return `id = "` + id + `"
+name = "Driver"
+version = "0.1.0"
+
+[kind]
+name = "driver"
+singleton = true
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`
+	}
+	writePlugin(t, filepath.Join(alphaDir, "driver-a", "plugin.toml"), body("driver-a"))
+	writePlugin(t, filepath.Join(betaDir, "driver-b", "plugin.toml"), body("driver-b"))
+	_, err := NewTenantStore(map[string]SearchDirs{"alpha": {PluginDirs: []string{alphaDir}}, "beta": {PluginDirs: []string{betaDir}}})
+	if err == nil || !strings.Contains(err.Error(), `plugin kind "driver" is singleton`) {
+		t.Fatalf("expected singleton kind error, got %v", err)
+	}
+}
+
 func TestLoadDirsIgnoresMissingSearchDir(t *testing.T) {
 	idx, err := LoadDirs([]string{filepath.Join(t.TempDir(), "missing")})
 	if err != nil {
@@ -218,6 +335,73 @@ protocol_version = 1
 	writePlugin(t, path, body)
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "worker.command must be a non-empty argv list") {
 		t.Fatalf("expected worker.command validation error, got %v", err)
+	}
+}
+
+func TestLoadAcceptsRuntimeWorkerScopeForWarmPlugin(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "plugin.toml")
+	writePlugin(t, path, `id = "gateway"
+name = "Gateway"
+version = "1.0.0"
+runtime = "python"
+entry = "run.py"
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+scope = "runtime"
+
+[[tools]]
+name = "status"
+description = "Status"
+schema_json = "{}"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`)
+
+	plugin, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if plugin.WorkerScope != wire.WorkerScopeRuntime || plugin.Worker == nil || plugin.Worker.Scope != wire.WorkerScopeRuntime {
+		t.Fatalf("worker scope = plugin:%q worker:%#v", plugin.WorkerScope, plugin.Worker)
+	}
+	if plugin.Capability().WorkerScope != wire.WorkerScopeRuntime {
+		t.Fatalf("capability worker scope = %q", plugin.Capability().WorkerScope)
+	}
+}
+
+func TestLoadRejectsRuntimeWorkerScopeForColdPlugin(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "plugin.toml")
+	writePlugin(t, path, `id = "gateway"
+name = "Gateway"
+version = "1.0.0"
+runtime = "python"
+entry = "run.py"
+
+[worker]
+command = ["python3", "run.py"]
+mode = "cold"
+scope = "runtime"
+
+[[tools]]
+name = "status"
+description = "Status"
+schema_json = "{}"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`)
+
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "worker.scope runtime requires worker_mode warm") {
+		t.Fatalf("Load err = %v", err)
 	}
 }
 

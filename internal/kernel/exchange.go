@@ -149,14 +149,10 @@ func (h *Hub) handleSuspendedToolExchangeReply(sender *Client, msg *Message) boo
 		sender.SendMsg(&Message{Type: string(MsgError), Text: "client answered suspended tool on wrong exchange topic"})
 		return true
 	}
-	choice := approvalChoice(msg.Data)
+	choice := ""
 	approved := true
 	if msg.Topic == TopicExchangeApprove {
-		approved = choice == "allow once" || choice == "allow always"
-		if choice == "" {
-			approved = false
-			choice = "deny once"
-		}
+		choice, approved = approvalReply(msg.Data)
 	}
 	h.tools.setPendingExchangeReply(pending.approvalID, msg.Data)
 	h.tools.resolvePendingApproval(pending.approvalID, approved, choice)
@@ -165,7 +161,7 @@ func (h *Hub) handleSuspendedToolExchangeReply(sender *Client, msg *Message) boo
 }
 
 func approvalRequestData(pending pendingToolCall, blocked *HookDispatchDecision) json.RawMessage {
-	if len(pending.ApprovalData) > 0 && blocked == nil {
+	if len(pending.ApprovalData) > 0 {
 		var data map[string]any
 		if json.Unmarshal(pending.ApprovalData, &data) == nil {
 			data["approval_id"] = pending.ApprovalID
@@ -173,35 +169,11 @@ func approvalRequestData(pending pendingToolCall, blocked *HookDispatchDecision)
 		}
 		return append(json.RawMessage(nil), pending.ApprovalData...)
 	}
-	data := map[string]any{
-		"approval_id": pending.ApprovalID,
-		"question":    fmt.Sprintf("Approve tool %s?", pending.ToolName),
-		"details": map[string]any{
-			"tool":         pending.ToolName,
-			"tool_call_id": pending.ToolID,
-			"input":        json.RawMessage(pending.Input),
-		},
-		"options": []string{"allow once", "allow always", "deny once", "deny always"},
-	}
-	if blocked != nil {
-		if blocked.Reason != "" {
-			data["question"] = blocked.Reason
-		}
-		if len(blocked.Payload) > 0 {
-			var payload map[string]any
-			if json.Unmarshal(blocked.Payload, &payload) == nil {
-				for _, key := range []string{"question", "options"} {
-					if value, ok := payload[key]; ok {
-						data[key] = value
-					}
-				}
-			}
-		}
-	}
-	return mustMarshalRaw(data)
+	return mustMarshalRaw(map[string]any{"approval_id": pending.ApprovalID})
 }
 
 func approvalRequestDataFromDecision(toolName string, blocked *HookDispatchDecision) json.RawMessage {
+	_ = toolName
 	if blocked == nil || len(blocked.Payload) == 0 {
 		return nil
 	}
@@ -210,17 +182,11 @@ func approvalRequestDataFromDecision(toolName string, blocked *HookDispatchDecis
 		return nil
 	}
 	data := map[string]any{}
-	if question, ok := payload["question"]; ok {
-		data["question"] = question
-	} else if blocked.Reason != "" {
-		data["question"] = blocked.Reason
-	} else {
-		data["question"] = fmt.Sprintf("Approve tool %s?", toolName)
-	}
-	for _, key := range []string{"details", "options", "questions", "kind"} {
-		if value, ok := payload[key]; ok {
-			data[key] = value
+	for key, value := range payload {
+		if key == "approval_id" || key == "topic" {
+			continue
 		}
+		data[key] = value
 	}
 	if len(data) == 0 {
 		return nil
@@ -228,14 +194,18 @@ func approvalRequestDataFromDecision(toolName string, blocked *HookDispatchDecis
 	return mustMarshalRaw(data)
 }
 
-func approvalChoice(raw json.RawMessage) string {
+func approvalReply(raw json.RawMessage) (string, bool) {
 	var body struct {
-		Choice string `json:"choice"`
+		Choice   string `json:"choice"`
+		Approved *bool  `json:"approved"`
 	}
 	if json.Unmarshal(raw, &body) != nil {
-		return ""
+		return "", false
 	}
-	return strings.TrimSpace(body.Choice)
+	if body.Approved == nil {
+		return strings.TrimSpace(body.Choice), false
+	}
+	return strings.TrimSpace(body.Choice), *body.Approved
 }
 
 func (h *Hub) pickExchangeResponders(sender *Client, tenantID, session string, topic string) []*Client {

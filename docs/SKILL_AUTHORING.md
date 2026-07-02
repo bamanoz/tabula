@@ -168,7 +168,7 @@ Some names carry behavior by convention (not enforced by the kernel):
 
 - `gateway-*` — user interface plugin.
 - `hook-*` — bus subscriber plugin.
-- `gateway-*` — user interface clients/plugins.
+- `gateway-*` — user interface apps/plugins.
 
 These are project conventions; distros and bundles enforce them.
 

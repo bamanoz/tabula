@@ -252,7 +252,7 @@ class ApprovalFlowInstalled(unittest.TestCase):
         python = home / ".venv" / "bin" / "python3"
         if not python.is_file():
             python = Path(sys.executable)
-        driver = home / "clients" / "driver" / "run.py"
+        driver = home / "plugins" / "driver" / "run.py"
         log_path = home / "logs" / "testbed-approvals.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
@@ -262,8 +262,8 @@ class ApprovalFlowInstalled(unittest.TestCase):
             "TABULA_VERBOSE": "1",
             "TABULA_APP_ID": "default",
             "TABULA_TENANT_ID": "default",
-            "TABULA_CLIENT_DRIVER_OPENAI_API_KEY": "test-key",
-            "TABULA_CLIENT_DRIVER_OPENAI_MODEL": "o3",
+            "TABULA_PLUGIN_DRIVER_OPENAI_API_KEY": "test-key",
+            "TABULA_PLUGIN_DRIVER_OPENAI_MODEL": "o3",
             "PYTHONPATH": f"{stub_dir}{os.pathsep}{env.get('PYTHONPATH', '')}" if env.get("PYTHONPATH") else str(stub_dir),
         })
         log_handle = log_path.open("wb")
@@ -301,9 +301,9 @@ class ApprovalFlowInstalled(unittest.TestCase):
         path = home / "config" / "global.toml"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            '[clients.driver]\n'
+            '[plugins.driver]\n'
             'provider = "openai"\n\n'
-            '[clients.driver.providers.openai]\n'
+            '[plugins.driver.providers.openai]\n'
             'type = "openai"\n'
             'api_key = "test-key"\n'
             'base_url = "https://example.invalid/v1"\n'

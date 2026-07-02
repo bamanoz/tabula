@@ -87,10 +87,10 @@ secrets.
 Default Docker `global.toml` references secret store ids:
 
 ```toml
-[clients.driver]
+[plugins.driver]
 provider = "openai"
 
-[clients.driver.providers.openai]
+[plugins.driver.providers.openai]
 api_key = { source = "store", id = "driver.openai.api_key" }
 ```
 
@@ -114,7 +114,7 @@ EOF'
 ```
 
 To switch providers, edit `$TABULA_HOME/config/global.toml` inside the runtime
-volume and change `[clients.driver].provider`.
+volume and change `[plugins.driver].provider`.
 
 Avoid putting secrets in compose `environment` or `env_file`; `docker compose
 config` prints resolved environment values.

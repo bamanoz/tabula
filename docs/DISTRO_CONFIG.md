@@ -27,7 +27,7 @@ source = "git+https://github.com/bamanoz/tabula-bundles.git@main"
 [[bundles]]
 name   = "workspace"
 source = "source:tabula-bundles#path=workspace"
-# components = ["fs", "exec"]  # optional skill/plugin/client allowlist
+# components = ["fs", "exec"]  # optional skill/plugin/app allowlist
 # override = false              # must be true to replace existing
 
 [[bundles]]
@@ -73,7 +73,7 @@ for one compatibility cycle; new configs should use `components`.
   - `name` — required. Target path under `skills/` for skills, `plugins/` for
     plugins, or bundle identity for bundles.
   - `source` — required. See URI grammar below.
-  - `components` — bundles only. Optional allowlist of skill/plugin/client component
+  - `components` — bundles only. Optional allowlist of skill/plugin/app component
     subdirectories to include. `skills` is a deprecated alias.
   - `override` — required to replace a pre-existing target with the same name.
 - `[[runtime_requirements.executables]]` — external commands the distro expects
@@ -122,7 +122,7 @@ constraint. Bundles without a `bundle.toml` are accepted as legacy/unversioned
 and skip the check (their entry in `distro.lock.json` will have no `version`).
 If `[bundle].components` is omitted, `tabula-distro` discovers components by
 walking immediate child directories and selecting those with `SKILL.md` or
-`plugin.toml` or `client.toml`. If `components` is present, only those relative component paths
+`plugin.toml` or `app.toml`. If `components` is present, only those relative component paths
 are installed; missing entries fail the install instead of being silently
 skipped.
 
@@ -169,11 +169,11 @@ source:<alias>[#path=<subdir>]
 
 Resolution order within a distro (first writer wins):
 
-1. In-tree `skills/<name>/`, `plugins/<name>/`, and `clients/<name>/` directories.
+1. In-tree `skills/<name>/`, `plugins/<name>/`, and `apps/<name>/` directories.
 2. `[[skills]]` and `[[plugins]]` entries, in declaration order.
 3. `[[bundles]]`, in declaration order — each provides skill components under
-   `skills/`, plugin components under `plugins/`, and client components under
-   `clients/`.
+   `skills/`, plugin components under `plugins/`, and app components under
+   `apps/`.
 
 If a later entry collides with an earlier one, installation fails unless the
 later entry is marked `override = true`. Silent overwrites are refused on
@@ -316,6 +316,8 @@ keep these two surfaces separate:
 
 - The installer writes `plugin_dirs` from the installed generation's plugin
   surface and writes kernel transport settings to `kernel.toml`.
+- `runtime.toml` may also declare runtime composition between plugin manifest
+  kinds, for example `[plugin_kinds.gateway] depends_on = ["driver"]`.
 - The running kernel reads `kernel.toml` for its own transport settings and
   `runtime.toml` for runtime layout, and fails fast if either is missing.
 - Hot reload happens through `$TABULA_HOME/run/reload.touch`. The installer

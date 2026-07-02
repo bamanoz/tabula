@@ -34,6 +34,7 @@ type Options struct {
 	AllowedTenants          []string
 	TabulaHome              string
 	KernelURL               string
+	PluginKindDependsOn     map[string][]string
 }
 
 // Pool lazily spawns and reuses warm workers.
@@ -66,6 +67,7 @@ func New(kernelID string, store *manifest.Store, pol policy.PluginExecPolicy, op
 		resolved.AllowedTenants = append([]string(nil), opts[0].AllowedTenants...)
 		resolved.TabulaHome = strings.TrimSpace(opts[0].TabulaHome)
 		resolved.KernelURL = strings.TrimSpace(opts[0].KernelURL)
+		resolved.PluginKindDependsOn = cloneKindDependencies(opts[0].PluginKindDependsOn)
 	}
 	p := &Pool{kernelID: kernelID, store: store, policy: pol, opts: resolved, registry: newWorkerRegistry(), cold: newColdWorkerLimiter(resolved.ColdWorkersPerTenantMax, resolved.ColdAcquireTimeout, resolved.ColdWorkersByTenant), capabilities: newCapabilityState(store), publisher: newAsyncPublisher(), logger: slog.Default()}
 	p.starter = newWorkerStarter(kernelID, pol, p.spawnEnv)
@@ -99,6 +101,17 @@ func (p *Pool) AsyncFrames() <-chan any {
 // so a newly attached kernel can rebuild runtime-backed dispatch without
 // waiting for a later mutation.
 func (p *Pool) PrimeTargets(ctx context.Context, target *wire.Target) {
+	p.primeTargets(ctx, target, false)
+}
+
+// PrimeRuntimeTargets proactively initializes runtime-scoped manifest-backed
+// targets. It is safe at runtime attach because these targets explicitly opted
+// into one shared worker per runtime instead of tenant fan-out.
+func (p *Pool) PrimeRuntimeTargets(ctx context.Context, target *wire.Target) {
+	p.primeTargets(ctx, target, true)
+}
+
+func (p *Pool) primeTargets(ctx context.Context, target *wire.Target, runtimeScopeOnly bool) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -106,22 +119,89 @@ func (p *Pool) PrimeTargets(ctx context.Context, target *wire.Target) {
 		return
 	}
 	for _, tenantID := range p.capabilities.catalogTenants() {
-		for _, capability := range p.store.CapabilitiesForTenant(tenantID) {
-			if target != nil {
-				if target.Kind != wire.TargetKindPlugin || target.ID != capability.Target.ID {
-					continue
-				}
-			}
-			plugin, ok := p.store.GetForTenant(tenantID, capability.Target.ID)
-			if !ok {
-				continue
-			}
+		plugins := p.orderedPrimePlugins(tenantID, target)
+		readyKinds := map[string]bool{}
+		for _, plugin := range plugins {
 			if plugin.WorkerMode == wire.WorkerModeCold {
 				continue
 			}
+			if runtimeScopeOnly && plugin.WorkerScope != wire.WorkerScopeRuntime {
+				continue
+			}
+			if !p.kindDependenciesReady(plugin, readyKinds) {
+				p.logPrimeDependencyBlocked(plugin)
+				continue
+			}
 			p.primeTarget(ctx, tenantID, plugin)
+			if p.targetReady(tenantID, plugin.ID) {
+				if kind := pluginKindName(plugin); kind != "" {
+					readyKinds[kind] = true
+				}
+			}
 		}
 	}
+}
+
+func (p *Pool) orderedPrimePlugins(tenantID string, target *wire.Target) []manifest.Plugin {
+	plugins := p.store.PluginsForTenant(tenantID)
+	if target != nil && target.Kind != wire.TargetKindPlugin {
+		return nil
+	}
+	if target != nil {
+		plugins = p.filterPrimeClosure(plugins, target.ID)
+	}
+	return orderPluginsByKindDependencies(plugins, p.opts.PluginKindDependsOn)
+}
+
+func (p *Pool) filterPrimeClosure(plugins []manifest.Plugin, targetID string) []manifest.Plugin {
+	if targetID == "" {
+		return nil
+	}
+	byID := make(map[string]manifest.Plugin, len(plugins))
+	byKind := map[string][]manifest.Plugin{}
+	for _, plugin := range plugins {
+		byID[plugin.ID] = plugin
+		if kind := pluginKindName(plugin); kind != "" {
+			byKind[kind] = append(byKind[kind], plugin)
+		}
+	}
+	target, ok := byID[targetID]
+	if !ok {
+		return nil
+	}
+	selected := map[string]manifest.Plugin{target.ID: target}
+	var addDeps func(manifest.Plugin)
+	addDeps = func(plugin manifest.Plugin) {
+		for _, depKind := range p.opts.PluginKindDependsOn[pluginKindName(plugin)] {
+			for _, dep := range byKind[depKind] {
+				if _, ok := selected[dep.ID]; ok {
+					continue
+				}
+				selected[dep.ID] = dep
+				addDeps(dep)
+			}
+		}
+	}
+	addDeps(target)
+	out := make([]manifest.Plugin, 0, len(selected))
+	for _, plugin := range selected {
+		out = append(out, plugin)
+	}
+	return out
+}
+
+func (p *Pool) kindDependenciesReady(plugin manifest.Plugin, readyKinds map[string]bool) bool {
+	for _, depKind := range p.opts.PluginKindDependsOn[pluginKindName(plugin)] {
+		if !readyKinds[depKind] {
+			return false
+		}
+	}
+	return true
+}
+
+func (p *Pool) targetReady(tenantID, targetID string) bool {
+	_, ok := p.capabilities.readySnapshot(tenantID, targetID)
+	return ok
 }
 
 // Capabilities returns the current runtime capability view in stable target-id
@@ -212,7 +292,7 @@ func (p *Pool) HookEvent(ctx context.Context, in wire.HookEvent) (*wire.HookEven
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", ErrTargetNotFound, in.Target.ID)
 	}
-	e := p.registry.entryFor(key{kernelID: p.kernelID, tenantID: tenantID, targetID: in.Target.ID})
+	e := p.registry.entryFor(p.workerKey(tenantID, plugin))
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	worker, _, err := p.ensureWorker(ctx, e, plugin, tenantID)
@@ -221,6 +301,7 @@ func (p *Pool) HookEvent(ctx context.Context, in wire.HookEvent) (*wire.HookEven
 	}
 	reply, err := worker.HookEvent(ctx, workerwire.WorkerEvent{
 		CallID:            in.CallID,
+		TenantID:          tenantID,
 		Event:             in.Event,
 		ReplyMode:         workerwire.ReplyMode(in.ReplyMode),
 		SessionID:         in.SessionID,
@@ -244,7 +325,7 @@ func (p *Pool) invokeWarm(ctx context.Context, plugin manifest.Plugin, in wire.I
 	if !ok {
 		return failed(in.CallID, wire.ErrorToolNotFound, fmt.Sprintf("tool %q not found on target %q", in.Tool, in.Target.ID))
 	}
-	e := p.registry.entryFor(key{kernelID: p.kernelID, tenantID: in.TenantID, targetID: in.Target.ID})
+	e := p.registry.entryFor(p.workerKey(in.TenantID, plugin))
 	worker, err := p.acquireWarmToolSlot(ctx, e, plugin, in.TenantID, tool)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -253,10 +334,13 @@ func (p *Pool) invokeWarm(ctx context.Context, plugin manifest.Plugin, in wire.I
 		if errors.Is(err, context.Canceled) {
 			return failed(in.CallID, wire.ErrorCancelled, "invoke cancelled")
 		}
+		if errors.Is(err, errWarmWorkerBackoff) {
+			return failed(in.CallID, wire.ErrorRuntimeBusy, "worker initialization delayed; "+err.Error())
+		}
 		return failed(in.CallID, wire.ErrorInternal, safeWorkerErrorMessage("worker initialization failed", err))
 	}
 	defer p.releaseWarmToolSlot(e, tool)
-	result, err := worker.Call(ctx, workerwire.WorkerCall{CallID: in.CallID, Tool: in.Tool, Args: in.Args, SessionID: in.SessionID, TurnCorrelationID: in.TurnCorrelationID})
+	result, err := worker.Call(ctx, workerwire.WorkerCall{CallID: in.CallID, TenantID: in.TenantID, Tool: in.Tool, Args: in.Args, SessionID: in.SessionID, TurnCorrelationID: in.TurnCorrelationID})
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			if p.shouldResetWarmWorkerAfterCallError(e, worker) {
@@ -270,7 +354,7 @@ func (p *Pool) invokeWarm(ctx context.Context, plugin manifest.Plugin, in wire.I
 			}
 			return failed(in.CallID, wire.ErrorCancelled, "invoke cancelled")
 		}
-		p.resetWarmWorker(e, worker)
+		p.resetWarmWorkerAfterFailure(e, worker)
 		return failed(in.CallID, wire.ErrorInternal, safeWorkerErrorMessage("worker call failed", err))
 	}
 	if !result.OK {
@@ -325,6 +409,21 @@ func (p *Pool) resetWarmWorker(e *entry, worker policy.Worker) {
 		e.worker = nil
 	}
 	e.notifyWaitersLocked()
+	e.mu.Unlock()
+	_ = worker.Shutdown(context.Background())
+}
+
+func (p *Pool) resetWarmWorkerAfterFailure(e *entry, worker policy.Worker) {
+	if e == nil || worker == nil {
+		return
+	}
+	e.mu.Lock()
+	if e.worker == worker {
+		e.worker = nil
+		e.noteWarmWorkerFailureLocked(time.Now())
+	} else {
+		e.notifyWaitersLocked()
+	}
 	e.mu.Unlock()
 	_ = worker.Shutdown(context.Background())
 }
@@ -411,7 +510,7 @@ func (p *Pool) invokeColdPlugin(ctx context.Context, plugin manifest.Plugin, in 
 	if _, err := worker.Init(ctx, workerwire.WorkerInit{Op: workerwire.OpInit, KernelID: p.kernelID, TenantID: in.TenantID, TargetID: in.Target.ID, Manifest: plugin.RawJSON()}); err != nil {
 		return failed(in.CallID, wire.ErrorInternal, err.Error())
 	}
-	result, err := worker.Call(ctx, workerwire.WorkerCall{Op: workerwire.OpCall, CallID: in.CallID, Tool: in.Tool, Args: in.Args, SessionID: in.SessionID, TurnCorrelationID: in.TurnCorrelationID})
+	result, err := worker.Call(ctx, workerwire.WorkerCall{Op: workerwire.OpCall, CallID: in.CallID, TenantID: in.TenantID, Tool: in.Tool, Args: in.Args, SessionID: in.SessionID, TurnCorrelationID: in.TurnCorrelationID})
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return failed(in.CallID, wire.ErrorTimeout, "invoke timed out")
@@ -474,6 +573,13 @@ func (p *Pool) spawnEnv(tenantID string) map[string]string {
 	}
 }
 
+func (p *Pool) workerKey(tenantID string, plugin manifest.Plugin) key {
+	if plugin.WorkerScope == wire.WorkerScopeRuntime {
+		tenantID = ""
+	}
+	return key{kernelID: p.kernelID, tenantID: tenantID, targetID: plugin.ID}
+}
+
 func (p *Pool) primeTenantID() string {
 	if len(p.opts.AllowedTenants) == 0 {
 		return "default"
@@ -530,7 +636,7 @@ func (p *Pool) ensureWorker(ctx context.Context, e *entry, plugin manifest.Plugi
 }
 
 func (p *Pool) primeTarget(ctx context.Context, tenantID string, plugin manifest.Plugin) {
-	e := p.registry.entryFor(key{kernelID: p.kernelID, tenantID: tenantID, targetID: plugin.ID})
+	e := p.registry.entryFor(p.workerKey(tenantID, plugin))
 	e.mu.Lock()
 	_, existing, err := p.ensureWorker(ctx, e, plugin, tenantID)
 	e.mu.Unlock()
@@ -562,6 +668,75 @@ func (p *Pool) logPrimeFailure(plugin manifest.Plugin, err error) {
 	)
 }
 
+func (p *Pool) logPrimeDependencyBlocked(plugin manifest.Plugin) {
+	if p == nil {
+		return
+	}
+	logger := p.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Warn("runtime target priming blocked by plugin kind dependency", "target", plugin.ID, "kind", pluginKindName(plugin), "depends_on", p.opts.PluginKindDependsOn[pluginKindName(plugin)])
+}
+
+func orderPluginsByKindDependencies(plugins []manifest.Plugin, deps map[string][]string) []manifest.Plugin {
+	if len(plugins) <= 1 || len(deps) == 0 {
+		out := append([]manifest.Plugin(nil), plugins...)
+		sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+		return out
+	}
+	byID := make(map[string]manifest.Plugin, len(plugins))
+	byKind := map[string][]string{}
+	for _, plugin := range plugins {
+		byID[plugin.ID] = plugin
+		if kind := pluginKindName(plugin); kind != "" {
+			byKind[kind] = append(byKind[kind], plugin.ID)
+		}
+	}
+	for kind := range byKind {
+		sort.Strings(byKind[kind])
+	}
+	ids := make([]string, 0, len(plugins))
+	for _, plugin := range plugins {
+		ids = append(ids, plugin.ID)
+	}
+	sort.Strings(ids)
+	visited := map[string]bool{}
+	visiting := map[string]bool{}
+	orderedIDs := make([]string, 0, len(ids))
+	var visit func(string)
+	visit = func(id string) {
+		if visited[id] || visiting[id] {
+			return
+		}
+		visiting[id] = true
+		plugin := byID[id]
+		for _, depKind := range deps[pluginKindName(plugin)] {
+			for _, depID := range byKind[depKind] {
+				visit(depID)
+			}
+		}
+		visiting[id] = false
+		visited[id] = true
+		orderedIDs = append(orderedIDs, id)
+	}
+	for _, id := range ids {
+		visit(id)
+	}
+	out := make([]manifest.Plugin, 0, len(orderedIDs))
+	for _, id := range orderedIDs {
+		out = append(out, byID[id])
+	}
+	return out
+}
+
+func pluginKindName(plugin manifest.Plugin) string {
+	if plugin.Kind == nil {
+		return ""
+	}
+	return strings.TrimSpace(plugin.Kind.Name)
+}
+
 func pluginRuntime(plugin manifest.Plugin) string {
 	if runtime := strings.TrimSpace(plugin.Runtime); runtime != "" {
 		return runtime
@@ -570,6 +745,17 @@ func pluginRuntime(plugin manifest.Plugin) string {
 		return string(kind)
 	}
 	return ""
+}
+
+func cloneKindDependencies(in map[string][]string) map[string][]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for kind, deps := range in {
+		out[kind] = append([]string(nil), deps...)
+	}
+	return out
 }
 
 func cloneTenantLimits(in map[string]int) map[string]int {
@@ -730,8 +916,10 @@ func (p *Pool) watchWorker(tenantID string, plugin manifest.Plugin, entry *entry
 				continue
 			}
 			if event.Err != nil {
-				clearEntryWorker(entry, worker)
-				p.markTargetCrashed(tenantID, plugin, event.Err)
+				if clearEntryWorkerAfterFailure(entry, worker) {
+					p.markTargetCrashed(tenantID, plugin, event.Err)
+					_ = worker.Shutdown(context.Background())
+				}
 				continue
 			}
 			switch frame := event.Frame.(type) {
@@ -744,23 +932,27 @@ func (p *Pool) watchWorker(tenantID string, plugin manifest.Plugin, entry *entry
 			case *workerwire.WorkerLog:
 				p.publishBestEffortFrame(wire.PluginLog{Op: wire.OpPluginLog, Target: wire.Target{Kind: wire.TargetKindPlugin, ID: plugin.ID}, Level: frame.Level, Message: frame.Message, Fields: frame.Fields})
 			case *workerwire.WorkerError:
-				clearEntryWorker(entry, worker)
-				message := frame.Error.Code
-				if frame.Error.Message != "" {
-					message = frame.Error.Message
+				if clearEntryWorkerAfterFailure(entry, worker) {
+					message := frame.Error.Code
+					if frame.Error.Message != "" {
+						message = frame.Error.Message
+					}
+					p.markTargetCrashed(tenantID, plugin, errors.New(message))
+					_ = worker.Shutdown(context.Background())
 				}
-				p.markTargetCrashed(tenantID, plugin, errors.New(message))
 			}
 		}
 	}()
 }
 
 func (p *Pool) applyToolsUpdated(tenantID string, plugin manifest.Plugin, update workerwire.WorkerToolsUpdated) {
-	capability, ok := p.capabilities.applyToolsUpdated(tenantID, plugin, update)
+	capabilities, ok := p.capabilities.applyToolsUpdated(tenantID, plugin, update)
 	if !ok {
 		return
 	}
-	p.publishCriticalFrame(wire.CatalogUpdate{Op: wire.OpCatalogUpdate, Target: capability.Target, Tenants: append([]string(nil), capability.Tenants...), Tools: cloneToolSpecs(capability.Tools), Hooks: cloneHookSpecs(capability.Hooks), Removed: append([]string(nil), update.Removed...), Revision: capability.Revision, State: capability.State, Source: capability.Source})
+	for _, capability := range capabilities {
+		p.publishCriticalFrame(wire.CatalogUpdate{Op: wire.OpCatalogUpdate, Target: capability.Target, Tenants: append([]string(nil), capability.Tenants...), Tools: cloneToolSpecs(capability.Tools), Hooks: cloneHookSpecs(capability.Hooks), Removed: append([]string(nil), update.Removed...), Revision: capability.Revision, State: capability.State, Source: capability.Source})
+	}
 }
 
 func (p *Pool) resetTargets(target *wire.Target, tenants ...string) {
@@ -799,9 +991,10 @@ func (p *Pool) publishTargetSnapshot(tenantID, targetID string) {
 }
 
 func (p *Pool) markTargetReady(tenantID string, plugin manifest.Plugin, ack workerwire.WorkerInitAck) {
-	capability := p.capabilities.markReady(tenantID, plugin, ack)
-	p.publishCriticalFrame(wire.CatalogUpdate{Op: wire.OpCatalogUpdate, Target: capability.Target, Tenants: append([]string(nil), capability.Tenants...), Tools: cloneToolSpecs(capability.Tools), Hooks: cloneHookSpecs(capability.Hooks), Revision: capability.Revision, State: capability.State, Source: capability.Source, Diagnostic: "worker ready"})
-	p.publishCriticalFrame(wire.LifecycleNotice{Op: wire.OpLifecycleNotice, Target: capability.Target, State: wire.LifecycleStateReady})
+	for _, capability := range p.capabilities.markReady(tenantID, plugin, ack) {
+		p.publishCriticalFrame(wire.CatalogUpdate{Op: wire.OpCatalogUpdate, Target: capability.Target, Tenants: append([]string(nil), capability.Tenants...), Tools: cloneToolSpecs(capability.Tools), Hooks: cloneHookSpecs(capability.Hooks), Revision: capability.Revision, State: capability.State, Source: capability.Source, Diagnostic: "worker ready"})
+	}
+	p.publishCriticalFrame(wire.LifecycleNotice{Op: wire.OpLifecycleNotice, Target: wire.Target{Kind: wire.TargetKindPlugin, ID: plugin.ID}, State: wire.LifecycleStateReady})
 }
 
 func (p *Pool) publishCriticalFrame(frame any) {

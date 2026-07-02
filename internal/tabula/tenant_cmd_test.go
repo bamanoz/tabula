@@ -90,7 +90,7 @@ func TestTenantCreateFansOutActiveRuntimeSurface(t *testing.T) {
 	for _, rel := range []string{
 		"skills/test-skill/SKILL.md",
 		"plugins/test-plugin/plugin.toml",
-		"clients/test-client/client.toml",
+		"apps/test-client/app.toml",
 		"templates/SYSTEM.md",
 		"packages/python/src/pkg/__init__.py",
 	} {
@@ -108,7 +108,7 @@ func TestTenantCreateFansOutActiveRuntimeSurface(t *testing.T) {
 	for _, rel := range []string{
 		"skills/test-skill/SKILL.md",
 		"plugins/test-plugin/plugin.toml",
-		"clients/test-client/client.toml",
+		"apps/test-client/app.toml",
 		"templates/SYSTEM.md",
 		"packages/python/src/pkg/__init__.py",
 	} {

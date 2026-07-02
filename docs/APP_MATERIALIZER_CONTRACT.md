@@ -54,7 +54,7 @@ The materializer owns distro semantics:
 - write plugin defaults under
   `TABULA_TENANT_DIR/config/plugins/<plugin-id>/defaults.toml`;
 - write client config under
-  `TABULA_TENANT_DIR/config/clients/<client-id>/config.toml`;
+  `TABULA_TENANT_DIR/config/apps/<client-id>/config.toml`;
 - write distro-owned boot metadata under the app tenant;
 - configure prompt policy and project files for the distro;
 - configure tenant-local or explicitly shared plugin state such as memory.

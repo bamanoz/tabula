@@ -185,6 +185,10 @@ through `runtime.toml` only.
   verifies `runtime.toml` exists. It fails fast with an explicit
   "run `tabula-install <distro>` first" message when the file is missing.
 - `tabula-runtime` reads `runtime.toml` and loads plugins from `plugin_dirs`.
+- Optional `[plugin_kinds.<kind>] depends_on = [...]` entries in
+  `runtime.toml` express runtime composition ordering between plugin `[kind]`
+  classes. Plugin manifests declare their own kind; runtime config wires kinds
+  together for the installed deployment.
 - After `tabula-install --update` the installer atomically updates
   `$TABULA_HOME/run/reload.touch`. The kernel polls that file and triggers a
   plugin reload through `runtime.toml`.
@@ -291,6 +295,7 @@ version = "0.3.0"
 [worker]
 command = ["python3", "run.py"]
 mode = "warm"
+scope = "tenant"      # default; "runtime" shares one warm worker across tenants
 
 tags = ["mcp_bridge"]   # optional, free strings, kernel-ignored
 ```
@@ -589,7 +594,7 @@ that changes `[sources.tabula-bundles]` to a single `local:` checkout.
 
 At install time, bundle components are linked into the flat runtime surface:
 skill components under `skills/`, plugin components under `plugins/`, and
-client components under `clients/`.
+app components under `apps/`.
 
 ## Current boundaries
 

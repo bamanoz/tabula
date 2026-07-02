@@ -224,7 +224,7 @@ func tenantRecords(items []tenant.Tenant) []tenantCLIRecord {
 
 func refreshTenantRuntimeSurface(tabulaHome, tenantID string) error {
 	tenantRoot := filepath.Join(tabulaHome, "tenants", tenantID)
-	for _, name := range []string{"clients", "templates", "plugins", "skills", "packages"} {
+	for _, name := range []string{"apps", "templates", "plugins", "skills", "packages"} {
 		if err := mirrorRuntimeSurface(filepath.Join(tabulaHome, name), filepath.Join(tenantRoot, name)); err != nil {
 			return err
 		}

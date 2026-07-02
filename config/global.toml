@@ -1,14 +1,14 @@
-[clients.driver]
+[plugins.driver]
 provider = "openai"
 
-[clients.driver.providers.openai]
+[plugins.driver.providers.openai]
 type = "openai"
 api_key = { source = "store", id = "driver.openai.api_key" }
 default_model = "gpt-5.4"
 api = "chat_completions"
 base_url = "https://api.openai.com/v1"
 
-[clients.driver.providers.anthropic]
+[plugins.driver.providers.anthropic]
 type = "anthropic"
 api_key = { source = "store", id = "driver.anthropic.api_key" }
 default_model = "claude-sonnet-4-6"

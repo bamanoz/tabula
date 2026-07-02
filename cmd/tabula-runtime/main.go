@@ -107,7 +107,7 @@ func stdioCmd(args []string, stderr io.Writer) int {
 	}
 	manifestStore.SetTabulaHome(paths.Home())
 	logger := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	workerPool := pool.New(kernelCfg.ID, manifestStore, bare.New(), pool.Options{ColdWorkersPerTenantMax: cfg.Pool.ColdWorkersPerTenantMax, ColdWorkersByTenant: coldWorkerTenantOverrides(cfg.Pool.Tenants), AllowedTenants: kernelCfg.Tenants, TabulaHome: paths.Home(), KernelURL: os.Getenv("TABULA_URL")})
+	workerPool := pool.New(kernelCfg.ID, manifestStore, bare.New(), pool.Options{ColdWorkersPerTenantMax: cfg.Pool.ColdWorkersPerTenantMax, ColdWorkersByTenant: coldWorkerTenantOverrides(cfg.Pool.Tenants), AllowedTenants: kernelCfg.Tenants, TabulaHome: paths.Home(), KernelURL: os.Getenv("TABULA_URL"), PluginKindDependsOn: pluginKindDependencies(cfg.PluginKinds)})
 	workerPool.SetLogger(logger)
 	defer workerPool.Close()
 	conn := stdio.NewConn(os.Stdin, os.Stdout)
@@ -180,6 +180,7 @@ func startCmd(args []string, stderr io.Writer) int {
 		AllowedTenants:          kernelCfg.Tenants,
 		TabulaHome:              paths.Home(),
 		KernelURL:               os.Getenv("TABULA_URL"),
+		PluginKindDependsOn:     pluginKindDependencies(cfg.PluginKinds),
 	})
 	workerPool.SetLogger(logger)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -217,6 +218,19 @@ func coldWorkerTenantOverrides(in map[string]runtimeconfig.TenantPool) map[strin
 	for tenantID, limits := range in {
 		if limits.ColdWorkersMax > 0 {
 			out[tenantID] = limits.ColdWorkersMax
+		}
+	}
+	return out
+}
+
+func pluginKindDependencies(in map[string]runtimeconfig.PluginKind) map[string][]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for kind, policy := range in {
+		if len(policy.DependsOn) > 0 {
+			out[kind] = append([]string(nil), policy.DependsOn...)
 		}
 	}
 	return out

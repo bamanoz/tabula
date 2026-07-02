@@ -36,8 +36,9 @@ type Tool struct {
 
 // Worker mirrors a canonical [worker] block from plugin.toml.
 type Worker struct {
-	Command []string        `json:"command,omitempty"`
-	Mode    wire.WorkerMode `json:"mode,omitempty"`
+	Command []string         `json:"command,omitempty"`
+	Mode    wire.WorkerMode  `json:"mode,omitempty"`
+	Scope   wire.WorkerScope `json:"scope,omitempty"`
 }
 
 type toolTOML struct {
@@ -52,18 +53,27 @@ type toolTOML struct {
 
 // Plugin is the runtime daemon's normalized view of one plugin.toml.
 type Plugin struct {
-	ID          string          `json:"id"`
-	Name        string          `json:"name"`
-	Version     string          `json:"version"`
-	Runtime     string          `json:"runtime"`
-	Entry       string          `json:"entry"`
-	Description string          `json:"description,omitempty"`
-	Worker      *Worker         `json:"worker,omitempty"`
-	WorkerMode  wire.WorkerMode `json:"worker_mode,omitempty"`
-	Tools       []Tool          `json:"tools,omitempty"`
-	Hooks       []Hook          `json:"hooks,omitempty"`
-	Requires    *Requires       `json:"requires,omitempty"`
-	RootDir     string          `json:"-"`
+	ID          string           `json:"id"`
+	Name        string           `json:"name"`
+	Version     string           `json:"version"`
+	Runtime     string           `json:"runtime"`
+	Entry       string           `json:"entry"`
+	Description string           `json:"description,omitempty"`
+	Kind        *Kind            `json:"kind,omitempty"`
+	Worker      *Worker          `json:"worker,omitempty"`
+	WorkerMode  wire.WorkerMode  `json:"worker_mode,omitempty"`
+	WorkerScope wire.WorkerScope `json:"worker_scope,omitempty"`
+	Tools       []Tool           `json:"tools,omitempty"`
+	Hooks       []Hook           `json:"hooks,omitempty"`
+	Requires    *Requires        `json:"requires,omitempty"`
+	RootDir     string           `json:"-"`
+}
+
+// Kind classifies a plugin for runtime-side composition rules. It is distinct
+// from wire target kind, which remains the protocol namespace (plugin/skill).
+type Kind struct {
+	Name      string `toml:"name" json:"name"`
+	Singleton bool   `toml:"singleton" json:"singleton,omitempty"`
 }
 
 // Hook mirrors an advisory [[hooks]] entry from plugin.toml. Runtime does not
@@ -91,6 +101,7 @@ type pluginTOML struct {
 	Runtime     string          `toml:"runtime"`
 	Entry       string          `toml:"entry"`
 	Description string          `toml:"description"`
+	Kind        *Kind           `toml:"kind"`
 	Worker      *workerTOML     `toml:"worker"`
 	WorkerMode  wire.WorkerMode `toml:"worker_mode"`
 	Tools       []toolTOML      `toml:"tools"`
@@ -99,8 +110,9 @@ type pluginTOML struct {
 }
 
 type workerTOML struct {
-	Command []string        `toml:"command"`
-	Mode    wire.WorkerMode `toml:"mode"`
+	Command []string         `toml:"command"`
+	Mode    wire.WorkerMode  `toml:"mode"`
+	Scope   wire.WorkerScope `toml:"scope"`
 }
 
 type requiresTOML struct {
@@ -148,6 +160,9 @@ func LoadSearchDirs(pluginDirs []string, skillDirs []string) (*Index, error) {
 			plugins[plugin.ID] = plugin
 		}
 	}
+	if err := validatePluginKindSingletons(plugins); err != nil {
+		return nil, err
+	}
 	for _, dir := range skillDirs {
 		paths, err := skillManifestPaths(dir)
 		if err != nil {
@@ -166,6 +181,29 @@ func LoadSearchDirs(pluginDirs []string, skillDirs []string) (*Index, error) {
 		}
 	}
 	return &Index{plugins: plugins, skills: skills}, nil
+}
+
+func validatePluginKindSingletons(plugins map[string]Plugin) error {
+	byKind := map[string][]string{}
+	singletonKinds := map[string]struct{}{}
+	for id, plugin := range plugins {
+		if plugin.Kind == nil || plugin.Kind.Name == "" {
+			continue
+		}
+		byKind[plugin.Kind.Name] = append(byKind[plugin.Kind.Name], id)
+		if plugin.Kind.Singleton {
+			singletonKinds[plugin.Kind.Name] = struct{}{}
+		}
+	}
+	for kind := range singletonKinds {
+		ids := byKind[kind]
+		if len(ids) <= 1 {
+			continue
+		}
+		sort.Strings(ids)
+		return fmt.Errorf("plugin kind %q is singleton but multiple plugins declare it: %s", kind, strings.Join(ids, ", "))
+	}
+	return nil
 }
 
 func inferSkillSearchDirs(dirs []string) []string {
@@ -314,7 +352,9 @@ func Load(path string) (Plugin, error) {
 		Runtime:     strings.TrimSpace(raw.Runtime),
 		Entry:       strings.TrimSpace(raw.Entry),
 		Description: strings.TrimSpace(raw.Description),
+		Kind:        normalizeKind(raw.Kind),
 		WorkerMode:  workerMode,
+		WorkerScope: wire.WorkerScopeTenant,
 		Tools:       make([]Tool, 0, len(raw.Tools)),
 		Hooks:       make([]Hook, 0, len(raw.Hooks)),
 		RootDir:     filepath.Dir(abs),
@@ -322,8 +362,11 @@ func Load(path string) (Plugin, error) {
 	if plugin.WorkerMode == "" {
 		plugin.WorkerMode = wire.WorkerModeWarm
 	}
+	if raw.Worker != nil && raw.Worker.Scope != "" {
+		plugin.WorkerScope = raw.Worker.Scope
+	}
 	if raw.Worker != nil {
-		plugin.Worker = &Worker{Command: trimNonemptyStrings(raw.Worker.Command), Mode: plugin.WorkerMode}
+		plugin.Worker = &Worker{Command: trimNonemptyStrings(raw.Worker.Command), Mode: plugin.WorkerMode, Scope: plugin.WorkerScope}
 	}
 	for i, tool := range raw.Tools {
 		parsed, err := parseTool(tool)
@@ -344,6 +387,13 @@ func Load(path string) (Plugin, error) {
 	return plugin, nil
 }
 
+func normalizeKind(kind *Kind) *Kind {
+	if kind == nil {
+		return nil
+	}
+	return &Kind{Name: strings.TrimSpace(kind.Name), Singleton: kind.Singleton}
+}
+
 // Validate checks runtime-owned invariants before a worker can be spawned.
 func (p Plugin) Validate() error {
 	if !pluginIDPattern.MatchString(p.ID) {
@@ -362,6 +412,17 @@ func (p Plugin) Validate() error {
 	case wire.WorkerModeWarm, wire.WorkerModeCold:
 	default:
 		return fmt.Errorf("worker_mode %q must be warm or cold", p.WorkerMode)
+	}
+	switch p.WorkerScope {
+	case "", wire.WorkerScopeTenant, wire.WorkerScopeRuntime:
+	default:
+		return fmt.Errorf("worker.scope %q must be tenant or runtime", p.WorkerScope)
+	}
+	if p.WorkerMode == wire.WorkerModeCold && p.WorkerScope == wire.WorkerScopeRuntime {
+		return fmt.Errorf("worker.scope runtime requires worker_mode warm")
+	}
+	if p.Kind != nil && p.Kind.Name == "" {
+		return fmt.Errorf("kind.name is required")
 	}
 	hasWorkerCommand := p.hasWorkerCommand()
 	if p.Worker != nil {
@@ -685,6 +746,7 @@ func (p Plugin) Capability() wire.Capability {
 		State:       wire.CapabilityStateManifestLoaded,
 		Source:      wire.CapabilitySourceManifest,
 		WorkerMode:  p.WorkerMode,
+		WorkerScope: p.WorkerScope,
 		HarnessKind: detectPluginHarnessKind(p.Runtime, p.LaunchCommand()),
 	}
 }
@@ -1040,6 +1102,34 @@ func (s *Store) CapabilitiesForTenant(tenantID string) []wire.Capability {
 	return out
 }
 
+// PluginsForTenant returns executable plugin manifests for one tenant/app catalog.
+func (s *Store) PluginsForTenant(tenantID string) []Plugin {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	idx := s.indexForTenantLocked(tenantID)
+	if idx == nil {
+		return nil
+	}
+	ids := sortedPluginKeys(idx.plugins)
+	out := make([]Plugin, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, idx.plugins[id])
+	}
+	return out
+}
+
+func sortedPluginKeys(plugins map[string]Plugin) []string {
+	keys := make([]string, 0, len(plugins))
+	for key := range plugins {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // TenantIDs returns the configured tenant/app catalog ids.
 func (s *Store) TenantIDs() []string {
 	if s == nil {
@@ -1100,7 +1190,44 @@ func loadTenantIndexes(tenants map[string]SearchDirs) (map[string]*Index, error)
 		}
 		byTenant[tenantID] = idx
 	}
+	if err := validateTenantPluginKindSingletons(byTenant); err != nil {
+		return nil, err
+	}
 	return byTenant, nil
+}
+
+func validateTenantPluginKindSingletons(byTenant map[string]*Index) error {
+	byKind := map[string]map[string]struct{}{}
+	singletonKinds := map[string]struct{}{}
+	for _, idx := range byTenant {
+		if idx == nil {
+			continue
+		}
+		for id, plugin := range idx.plugins {
+			if plugin.Kind == nil || plugin.Kind.Name == "" {
+				continue
+			}
+			if byKind[plugin.Kind.Name] == nil {
+				byKind[plugin.Kind.Name] = map[string]struct{}{}
+			}
+			byKind[plugin.Kind.Name][id] = struct{}{}
+			if plugin.Kind.Singleton {
+				singletonKinds[plugin.Kind.Name] = struct{}{}
+			}
+		}
+	}
+	for kind := range singletonKinds {
+		if len(byKind[kind]) <= 1 {
+			continue
+		}
+		ids := make([]string, 0, len(byKind[kind]))
+		for id := range byKind[kind] {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		return fmt.Errorf("plugin kind %q is singleton but multiple plugin ids declare it across tenant catalogs: %s", kind, strings.Join(ids, ", "))
+	}
+	return nil
 }
 
 func cloneTenantSearchDirs(in map[string]SearchDirs) map[string]SearchDirs {

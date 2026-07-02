@@ -35,7 +35,7 @@ func (h *Handler) AsyncFrames() <-chan any {
 	if h == nil || h.pool == nil {
 		return nil
 	}
-	go h.pool.PrimeTargets(context.Background(), nil)
+	go h.pool.PrimeRuntimeTargets(context.Background(), nil)
 	return h.pool.AsyncFrames()
 }
 

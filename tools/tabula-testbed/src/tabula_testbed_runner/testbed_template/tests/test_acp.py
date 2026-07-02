@@ -182,8 +182,8 @@ class ACPGatewayInstalled(unittest.TestCase):
         self.write_agent_catalog()
 
     def test_gateway_acp_client_is_installed(self):
-        self.assertTrue((self.home / "clients" / "gateway-acp" / "client.toml").is_file())
-        self.assertTrue((self.home / "clients" / "gateway-acp" / "run.py").is_file())
+        self.assertTrue((self.home / "apps" / "gateway-acp" / "app.toml").is_file())
+        self.assertTrue((self.home / "apps" / "gateway-acp" / "run.py").is_file())
         self.assertFalse((self.home / "plugins" / "gateway-acp").exists())
 
     def test_gateway_acp_full_protocol(self):
@@ -300,7 +300,7 @@ class ACPGatewayInstalled(unittest.TestCase):
         python = self.home / ".venv" / "bin" / "python3"
         if not python.is_file():
             python = Path(sys.executable)
-        gateway = self.home / "clients" / "gateway-acp" / "run.py"
+        gateway = self.home / "apps" / "gateway-acp" / "run.py"
         log_path = self.home / "logs" / "testbed-acp.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
@@ -309,8 +309,8 @@ class ACPGatewayInstalled(unittest.TestCase):
             "TABULA_URL": self.url,
             "TABULA_APP_ID": "default",
             "TABULA_TENANT_ID": "default",
-            "TABULA_CLIENT_DRIVER_OPENAI_API_KEY": "test-key",
-            "TABULA_CLIENT_DRIVER_OPENAI_MODEL": "o3",
+            "TABULA_PLUGIN_DRIVER_OPENAI_API_KEY": "test-key",
+            "TABULA_PLUGIN_DRIVER_OPENAI_MODEL": "o3",
             "PYTHONPATH": f"{self.stub_dir}{os.pathsep}{env.get('PYTHONPATH', '')}" if env.get("PYTHONPATH") else str(self.stub_dir),
         })
         stderr_handle = log_path.open("w", encoding="utf-8")
@@ -350,7 +350,7 @@ class ACPGatewayInstalled(unittest.TestCase):
         )
 
     def assert_session_store_contains(self, session_id: str, *, agent: str, model_ref: str) -> None:
-        path = self.home / "state" / "clients" / "gateway-acp" / "sessions.json"
+        path = self.home / "state" / "apps" / "gateway-acp" / "sessions.json"
         payload = json.loads(path.read_text(encoding="utf-8"))
         sessions = payload.get("sessions", [])
         match = next((item for item in sessions if item.get("session_id") == session_id), None)
@@ -361,7 +361,7 @@ class ACPGatewayInstalled(unittest.TestCase):
         self.assertTrue(str(match.get("last_response_preview") or ""))
 
     def assert_session_closed(self, session_id: str) -> None:
-        path = self.home / "state" / "clients" / "gateway-acp" / "sessions.json"
+        path = self.home / "state" / "apps" / "gateway-acp" / "sessions.json"
         payload = json.loads(path.read_text(encoding="utf-8"))
         sessions = payload.get("sessions", [])
         match = next((item for item in sessions if item.get("session_id") == session_id), None)

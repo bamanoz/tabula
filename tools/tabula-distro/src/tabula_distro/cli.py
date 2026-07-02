@@ -367,7 +367,7 @@ def _cmd_gc(args: argparse.Namespace, home: Path) -> int:
             lock = lockmod.load(lock_path)
             if lock is None:
                 continue
-            for lck in list(lock.bundles.values()) + list(lock.skills.values()) + list(lock.plugins.values()) + list(lock.clients.values()):
+            for lck in list(lock.bundles.values()) + list(lock.skills.values()) + list(lock.plugins.values()) + list(lock.apps.values()):
                 if lck.resolved_sha:
                     keep.add(lck.resolved_sha)
     removed = cache.gc(keep)
@@ -727,7 +727,7 @@ def _read_runtime_config(path: Path, app_id: str) -> dict:
 def _materializer_status(tenant_dir: Path, *, expected: bool) -> dict:
     config_dir = tenant_dir / "config"
     plugin_cfg = config_dir / "plugins"
-    client_cfg = config_dir / "clients"
+    client_cfg = config_dir / "apps"
     return {
         "expected": expected,
         "ran": config_dir.is_dir(),
@@ -979,11 +979,11 @@ def _print_summary(home: Path, distro_name: str, gen, lock: lockmod.Lock, *, cha
         print("  plugins:")
         for name, entry in sorted(lock.plugins.items()):
             print(f"    {name:20s} {_describe_lock(entry)}")
-    if lock.clients:
-        print("  clients:")
-        for name, entry in sorted(lock.clients.items()):
+    if lock.apps:
+        print("  apps:")
+        for name, entry in sorted(lock.apps.items()):
             print(f"    {name:20s} {_describe_lock(entry)}")
-    if not lock.bundles and not lock.skills and not lock.plugins and not lock.clients:
+    if not lock.bundles and not lock.skills and not lock.plugins and not lock.apps:
         print("  (no external sources)")
 
 

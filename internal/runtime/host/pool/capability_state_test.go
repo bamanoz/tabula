@@ -32,7 +32,11 @@ func TestCapabilityStateMarkReadyClonesWorkerMetadata(t *testing.T) {
 		Subscriptions: []wire.HookSpec{{Event: "before_tool_call", Priority: 100}},
 	}
 
-	capability := state.markReady("tenant-a", plugin, ack)
+	capabilities := state.markReady("tenant-a", plugin, ack)
+	if len(capabilities) != 1 {
+		t.Fatalf("ready capabilities = %#v", capabilities)
+	}
+	capability := capabilities[0]
 	ack.Tools[0].Name = "mutated"
 	ack.Subscriptions[0].Event = "mutated"
 
@@ -52,7 +56,11 @@ func TestCapabilityStateApplyToolsUpdatedDeduplicatesSameRevision(t *testing.T) 
 	state, plugin := testCapabilityState(t)
 	state.markReady("tenant-a", plugin, workerwire.WorkerInitAck{Tools: []wire.ToolSpec{{Name: "echo"}}})
 
-	capability, ok := state.applyToolsUpdated("tenant-a", plugin, workerwire.WorkerToolsUpdated{Revision: 7, Tools: []wire.ToolSpec{{Name: "dynamic"}}, Removed: []string{"echo"}})
+	capabilities, ok := state.applyToolsUpdated("tenant-a", plugin, workerwire.WorkerToolsUpdated{Revision: 7, Tools: []wire.ToolSpec{{Name: "dynamic"}}, Removed: []string{"echo"}})
+	if len(capabilities) != 1 {
+		t.Fatalf("updated capabilities = %#v", capabilities)
+	}
+	capability := capabilities[0]
 	if !ok || capability.Revision != 7 || len(capability.Tools) != 1 || capability.Tools[0].Name != "dynamic" {
 		t.Fatalf("first update = %#v ok=%v", capability, ok)
 	}

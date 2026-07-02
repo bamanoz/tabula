@@ -63,7 +63,7 @@ func TestPrepareBootLayoutCreatesDefaultTenant(t *testing.T) {
 	if _, ok, err := store.Get(DefaultID); err != nil || !ok {
 		t.Fatalf("default tenant missing: ok=%v err=%v", ok, err)
 	}
-	for _, rel := range []string{"config", "config/plugins", "state/plugins", "state/skills", "state/sessions", "cache", "logs", "skills", "plugins", "clients", "templates"} {
+	for _, rel := range []string{"config", "config/plugins", "state/plugins", "state/skills", "state/sessions", "cache", "logs", "skills", "plugins", "apps", "templates"} {
 		if info, err := os.Stat(filepath.Join(home, "tenants", DefaultID, rel)); err != nil || !info.IsDir() {
 			t.Fatalf("missing tenant dir %s: %v", rel, err)
 		}
@@ -105,7 +105,7 @@ func TestPrepareBootLayoutPreservesExistingDefaultWorkspaceRoot(t *testing.T) {
 
 func TestPrepareBootLayoutMarksLegacyFlatLayoutWithoutBreakingRuntimeSurface(t *testing.T) {
 	home := t.TempDir()
-	for _, rel := range []string{"skills/timer", "plugins/sessions", "clients/driver", "templates/default", "state/sessions"} {
+	for _, rel := range []string{"skills/timer", "plugins/sessions", "apps/driver", "templates/default", "state/sessions"} {
 		if err := os.MkdirAll(filepath.Join(home, rel), 0o755); err != nil {
 			t.Fatalf("mkdir legacy %s: %v", rel, err)
 		}
@@ -113,7 +113,7 @@ func TestPrepareBootLayoutMarksLegacyFlatLayoutWithoutBreakingRuntimeSurface(t *
 	if err := PrepareBootLayout(home); err != nil {
 		t.Fatalf("PrepareBootLayout: %v", err)
 	}
-	for _, rel := range []string{"skills/timer", "plugins/sessions", "clients/driver", "templates/default", "state/sessions"} {
+	for _, rel := range []string{"skills/timer", "plugins/sessions", "apps/driver", "templates/default", "state/sessions"} {
 		if _, err := os.Stat(filepath.Join(home, rel)); err != nil {
 			t.Fatalf("legacy runtime surface %s should remain until M4-04 fan-out: %v", rel, err)
 		}

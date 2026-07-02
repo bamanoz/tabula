@@ -187,7 +187,7 @@ func TestHandlerRoutesHookEventToWorker(t *testing.T) {
 	}
 }
 
-func TestHandlerAsyncFramesPrimeManifestTargetsOnAttach(t *testing.T) {
+func TestHandlerAsyncFramesDoesNotPrimeManifestTargetsOnAttach(t *testing.T) {
 	dir := t.TempDir()
 	writeRuntimePlugin(t, dir)
 	store, err := manifest.NewStore([]string{dir})
@@ -199,24 +199,17 @@ func TestHandlerAsyncFramesPrimeManifestTargetsOnAttach(t *testing.T) {
 	h := NewHandler(Options{Store: store, Pool: pool})
 
 	frames := h.AsyncFrames()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		select {
-		case frame := <-frames:
-			if update, ok := frame.(wire.CatalogUpdate); ok && update.Target.ID == "fs" && update.State == wire.CapabilityStateReady && len(update.Hooks) == 1 {
-				caps, err := h.ListCapabilities(context.Background(), wire.ListCapabilities{Op: wire.OpListCapabilities})
-				if err != nil {
-					t.Fatalf("ListCapabilities: %v", err)
-				}
-				if len(caps.Targets) != 1 || caps.Targets[0].State != wire.CapabilityStateReady || caps.Targets[0].Source != wire.CapabilitySourceWorker {
-					t.Fatalf("capabilities after async prime = %#v", caps)
-				}
-				return
-			}
-		case <-time.After(10 * time.Millisecond):
-		}
+	if frames == nil {
+		t.Fatal("AsyncFrames returned nil")
 	}
-	t.Fatal("async attach prime did not publish ready catalog update")
+	time.Sleep(50 * time.Millisecond)
+	if health, err := h.Health(context.Background(), wire.Health{Op: wire.OpHealth}); err != nil || health.WorkerCount != 0 {
+		t.Fatalf("Health after async attach = %#v, %v", health, err)
+	}
+	caps, err := h.ListCapabilities(context.Background(), wire.ListCapabilities{Op: wire.OpListCapabilities})
+	if err != nil || len(caps.Targets) != 1 || caps.Targets[0].State != wire.CapabilityStateManifestLoaded || caps.Targets[0].Source != wire.CapabilitySourceManifest {
+		t.Fatalf("ListCapabilities after async attach = %#v, %v", caps, err)
+	}
 }
 
 func TestHandlerCancelAbandonsInvoke(t *testing.T) {

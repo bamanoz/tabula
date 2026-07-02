@@ -2,6 +2,7 @@ package pool
 
 import (
 	"context"
+	"time"
 
 	"github.com/bamanoz/tabula/internal/runtime/host/manifest"
 	"github.com/bamanoz/tabula/internal/runtime/host/policy"
@@ -30,9 +31,17 @@ func (s *workerStarter) ensure(ctx context.Context, e *entry, plugin manifest.Pl
 	if e.worker != nil && e.worker.IsAlive() {
 		return e.worker, true, nil
 	}
+	if e.worker != nil {
+		e.worker = nil
+		e.noteWarmWorkerFailureLocked(time.Now())
+	}
+	if err := e.warmWorkerBackoffErrLocked(time.Now()); err != nil {
+		return nil, false, err
+	}
 	s.markInitializing(tenantID, plugin)
 	worker, err := s.policy.Spawn(ctx, s.spawnReq(tenantID, plugin))
 	if err != nil {
+		e.noteWarmWorkerFailureLocked(time.Now())
 		s.markFailed(tenantID, plugin)
 		return nil, false, err
 	}
@@ -43,10 +52,12 @@ func (s *workerStarter) ensure(ctx context.Context, e *entry, plugin manifest.Pl
 		if e.worker == worker {
 			e.worker = nil
 		}
+		e.noteWarmWorkerFailureLocked(time.Now())
 		s.markFailed(tenantID, plugin)
 		_ = worker.Shutdown(context.Background())
 		return nil, false, err
 	}
+	e.noteWarmWorkerStartedLocked()
 	s.markReady(tenantID, plugin, ack)
 	return worker, false, nil
 }

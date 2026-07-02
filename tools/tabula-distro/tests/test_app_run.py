@@ -266,12 +266,13 @@ dir = "{stale}"
             _write(manifest_path, _manifest(root))
             manifest = appmod.load(manifest_path, tabula_home=home)
             appmod.materialize_metadata(manifest, appmod.create_lock(manifest, home), home)
+            boot_path = home / "distrib" / "demo" / "generations" / "1"
             tabula_bin = root / "bin" / "tabula"
             _write(tabula_bin, "#!/bin/sh\n")
             _write(root / "bin" / "tabula-runner", "#!/bin/sh\n")
             runmod.write_runtime_config(manifest, home)
             with mock.patch.object(runmod, "kernel_healthy", return_value=False), mock.patch.object(runmod.os, "execvpe") as execvpe:
-                runmod.execute(manifest, home, tabula_bin=str(tabula_bin), foreground=True)
+                runmod.execute(manifest, home, tabula_bin=str(tabula_bin), foreground=True, boot_path=boot_path)
 
             execvpe.assert_called_once()
             _file, argv, env = execvpe.call_args.args
@@ -280,7 +281,7 @@ dir = "{stale}"
             self.assertEqual(env["TABULA_APP_ID"], "claw-tabula")
             self.assertEqual(env["TABULA_TENANT_ID"], "claw-tabula")
             self.assertEqual(env["TABULA_TENANT_DIR"], str(home / "tenants" / "claw-tabula"))
-            self.assertNotIn("TABULA_BOOT", env)
+            self.assertEqual(env["TABULA_BOOT"], str(boot_path))
             self.assertNotIn("TABULA_BOOT_PATH", env)
 
     def test_runtime_config_merges_existing_app_tenants(self):
@@ -314,6 +315,8 @@ tenants = ["first-app"]
             self.assertIn('id = "first-app"', runtime_cfg)
             self.assertIn('id = "claw-tabula"', runtime_cfg)
             self.assertIn('tenants = ["first-app", "claw-tabula"]', runtime_cfg)
+            self.assertIn('[plugin_kinds.gateway]', runtime_cfg)
+            self.assertIn('depends_on = ["driver"]', runtime_cfg)
 
     def test_runtime_config_uses_short_socket_for_long_home(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -372,7 +375,7 @@ exit 0
             os.chmod(bin_dir / "tabula", 0o755)
 
             result = subprocess.run(
-                [str(Path(__file__).parents[3] / "bin" / "tabula-runner")],
+                [str(Path(__file__).parents[3] / "bin" / "tabula-runner"), "--runtime-mode", "disabled"],
                 env={**os.environ, "TABULA_HOME": str(home)},
                 text=True,
                 stdout=subprocess.PIPE,

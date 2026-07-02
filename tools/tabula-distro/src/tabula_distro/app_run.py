@@ -85,6 +85,8 @@ def execute(manifest: AppManifest, home: Path, *, tabula_bin: str = "tabula", ti
     env["TABULA_URL"] = manifest.kernel.url
     env.setdefault("TABULA_PATH", os.environ.get("PATH", ""))
     env["TABULA_PRESERVE_RUNTIME_CONFIG"] = "1"
+    if boot_path is not None:
+        env["TABULA_BOOT"] = str(boot_path)
     argv = _kernel_launch_argv(tabula_bin, run_plan.runtime_mode)
     _require_launch_binary(argv[0], tabula_bin=tabula_bin, runtime_mode=run_plan.runtime_mode)
     if foreground:
@@ -286,6 +288,12 @@ def write_runtime_config(manifest: AppManifest, home: Path, *, distro_dir: Path 
     kernel["tenants"] = _string_array(tenant_ids)
     kernel_aot.append(kernel)
     doc["kernel"] = kernel_aot
+
+    plugin_kinds = tomlkit.table()
+    gateway = tomlkit.table()
+    gateway["depends_on"] = _string_array(["driver"])
+    plugin_kinds["gateway"] = gateway
+    doc["plugin_kinds"] = plugin_kinds
 
     if distro_dir is not None:
         doc["distro"] = _distro_table(distro_dir)

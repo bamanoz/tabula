@@ -35,6 +35,11 @@ description = "Optional human summary"
 [worker]
 command = ["python3", "run.py"]  # argv; relative paths resolve from plugin root
 mode = "warm"                      # or "cold"
+scope = "tenant"                   # default; use "runtime" for one warm worker per runtime
+
+[kind]
+name = "gateway"                   # optional runtime composition class
+singleton = false                   # optional: reject multiple plugins of this kind in one catalog
 
 [[tools]]
 name = "my_tool"
@@ -52,17 +57,35 @@ Validation rules enforced by `internal/runtime/host/manifest/manifest.go`:
 - `id` must match `^[a-z0-9_-]+$`.
 - `version` must be SemVer-shaped (`X.Y.Z`, with optional prerelease/build).
 - `[worker].mode` must be `warm` or `cold`; cold plugins cannot publish hooks.
+- `[worker].scope` defaults to `tenant`. `runtime` is allowed only for warm
+  plugins and shares one worker across all tenants served by the runtime.
 - `command` must be a non-empty argv list. Relative paths resolve from the
   plugin root.
 - advisory `[[tools]]` entries require non-empty `name`; `deadline_ms` must be
   non-negative.
 - advisory `[[hooks]]` entries require non-empty `event`.
+- optional `[kind]` metadata classifies plugins for runtime composition. The
+  manifest declares what the plugin is; runtime config declares how kinds depend
+  on each other. If any plugin declares `kind.singleton = true`, a catalog with
+  more than one plugin of that kind is rejected.
 
 Legacy `runtime`/`entry` manifests are still accepted for compatibility, but
 new plugins should use `[worker]`.
 
 Unknown manifest keys are tolerated for forward compatibility. The kernel
 ignores tags/UI hints unless a distro or UI chooses to use them.
+
+Runtime-side kind wiring lives in `$TABULA_HOME/config/runtime.toml`, not in
+plugin manifests. Example:
+
+```toml
+[plugin_kinds.gateway]
+depends_on = ["driver"]
+```
+
+When priming warm runtime plugins, `tabula-runtime` starts dependency kinds
+first. If a configured dependency kind is missing or fails to become ready, the
+dependent kind is not started during that prime pass.
 
 ## Plugin config
 

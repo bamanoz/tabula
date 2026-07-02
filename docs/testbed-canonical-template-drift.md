@@ -78,14 +78,14 @@ Files that exist in both but **differ**:
 - Canonical writes `$TABULA_HOME/config/global.toml` with
   `[clients.driver.providers.openai] api_key = "test-key"` etc. and runs
   driver with `--no-app-binding`.
-- Template sets `TABULA_CLIENT_DRIVER_OPENAI_API_KEY=test-key` and
-  `TABULA_CLIENT_DRIVER_OPENAI_MODEL=o3` via env, and runs driver without
+- Template sets `TABULA_PLUGIN_DRIVER_OPENAI_API_KEY=test-key` and
+  `TABULA_PLUGIN_DRIVER_OPENAI_MODEL=o3` via env, and runs driver without
   `--no-app-binding`.
 
 Both surfaces exist in current code: `tabula-bundles/drivers/driver/run.py`
 defines `--no-app-binding`, and
-`tabula-bundles/drivers/driver/client.schema.toml` declares
-`TABULA_CLIENT_DRIVER_OPENAI_API_KEY`. The two test variants test *different*
+`tabula-bundles/drivers/driver/app.schema.toml` declares
+`TABULA_PLUGIN_DRIVER_OPENAI_API_KEY`. The two test variants test *different*
 provisioning paths.
 
 ## Why this PR/workstream did not resolve it

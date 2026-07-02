@@ -118,6 +118,11 @@ func statusCmd(args []string) int {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return statusExitCannotRead
 	}
+	if inferredHome, ok := executableTabulaHome(); ok {
+		if preferredDoc, preferred := preferCandidateStatus(context.Background(), doc, tabulaHome, inferredHome, http.DefaultClient); preferred {
+			doc = preferredDoc
+		}
+	}
 	if *asJSON {
 		data, err := json.MarshalIndent(doc, "", "  ")
 		if err != nil {
@@ -132,7 +137,61 @@ func statusCmd(args []string) int {
 }
 
 func resolveTabulaHome() (string, error) {
+	if strings.TrimSpace(os.Getenv("TABULA_HOME")) != "" {
+		return paths.Home(), nil
+	}
+	if home, ok := executableTabulaHome(); ok {
+		return home, nil
+	}
 	return paths.Home(), nil
+}
+
+func executableTabulaHome() (string, bool) {
+	executable, err := os.Executable()
+	if err != nil {
+		return "", false
+	}
+	return tabulaHomeFromExecutable(executable)
+}
+
+func preferCandidateStatus(ctx context.Context, current statusDocument, currentHome, candidateHome string, client *http.Client) (statusDocument, bool) {
+	if current.Kernel.Running || candidateHome == "" || candidateHome == currentHome {
+		return current, false
+	}
+	candidate, err := buildStatus(ctx, candidateHome, client)
+	if err != nil || !candidate.Kernel.Running {
+		return current, false
+	}
+	return candidate, true
+}
+
+func tabulaHomeFromExecutable(executable string) (string, bool) {
+	executable = strings.TrimSpace(executable)
+	if executable == "" {
+		return "", false
+	}
+	binDir := filepath.Dir(executable)
+	if filepath.Base(binDir) != "bin" {
+		return "", false
+	}
+	home := filepath.Clean(filepath.Dir(binDir))
+	if !installedHomeLayout(home) {
+		return "", false
+	}
+	return home, true
+}
+
+func installedHomeLayout(home string) bool {
+	if home == "" || home == "." || home == string(filepath.Separator) {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(home, "PROTOCOL")); err != nil {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(home, "bin", "tabula-runner")); err != nil {
+		return false
+	}
+	return true
 }
 
 func buildStatus(ctx context.Context, tabulaHome string, client *http.Client) (statusDocument, error) {

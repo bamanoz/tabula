@@ -190,7 +190,7 @@ func TestRunServesManifestBackedInvokeOverUnix(t *testing.T) {
 				return
 			}
 			health, err := rc.Health(connCtx)
-			if err != nil || health.WorkerCount != 2 {
+			if err != nil || health.WorkerCount != 1 {
 				t.Errorf("Health after invoke = %#v, %v", health, err)
 				return
 			}

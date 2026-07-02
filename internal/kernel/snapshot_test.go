@@ -27,7 +27,7 @@ func TestSnapshotSessionsUsesRecordedPID(t *testing.T) {
 			ID   string          `json:"id"`
 			Name string          `json:"name"`
 			Meta json.RawMessage `json:"meta"`
-		} `json:"clients"`
+		} `json:"apps"`
 		Processes []struct {
 			PID     int    `json:"pid"`
 			Command string `json:"command"`
@@ -66,7 +66,7 @@ func TestSnapshotSessionsIncludesClientMeta(t *testing.T) {
 			ID   string          `json:"id"`
 			Name string          `json:"name"`
 			Meta json.RawMessage `json:"meta"`
-		} `json:"clients"`
+		} `json:"apps"`
 	}
 	if err := json.Unmarshal(hub.SnapshotSessions(), &snapshot); err != nil {
 		t.Fatalf("SnapshotSessions returned invalid JSON: %v", err)

@@ -72,7 +72,7 @@ def _make_plugin(root: Path, name: str, marker: str = "v1") -> Path:
 def _make_client(root: Path, name: str, marker: str = "v1") -> Path:
     d = root / name
     d.mkdir(parents=True, exist_ok=True)
-    _touch(d / "client.toml", (
+    _touch(d / "app.toml", (
         f'id = "{name}"\n'
         f'name = "{name}"\n'
         'version = "0.1.0"\n'
@@ -304,7 +304,7 @@ class InstallTests(unittest.TestCase):
             bundle = root / "ext" / "bundles" / "mempalace"
             _make_skill(bundle, "mempalace-save", "save-v1")
             _make_plugin(bundle, "sessions", "sessions-v1")
-            _touch(bundle / "client-probe" / "client.toml", 'id = "client-probe"\nname = "client-probe"\nversion = "0.1.0"\nruntime = "python"\nentry = "run.py"\n')
+            _touch(bundle / "client-probe" / "app.toml", 'id = "client-probe"\nname = "client-probe"\nversion = "0.1.0"\nruntime = "python"\nentry = "run.py"\n')
             _touch(bundle / "client-probe" / "run.py", "# client\n")
             _touch(bundle / "templates" / "SYSTEM.md", "system\n")
             _touch(bundle / "_lib" / "python" / "src" / "pkg" / "__init__.py", "X=1\n")
@@ -324,7 +324,7 @@ class InstallTests(unittest.TestCase):
                 tenant_root = home / "tenants" / tenant_name
                 self.assertTrue((tenant_root / "skills" / "mempalace-save" / "marker.txt").exists())
                 self.assertTrue((tenant_root / "plugins" / "sessions" / "marker.txt").exists())
-                self.assertTrue((tenant_root / "clients" / "client-probe" / "run.py").exists())
+                self.assertTrue((tenant_root / "apps" / "client-probe" / "run.py").exists())
                 self.assertTrue((tenant_root / "packages").exists())
                 self.assertFalse((tenant_root / "_lib").exists())
             self.assertTrue(os.path.samefile(home / "tenants" / "alpha" / "skills" / "mempalace-save" / "marker.txt", home / "tenants" / "beta" / "skills" / "mempalace-save" / "marker.txt"))
@@ -540,61 +540,61 @@ class InstallTests(unittest.TestCase):
             self.assertIn("base-shell", lock.skills)
             self.assertIn("hook-permissions", lock.plugins)
 
-    def test_bundle_install_clients(self):
+    def test_bundle_install_apps(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
             distro = _make_minimal_distro(root, "demo")
 
-            bundle = root / "ext" / "bundles" / "clients"
+            bundle = root / "ext" / "bundles" / "apps"
             _make_client(bundle, "driver", "driver-v1")
             _make_client(bundle, "subagent", "subagent-v1")
 
             (distro / "distro.toml").write_text(
                 '[distro]\nid="tabula.demo"\nname="demo"\n\n'
-                '[[bundles]]\nname="clients"\nsource="local:../ext/bundles/clients"\n',
+                '[[bundles]]\nname="apps"\nsource="local:../ext/bundles/apps"\n',
                 encoding="utf-8",
             )
 
             _gen, lock = installmod.install(distro, home)
-            self.assertTrue((home / "distrib" / "demo" / "clients" / "driver" / "client.toml").exists())
-            self.assertTrue((home / "clients" / "driver" / "run.py").exists())
+            self.assertTrue((home / "distrib" / "demo" / "apps" / "driver" / "app.toml").exists())
+            self.assertTrue((home / "apps" / "driver" / "run.py").exists())
             self.assertFalse((home / "skills" / "driver").exists())
-            self.assertIn("driver", lock.clients)
-            self.assertIn("subagent", lock.clients)
+            self.assertIn("driver", lock.apps)
+            self.assertIn("subagent", lock.apps)
 
-    def test_client_manifest_is_validated(self):
+    def test_app_manifest_is_validated(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
             distro = _make_minimal_distro(root, "demo")
-            bundle = root / "ext" / "bundles" / "clients"
+            bundle = root / "ext" / "bundles" / "apps"
             bad = bundle / "driver"
             bad.mkdir(parents=True)
-            _touch(bad / "client.toml", 'id="wrong"\nruntime="python"\nentry="run.py"\n')
+            _touch(bad / "app.toml", 'id="wrong"\nruntime="python"\nentry="run.py"\n')
             _touch(bad / "run.py", "# client\n")
             (distro / "distro.toml").write_text(
                 '[distro]\nid="tabula.demo"\nname="demo"\n\n'
-                '[[bundles]]\nname="clients"\nsource="local:../ext/bundles/clients"\n',
+                '[[bundles]]\nname="apps"\nsource="local:../ext/bundles/apps"\n',
                 encoding="utf-8",
             )
             with self.assertRaises(installmod.InstallError) as cm:
                 installmod.install(distro, home)
             self.assertIn("must match directory name", str(cm.exception))
 
-    def test_client_manifest_entry_must_stay_inside_component(self):
+    def test_app_manifest_entry_must_stay_inside_component(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
             distro = _make_minimal_distro(root, "demo")
-            bundle = root / "ext" / "bundles" / "clients"
+            bundle = root / "ext" / "bundles" / "apps"
             bad = bundle / "driver"
             bad.mkdir(parents=True)
-            _touch(bad / "client.toml", 'id="driver"\nruntime="python"\nentry="../run.py"\n')
+            _touch(bad / "app.toml", 'id="driver"\nruntime="python"\nentry="../run.py"\n')
             _touch(bundle / "run.py", "# outside\n")
             (distro / "distro.toml").write_text(
                 '[distro]\nid="tabula.demo"\nname="demo"\n\n'
-                '[[bundles]]\nname="clients"\nsource="local:../ext/bundles/clients"\n',
+                '[[bundles]]\nname="apps"\nsource="local:../ext/bundles/apps"\n',
                 encoding="utf-8",
             )
             with self.assertRaises(installmod.InstallError) as cm:
@@ -1171,7 +1171,7 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(lock.to_json()["version"], lockmod.LOCK_VERSION)
         self.assertEqual(lock.to_json()["plugins"], {})
 
-    def test_lock_v2_migrates_to_v3(self):
+    def test_lock_v2_migrates_to_current(self):
         data = {
             "version": 2,
             "distro": "demo",
@@ -1180,13 +1180,13 @@ class InstallTests(unittest.TestCase):
             "bundles": {},
             "skills": {},
             "plugins": {},
-            "clients": {},
+            "apps": {},
         }
         lock = lockmod.Lock.from_json(data)
         self.assertEqual(lock.kernel_version, "0.9.0")
         self.assertIsNone(lock.plugin_protocol_version)
         self.assertEqual(lock.sdk_versions, {})
-        self.assertEqual(lock.to_json()["version"], 3)
+        self.assertEqual(lock.to_json()["version"], lockmod.LOCK_VERSION)
 
     def test_bundle_skips_directories_without_skill_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1339,14 +1339,14 @@ class InstallTests(unittest.TestCase):
             root = Path(tmp)
             home = root / "home"
             distro = _make_minimal_distro(root)
-            client = distro / "clients" / "gateway-cli"
+            client = distro / "apps" / "gateway-cli"
             client.mkdir(parents=True)
-            _touch(client / "client.toml", 'id="gateway-cli"\nruntime="python"\nentry="run.py"\n')
+            _touch(client / "app.toml", 'id="gateway-cli"\nruntime="python"\nentry="run.py"\n')
             _touch(client / "run.py", "print('gateway')\n")
             installmod.install(distro, home)
-            self.assertTrue((home / "distrib" / "demo" / "clients" / "gateway-cli" / "run.py").exists())
-            self.assertTrue((home / "clients" / "gateway-cli").is_symlink())
-            self.assertTrue((home / "clients" / "gateway-cli" / "run.py").exists())
+            self.assertTrue((home / "distrib" / "demo" / "apps" / "gateway-cli" / "run.py").exists())
+            self.assertTrue((home / "apps" / "gateway-cli").is_symlink())
+            self.assertTrue((home / "apps" / "gateway-cli" / "run.py").exists())
 
     def test_install_writes_reload_trigger(self):
         with tempfile.TemporaryDirectory() as tmp:

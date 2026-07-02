@@ -46,7 +46,7 @@ The current codebase already shows why this boundary matters:
 
 - `tabula serve` reads one global `config/kernel.toml`.
 - `$TABULA_HOME/distrib/active`, `$TABULA_HOME/plugins`,
-  `$TABULA_HOME/templates`, `$TABULA_HOME/skills`, and `$TABULA_HOME/clients` are
+  `$TABULA_HOME/templates`, `$TABULA_HOME/skills`, and `$TABULA_HOME/apps` are
   global active-distro surfaces.
 - Tenants already isolate config/state/cache/logs/sessions and are used by
   runtime workers through `tenant_id`, `TABULA_TENANT_ID`, and

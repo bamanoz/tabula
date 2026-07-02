@@ -368,6 +368,40 @@ class AppCLITests(unittest.TestCase):
             self.assertEqual(compiled["limits"]["mode"], "default")
             self.assertEqual(compiled["extra_roots"], ["/user/skills", "/runtime/skills"])
 
+    def test_app_apply_migrates_driver_config_to_plugin_surface(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            tenant_dir = home / "tenants" / "claw-tabula"
+            _make_defaults_materializing_distro(root)
+            _write(root / ".tabula" / "local.toml", '[mempalace]\npath = "/tmp/shared-mempalace"\n')
+            _write(home / "config" / "global.toml", '[clients.driver]\nprovider = "externcash"\n\n[clients.driver.providers.externcash]\ntype = "openai"\ndefault_model = "gpt-5.5"\n')
+            manifest_path = root / "tabula.app.toml"
+            _write(manifest_path, _manifest("local:./claw"))
+
+            code, _out, err = self._run(["--home", str(home), "app", "apply", str(manifest_path)])
+
+            self.assertEqual(code, 0, err)
+            global_cfg = tomllib.loads((home / "config" / "global.toml").read_text(encoding="utf-8"))
+            self.assertNotIn("clients", global_cfg)
+            self.assertEqual(global_cfg["plugins"]["driver"]["provider"], "externcash")
+            self.assertEqual(global_cfg["plugins"]["driver"]["providers"]["externcash"]["default_model"], "gpt-5.5")
+
+    def test_compile_plugin_configs_migrates_tenant_driver_app_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            tenant_dir = home / "tenants" / "claw-tabula"
+            _write(home / "plugins" / "driver" / "plugin.toml", '[plugin]\nid = "driver"\n')
+            _write(home / "plugins" / "driver" / "plugin.schema.toml", 'id = "driver"\n\n[entry.agents]\ntype = "object"\ndefault = {}\n')
+            _write(tenant_dir / "config" / "apps" / "driver" / "config.toml", '[agents.general]\nprovider = "externcash"\n')
+
+            appmod.compile_plugin_configs(home, tenant_dir)
+
+            self.assertFalse((tenant_dir / "config" / "apps" / "driver" / "config.toml").exists())
+            tenant_cfg = tomllib.loads((tenant_dir / "config" / "plugins" / "driver" / "config.toml").read_text(encoding="utf-8"))
+            self.assertEqual(tenant_cfg["agents"]["general"]["provider"], "externcash")
+
     def test_frozen_requires_existing_lock(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -102,7 +102,7 @@ class CompactionSmoke(unittest.TestCase):
         python = home / ".venv" / "bin" / "python3"
         if not python.is_file():
             python = Path(sys.executable)
-        driver = home / "clients" / "driver" / "run.py"
+        driver = home / "plugins" / "driver" / "run.py"
         log_path = home / "logs" / f"testbed-compaction{suffix}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
@@ -110,8 +110,8 @@ class CompactionSmoke(unittest.TestCase):
             "TABULA_HOME": self.tabula_home,
             "TABULA_URL": self.url,
             "TABULA_VERBOSE": "1",
-            "TABULA_CLIENT_DRIVER_OPENAI_API_KEY": "test-key",
-            "TABULA_CLIENT_DRIVER_OPENAI_MODEL": "o3",
+            "TABULA_PLUGIN_DRIVER_OPENAI_API_KEY": "test-key",
+            "TABULA_PLUGIN_DRIVER_OPENAI_MODEL": "o3",
             "TABULA_COMPACT_THRESHOLD": "0.0001",
             "TABULA_COMPACT_KEEP_LAST": "2",
             "PYTHONPATH": f"{stub_dir}{os.pathsep}{env.get('PYTHONPATH', '')}" if env.get("PYTHONPATH") else str(stub_dir),

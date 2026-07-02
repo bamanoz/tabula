@@ -93,6 +93,8 @@ type WorkerCall struct {
 	Op Operation `json:"op"`
 	// CallID correlates this call with its WorkerResult.
 	CallID string `json:"call_id"`
+	// TenantID identifies the tenant that originated this call.
+	TenantID string `json:"tenant_id,omitempty"`
 	// Tool is the target-local tool name.
 	Tool string `json:"tool"`
 	// Args is raw JSON so the worker protocol stays tool-schema neutral.
@@ -121,6 +123,8 @@ type WorkerEvent struct {
 	Op Operation `json:"op"`
 	// CallID correlates this event with an optional WorkerEventReply.
 	CallID string `json:"call_id,omitempty"`
+	// TenantID identifies the tenant that originated this event.
+	TenantID string `json:"tenant_id,omitempty"`
 	// Event is the canonical hook event name.
 	Event string `json:"event"`
 	// ReplyMode declares whether the worker must answer.

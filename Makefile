@@ -129,7 +129,7 @@ agent-prepare:
 	"$(AGENT_HOME)/bin/tabula-install" app install "$(CURDIR)/tabula.app.toml" --workspace "$(CURDIR)" --update
 
 agent-run:
-	TABULA_HOME="$(AGENT_HOME)" TABULA_LOG_LEVEL="$${TABULA_LOG_LEVEL:-info}" "$(AGENT_HOME)/bin/tabula-runner"
+	TABULA_HOME="$(AGENT_HOME)" TABULA_BOOT="$(AGENT_HOME)/distrib/active/current" TABULA_LOG_LEVEL="$${TABULA_LOG_LEVEL:-info}" "$(AGENT_HOME)/bin/tabula-runner"
 
 agent-connect:
 	TABULA_HOME="$(AGENT_HOME)" "$(AGENT_HOME)/bin/tabula-cli" $(if $(SESSION),--session $(SESSION),)

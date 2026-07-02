@@ -17,12 +17,20 @@ import (
 // intentional: M2-02 only starts one kernel connection, but later N:M work must
 // not change the schema.
 type Config struct {
-	Kernels    []Kernel `toml:"kernel"`
-	PluginDirs []string `toml:"plugin_dirs"`
-	SkillDirs  []string `toml:"skill_dirs"`
-	Tenants    []Tenant `toml:"tenant"`
-	Pool       Pool     `toml:"pool"`
-	Distro     Distro   `toml:"distro"`
+	Kernels     []Kernel              `toml:"kernel"`
+	PluginDirs  []string              `toml:"plugin_dirs"`
+	SkillDirs   []string              `toml:"skill_dirs"`
+	Tenants     []Tenant              `toml:"tenant"`
+	Pool        Pool                  `toml:"pool"`
+	PluginKinds map[string]PluginKind `toml:"plugin_kinds"`
+	Distro      Distro                `toml:"distro"`
+}
+
+// PluginKind describes runtime composition policy for plugins that declare the
+// matching [kind]. Plugin manifests declare identity; runtime config wires kinds
+// together for one deployment.
+type PluginKind struct {
+	DependsOn []string `toml:"depends_on"`
 }
 
 // Distro records which distro generation the installer activated. The
@@ -218,6 +226,35 @@ func (c *Config) Validate() error {
 		if limits.ColdWorkersMax < 0 {
 			return fmt.Errorf("pool.tenants.%s.cold_workers_max must be >= 0", tenantID)
 		}
+	}
+	if len(c.PluginKinds) > 0 {
+		normalizedKinds := make(map[string]PluginKind, len(c.PluginKinds))
+		for rawKind, policy := range c.PluginKinds {
+			kind := strings.TrimSpace(rawKind)
+			if kind == "" {
+				return fmt.Errorf("plugin_kinds contains an empty kind name")
+			}
+			seenDeps := map[string]struct{}{}
+			for i, dep := range policy.DependsOn {
+				dep = strings.TrimSpace(dep)
+				if dep == "" {
+					return fmt.Errorf("plugin_kinds.%s.depends_on[%d] is empty", kind, i)
+				}
+				if dep == kind {
+					return fmt.Errorf("plugin_kinds.%s cannot depend on itself", kind)
+				}
+				if _, ok := seenDeps[dep]; ok {
+					return fmt.Errorf("plugin_kinds.%s.depends_on has duplicate %q", kind, dep)
+				}
+				seenDeps[dep] = struct{}{}
+				policy.DependsOn[i] = dep
+			}
+			if _, ok := normalizedKinds[kind]; ok {
+				return fmt.Errorf("plugin_kinds contains duplicate kind %q", kind)
+			}
+			normalizedKinds[kind] = policy
+		}
+		c.PluginKinds = normalizedKinds
 	}
 	c.Distro.Active = strings.TrimSpace(c.Distro.Active)
 	c.Distro.Dir = os.ExpandEnv(strings.TrimSpace(c.Distro.Dir))

@@ -8,7 +8,7 @@ import tomllib
 from pathlib import Path
 
 
-ASSET_NAMES = ["materialize_app.py", "templates", "clients", "tests"]
+ASSET_NAMES = ["materialize_app.py", "templates", "apps", "tests"]
 
 
 def parse_component(value: str) -> tuple[str, str]:

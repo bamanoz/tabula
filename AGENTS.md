@@ -10,6 +10,12 @@ and shared development tooling. Distro-specific product policy belongs in
 - Keep kernel changes generic. The kernel should not know about concrete
   distros, bundles, skills, plugins, gateways, MCP servers, workspaces, or
   product-specific policy.
+- Keep the kernel dumb: it is a router, message bus, lifecycle coordinator, and
+  persistence boundary only. Do not add product semantics, UI text, default
+  choices, policy decisions, tool-specific payload shaping, or gateway/client
+  behavior to kernel code. Put smart behavior in the harness around the kernel:
+  plugins, hooks, gateways, clients, distro boot/materializers, and tests that
+  exercise those layers.
 - Put distro policy in distro boot/materializer code, not in the kernel.
 - Put reusable Python runtime helpers in shared bundle libraries when multiple
   distros or components need the same behavior.

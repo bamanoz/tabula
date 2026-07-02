@@ -138,7 +138,7 @@ func TestBeforeToolCallHookCanSuspendForApprovalAndResume(t *testing.T) {
 		t.Fatalf("tool result should not be emitted while approval is pending: %+v", msg)
 	}
 
-	writeJSON(t, ui, Message{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: approvalReq.ID, Data: json.RawMessage(`{"choice":"allow once"}`)})
+	writeJSON(t, ui, Message{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: approvalReq.ID, Data: json.RawMessage(`{"choice":"allow once","approved":true}`)})
 	resolvedEvent := readMsg(t, ui2)
 	if resolvedEvent.Type != string(MsgEvent) || resolvedEvent.Topic != TopicExchangeApprove || resolvedEvent.ID != approvalReq.ID || !strings.Contains(string(resolvedEvent.Data), "exchange.resolved") {
 		t.Fatalf("expected exchange resolved for second UI, got %+v", resolvedEvent)
@@ -203,6 +203,24 @@ func TestBeforeToolCallHookCanSuspendForExchangeChooseAndResume(t *testing.T) {
 	if !strings.Contains(string(chooseReq.Data), `"Ready?"`) {
 		t.Fatalf("expected choose request to include questions, got %s", string(chooseReq.Data))
 	}
+	var chooseData struct {
+		Questions []struct {
+			Question string `json:"question"`
+			Options  []struct {
+				Label string `json:"label"`
+			} `json:"options"`
+		} `json:"questions"`
+		Options []string `json:"options"`
+	}
+	if err := json.Unmarshal(chooseReq.Data, &chooseData); err != nil {
+		t.Fatalf("decode choose request data: %v", err)
+	}
+	if len(chooseData.Questions) != 1 || len(chooseData.Questions[0].Options) != 1 || chooseData.Questions[0].Options[0].Label != "yes" {
+		t.Fatalf("expected choose request to keep hook questions, got %s", string(chooseReq.Data))
+	}
+	if len(chooseData.Options) > 0 || strings.Contains(string(chooseReq.Data), `"allow once"`) {
+		t.Fatalf("expected choose request to keep question options instead of approval defaults, got %s", string(chooseReq.Data))
+	}
 
 	writeJSON(t, ui, Message{Type: string(MsgReply), Topic: TopicExchangeChoose, ID: chooseReq.ID, Data: json.RawMessage(`{"answers":[["yes"]],"dismissed":false}`)})
 
@@ -244,11 +262,15 @@ func TestSuspendedBeforeToolCallResumesLaterRewriteHookAfterApproval(t *testing.
 	if approvalReq.Type != string(MsgRequest) || approvalReq.Topic != TopicExchangeApprove {
 		t.Fatalf("expected approval request, got %+v", approvalReq)
 	}
-	if !strings.Contains(string(approvalReq.Data), `"text":"original"`) || strings.Contains(string(approvalReq.Data), `"text":"rewritten"`) {
-		t.Fatalf("expected approval request to include pre-suspend input only, got %s", string(approvalReq.Data))
+	var approvalData map[string]any
+	if err := json.Unmarshal(approvalReq.Data, &approvalData); err != nil {
+		t.Fatalf("decode approval request data: %v", err)
+	}
+	if _, ok := approvalData["approval_id"]; !ok || len(approvalData) != 1 {
+		t.Fatalf("expected kernel to send only approval_id when hook provides no UI payload, got %s", string(approvalReq.Data))
 	}
 
-	writeJSON(t, ui, Message{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: approvalReq.ID, Data: json.RawMessage(`{"choice":"allow once"}`)})
+	writeJSON(t, ui, Message{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: approvalReq.ID, Data: json.RawMessage(`{"choice":"allow once","approved":true}`)})
 
 	rewriteMsg := readMsg(t, rewriter)
 	if rewriteMsg.Type != "hook" || rewriteMsg.Name != "before_tool_call" {

@@ -271,6 +271,15 @@ const (
 	WorkerModeCold WorkerMode = "cold"
 )
 
+// WorkerScope describes whether a warm target has one worker per tenant or one
+// worker shared by all tenants served by the runtime.
+type WorkerScope string
+
+const (
+	WorkerScopeTenant  WorkerScope = "tenant"
+	WorkerScopeRuntime WorkerScope = "runtime"
+)
+
 // HarnessKind identifies which runtime-side harness/execution family serves a target.
 type HarnessKind string
 
@@ -300,6 +309,9 @@ type Capability struct {
 	Source CapabilitySource `json:"source"`
 	// WorkerMode reports whether Target is warm-reused or cold-spawned.
 	WorkerMode WorkerMode `json:"worker_mode,omitempty"`
+	// WorkerScope reports whether warm Target workers are tenant-scoped or shared
+	// for the whole runtime.
+	WorkerScope WorkerScope `json:"worker_scope,omitempty"`
 	// HarnessKind reports which harness/runtime family serves Target.
 	HarnessKind HarnessKind `json:"harness_kind,omitempty"`
 }
@@ -311,6 +323,11 @@ func (c Capability) Validate() error {
 	}
 	if err := validateTenantsServed(c.Tenants); err != nil {
 		return err
+	}
+	switch c.WorkerScope {
+	case "", WorkerScopeTenant, WorkerScopeRuntime:
+	default:
+		return ProtocolErrorf("worker_scope %q must be tenant or runtime", c.WorkerScope)
 	}
 	for _, tool := range c.Tools {
 		if err := tool.Validate(); err != nil {

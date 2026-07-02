@@ -165,8 +165,8 @@ class SubagentsPluginSmoke(unittest.TestCase):
     def test_subagents_plugin_and_client_are_installed(self):
         home = Path(self.tabula_home)
         self.assertTrue((home / "plugins" / "subagents" / "plugin.toml").is_file())
-        self.assertTrue((home / "clients" / "subagent" / "client.toml").is_file())
-        self.assertTrue((home / "clients" / "subagent-acp" / "client.toml").is_file())
+        self.assertTrue((home / "apps" / "subagent" / "app.toml").is_file())
+        self.assertTrue((home / "apps" / "subagent-acp" / "app.toml").is_file())
         self.assertFalse((home / "skills" / "_subagent_types").exists())
         self.assertFalse((home / "plugins" / "_subagent_types").exists())
         self.assertFalse((home / "state" / "subagents").exists())

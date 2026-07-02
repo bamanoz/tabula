@@ -136,6 +136,11 @@ set = "empty"
 components = ["base:mcp"]
 tests = ["tests/test_mcp.py"]
 
+[suites.pair]
+set = "empty"
+components = ["base:pair"]
+tests = ["tests/test_pair.py"]
+
 [suites.cron]
 set = "empty"
 components = ["base:cron"]
@@ -215,6 +220,11 @@ tests = ["tests/test_compaction.py", "tests/test_driver_config.py"]
 set = "empty"
 components = ["base:question", "base:hook-approvals", "base:hook-permissions", "drivers:driver", "gateways:gateway-acp", "workspace:exec"]
 tests = ["tests/test_acp.py"]
+
+[suites.telegram-gateway]
+set = "base"
+components = ["drivers:driver", "gateways:telegram-gateway"]
+tests = ["tests/test_telegram_gateway.py"]
 
 [suites.runtime-wss-loopback]
 set = "empty"

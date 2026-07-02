@@ -93,10 +93,29 @@ func (s *capabilityState) toolSpec(tenantID, targetID, toolName string) (wire.To
 	return wire.ToolSpec{}, false
 }
 
-func (s *capabilityState) applyToolsUpdated(tenantID string, plugin manifest.Plugin, update workerwire.WorkerToolsUpdated) (wire.Capability, bool) {
+func (s *capabilityState) applyToolsUpdated(tenantID string, plugin manifest.Plugin, update workerwire.WorkerToolsUpdated) ([]wire.Capability, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	capabilityTenant := s.capabilityTenant(tenantID)
+	if plugin.WorkerScope == wire.WorkerScopeRuntime {
+		capabilities := make([]wire.Capability, 0, len(s.catalogTenants()))
+		changed := false
+		for _, capabilityTenant := range s.catalogTenants() {
+			capability, ok := s.applyToolsUpdatedLocked(capabilityTenant, plugin, update)
+			if ok {
+				capabilities = append(capabilities, capability)
+			}
+			changed = changed || ok
+		}
+		return capabilities, changed
+	}
+	capability, ok := s.applyToolsUpdatedLocked(s.capabilityTenant(tenantID), plugin, update)
+	if !ok {
+		return nil, false
+	}
+	return []wire.Capability{capability}, true
+}
+
+func (s *capabilityState) applyToolsUpdatedLocked(capabilityTenant string, plugin manifest.Plugin, update workerwire.WorkerToolsUpdated) (wire.Capability, bool) {
 	key := capabilityKey(capabilityTenant, plugin.ID)
 	capability, ok := s.targets[key]
 	if !ok {
@@ -185,7 +204,16 @@ func (s *capabilityState) reset(target *wire.Target, tenants ...string) {
 func (s *capabilityState) setState(tenantID string, plugin manifest.Plugin, state wire.CapabilityState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	capabilityTenant := s.capabilityTenant(tenantID)
+	if plugin.WorkerScope == wire.WorkerScopeRuntime {
+		for _, capabilityTenant := range s.catalogTenants() {
+			s.setStateLocked(capabilityTenant, plugin, state)
+		}
+		return
+	}
+	s.setStateLocked(s.capabilityTenant(tenantID), plugin, state)
+}
+
+func (s *capabilityState) setStateLocked(capabilityTenant string, plugin manifest.Plugin, state wire.CapabilityState) {
 	key := capabilityKey(capabilityTenant, plugin.ID)
 	capability, ok := s.targets[key]
 	if !ok {
@@ -212,10 +240,20 @@ func (s *capabilityState) readySnapshot(tenantID, targetID string) (wire.Capabil
 	return cloneCapability(capability), true
 }
 
-func (s *capabilityState) markReady(tenantID string, plugin manifest.Plugin, ack workerwire.WorkerInitAck) wire.Capability {
+func (s *capabilityState) markReady(tenantID string, plugin manifest.Plugin, ack workerwire.WorkerInitAck) []wire.Capability {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	capabilityTenant := s.capabilityTenant(tenantID)
+	if plugin.WorkerScope == wire.WorkerScopeRuntime {
+		capabilities := make([]wire.Capability, 0, len(s.catalogTenants()))
+		for _, capabilityTenant := range s.catalogTenants() {
+			capabilities = append(capabilities, s.markReadyLocked(capabilityTenant, plugin, ack))
+		}
+		return capabilities
+	}
+	return []wire.Capability{s.markReadyLocked(s.capabilityTenant(tenantID), plugin, ack)}
+}
+
+func (s *capabilityState) markReadyLocked(capabilityTenant string, plugin manifest.Plugin, ack workerwire.WorkerInitAck) wire.Capability {
 	key := capabilityKey(capabilityTenant, plugin.ID)
 	capability, ok := s.targets[key]
 	if !ok {

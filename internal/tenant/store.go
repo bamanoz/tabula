@@ -220,7 +220,7 @@ func tenantDirs(root string) []string {
 	dirs = append(dirs,
 		filepath.Join(root, "skills"),
 		filepath.Join(root, "plugins"),
-		filepath.Join(root, "clients"),
+		filepath.Join(root, "apps"),
 		filepath.Join(root, "templates"),
 	)
 	return dirs
@@ -317,7 +317,7 @@ func ensureWorkspaceProjectRoot(path, projectRoot string) error {
 }
 
 func hasLegacyFlatLayout(home string) bool {
-	for _, name := range []string{"skills", "plugins", "clients", "templates", "state"} {
+	for _, name := range []string{"skills", "plugins", "apps", "templates", "state"} {
 		if _, err := os.Stat(filepath.Join(home, name)); err == nil {
 			return true
 		}

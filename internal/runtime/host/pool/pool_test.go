@@ -42,6 +42,200 @@ func TestPoolInvokesWarmWorkerAndReusesByTenantTarget(t *testing.T) {
 	}
 }
 
+func TestPoolInvokesRuntimeScopedWarmWorkerOnceAcrossTenants(t *testing.T) {
+	alphaDir := t.TempDir()
+	betaDir := t.TempDir()
+	body := `id = "gateway"
+name = "Gateway"
+version = "0.1.0"
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+scope = "runtime"
+
+[[tools]]
+name = "status"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`
+	writePoolPluginBody(t, filepath.Join(alphaDir, "gateway", "plugin.toml"), body)
+	writePoolPluginBody(t, filepath.Join(betaDir, "gateway", "plugin.toml"), body)
+	store, err := manifest.NewTenantStore(map[string]manifest.SearchDirs{
+		"alpha": {PluginDirs: []string{alphaDir}},
+		"beta":  {PluginDirs: []string{betaDir}},
+	})
+	if err != nil {
+		t.Fatalf("NewTenantStore: %v", err)
+	}
+	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), nextWorker: newFakeWorker()}
+	p := New("main", store, fake, Options{AllowedTenants: []string{"alpha", "beta"}})
+	t.Cleanup(p.Close)
+
+	for _, tenantID := range []string{"alpha", "beta"} {
+		resp, err := p.Invoke(context.Background(), wire.Invoke{Op: wire.OpInvoke, CallID: tenantID, TenantID: tenantID, Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "gateway"}, Tool: "status"})
+		if err != nil || !resp.OK {
+			t.Fatalf("Invoke %s = %#v, %v", tenantID, resp, err)
+		}
+	}
+	if got := fake.spawnCount.Load(); got != 1 {
+		t.Fatalf("spawn count = %d, want 1", got)
+	}
+	if got := fake.spawnRequests()[0].TenantID; got != "alpha" {
+		t.Fatalf("spawn tenant = %q, want first caller tenant alpha", got)
+	}
+}
+
+func TestPoolPrimeRuntimeTargetsSkipsTenantScopedWarmWorkers(t *testing.T) {
+	alphaDir := t.TempDir()
+	betaDir := t.TempDir()
+	runtimeBody := `id = "gateway"
+name = "Gateway"
+version = "0.1.0"
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+scope = "runtime"
+
+[[tools]]
+name = "status"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`
+	tenantBody := `id = "fs"
+name = "Filesystem"
+version = "0.1.0"
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+
+[[tools]]
+name = "read"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`
+	for _, dir := range []string{alphaDir, betaDir} {
+		writePoolPluginBody(t, filepath.Join(dir, "gateway", "plugin.toml"), runtimeBody)
+		writePoolPluginBody(t, filepath.Join(dir, "fs", "plugin.toml"), tenantBody)
+	}
+	store, err := manifest.NewTenantStore(map[string]manifest.SearchDirs{
+		"alpha": {PluginDirs: []string{alphaDir}},
+		"beta":  {PluginDirs: []string{betaDir}},
+	})
+	if err != nil {
+		t.Fatalf("NewTenantStore: %v", err)
+	}
+	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), nextWorker: newFakeWorker()}
+	p := New("main", store, fake, Options{AllowedTenants: []string{"alpha", "beta"}})
+	t.Cleanup(p.Close)
+
+	p.PrimeRuntimeTargets(context.Background(), nil)
+	if got := fake.spawnCount.Load(); got != 1 {
+		t.Fatalf("spawn count = %d, want only runtime-scoped gateway", got)
+	}
+	req := fake.spawnRequests()[0]
+	if req.TargetID != "gateway" {
+		t.Fatalf("spawn target = %q, want gateway", req.TargetID)
+	}
+	p.PrimeRuntimeTargets(context.Background(), nil)
+	if got := fake.spawnCount.Load(); got != 1 {
+		t.Fatalf("spawn count after second prime = %d, want shared runtime worker", got)
+	}
+}
+
+func TestPoolPrimeRuntimeTargetsOrdersPluginKindDependencies(t *testing.T) {
+	dir := t.TempDir()
+	writePoolPluginBody(t, filepath.Join(dir, "gateway", "plugin.toml"), `id = "gateway"
+name = "Gateway"
+version = "0.1.0"
+
+[kind]
+name = "gateway"
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+scope = "runtime"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`)
+	writePoolPluginBody(t, filepath.Join(dir, "driver", "plugin.toml"), `id = "driver"
+name = "Driver"
+version = "0.1.0"
+
+[kind]
+name = "driver"
+singleton = true
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+scope = "runtime"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`)
+	store, err := manifest.NewTenantStore(map[string]manifest.SearchDirs{"alpha": {PluginDirs: []string{dir}}})
+	if err != nil {
+		t.Fatalf("NewTenantStore: %v", err)
+	}
+	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), nextWorker: newFakeWorker()}
+	p := New("main", store, fake, Options{AllowedTenants: []string{"alpha"}, PluginKindDependsOn: map[string][]string{"gateway": {"driver"}}})
+	t.Cleanup(p.Close)
+
+	p.PrimeRuntimeTargets(context.Background(), nil)
+	reqs := fake.spawnRequests()
+	if len(reqs) != 2 || reqs[0].TargetID != "driver" || reqs[1].TargetID != "gateway" {
+		t.Fatalf("spawn order = %#v, want driver then gateway", reqs)
+	}
+}
+
+func TestPoolPrimeRuntimeTargetsBlocksMissingPluginKindDependency(t *testing.T) {
+	dir := t.TempDir()
+	writePoolPluginBody(t, filepath.Join(dir, "gateway", "plugin.toml"), `id = "gateway"
+name = "Gateway"
+version = "0.1.0"
+
+[kind]
+name = "gateway"
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+scope = "runtime"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`)
+	store, err := manifest.NewTenantStore(map[string]manifest.SearchDirs{"alpha": {PluginDirs: []string{dir}}})
+	if err != nil {
+		t.Fatalf("NewTenantStore: %v", err)
+	}
+	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), nextWorker: newFakeWorker()}
+	p := New("main", store, fake, Options{AllowedTenants: []string{"alpha"}, PluginKindDependsOn: map[string][]string{"gateway": {"driver"}}})
+	t.Cleanup(p.Close)
+
+	p.PrimeRuntimeTargets(context.Background(), nil)
+	if got := fake.spawnCount.Load(); got != 0 {
+		t.Fatalf("spawn count = %d, want gateway blocked by missing driver kind", got)
+	}
+}
+
 func TestPoolInvokesColdPluginWithoutBlockingSecondCall(t *testing.T) {
 	dir := t.TempDir()
 	body := `id = "question"
@@ -1021,6 +1215,87 @@ func TestPoolCrashEvictsWorkerAndNextInvokeRespawns(t *testing.T) {
 	}
 	if got := fake.spawnCount.Load(); got != 2 {
 		t.Fatalf("spawn count = %d, want 2", got)
+	}
+}
+
+func TestPoolBacksOffAfterRepeatedWarmWorkerCrashes(t *testing.T) {
+	oldBase := warmWorkerBackoffBase
+	oldMax := warmWorkerBackoffMax
+	oldStable := warmWorkerBackoffStable
+	warmWorkerBackoffBase = time.Hour
+	warmWorkerBackoffMax = time.Hour
+	warmWorkerBackoffStable = time.Hour
+	t.Cleanup(func() {
+		warmWorkerBackoffBase = oldBase
+		warmWorkerBackoffMax = oldMax
+		warmWorkerBackoffStable = oldStable
+	})
+
+	p, fake := testPool(t)
+	for _, callID := range []string{"crash-1", "crash-2"} {
+		w := newFakeWorker()
+		w.callErr = errors.New("worker exited: boom")
+		fake.setNextWorker(w)
+		resp, err := p.Invoke(context.Background(), invoke(callID, "tenant-a", "echo"))
+		if err != nil || resp.Error == nil || resp.Error.Code != wire.ErrorInternal {
+			t.Fatalf("%s resp = %#v, %v", callID, resp, err)
+		}
+	}
+	if got := fake.spawnCount.Load(); got != 2 {
+		t.Fatalf("spawn count before backoff = %d, want 2", got)
+	}
+
+	fake.setNextWorker(newFakeWorker())
+	resp, err := p.Invoke(context.Background(), invoke("during-backoff", "tenant-a", "echo"))
+	if err != nil || resp.Error == nil || resp.Error.Code != wire.ErrorRuntimeBusy {
+		t.Fatalf("backoff resp = %#v, %v", resp, err)
+	}
+	if !strings.Contains(resp.Error.Message, "restart backoff active") {
+		t.Fatalf("backoff message = %q", resp.Error.Message)
+	}
+	if got := fake.spawnCount.Load(); got != 2 {
+		t.Fatalf("spawn count during backoff = %d, want 2", got)
+	}
+}
+
+func TestPoolBacksOffAfterWarmWorkerAsyncCrash(t *testing.T) {
+	oldBase := warmWorkerBackoffBase
+	oldMax := warmWorkerBackoffMax
+	oldStable := warmWorkerBackoffStable
+	warmWorkerBackoffBase = time.Hour
+	warmWorkerBackoffMax = time.Hour
+	warmWorkerBackoffStable = time.Hour
+	t.Cleanup(func() {
+		warmWorkerBackoffBase = oldBase
+		warmWorkerBackoffMax = oldMax
+		warmWorkerBackoffStable = oldStable
+	})
+
+	p, fake := testPool(t)
+	resp, err := p.Invoke(context.Background(), invoke("ready-1", "tenant-a", "echo"))
+	if err != nil || !resp.OK {
+		t.Fatalf("ready-1 resp = %#v, %v", resp, err)
+	}
+	first := fake.waitForWorker(t)
+	first.emit(policy.WorkerAsyncEvent{Err: errors.New("worker exited: boom")})
+	waitForWorkerStopped(t, first)
+	resp, err = p.Invoke(context.Background(), invoke("ready-2", "tenant-a", "echo"))
+	if err != nil || !resp.OK {
+		t.Fatalf("ready-2 resp = %#v, %v", resp, err)
+	}
+	w := fake.waitForWorker(t)
+	w.emit(policy.WorkerAsyncEvent{Err: errors.New("worker exited: boom")})
+	waitForWorkerStopped(t, w)
+	if got := fake.spawnCount.Load(); got != 2 {
+		t.Fatalf("spawn count before backoff = %d, want 2", got)
+	}
+
+	resp, err = p.Invoke(context.Background(), invoke("during-async-backoff", "tenant-a", "echo"))
+	if err != nil || resp.Error == nil || resp.Error.Code != wire.ErrorRuntimeBusy {
+		t.Fatalf("backoff resp = %#v, %v", resp, err)
+	}
+	if got := fake.spawnCount.Load(); got != 2 {
+		t.Fatalf("spawn count during backoff = %d, want 2", got)
 	}
 }
 

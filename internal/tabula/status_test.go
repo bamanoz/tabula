@@ -43,6 +43,71 @@ func TestBuildStatusKernelDownStillListsTenants(t *testing.T) {
 	}
 }
 
+func TestTabulaHomeFromExecutableDetectsInstalledLayout(t *testing.T) {
+	tabulaHome := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tabulaHome, "bin"), 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tabulaHome, "PROTOCOL"), []byte("1\n"), 0o644); err != nil {
+		t.Fatalf("write protocol: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tabulaHome, "bin", "tabula-runner"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write runner: %v", err)
+	}
+
+	got, ok := tabulaHomeFromExecutable(filepath.Join(tabulaHome, "bin", "tabula"))
+	if !ok || got != tabulaHome {
+		t.Fatalf("tabulaHomeFromExecutable = %q, %v; want %q, true", got, ok, tabulaHome)
+	}
+}
+
+func TestTabulaHomeFromExecutableRejectsSourceTreeBin(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "VERSION"), []byte("0.10.0\n"), 0o644); err != nil {
+		t.Fatalf("write version: %v", err)
+	}
+
+	got, ok := tabulaHomeFromExecutable(filepath.Join(root, "bin", "tabula"))
+	if ok || got != "" {
+		t.Fatalf("tabulaHomeFromExecutable = %q, %v; want empty, false", got, ok)
+	}
+}
+
+func TestPreferCandidateStatusUsesLiveExecutableHome(t *testing.T) {
+	currentHome := t.TempDir()
+	candidateHome := t.TempDir()
+	writeTenantDir(t, currentHome, "old-home")
+	writeTenantDir(t, candidateHome, "live-home")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sessions":
+			_, _ = w.Write([]byte(`{}`))
+		case "/internal/snapshot/runtimes":
+			_, _ = w.Write([]byte(`{"runtimes":[]}`))
+		default:
+			t.Fatalf("unexpected status path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	writeKernelStatusFixture(t, candidateHome, kernelStatusFile{PID: os.Getpid(), WSEndpoint: "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws", StartedAt: formatStatusTime(time.Now())})
+
+	current, err := buildStatus(t.Context(), currentHome, srv.Client())
+	if err != nil {
+		t.Fatalf("build current status: %v", err)
+	}
+	preferred, ok := preferCandidateStatus(t.Context(), current, currentHome, candidateHome, srv.Client())
+	if !ok || !preferred.Kernel.Running {
+		t.Fatalf("expected live candidate status, ok=%v doc=%+v", ok, preferred.Kernel)
+	}
+	if got := tenantIDs(preferred.Tenants); strings.Join(got, ",") != "live-home" {
+		t.Fatalf("expected candidate tenants, got %+v", preferred.Tenants)
+	}
+}
+
 func TestBuildStatusKernelRunningFetchesRuntimeSnapshot(t *testing.T) {
 	tabulaHome := t.TempDir()
 	writeTenantDir(t, tabulaHome, "default")

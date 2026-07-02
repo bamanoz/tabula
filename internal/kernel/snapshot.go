@@ -27,7 +27,7 @@ type snapshotSessionInfo struct {
 	ActiveToolCalls     int                   `json:"active_tool_calls"`
 	RestartObservations int                   `json:"restart_observations"`
 	StuckSuspended      bool                  `json:"stuck_suspended"`
-	Clients             []snapshotClientInfo  `json:"clients"`
+	Clients             []snapshotClientInfo  `json:"apps"`
 	Processes           []snapshotProcessInfo `json:"processes"`
 }
 

@@ -144,7 +144,7 @@ wait_for_file() {
     if [ -e "$path" ]; then
       return 0
     fi
-    if ! kill -0 "$KERNEL_PID" 2>/dev/null; then
+    if ! child_running "$KERNEL_PID"; then
       local status=0
       wait "$KERNEL_PID" || status=$?
       return 1
@@ -172,6 +172,19 @@ cleanup_children() {
 }
 
 trap cleanup_children EXIT INT TERM
+
+child_running() {
+  local pid="$1"
+  [ "$pid" -gt 0 ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  local stat
+  stat="$(ps -o stat= -p "$pid" 2>/dev/null || true)"
+  [ -n "$stat" ] || return 1
+  case "$stat" in
+    Z*|*Z*) return 1 ;;
+  esac
+  return 0
+}
 
 runtime_socket_path() {
   "$TABULA_VENV/bin/python3" - "$TABULA_HOME/config/runtime.toml" <<'PY'
@@ -208,13 +221,13 @@ wait_for_file "$RUNTIME_SOCKET" "runtime socket"
 RUNTIME_PID=$!
 
 while true; do
-  if ! kill -0 "$KERNEL_PID" 2>/dev/null; then
+  if ! child_running "$KERNEL_PID"; then
     status=0
     wait "$KERNEL_PID" || status=$?
     KERNEL_PID=0
     exit "$status"
   fi
-  if ! kill -0 "$RUNTIME_PID" 2>/dev/null; then
+  if ! child_running "$RUNTIME_PID"; then
     status=0
     wait "$RUNTIME_PID" || status=$?
     RUNTIME_PID=0

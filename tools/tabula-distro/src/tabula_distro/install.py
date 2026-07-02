@@ -384,7 +384,7 @@ class InstallResult:
 class InstalledBundleComponents:
     skills: tuple[str, ...] = ()
     plugins: tuple[str, ...] = ()
-    clients: tuple[str, ...] = ()
+    apps: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -511,8 +511,8 @@ def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lock
     skills_dir.mkdir(parents=True, exist_ok=True)
     plugins_dir = staging / "plugins"
     plugins_dir.mkdir(parents=True, exist_ok=True)
-    clients_dir = staging / "clients"
-    clients_dir.mkdir(parents=True, exist_ok=True)
+    apps_dir = staging / "apps"
+    apps_dir.mkdir(parents=True, exist_ok=True)
     packages_dir = staging / "packages"
     packages_dir.mkdir(parents=True, exist_ok=True)
 
@@ -557,7 +557,7 @@ def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lock
     for resolved in resolved_bundles:
         entry = resolved.entry
         lock_entry = resolved.lock_entry
-        installed = _install_bundle(resolved.resolved_dir, skills_dir, plugins_dir, clients_dir, packages_dir, installed_python_packages, installed_typescript_packages, manifest=resolved.manifest,
+        installed = _install_bundle(resolved.resolved_dir, skills_dir, plugins_dir, apps_dir, packages_dir, installed_python_packages, installed_typescript_packages, manifest=resolved.manifest,
                                       allowlist=entry.components, override=entry.override,
                                       bundle_name=entry.name, source_uri=lock_entry.source)
         new_lock.bundles[entry.name] = lock_entry
@@ -565,8 +565,8 @@ def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lock
             new_lock.skills[name] = replace(lock_entry)
         for name in installed.plugins:
             new_lock.plugins[name] = replace(lock_entry)
-        for name in installed.clients:
-            new_lock.clients[name] = replace(lock_entry)
+        for name in installed.apps:
+            new_lock.apps[name] = replace(lock_entry)
 
     # Plugin compat checks run last so staged package exports are fully
     # populated by all bundles. We re-walk `staging/plugins` rather than
@@ -728,39 +728,40 @@ def _install_component(src: Path, dst: Path, *, override: bool, label: str) -> N
     _copytree(src, dst)
 
 
-def _install_client(src: Path, dst: Path, *, override: bool, label: str) -> None:
-    _validate_client_manifest(src, label=label)
+def _install_app(src: Path, dst: Path, *, override: bool, label: str) -> None:
+    _validate_app_manifest(src, label=label)
     _install_component(src, dst, override=override, label=label)
 
 
-def _validate_client_manifest(src: Path, *, label: str) -> None:
-    manifest = src / "client.toml"
+def _validate_app_manifest(src: Path, *, label: str) -> str:
+    manifest = src / "app.toml"
     if not manifest.is_file():
-        raise InstallError(f"{label}: missing client.toml")
+        raise InstallError(f"{label}: missing app.toml")
     try:
         with manifest.open("rb") as f:
             data = tomllib.load(f)
     except tomllib.TOMLDecodeError as exc:
-        raise InstallError(f"{label}: invalid client.toml: {exc}") from exc
+        raise InstallError(f"{label}: invalid app.toml: {exc}") from exc
 
-    client_id = data.get("id")
+    app_id = data.get("id")
     runtime = data.get("runtime")
     entry = data.get("entry")
-    if not isinstance(client_id, str) or not client_id.strip():
-        raise InstallError(f"{label}: client.toml id is required")
-    if client_id != src.name:
-        raise InstallError(f"{label}: client.toml id {client_id!r} must match directory name {src.name!r}")
+    if not isinstance(app_id, str) or not app_id.strip():
+        raise InstallError(f"{label}: app.toml id is required")
+    app_id = app_id.strip()
+    if app_id != src.name:
+        raise InstallError(f"{label}: app.toml id {app_id!r} must match directory name {src.name!r}")
     if runtime not in {"python"}:
-        raise InstallError(f"{label}: unsupported client runtime {runtime!r}")
+        raise InstallError(f"{label}: unsupported app runtime {runtime!r}")
     if not isinstance(entry, str) or not entry.strip():
-        raise InstallError(f"{label}: client.toml entry is required")
+        raise InstallError(f"{label}: app.toml entry is required")
     entry_path = (src / entry).resolve()
     try:
         entry_path.relative_to(src.resolve())
     except ValueError as exc:
-        raise InstallError(f"{label}: client entry escapes component directory") from exc
+        raise InstallError(f"{label}: app entry escapes component directory") from exc
     if not entry_path.is_file():
-        raise InstallError(f"{label}: client entry does not exist: {entry}")
+        raise InstallError(f"{label}: app entry does not exist: {entry}")
 
     bus = data.get("bus")
     if bus is not None:
@@ -770,9 +771,10 @@ def _validate_client_manifest(src: Path, *, label: str) -> None:
             values = bus.get(key)
             if values is not None and (not isinstance(values, list) or not all(isinstance(item, str) for item in values)):
                 raise InstallError(f"{label}: bus.{key} must be an array of strings")
+    return app_id
 
 
-def _install_bundle(bundle_root: Path, skills_dir: Path, plugins_dir: Path, clients_dir: Path, packages_dir: Path,
+def _install_bundle(bundle_root: Path, skills_dir: Path, plugins_dir: Path, apps_dir: Path, packages_dir: Path,
                     installed_python_packages: dict[str, tuple[str, Path]],
                     installed_typescript_packages: dict[str, tuple[str, Path]], *,
                     manifest: BundleManifest, allowlist: tuple[str, ...] | None,
@@ -792,12 +794,12 @@ def _install_bundle(bundle_root: Path, skills_dir: Path, plugins_dir: Path, clie
 
     installed_skills: list[str] = []
     installed_plugins: list[str] = []
-    installed_clients: list[str] = []
+    installed_apps: list[str] = []
     for name, entry in candidates:
         has_skill = (entry / "SKILL.md").is_file()
         has_plugin = (entry / "plugin.toml").is_file()
-        has_client = (entry / "client.toml").is_file()
-        kinds = sum(1 for present in (has_skill, has_plugin, has_client) if present)
+        has_app = (entry / "app.toml").is_file()
+        kinds = sum(1 for present in (has_skill, has_plugin, has_app) if present)
         if kinds > 1:
             raise InstallError(f"bundle {bundle_name}: component {name!r} has multiple component manifests")
         if has_skill:
@@ -808,15 +810,16 @@ def _install_bundle(bundle_root: Path, skills_dir: Path, plugins_dir: Path, clie
             _install_plugin(entry, plugins_dir / name, override=override,
                             label=f"bundle {bundle_name} -> plugin {name}")
             installed_plugins.append(name)
-        elif has_client:
-            _install_client(entry, clients_dir / name, override=override,
-                            label=f"bundle {bundle_name} -> client {name}")
-            installed_clients.append(name)
+        elif has_app:
+            app_id = _validate_app_manifest(entry, label=f"bundle {bundle_name} -> app {name}")
+            _install_component(entry, apps_dir / app_id, override=override,
+                               label=f"bundle {bundle_name} -> app {name}")
+            installed_apps.append(app_id)
         else:
-            raise InstallError(f"bundle {bundle_name}: component {name!r} has no SKILL.md, plugin.toml or client.toml")
+            raise InstallError(f"bundle {bundle_name}: component {name!r} has no SKILL.md, plugin.toml or app.toml")
     _install_bundle_python_exports(bundle_root, manifest, packages_dir, installed_python_packages, bundle_name=bundle_name)
     _install_bundle_typescript_exports(bundle_root, manifest, packages_dir, installed_typescript_packages, bundle_name=bundle_name)
-    return InstalledBundleComponents(skills=tuple(installed_skills), plugins=tuple(installed_plugins), clients=tuple(installed_clients))
+    return InstalledBundleComponents(skills=tuple(installed_skills), plugins=tuple(installed_plugins), apps=tuple(installed_apps))
 
 
 def _validate_bundle_dependencies(bundle_manifests: dict[str, BundleManifest]) -> None:
@@ -965,7 +968,7 @@ def _bundle_component_candidates(bundle_root: Path, manifest: BundleManifest, *,
             continue
         if entry.name in IGNORE_NAMES or entry.name.startswith("."):
             continue
-        if (entry / "SKILL.md").is_file() or (entry / "plugin.toml").is_file() or (entry / "client.toml").is_file():
+        if (entry / "SKILL.md").is_file() or (entry / "plugin.toml").is_file() or (entry / "app.toml").is_file():
             candidates.append((entry.name, entry))
     return candidates
 
@@ -975,7 +978,7 @@ def _bundle_component_candidates(bundle_root: Path, manifest: BundleManifest, *,
 
 def _expose_current(home: Path, distro_name: str) -> None:
     root = gens.distro_root(home, distro_name)
-    for entry in ("skills", "plugins", "clients", "templates", "packages"):
+    for entry in ("skills", "plugins", "apps", "templates", "packages"):
         link = root / entry
         if link.exists() or link.is_symlink():
             if link.is_dir() and not link.is_symlink():
@@ -1006,7 +1009,7 @@ def _refresh_runtime_surface(home: Path, *, tenant: str | None = None) -> None:
             else:
                 obsolete.unlink(missing_ok=True)
     _link_runtime(home / "distrib" / "active" / "packages", home / "packages")
-    _link_runtime(home / "distrib" / "active" / "clients", home / "clients")
+    _link_runtime(home / "distrib" / "active" / "apps", home / "apps")
     _link_runtime(home / "distrib" / "active" / "templates", home / "templates")
     _link_runtime(home / "distrib" / "active" / "plugins", home / "plugins")
     _link_runtime(home / "distrib" / "active" / "skills", home / "skills")
@@ -1033,7 +1036,7 @@ def _refresh_tenant_runtime_surface(home: Path, tenant_dir: Path) -> None:
         else:
             obsolete.unlink(missing_ok=True)
     _link_runtime(home / "distrib" / "active" / "packages", tenant_dir / "packages")
-    _link_runtime(home / "distrib" / "active" / "clients", tenant_dir / "clients")
+    _link_runtime(home / "distrib" / "active" / "apps", tenant_dir / "apps")
     _link_runtime(home / "distrib" / "active" / "templates", tenant_dir / "templates")
     _link_runtime(home / "distrib" / "active" / "plugins", tenant_dir / "plugins")
     _link_runtime(home / "distrib" / "active" / "skills", tenant_dir / "skills")

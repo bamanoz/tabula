@@ -188,8 +188,8 @@ def skill_config_dir(skill_id: str) -> Path:
     return config_dir() / "skills" / skill_id
 
 
-def client_config_toml(client_id: str) -> Path:
-    return config_dir() / "clients" / client_id / "config.toml"
+def app_config_toml(app_id: str) -> Path:
+    return config_dir() / "apps" / app_id / "config.toml"
 
 
 def plugin_config_toml(plugin_id: str) -> Path:
@@ -212,12 +212,12 @@ def plugin_logs_dir(plugin_id: str) -> Path:
     return logs_dir() / "plugins" / plugin_id
 
 
-def client_state_dir(client_id: str) -> Path:
-    return state_dir() / "clients" / client_id
+def app_state_dir(app_id: str) -> Path:
+    return state_dir() / "apps" / app_id
 
 
-def client_logs_dir(client_id: str) -> Path:
-    return logs_dir() / "clients" / client_id
+def app_logs_dir(app_id: str) -> Path:
+    return logs_dir() / "apps" / app_id
 
 
 def plugin_run_dir(plugin_id: str) -> Path:

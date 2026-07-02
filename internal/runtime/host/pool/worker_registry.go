@@ -1,12 +1,25 @@
 package pool
 
 import (
+	"errors"
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/bamanoz/tabula/internal/runtime/host/manifest"
 	"github.com/bamanoz/tabula/internal/runtime/host/policy"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
 )
+
+const defaultWarmWorkerBackoffBase = time.Second
+const defaultWarmWorkerBackoffMax = 30 * time.Second
+const defaultWarmWorkerBackoffStable = time.Minute
+
+var errWarmWorkerBackoff = errors.New("warm worker restart backoff active")
+
+var warmWorkerBackoffBase = defaultWarmWorkerBackoffBase
+var warmWorkerBackoffMax = defaultWarmWorkerBackoffMax
+var warmWorkerBackoffStable = defaultWarmWorkerBackoffStable
 
 type workerRegistry struct {
 	mu      sync.Mutex
@@ -20,10 +33,29 @@ type key struct {
 }
 
 type entry struct {
-	mu           sync.Mutex
-	worker       policy.Worker
-	activeGroups map[string]int
-	waitCh       chan struct{}
+	mu                  sync.Mutex
+	worker              policy.Worker
+	activeGroups        map[string]int
+	waitCh              chan struct{}
+	consecutiveFailures int
+	backoffUntil        time.Time
+	workerStartedAt     time.Time
+}
+
+type warmWorkerBackoffError struct {
+	remaining time.Duration
+}
+
+func (e warmWorkerBackoffError) Error() string {
+	remaining := e.remaining.Round(time.Millisecond)
+	if remaining < 0 {
+		remaining = 0
+	}
+	return fmt.Sprintf("warm worker restart backoff active; retry after %s", remaining)
+}
+
+func (e warmWorkerBackoffError) Is(target error) bool {
+	return target == errWarmWorkerBackoff
 }
 
 type evictedEntry struct {
@@ -99,6 +131,68 @@ func (e *entry) activeToolCallsLocked() int {
 	return total
 }
 
+func (e *entry) warmWorkerBackoffErrLocked(now time.Time) error {
+	if e == nil || e.backoffUntil.IsZero() || !e.backoffUntil.After(now) {
+		return nil
+	}
+	return warmWorkerBackoffError{remaining: e.backoffUntil.Sub(now)}
+}
+
+func (e *entry) noteWarmWorkerFailureLocked(now time.Time) {
+	if e == nil {
+		return
+	}
+	if !e.workerStartedAt.IsZero() && now.Sub(e.workerStartedAt) >= warmWorkerStableDuration() {
+		e.consecutiveFailures = 0
+	}
+	e.workerStartedAt = time.Time{}
+	e.consecutiveFailures++
+	e.backoffUntil = now.Add(warmWorkerBackoffDelay(e.consecutiveFailures))
+	e.notifyWaitersLocked()
+}
+
+func (e *entry) noteWarmWorkerStartedLocked() {
+	if e == nil {
+		return
+	}
+	e.workerStartedAt = time.Now()
+	e.backoffUntil = time.Time{}
+	e.notifyWaitersLocked()
+}
+
+func warmWorkerBackoffDelay(failures int) time.Duration {
+	if failures <= 1 {
+		return 0
+	}
+	base := warmWorkerBackoffBase
+	if base <= 0 {
+		base = defaultWarmWorkerBackoffBase
+	}
+	maxDelay := warmWorkerBackoffMax
+	if maxDelay <= 0 {
+		maxDelay = defaultWarmWorkerBackoffMax
+	}
+	delay := base
+	for i := 2; i < failures; i++ {
+		if delay >= maxDelay/2 {
+			delay = maxDelay
+			break
+		}
+		delay *= 2
+	}
+	if delay > maxDelay {
+		return maxDelay
+	}
+	return delay
+}
+
+func warmWorkerStableDuration() time.Duration {
+	if warmWorkerBackoffStable <= 0 {
+		return defaultWarmWorkerBackoffStable
+	}
+	return warmWorkerBackoffStable
+}
+
 func (r *workerRegistry) evict(target *wire.Target, tenants ...string) []evictedEntry {
 	if r == nil {
 		return nil
@@ -111,7 +205,7 @@ func (r *workerRegistry) evict(target *wire.Target, tenants ...string) []evicted
 		if target != nil && (target.Kind != wire.TargetKindPlugin || target.ID != k.targetID) {
 			continue
 		}
-		if len(requestedTenants) > 0 && !requestedTenants[k.tenantID] {
+		if len(requestedTenants) > 0 && k.tenantID != "" && !requestedTenants[k.tenantID] {
 			continue
 		}
 		delete(r.entries, k)
@@ -151,4 +245,18 @@ func clearEntryWorker(entry *entry, worker policy.Worker) {
 	if entry.worker == worker {
 		entry.worker = nil
 	}
+}
+
+func clearEntryWorkerAfterFailure(entry *entry, worker policy.Worker) bool {
+	if entry == nil {
+		return false
+	}
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	if entry.worker != worker {
+		return false
+	}
+	entry.worker = nil
+	entry.noteWarmWorkerFailureLocked(time.Now())
+	return true
 }

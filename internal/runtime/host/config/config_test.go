@@ -119,6 +119,45 @@ tenants = ["alpha", "beta"]
 	}
 }
 
+func TestLoadRuntimeConfigParsesPluginKindDependencies(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime.toml")
+	writeFile(t, path, `plugin_dirs = ["/tmp/plugins"]
+
+[plugin_kinds.gateway]
+depends_on = ["driver"]
+
+[[kernel]]
+id = "local"
+url = "unix:///tmp/runtime.sock"
+token_file = "/tmp/runtime-token"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !reflect.DeepEqual(cfg.PluginKinds["gateway"].DependsOn, []string{"driver"}) {
+		t.Fatalf("plugin kind deps = %#v", cfg.PluginKinds)
+	}
+}
+
+func TestLoadRuntimeConfigRejectsInvalidPluginKindDependencies(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime.toml")
+	writeFile(t, path, `plugin_dirs = ["/tmp/plugins"]
+
+[plugin_kinds.gateway]
+depends_on = ["gateway"]
+
+[[kernel]]
+id = "local"
+url = "unix:///tmp/runtime.sock"
+token_file = "/tmp/runtime-token"
+`)
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "cannot depend on itself") {
+		t.Fatalf("expected self dependency error, got %v", err)
+	}
+}
+
 func TestLoadRuntimeConfigRejectsMixedWildcardTenantAllowlist(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime.toml")
 	writeFile(t, path, `plugin_dirs = ["/tmp/plugins"]
@@ -302,6 +341,9 @@ func TestSaveRoundTripsRuntimeConfig(t *testing.T) {
 		PluginDirs: []string{"/tmp/plugins", "/tmp/extra-plugins"},
 		SkillDirs:  []string{"/tmp/skills"},
 		Pool:       Pool{ColdWorkersPerTenantMax: 8, Tenants: map[string]TenantPool{"alpha": {ColdWorkersMax: 3}}},
+		PluginKinds: map[string]PluginKind{
+			"gateway": {DependsOn: []string{"driver"}},
+		},
 	}
 	if err := Save(path, cfg); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -324,6 +366,9 @@ func TestSaveRoundTripsRuntimeConfig(t *testing.T) {
 	}
 	if loaded.Pool.Tenants["alpha"].ColdWorkersMax != 3 {
 		t.Fatalf("pool tenant overrides = %#v", loaded.Pool.Tenants)
+	}
+	if !reflect.DeepEqual(loaded.PluginKinds, cfg.PluginKinds) {
+		t.Fatalf("plugin kind policies = %#v, want %#v", loaded.PluginKinds, cfg.PluginKinds)
 	}
 }
 

@@ -19,20 +19,20 @@ class DriverConfigSmoke(unittest.TestCase):
         global_config.parent.mkdir(parents=True, exist_ok=True)
         global_config.write_text(
             """
-[clients.driver]
+[plugins.driver]
 provider = "openai"
 
-[clients.driver.providers.openai]
+[plugins.driver.providers.openai]
 api_key = "test-key"
 base_url = "https://api.openai.com/v1"
 default_model = "gpt-5.4"
 api = "responses"
 
-[clients.driver.providers.openai.models."gpt-5.4"]
+[plugins.driver.providers.openai.models."gpt-5.4"]
 effort = "xhigh"
 reasoning_summary = "auto"
 
-[clients.driver.providers.openai.models."gpt-5.4-mini"]
+[plugins.driver.providers.openai.models."gpt-5.4-mini"]
 effort = "low"
 """.strip()
             + "\n",

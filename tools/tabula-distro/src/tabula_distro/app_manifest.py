@@ -13,9 +13,12 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+import tomlkit
+
 from . import config as cfg
 from . import lock as distrolock
 from . import sources as srcmod
+from . import toml_io
 from .cache import GitCache
 
 
@@ -263,6 +266,7 @@ def with_lock_bindings(lock: AppLock, bindings: Bindings) -> AppLock:
 
 
 def materialize_metadata(manifest: AppManifest, lock: AppLock, home: Path) -> Path:
+    _migrate_global_driver_config(home / "config" / "global.toml")
     tenant_dir = home / "tenants" / manifest.application.id
     tenant_dir.mkdir(parents=True, exist_ok=True)
     tenant_file = tenant_dir / "tenant.toml"
@@ -355,6 +359,7 @@ def _prepend_pythonpath(env: dict[str, str], roots: list[Path]) -> None:
 
 
 def compile_plugin_configs(home: Path, tenant_dir: Path) -> tuple[str, ...]:
+    migrate_driver_plugin_config(home, tenant_dir)
     plugin_root = tenant_dir / "config" / "plugins"
     if not plugin_root.is_dir():
         return ()
@@ -376,6 +381,73 @@ def compile_plugin_configs(home: Path, tenant_dir: Path) -> tuple[str, ...]:
             continue
         config_path.unlink(missing_ok=True)
     return tuple(compiled)
+
+
+def migrate_driver_plugin_config(home: Path, tenant_dir: Path) -> None:
+    """Move the driver config from the removed app/client surface to plugin config."""
+
+    _migrate_global_driver_config(home / "config" / "global.toml")
+    _migrate_tenant_driver_config(tenant_dir)
+
+
+def _migrate_global_driver_config(path: Path) -> None:
+    if not path.is_file():
+        return
+    doc = toml_io.load(path)
+    clients = doc.get("clients")
+    if not isinstance(clients, dict):
+        return
+    driver = clients.get("driver")
+    if not isinstance(driver, dict):
+        return
+    plugins = doc.get("plugins")
+    if not isinstance(plugins, dict):
+        plugins = tomlkit.table()
+        doc["plugins"] = plugins
+    existing = plugins.get("driver")
+    if isinstance(existing, dict):
+        merged = _merge_toml(_plain_toml(driver), _plain_toml(existing))
+        plugins["driver"] = toml_io.to_tomlkit(merged)
+    else:
+        plugins["driver"] = driver
+    del clients["driver"]
+    if not clients:
+        del doc["clients"]
+    toml_io.dump(path, doc)
+
+
+def _migrate_tenant_driver_config(tenant_dir: Path) -> None:
+    old_dir = tenant_dir / "config" / "apps" / "driver"
+    if not old_dir.is_dir():
+        return
+    new_dir = tenant_dir / "config" / "plugins" / "driver"
+    for filename in ("defaults.toml", "config.toml"):
+        old_path = old_dir / filename
+        if not old_path.is_file():
+            continue
+        new_path = new_dir / filename
+        if new_path.is_file():
+            merged = _merge_toml(_read_toml(old_path), _read_toml(new_path))
+            new_path.write_text(_tomlish(merged), encoding="utf-8")
+            old_path.unlink()
+            continue
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        old_path.replace(new_path)
+    for path in (old_dir, old_dir.parent):
+        try:
+            path.rmdir()
+        except OSError:
+            pass
+
+
+def _plain_toml(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _plain_toml(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_plain_toml(item) for item in value]
+    if hasattr(value, "unwrap"):
+        return value.unwrap()
+    return value
 
 
 def _reset_materializer_output(tenant_dir: Path) -> None:
