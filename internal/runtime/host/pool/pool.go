@@ -118,6 +118,7 @@ func (p *Pool) primeTargets(ctx context.Context, target *wire.Target, runtimeSco
 	if p == nil || p.store == nil {
 		return
 	}
+	primedRuntimeTargets := map[string]bool{}
 	for _, tenantID := range p.capabilities.catalogTenants() {
 		plugins := p.orderedPrimePlugins(tenantID, target)
 		readyKinds := map[string]bool{}
@@ -127,6 +128,12 @@ func (p *Pool) primeTargets(ctx context.Context, target *wire.Target, runtimeSco
 			}
 			if runtimeScopeOnly && plugin.WorkerScope != wire.WorkerScopeRuntime {
 				continue
+			}
+			if runtimeScopeOnly && plugin.WorkerScope == wire.WorkerScopeRuntime {
+				if primedRuntimeTargets[plugin.ID] {
+					continue
+				}
+				primedRuntimeTargets[plugin.ID] = true
 			}
 			if !p.kindDependenciesReady(plugin, readyKinds) {
 				p.logPrimeDependencyBlocked(plugin)
@@ -812,11 +819,11 @@ func stderrCapturedSummary(message string) string {
 		return ""
 	}
 	start += len(needle)
-	end := strings.Index(message[start:], ")")
-	if end < 0 {
-		end = len(message) - start
+	end := strings.LastIndex(message, ")")
+	if end < start {
+		end = len(message)
 	}
-	diagnostic := strings.TrimSpace(message[start : start+end])
+	diagnostic := strings.TrimSpace(message[start:end])
 	parts := strings.Split(diagnostic, ";")
 	stats := strings.TrimSpace(parts[0])
 	if stats == "" {
@@ -917,6 +924,7 @@ func (p *Pool) watchWorker(tenantID string, plugin manifest.Plugin, entry *entry
 			}
 			if event.Err != nil {
 				if clearEntryWorkerAfterFailure(entry, worker) {
+					p.logWorkerFailure(plugin, event.Err)
 					p.markTargetCrashed(tenantID, plugin, event.Err)
 					_ = worker.Shutdown(context.Background())
 				}
@@ -937,12 +945,31 @@ func (p *Pool) watchWorker(tenantID string, plugin manifest.Plugin, entry *entry
 					if frame.Error.Message != "" {
 						message = frame.Error.Message
 					}
+					p.logWorkerFailure(plugin, errors.New(message))
 					p.markTargetCrashed(tenantID, plugin, errors.New(message))
 					_ = worker.Shutdown(context.Background())
 				}
 			}
 		}
 	}()
+}
+
+func (p *Pool) logWorkerFailure(plugin manifest.Plugin, err error) {
+	if p == nil || err == nil {
+		return
+	}
+	logger := p.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Warn(
+		"runtime target worker failed",
+		"target", plugin.ID,
+		"runtime", pluginRuntime(plugin),
+		"entry_path", pluginEntryPath(plugin),
+		"command", strings.Join(plugin.LaunchCommand(), " "),
+		"diagnostic", safeWorkerErrorMessage("worker failed", err),
+	)
 }
 
 func (p *Pool) applyToolsUpdated(tenantID string, plugin manifest.Plugin, update workerwire.WorkerToolsUpdated) {

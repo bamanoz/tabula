@@ -78,9 +78,10 @@ func (pe *PolicyEngine) SessionJoin(session string, tenantID string, clientName 
 	pe.hub.dispatchHook("session_join", pe.joinHookPayload(session, tenantID, clientName), tenantID, session)
 }
 
-// BeforePromptBuild lets plugins contribute prompt-build context for init-capable
-// clients without mutating the persisted session_start init context.
-func (pe *PolicyEngine) BeforePromptBuild(session string, tenantID string, clientName string, context string, tools json.RawMessage, meta json.RawMessage) string {
+// BeforePromptBuild lets plugins contribute prompt-build context and filter the
+// init tool surface for init-capable clients without mutating persisted session
+// state.
+func (pe *PolicyEngine) BeforePromptBuild(session string, tenantID string, clientName string, context string, tools json.RawMessage, meta json.RawMessage) (string, json.RawMessage) {
 	hookPayload, _ := json.Marshal(map[string]any{
 		"session":   session,
 		"tenant_id": tenantID,
@@ -91,14 +92,51 @@ func (pe *PolicyEngine) BeforePromptBuild(session string, tenantID string, clien
 	})
 	result, ok := pe.hub.dispatchHook("before_prompt_build", hookPayload, tenantID, session)
 	if !ok {
-		return context
+		return context, tools
 	}
 
-	var hookData struct{ Context string }
-	if json.Unmarshal(result, &hookData) == nil && hookData.Context != "" {
-		return hookData.Context
+	var hookData struct {
+		Context string          `json:"context"`
+		Tools   json.RawMessage `json:"tools"`
 	}
-	return context
+	if json.Unmarshal(result, &hookData) != nil {
+		return context, tools
+	}
+	if hookData.Context != "" {
+		context = hookData.Context
+	}
+	if len(hookData.Tools) > 0 {
+		tools = append(json.RawMessage(nil), hookData.Tools...)
+	}
+	return context, tools
+}
+
+// BeforeTurn lets plugins attach transient per-turn context without mutating
+// the persisted session init context or rewriting the user's text.
+func (pe *PolicyEngine) BeforeTurn(session string, tenantID string, msg *Message) string {
+	if msg == nil {
+		return ""
+	}
+	hookPayload, _ := json.Marshal(map[string]any{
+		"session":             session,
+		"tenant_id":           tenantID,
+		"message_id":          msg.ID,
+		"text":                messageText(msg),
+		"meta":                metaMap(msg.Meta),
+		"turn_correlation_id": metaString(msg.Meta, turnCorrelationMetaKey),
+	})
+	result, ok := pe.hub.dispatchHook("before_turn", hookPayload, tenantID, session)
+	if !ok {
+		return ""
+	}
+
+	var hookData struct {
+		Context string `json:"context"`
+	}
+	if json.Unmarshal(result, &hookData) != nil {
+		return ""
+	}
+	return hookData.Context
 }
 
 // CanSend checks whether a client is allowed to send a message.

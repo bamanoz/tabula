@@ -88,6 +88,60 @@ sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 	}
 }
 
+func TestPoolTenantReloadDoesNotEvictRuntimeScopedWorker(t *testing.T) {
+	alphaDir := t.TempDir()
+	betaDir := t.TempDir()
+	body := `id = "gateway"
+name = "Gateway"
+version = "0.1.0"
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+scope = "runtime"
+
+[[tools]]
+name = "status"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`
+	writePoolPluginBody(t, filepath.Join(alphaDir, "gateway", "plugin.toml"), body)
+	writePoolPluginBody(t, filepath.Join(betaDir, "gateway", "plugin.toml"), body)
+	store, err := manifest.NewTenantStore(map[string]manifest.SearchDirs{
+		"alpha": {PluginDirs: []string{alphaDir}},
+		"beta":  {PluginDirs: []string{betaDir}},
+	})
+	if err != nil {
+		t.Fatalf("NewTenantStore: %v", err)
+	}
+	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), nextWorker: newFakeWorker()}
+	p := New("main", store, fake, Options{AllowedTenants: []string{"alpha", "beta"}})
+	t.Cleanup(p.Close)
+
+	resp, err := p.Invoke(context.Background(), wire.Invoke{Op: wire.OpInvoke, CallID: "alpha", TenantID: "alpha", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "gateway"}, Tool: "status"})
+	if err != nil || !resp.OK {
+		t.Fatalf("Invoke alpha = %#v, %v", resp, err)
+	}
+	worker := fake.lastSpawnedWorker()
+	evicted := p.Reload(nil, "beta")
+	if len(evicted) != 0 {
+		t.Fatalf("tenant reload evicted runtime-scoped target: %#v", evicted)
+	}
+	if worker.shutdown.Load() {
+		t.Fatal("tenant reload shut down shared runtime-scoped worker")
+	}
+
+	resp, err = p.Invoke(context.Background(), wire.Invoke{Op: wire.OpInvoke, CallID: "beta", TenantID: "beta", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "gateway"}, Tool: "status"})
+	if err != nil || !resp.OK {
+		t.Fatalf("Invoke beta = %#v, %v", resp, err)
+	}
+	if got := fake.spawnCount.Load(); got != 1 {
+		t.Fatalf("spawn count after tenant reload = %d, want 1", got)
+	}
+}
+
 func TestPoolPrimeRuntimeTargetsSkipsTenantScopedWarmWorkers(t *testing.T) {
 	alphaDir := t.TempDir()
 	betaDir := t.TempDir()
@@ -874,6 +928,57 @@ func TestPoolPrimeTargetsRepublishesReadyCatalogWithoutRespawn(t *testing.T) {
 	t.Fatal("prime did not republish ready catalog update")
 }
 
+func TestPoolPrimeRuntimeTargetsStartsRuntimeScopedTargetOnceAcrossTenants(t *testing.T) {
+	dir := t.TempDir()
+	alphaDir := filepath.Join(dir, "alpha")
+	betaDir := filepath.Join(dir, "beta")
+	pluginBody := `id = "driver"
+name = "Driver"
+version = "0.1.0"
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+scope = "runtime"
+
+[[hooks]]
+event = "session_join"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`
+	writePoolPluginBody(t, filepath.Join(alphaDir, "driver", "plugin.toml"), pluginBody)
+	writePoolPluginBody(t, filepath.Join(betaDir, "driver", "plugin.toml"), pluginBody)
+	store, err := manifest.NewTenantStore(map[string]manifest.SearchDirs{
+		"alpha": {PluginDirs: []string{alphaDir}},
+		"beta":  {PluginDirs: []string{betaDir}},
+	})
+	if err != nil {
+		t.Fatalf("NewTenantStore: %v", err)
+	}
+	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), nextWorker: newFakeWorker()}
+	p := New("main", store, fake, Options{})
+
+	p.PrimeRuntimeTargets(context.Background(), nil)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if got := fake.spawnCount.Load(); got == 1 {
+			caps := p.Capabilities()
+			if len(caps) != 1 || caps[0].Target.ID != "driver" || caps[0].State != wire.CapabilityStateReady || len(caps[0].Tenants) != 2 {
+				t.Fatalf("unexpected capabilities: %#v", caps)
+			}
+			return
+		} else if got > 1 {
+			t.Fatalf("spawn count = %d, want 1", got)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("spawn count = %d, want 1", fake.spawnCount.Load())
+}
+
 func TestPoolInitTimeAsyncFramesAreNotDropped(t *testing.T) {
 	p, fake := testPool(t)
 	w := newFakeWorker()
@@ -1041,6 +1146,8 @@ func TestPoolPrimeTargetsLogsRuntimeAndEntryPathOnFailure(t *testing.T) {
 
 func TestPoolLifecycleCrashRedactsWorkerDiagnostics(t *testing.T) {
 	p, fake := testPool(t)
+	var buf bytes.Buffer
+	p.SetLogger(slog.New(slog.NewTextHandler(&buf, nil)))
 	resp, err := p.Invoke(context.Background(), invoke("call-ready", "tenant-a", "echo"))
 	if err != nil || !resp.OK {
 		t.Fatalf("Invoke = %#v, %v", resp, err)
@@ -1060,6 +1167,16 @@ func TestPoolLifecycleCrashRedactsWorkerDiagnostics(t *testing.T) {
 			}
 			if strings.Contains(notice.Message, "hunter2") || strings.Contains(notice.Message, "worker exited before result") {
 				t.Fatalf("expected lifecycle message to redact raw stderr/error detail, got %q", notice.Message)
+			}
+			logLine := buf.String()
+			if !strings.Contains(logLine, "runtime target worker failed") || !strings.Contains(logLine, "target=fs") {
+				t.Fatalf("expected worker failure log, got %q", logLine)
+			}
+			if !strings.Contains(logLine, "worker stderr captured: 1 line, 25 bytes") {
+				t.Fatalf("expected bounded stderr diagnostic in log, got %q", logLine)
+			}
+			if strings.Contains(logLine, "hunter2") || strings.Contains(logLine, "worker exited before result") {
+				t.Fatalf("expected worker failure log to redact raw detail, got %q", logLine)
 			}
 			return
 		case <-time.After(10 * time.Millisecond):

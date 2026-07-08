@@ -198,7 +198,8 @@ tests = ["tests/test_tool_result_store.py"]
 
 [suites.mempalace]
 set = "empty"
-components = ["mempalace:mempalace-save", "mempalace:mempalace-search", "mempalace:mempalace-admin"]
+bundles = ["base"]
+components = ["mempalace:mempalace", "mempalace:mempalace-admin"]
 tests = ["tests/test_mempalace.py"]
 
 [suites.codegraph]

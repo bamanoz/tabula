@@ -107,7 +107,7 @@ func stdioCmd(args []string, stderr io.Writer) int {
 	}
 	manifestStore.SetTabulaHome(paths.Home())
 	logger := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	workerPool := pool.New(kernelCfg.ID, manifestStore, bare.New(), pool.Options{ColdWorkersPerTenantMax: cfg.Pool.ColdWorkersPerTenantMax, ColdWorkersByTenant: coldWorkerTenantOverrides(cfg.Pool.Tenants), AllowedTenants: kernelCfg.Tenants, TabulaHome: paths.Home(), KernelURL: os.Getenv("TABULA_URL"), PluginKindDependsOn: pluginKindDependencies(cfg.PluginKinds)})
+	workerPool := pool.New(kernelCfg.ID, manifestStore, bare.New(), pool.Options{ColdWorkersPerTenantMax: cfg.Pool.ColdWorkersPerTenantMax, ColdWorkersByTenant: coldWorkerTenantOverrides(cfg.Pool.Tenants), AllowedTenants: kernelCfg.Tenants, TabulaHome: paths.Home(), KernelURL: workerKernelURL(kernelCfg.URL), PluginKindDependsOn: pluginKindDependencies(cfg.PluginKinds)})
 	workerPool.SetLogger(logger)
 	defer workerPool.Close()
 	conn := stdio.NewConn(os.Stdin, os.Stdout)
@@ -179,7 +179,7 @@ func startCmd(args []string, stderr io.Writer) int {
 		ColdWorkersByTenant:     coldWorkerTenantOverrides(cfg.Pool.Tenants),
 		AllowedTenants:          kernelCfg.Tenants,
 		TabulaHome:              paths.Home(),
-		KernelURL:               os.Getenv("TABULA_URL"),
+		KernelURL:               workerKernelURL(kernelCfg.URL),
 		PluginKindDependsOn:     pluginKindDependencies(cfg.PluginKinds),
 	})
 	workerPool.SetLogger(logger)
@@ -202,6 +202,13 @@ func configuredRuntimeID(explicit string, now time.Time) (string, error) {
 		return "", fmt.Errorf("resolve runtime instance metadata: %w", err)
 	}
 	return meta.RuntimeID, nil
+}
+
+func workerKernelURL(configured string) string {
+	if envURL := strings.TrimSpace(os.Getenv("TABULA_URL")); envURL != "" {
+		return envURL
+	}
+	return strings.TrimSpace(configured)
 }
 
 func printUsage(w io.Writer) {

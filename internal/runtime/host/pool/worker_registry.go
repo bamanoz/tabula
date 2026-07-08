@@ -205,8 +205,10 @@ func (r *workerRegistry) evict(target *wire.Target, tenants ...string) []evicted
 		if target != nil && (target.Kind != wire.TargetKindPlugin || target.ID != k.targetID) {
 			continue
 		}
-		if len(requestedTenants) > 0 && k.tenantID != "" && !requestedTenants[k.tenantID] {
-			continue
+		if len(requestedTenants) > 0 {
+			if k.tenantID == "" || !requestedTenants[k.tenantID] {
+				continue
+			}
 		}
 		delete(r.entries, k)
 		evicted = append(evicted, evictedEntry{target: wire.Target{Kind: wire.TargetKindPlugin, ID: k.targetID}, entry: e})

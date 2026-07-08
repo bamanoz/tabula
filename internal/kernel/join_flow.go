@@ -75,6 +75,11 @@ func (h *Hub) applyJoinPlan(c *Client, plan joinPlan) {
 	h.resendPendingApprovals(c, plan.tenantID, plan.session)
 
 	h.policy.SessionJoin(plan.session, plan.tenantID, c.name)
+	if c.canReceive(TopicMessageUser) && c.canSend(TopicTurnDone) {
+		if queued, ok := h.beginQueuedInput(plan.tenantID, plan.session); ok {
+			h.dispatchQueuedInput(plan.tenantID, plan.session, queued)
+		}
+	}
 }
 
 func (h *Hub) leaveCurrentSession(c *Client, nextTenantID, nextSession string) {
@@ -144,7 +149,7 @@ func (h *Hub) buildInitAfterJoin(c *Client, plan joinPlan) *Message {
 	}
 	tools := h.initToolsJSON(plan.tenantID)
 	meta := h.initMetaJSON(plan.tenantID)
-	context := h.policy.BeforePromptBuild(plan.session, plan.tenantID, c.name, plan.context, tools, meta)
+	context, tools := h.policy.BeforePromptBuild(plan.session, plan.tenantID, c.name, plan.context, tools, meta)
 	return h.initMessage(context, tools, meta)
 }
 
@@ -200,7 +205,7 @@ func (h *Hub) initToolsJSON(tenantID ...string) json.RawMessage {
 	}
 	h.toolExecMu.RLock()
 	for name, entry := range h.toolExec {
-		if entry.Source != toolSourceRuntime || name == "" || !toolExecVisible(entry, resolvedTenantID) || !h.runtimeToolVisibleToTenant(entry, resolvedTenantID) {
+		if entry.Source != toolSourceRuntime || !entry.Advertise || name == "" || !toolExecVisible(entry, resolvedTenantID) || !h.runtimeToolVisibleToTenant(entry, resolvedTenantID) {
 			continue
 		}
 		toolName := name
@@ -307,6 +312,7 @@ func appendInitTool(tools []map[string]any, seen map[string]bool, name string, s
 	if len(schema) > 0 {
 		var decoded map[string]any
 		if json.Unmarshal(schema, &decoded) == nil {
+			item["schema"] = decoded
 			if props, ok := decoded["properties"].(map[string]any); ok {
 				item["params"] = props
 			}

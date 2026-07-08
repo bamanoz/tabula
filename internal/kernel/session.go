@@ -36,6 +36,8 @@ type Session struct {
 	LastActiveAt        time.Time
 	clients             map[string]bool // client name → true
 	inflightTurn        bool
+	inflightInput       queuedInput
+	hasInflightInput    bool
 	cancelRequested     bool
 	pendingInputs       []queuedInput
 	pendingSteers       []queuedInput
@@ -196,6 +198,8 @@ func (s *Session) BeginTurn() bool {
 		return false
 	}
 	s.inflightTurn = true
+	s.inflightInput = queuedInput{}
+	s.hasInflightInput = false
 	s.cancelRequested = false
 	s.State = SessionActive
 	s.touchLocked()
@@ -206,6 +210,8 @@ func (s *Session) EndTurn() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.inflightTurn = false
+	s.inflightInput = queuedInput{}
+	s.hasInflightInput = false
 	s.cancelRequested = false
 	if s.stuckSuspended {
 		s.State = SessionStuck
@@ -219,13 +225,9 @@ func (s *Session) CompleteTurn() (queuedInput, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cancelRequested = false
-	if len(s.pendingInputs) > 0 {
-		input := s.pendingInputs[0]
-		copy(s.pendingInputs, s.pendingInputs[1:])
-		s.pendingInputs = s.pendingInputs[:len(s.pendingInputs)-1]
-		s.inflightTurn = true
-		s.State = SessionActive
-		s.touchLocked()
+	s.inflightInput = queuedInput{}
+	s.hasInflightInput = false
+	if input, ok := s.shiftQueuedInputLocked(); ok {
 		return input, true
 	}
 	s.inflightTurn = false
@@ -235,6 +237,64 @@ func (s *Session) CompleteTurn() (queuedInput, bool) {
 		s.State = SessionIdle
 	}
 	s.touchLocked()
+	return queuedInput{}, false
+}
+
+func (s *Session) SetInflightInput(msg *Message, exclude *Client) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.inflightTurn || msg == nil {
+		return
+	}
+	s.inflightInput = queuedInput{message: cloneMessage(msg), exclude: exclude}
+	s.hasInflightInput = true
+	s.touchLocked()
+}
+
+func (s *Session) InterruptTurn() (queuedInput, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.inflightTurn {
+		return queuedInput{}, false
+	}
+	input, hasInput := s.inflightInput, s.hasInflightInput && s.inflightInput.message != nil
+	s.inflightTurn = false
+	s.inflightInput = queuedInput{}
+	s.hasInflightInput = false
+	s.cancelRequested = false
+	if hasInput {
+		s.pendingInputs = append([]queuedInput{input}, s.pendingInputs...)
+	}
+	if s.stuckSuspended {
+		s.State = SessionStuck
+	} else if s.State != SessionClosing && len(s.clients) == 0 {
+		s.State = SessionIdle
+	}
+	s.touchLocked()
+	return input, hasInput
+}
+
+func (s *Session) BeginQueuedInput() (queuedInput, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.inflightTurn {
+		return queuedInput{}, false
+	}
+	return s.shiftQueuedInputLocked()
+}
+
+func (s *Session) shiftQueuedInputLocked() (queuedInput, bool) {
+	if len(s.pendingInputs) > 0 {
+		input := s.pendingInputs[0]
+		copy(s.pendingInputs, s.pendingInputs[1:])
+		s.pendingInputs = s.pendingInputs[:len(s.pendingInputs)-1]
+		s.inflightTurn = true
+		s.inflightInput = input
+		s.hasInflightInput = input.message != nil
+		s.State = SessionActive
+		s.touchLocked()
+		return input, true
+	}
 	return queuedInput{}, false
 }
 

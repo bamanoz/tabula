@@ -21,12 +21,106 @@ from __future__ import annotations
 
 import os
 import tempfile
+import tomllib
 from pathlib import Path
 from typing import Any, Mapping
 
-import tomlkit
-from tomlkit import TOMLDocument
-from tomlkit.items import AbstractTable, Array
+try:
+    import tomlkit
+    from tomlkit import TOMLDocument
+    from tomlkit.items import AbstractTable, Array
+except ImportError:  # pragma: no cover - depends on caller environment
+    tomlkit = None  # type: ignore[assignment]
+    TOMLDocument = dict  # type: ignore[assignment]
+    AbstractTable = dict  # type: ignore[assignment]
+    Array = list  # type: ignore[assignment]
+
+
+class MissingTomlkitError(RuntimeError):
+    pass
+
+
+def require_tomlkit():
+    if tomlkit is None:
+        return _FallbackTomlKit()
+    return tomlkit
+
+
+class _FallbackTomlKit:
+    def document(self) -> dict[str, Any]:
+        return {}
+
+    def table(self) -> dict[str, Any]:
+        return {}
+
+    def array(self) -> list[Any]:
+        return []
+
+    def aot(self) -> list[dict[str, Any]]:
+        return []
+
+    def parse(self, text: str) -> dict[str, Any]:
+        return tomllib.loads(text)
+
+    def dumps(self, doc: Mapping[str, Any]) -> str:
+        return _dump_plain_toml(doc)
+
+
+def _dump_plain_toml(doc: Mapping[str, Any]) -> str:
+    lines: list[str] = []
+    _dump_table(lines, [], doc)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _dump_table(lines: list[str], path: list[str], table: Mapping[str, Any]) -> None:
+    scalars: list[tuple[str, Any]] = []
+    tables: list[tuple[str, Mapping[str, Any]]] = []
+    arrays_of_tables: list[tuple[str, list[Mapping[str, Any]]]] = []
+    for key, value in table.items():
+        if isinstance(value, Mapping):
+            tables.append((str(key), value))
+            continue
+        if _is_array_of_tables(value):
+            arrays_of_tables.append((str(key), value))
+            continue
+        scalars.append((str(key), value))
+
+    for key, value in scalars:
+        lines.append(f"{key} = {_format_value(value)}")
+
+    for key, nested in tables:
+        if lines and lines[-1] != "":
+            lines.append("")
+        section = path + [key]
+        lines.append(f"[{'.'.join(section)}]")
+        _dump_table(lines, section, nested)
+
+    for key, items in arrays_of_tables:
+        section = path + [key]
+        for item in items:
+            if lines and lines[-1] != "":
+                lines.append("")
+            lines.append(f"[[{'.'.join(section)}]]")
+            _dump_table(lines, section, item)
+
+
+def _is_array_of_tables(value: Any) -> bool:
+    return isinstance(value, list) and bool(value) and all(isinstance(item, Mapping) for item in value)
+
+
+def _format_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_format_value(item) for item in value) + "]"
+    return _quote_string(str(value))
+
+
+def _quote_string(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return f'"{escaped}"'
 
 
 def load(path: Path) -> TOMLDocument:
@@ -37,10 +131,11 @@ def load(path: Path) -> TOMLDocument:
     ParseError` on malformed input — both are surfaced to the caller so the
     installer can fail loudly instead of silently overwriting a broken file.
     """
+    tk = require_tomlkit()
     if not path.is_file():
-        return tomlkit.document()
+        return tk.document()
     with path.open("r", encoding="utf-8") as fh:
-        return tomlkit.parse(fh.read())
+        return tk.parse(fh.read())
 
 
 def dump(path: Path, doc: TOMLDocument) -> None:
@@ -51,7 +146,7 @@ def dump(path: Path, doc: TOMLDocument) -> None:
     file intact or no change at all — never a partial write.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    rendered = tomlkit.dumps(doc)
+    rendered = require_tomlkit().dumps(doc)
     fd, tmp_name = tempfile.mkstemp(
         prefix=path.name + ".",
         suffix=".tmp",
@@ -111,12 +206,12 @@ def _merge_into(target: AbstractTable | TOMLDocument, defaults: Mapping[str, Any
 
 def _to_tomlkit(value: Any) -> Any:
     if isinstance(value, Mapping):
-        table = tomlkit.table()
+        table = require_tomlkit().table()
         for key, sub in value.items():
             table[key] = _to_tomlkit(sub)
         return table
     if isinstance(value, list):
-        array: Array = tomlkit.array()
+        array: Array = require_tomlkit().array()
         for item in value:
             array.append(_to_tomlkit(item))
         return array
@@ -129,4 +224,4 @@ def _to_tomlkit(value: Any) -> Any:
 to_tomlkit = _to_tomlkit
 
 
-__all__ = ["load", "dump", "merge_defaults", "assign", "to_tomlkit"]
+__all__ = ["MissingTomlkitError", "load", "dump", "merge_defaults", "assign", "require_tomlkit", "to_tomlkit"]

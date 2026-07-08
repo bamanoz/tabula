@@ -325,6 +325,37 @@ func TestWorkerRoutesHookEventAndReply(t *testing.T) {
 	}
 }
 
+func TestWorkerIgnoresReplyForNoReplyHookEvent(t *testing.T) {
+	req := testSpawnReq(t, policy.SpawnModeWarm)
+	worker, err := New().Spawn(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	defer func() { _ = worker.Shutdown(context.Background()) }()
+	if _, err := worker.Init(context.Background(), workerwire.WorkerInit{KernelID: req.KernelID, TenantID: req.TenantID, TargetID: req.TargetID, Manifest: req.Manifest}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if reply, err := worker.HookEvent(context.Background(), workerwire.WorkerEvent{CallID: "hook-void", Event: "session_join", ReplyMode: workerwire.ReplyModeNone, Data: json.RawMessage(`{"session":"web-fresh"}`)}); err != nil || reply != nil {
+		t.Fatalf("HookEvent no-reply: reply=%#v err=%v", reply, err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	deadline := time.Now().Add(time.Second)
+	var lastErr error
+	var lastResult workerwire.WorkerResult
+	for time.Now().Before(deadline) {
+		callCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		result, err := worker.Call(callCtx, workerwire.WorkerCall{CallID: "call-after-void-hook", TenantID: req.TenantID, Tool: "echo"})
+		cancel()
+		if err == nil && result.OK {
+			return
+		}
+		lastErr = err
+		lastResult = result
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("worker did not remain callable after no-reply hook reply: result=%#v err=%v", lastResult, lastErr)
+}
+
 func TestInitTimeoutKillsUnresponsiveWorker(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "worker.sh")
@@ -422,6 +453,57 @@ sys.exit(1)
 		}
 	}
 	_, _ = worker.Wait()
+}
+
+func TestAsyncWorkerExitIncludesActionableWorkerStderrSample(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "worker.py")
+	writeFile(t, script, `#!/usr/bin/env python3
+import json
+import sys
+
+_ = sys.stdin.readline()
+print(json.dumps({"op":"init_ack","ready":True,"tools":[],"subscriptions":[]}))
+sys.stdout.flush()
+print("Traceback (most recent call last):", file=sys.stderr)
+print("RuntimeError: background supervisor failed", file=sys.stderr)
+sys.stderr.flush()
+sys.exit(1)
+`)
+	worker, err := New().Spawn(context.Background(), policy.SpawnReq{
+		KernelID:   "main",
+		TenantID:   "default",
+		TargetID:   "driver",
+		Command:    []string{"./worker.py"},
+		WorkingDir: dir,
+		Mode:       policy.SpawnModeWarm,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if _, err := worker.Init(context.Background(), workerwire.WorkerInit{KernelID: "main", TenantID: "default", TargetID: "driver"}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case event, ok := <-worker.Events():
+			if !ok {
+				t.Fatal("worker events closed before async worker error")
+			}
+			if event.Err == nil {
+				continue
+			}
+			got := event.Err.Error()
+			if !strings.Contains(got, "worker stderr captured: 2 lines") || !strings.Contains(got, "RuntimeError: background supervisor failed") || !strings.Contains(got, "worker exit code=1") {
+				t.Fatalf("expected actionable stderr sample in async error, got %q", got)
+			}
+			_, _ = worker.Wait()
+			return
+		case <-deadline:
+			t.Fatal("timed out waiting for async worker error")
+		}
+	}
 }
 
 func TestSpawnValidatesRequiredFields(t *testing.T) {

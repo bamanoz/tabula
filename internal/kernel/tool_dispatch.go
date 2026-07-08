@@ -30,13 +30,14 @@ type toolDispatch struct {
 	Target     runtimeapi.Target
 	Schema     json.RawMessage // optional JSON schema for the tool
 	DeadlineMs int             // optional plugin tool deadline; defaulted by dispatcher
+	Advertise  bool            // false keeps stale in-flight calls routable without adding the tool to new prompts
 }
 
 func runtimeDispatch(runtimeID, tenantID string, target runtimeapi.Target, schema json.RawMessage, deadlineMs int) toolDispatch {
 	if tenantID == "" {
 		tenantID = "*"
 	}
-	return toolDispatch{Source: toolSourceRuntime, TenantID: tenantID, RuntimeID: runtimeID, Target: target, Schema: schema, DeadlineMs: deadlineMs}
+	return toolDispatch{Source: toolSourceRuntime, TenantID: tenantID, RuntimeID: runtimeID, Target: target, Schema: schema, DeadlineMs: deadlineMs, Advertise: true}
 }
 
 func toolExecKey(tenantID, toolName string) string {

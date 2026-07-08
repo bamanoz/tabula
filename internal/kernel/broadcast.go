@@ -7,11 +7,11 @@ import (
 
 // broadcastToSession sends a message to all clients in a session that can receive the given type.
 // Also delivers to clients with receives_global for that type (regardless of session).
-func (h *Hub) broadcastToSession(tenantID, session, msgType string, msg *Message, exclude *Client) {
-	h.broadcastToSessionFrom(tenantID, session, msgType, msg, nil, exclude)
+func (h *Hub) broadcastToSession(tenantID, session, msgType string, msg *Message, exclude *Client) int {
+	return h.broadcastToSessionFrom(tenantID, session, msgType, msg, nil, exclude)
 }
 
-func (h *Hub) broadcastToSessionFrom(tenantID, session, msgType string, msg *Message, sender *Client, exclude *Client) {
+func (h *Hub) broadcastToSessionFrom(tenantID, session, msgType string, msg *Message, sender *Client, exclude *Client) int {
 	delivered := 0
 	seen := make(map[*Client]bool)
 	if tenantID == "" && sender != nil {
@@ -21,6 +21,9 @@ func (h *Hub) broadcastToSessionFrom(tenantID, session, msgType string, msg *Mes
 	// Session members
 	for _, c := range h.sessionClients(tenantID, session) {
 		if c == exclude {
+			continue
+		}
+		if !c.IsConnected() {
 			continue
 		}
 		if !c.canReceive(msgType) {
@@ -36,6 +39,9 @@ func (h *Hub) broadcastToSessionFrom(tenantID, session, msgType string, msg *Mes
 		if c == exclude || seen[c] {
 			continue
 		}
+		if !c.IsConnected() {
+			continue
+		}
 		if !c.canReceiveGlobal(msgType) {
 			continue
 		}
@@ -49,6 +55,26 @@ func (h *Hub) broadcastToSessionFrom(tenantID, session, msgType string, msg *Mes
 	}
 
 	h.Logger.Debug("broadcast", "type", msgType, "session", session, "delivered", delivered)
+	return delivered
+}
+
+func (h *Hub) broadcastToTurnReceivers(tenantID, session string, msg *Message, sender *Client, exclude *Client) int {
+	delivered := 0
+	if tenantID == "" && sender != nil {
+		tenantID = sender.tenantID
+	}
+	for _, c := range h.sessionClients(tenantID, session) {
+		if c == exclude || !c.IsConnected() {
+			continue
+		}
+		if !c.canReceive(TopicMessageUser) || !c.canSend(TopicTurnDone) {
+			continue
+		}
+		c.SendMsg(h.prepareRoutedMessage(sender, session, "session", msg))
+		delivered++
+	}
+	h.Logger.Debug("broadcast turn input", "session", session, "delivered", delivered)
+	return delivered
 }
 
 func (h *Hub) sendToolResultForTool(tenantID, session, toolID, toolName, output string, artifact json.RawMessage, truncated bool) {

@@ -926,7 +926,7 @@ func resolveToolDeadline(deadlineMs int) time.Duration {
 	if deadlineMs <= 0 {
 		deadlineMs = 30000
 	}
-	maxDeadline := int((15 * time.Minute) / time.Millisecond)
+	maxDeadline := int((time.Hour) / time.Millisecond)
 	if deadlineMs > maxDeadline {
 		deadlineMs = maxDeadline
 	}

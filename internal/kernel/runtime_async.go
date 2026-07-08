@@ -151,7 +151,8 @@ func (h *Hub) syncRuntimeCapability(runtimeID string, capability runtimeapi.Capa
 	h.toolExecMu.Lock()
 	defer h.toolExecMu.Unlock()
 	h.removeRuntimeTargetToolsLocked(runtimeID, capability.Target, capability.Tenants)
-	if capability.State != wire.CapabilityStateReady && capability.State != wire.CapabilityStateManifestLoaded && capability.State != wire.CapabilityStateInitializing {
+	advertise := capability.State == wire.CapabilityStateReady || capability.State == wire.CapabilityStateManifestLoaded || capability.State == wire.CapabilityStateInitializing
+	if !advertise && len(capability.Tools) == 0 {
 		return
 	}
 	tenants := capability.Tenants
@@ -170,7 +171,9 @@ func (h *Hub) syncRuntimeCapability(runtimeID string, capability runtimeapi.Capa
 			if existing, ok := h.toolExec[key]; ok && (existing.RuntimeID != runtimeID || !sameRuntimeTarget(existing.Target, capability.Target)) {
 				h.Logger.Warn("runtime tool shadows existing runtime tool", "tool", tool.Name, "runtime_id", runtimeID, "target", capability.Target.ID, "tenant_id", tenantID)
 			}
-			h.toolExec[key] = runtimeDispatch(runtimeID, tenantID, capability.Target, tool.Schema, int(tool.DeadlineMS))
+			dispatch := runtimeDispatch(runtimeID, tenantID, capability.Target, tool.Schema, int(tool.DeadlineMS))
+			dispatch.Advertise = advertise
+			h.toolExec[key] = dispatch
 		}
 	}
 }
@@ -197,8 +200,8 @@ func (h *Hub) broadcastRuntimeCatalogRefreshForTenants(tenants []string) {
 		meta := h.initMetaJSON(sess.TenantID)
 		for _, client := range h.sessionClients(sess.TenantID, sess.ID) {
 			if client.canReceive(TopicSessionInit) {
-				context := h.policy.BeforePromptBuild(sess.ID, sess.TenantID, client.name, sess.GetInitContext(), tools, meta)
-				msg := h.initMessage(context, tools, meta)
+				context, filteredTools := h.policy.BeforePromptBuild(sess.ID, sess.TenantID, client.name, sess.GetInitContext(), tools, meta)
+				msg := h.initMessage(context, filteredTools, meta)
 				client.SendMsg(msg)
 				clientCount++
 			}
@@ -276,6 +279,28 @@ func (h *Hub) markRuntimeTargetBusy(runtimeID string, target wire.Target) func()
 		}
 		h.runtimeBusy[key]--
 	}
+}
+
+func (h *Hub) tryMarkRuntimeTargetBusy(runtimeID string, target wire.Target) (func(), bool) {
+	if h == nil || runtimeID == "" {
+		return func() {}, true
+	}
+	key := runtimeTargetBusyKey(runtimeID, target)
+	h.runtimeBusyMu.Lock()
+	defer h.runtimeBusyMu.Unlock()
+	if h.runtimeBusy[key] > 0 {
+		return nil, false
+	}
+	h.runtimeBusy[key] = 1
+	return func() {
+		h.runtimeBusyMu.Lock()
+		defer h.runtimeBusyMu.Unlock()
+		if h.runtimeBusy[key] <= 1 {
+			delete(h.runtimeBusy, key)
+			return
+		}
+		h.runtimeBusy[key]--
+	}, true
 }
 
 func (h *Hub) isRuntimeTargetBusy(runtimeID string, target wire.Target) bool {

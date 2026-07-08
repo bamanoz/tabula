@@ -570,7 +570,7 @@ Current bundles:
   sessions, skill-contract, tabula-guide, timer, mcp
 - `workspace/` — `fs` and `exec` plugins
 - `drivers/` — `driver`, `subagent`, plus `_drivers/` shared support code
-- `mempalace/` — mempalace-save, mempalace-search, mempalace-admin
+- `mempalace/` — mempalace, mempalace-admin
 - `caveman/` — minimal experimental skill set
 - `code/`, `subagents/` — coding and delegation components
 

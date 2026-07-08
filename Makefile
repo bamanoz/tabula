@@ -1,8 +1,16 @@
-.PHONY: build test test-unit test-smoke test-e2e test-contract test-go test-go-unit test-go-smoke test-python test-python-unit test-python-smoke test-python-e2e test-python-contract lint vet release-local release-local-dry-run push install install-agent agent agent-prepare agent-run agent-connect clean
+.PHONY: build build-windows build-linux build-all build-harness-bench-image test test-unit test-smoke test-e2e test-contract test-go test-go-unit test-go-smoke test-python test-python-unit test-python-smoke test-python-e2e test-python-contract testbed lint vet release-local release-local-dry-run push install install-agent agent agent-prepare agent-run agent-connect clean
 
 TABULA_HOME ?= .
 VENV_PYTHON = .venv/bin/python3
 AGENT_HOME ?= $(CURDIR)/.tabula
+HARNESS_BENCH_IMAGE ?= tabula-harness-bench:latest
+HARNESS_BENCH_DOCKERFILE ?= docker/harness-bench.Dockerfile
+TESTBED_VENV ?= $(CURDIR)/.venv-testbed
+TESTBED_PYTHON ?= $(TESTBED_VENV)/bin/python
+TESTBED_DIR ?= $(CURDIR)/../tabula-distrib/testbed
+TESTBED_HOME ?=
+TESTBED_KEEP ?= 0
+TESTBED_EXTRA_ARGS ?=
 
 PRIMARY_GOAL := $(firstword $(MAKECMDGOALS))
 SECOND_GOAL := $(word 2,$(MAKECMDGOALS))
@@ -40,6 +48,9 @@ build-linux:
 
 build-all: build build-windows build-linux
 
+build-harness-bench-image:
+	docker build -f "$(HARNESS_BENCH_DOCKERFILE)" -t "$(HARNESS_BENCH_IMAGE)" .
+
 # Test
 
 test: test-go test-python
@@ -75,6 +86,28 @@ test-python-e2e:
 
 test-python-contract:
 	TABULA_HOME=$(TABULA_HOME) ./scripts/test-python.sh contract
+
+testbed:
+	@if [ -z "$(SUITE)" ]; then \
+		printf 'usage: make testbed SUITE=<suite> [TESTBED_DIR=path] [LOCAL_TABULA_BUNDLES=path] [TESTBED_EXTRA_ARGS="..."]\n' >&2; \
+		exit 2; \
+	fi
+	@if [ ! -x "$(TESTBED_PYTHON)" ]; then \
+		python3 -m venv "$(TESTBED_VENV)"; \
+		"$(TESTBED_VENV)/bin/python" -m pip install -q --upgrade pip setuptools wheel; \
+		"$(TESTBED_VENV)/bin/python" -m pip install -q -e "$(CURDIR)/tools/tabula-testbed"; \
+	fi
+	@if [ -n "$(TESTBED_HOME)" ]; then \
+		rm -rf "$(TESTBED_HOME)"; \
+	fi
+	$(TESTBED_PYTHON) -m tabula_testbed_runner.cli run \
+		--tabula-root "$(CURDIR)" \
+		--testbed-dir "$(TESTBED_DIR)" \
+		--suite "$(SUITE)" \
+		--source tabula-bundles="$(LOCAL_TABULA_BUNDLES)" \
+		$(if $(TESTBED_HOME),--home "$(TESTBED_HOME)",) \
+		$(if $(filter 1 true yes,$(TESTBED_KEEP)),--keep,) \
+		$(TESTBED_EXTRA_ARGS)
 
 # Lint
 

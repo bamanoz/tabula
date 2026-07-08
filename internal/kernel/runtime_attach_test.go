@@ -279,10 +279,85 @@ func TestRuntimeHookSubscriberConnectsManifestLoadedHookOnlyTarget(t *testing.T)
 			State:  wire.CapabilityStateManifestLoaded,
 			Source: wire.CapabilitySourceManifest,
 		},
-	}, nil, nil)
+	}, nil, nil, nil, nil)
 	if !sub.IsConnected() {
 		t.Fatal("manifest-loaded hook-only runtime target should be dispatchable")
 	}
+}
+
+func TestRuntimeHookSubscriberSendsCallIDForVoidHooks(t *testing.T) {
+	recorder := &recordingRuntimeConn{}
+	sub := newRuntimeHookSubscriber(runtimeHookTarget{
+		RuntimeID: runtimeauth.LocalRuntimeID,
+		Conn:      recorder,
+		Capability: wire.Capability{
+			Target:  wire.Target{Kind: wire.TargetKindPlugin, ID: "driver"},
+			Tenants: []string{"code-immune-tabula-dev"},
+			Hooks:   []wire.HookSpec{{Event: "session_join", Priority: 100}},
+			State:   wire.CapabilityStateReady,
+			Source:  wire.CapabilitySourceWorker,
+		},
+	}, nil, nil, nil, nil)
+
+	sub.SendMsg(&Message{
+		Type:     string(MsgHook),
+		ID:       "h-session-join",
+		Name:     "session_join",
+		TenantID: "code-immune-tabula-dev",
+		Session:  "web-fresh",
+		Payload:  json.RawMessage(`{"session":"web-fresh","tenant_id":"code-immune-tabula-dev","client":"gateway-web"}`),
+	})
+
+	got := recorder.hookEvents
+	if len(got) != 1 {
+		t.Fatalf("expected one hook event, got %d", len(got))
+	}
+	if got[0].CallID != "h-session-join" {
+		t.Fatalf("void runtime hook call_id was dropped: %#v", got[0])
+	}
+	if got[0].ReplyMode != wire.HookReplyModeNone {
+		t.Fatalf("expected no-reply void hook mode, got %q", got[0].ReplyMode)
+	}
+}
+
+func TestRuntimeSessionJoinHookDeliveredWhenTargetBusy(t *testing.T) {
+	recorder := &recordingRuntimeConn{}
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "driver"}
+	sub := newRuntimeHookSubscriber(runtimeHookTarget{
+		RuntimeID: runtimeauth.LocalRuntimeID,
+		Conn:      recorder,
+		Capability: wire.Capability{
+			Target:  target,
+			Tenants: []string{"code-immune-tabula-dev"},
+			Hooks:   []wire.HookSpec{{Event: "session_join", Priority: 100}},
+			State:   wire.CapabilityStateReady,
+			Source:  wire.CapabilitySourceWorker,
+		},
+	}, func(runtimeID string, busyTarget wire.Target) bool {
+		return runtimeID == runtimeauth.LocalRuntimeID && busyTarget == target
+	}, nil, nil, nil)
+	engine := NewHookEngine(nil)
+	engine.RebuildIndex([]HookSubscriber{sub})
+
+	engine.Dispatch("session_join", json.RawMessage(`{"session":"web-fresh","tenant_id":"code-immune-tabula-dev","client":"gateway-web"}`), "code-immune-tabula-dev", "web-fresh")
+
+	got := recorder.hookEvents
+	if len(got) != 1 {
+		t.Fatalf("session_join should not be skipped for a busy runtime target; got %d events", len(got))
+	}
+	if got[0].Event != "session_join" || got[0].SessionID != "web-fresh" {
+		t.Fatalf("unexpected hook event: %#v", got[0])
+	}
+}
+
+type recordingRuntimeConn struct {
+	testRuntimeConn
+	hookEvents []runtimeapi.HookEventReq
+}
+
+func (c *recordingRuntimeConn) SendHookEvent(_ context.Context, req runtimeapi.HookEventReq) error {
+	c.hookEvents = append(c.hookEvents, req)
+	return nil
 }
 
 func TestServeAuthenticatedRuntimeInitialCapabilitiesReachInitTools(t *testing.T) {

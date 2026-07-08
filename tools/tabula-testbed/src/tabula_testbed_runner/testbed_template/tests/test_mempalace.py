@@ -18,6 +18,12 @@ class MempalaceSmoke(unittest.TestCase):
         client.connect_join("testbed-mempalace")
         return client
 
+    def test_mempalace_manifest_advertises_recall_hooks(self):
+        manifest = (Path(self.tabula_home) / "plugins" / "mempalace" / "plugin.toml").read_text(encoding="utf-8")
+        self.assertIn('event = "session_start"', manifest)
+        self.assertIn('event = "before_prompt_build"', manifest)
+        self.assertIn('event = "before_turn"', manifest)
+
     def test_mempalace_validation_errors_execute_installed_scripts(self):
         with self.make_client() as client:
             client.wait_tools({
@@ -35,7 +41,7 @@ class MempalaceSmoke(unittest.TestCase):
             result = client.call_tool("mempalace_add_drawer", {"wing": "people", "room": "facts", "content": ""}).json()
             self.assertFalse(result.get("success"), result)
             result = client.call_tool("mempalace_search", {"query": ""}).json()
-            self.assertIn("error", result)
+            self.assertEqual(result.get("results"), [])
             result = client.call_tool("mempalace_search", {"query": "x", "limit": "nope"}).json()
             self.assertIn("error", result)
             result = client.call_tool("mempalace_list_drawers", {"limit": "nope"}).json()

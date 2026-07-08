@@ -45,9 +45,13 @@ const (
 	TopicExchangeApprove     = "exchange.approve"
 	TopicSessionInit         = "session.init"
 	TopicSessionMemberJoined = "session.member_joined"
+	TopicSessionStatus       = "session.status"
 	TopicTurnDone            = "turn.done"
 	TopicTurnCancel          = "turn.cancel"
 	TopicTurnSteer           = "turn.steer"
+	TopicCompactionStart     = "compaction.start"
+	TopicCompactionEnd       = "compaction.end"
+	TopicCompactionError     = "compaction.error"
 )
 
 func isExchangeTopic(topic string) bool {

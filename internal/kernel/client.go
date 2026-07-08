@@ -36,10 +36,20 @@ type Client struct {
 	sendCh         chan []byte
 	sendMu         sync.Mutex
 	sendClosed     bool
+	unregisterOnce sync.Once
+	stateMu        sync.RWMutex
 	state          ClientState
 	recvCh         chan *Message // if set, messages go here instead of WebSocket
 	done           chan struct{} // closed when the client disconnects
 	doneOnce       sync.Once
+}
+
+func (c *Client) Close() error {
+	c.MarkClosed()
+	if c.conn == nil {
+		return nil
+	}
+	return c.conn.Close()
 }
 
 // Done returns a channel that is closed when the client disconnects.
@@ -60,7 +70,7 @@ func NewClient(hub *Hub, conn *websocket.Conn) *Client {
 		done:   make(chan struct{}),
 	}
 	if !hub.Register(c) {
-		conn.Close()
+		_ = conn.Close()
 		return nil
 	}
 	go c.writePump()
@@ -70,6 +80,8 @@ func NewClient(hub *Hub, conn *websocket.Conn) *Client {
 
 // transition moves the client to a new state, returning false if invalid.
 func (c *Client) transition(to ClientState) bool {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
 	valid := map[ClientState]map[ClientState]bool{
 		ClientSocketConnected: {ClientProtocolReady: true, ClientClosed: true},
 		ClientProtocolReady:   {ClientJoined: true, ClientClosed: true},
@@ -101,6 +113,8 @@ func (c *Client) MarkClosed() {
 
 // IsConnected returns true if the client is in a live state.
 func (c *Client) IsConnected() bool {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
 	return c.state != ClientClosed
 }
 
@@ -174,7 +188,7 @@ func (c *Client) SendRaw(data []byte) {
 // readPump reads messages from WebSocket and dispatches to hub.
 func (c *Client) readPump() {
 	defer func() {
-		c.hub.Unregister(c)
+		c.unregister()
 		c.conn.Close()
 		c.closeSend()
 	}()
@@ -208,6 +222,14 @@ func (c *Client) writePump() {
 			break
 		}
 	}
+	c.unregister()
+}
+
+func (c *Client) unregister() {
+	c.MarkClosed()
+	c.unregisterOnce.Do(func() {
+		c.hub.Unregister(c)
+	})
 }
 
 func (c *Client) closeSend() {

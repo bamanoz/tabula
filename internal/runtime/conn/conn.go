@@ -229,14 +229,14 @@ func (c *Conn) SendHookEvent(ctx context.Context, req runtimeapi.HookEventReq) e
 		replyMode = defaultHookReplyMode(req.Event)
 	}
 	frame := wire.HookEvent{
-		Op:        wire.OpHookEvent,
-		TenantID:  req.TenantID,
-		CallID:    req.CallID,
-		Target:    req.Target,
-		Event:     req.Event,
-		ReplyMode: replyMode,
-		Data:      req.Data,
-		SessionID: req.SessionID,
+		Op:                wire.OpHookEvent,
+		TenantID:          req.TenantID,
+		CallID:            req.CallID,
+		Target:            req.Target,
+		Event:             req.Event,
+		ReplyMode:         replyMode,
+		Data:              req.Data,
+		SessionID:         req.SessionID,
 		TurnCorrelationID: req.TurnCorrelationID,
 	}
 	if frame.TenantID == "" && frame.SessionID != "" {
@@ -298,8 +298,7 @@ func (c *Conn) readLoop() {
 			replaceLatest(c.reloads, *f)
 		case *wire.CatalogUpdate:
 			if err := c.sink.CatalogUpdated(c.runtimeID, *f); err != nil {
-				c.protocolFailure(err)
-				return
+				c.sink.RuntimeProtocolError(c.runtimeID, err)
 			}
 		case *wire.HookEventReply:
 			if err := c.sink.HookEventReplied(c.runtimeID, *f); err != nil {
@@ -308,15 +307,13 @@ func (c *Conn) readLoop() {
 			}
 		case *wire.PluginSend:
 			if err := c.sink.PluginSent(c.runtimeID, *f); err != nil {
-				c.protocolFailure(err)
-				return
+				c.sink.RuntimeProtocolError(c.runtimeID, err)
 			}
 		case *wire.PluginLog:
 			c.sink.PluginLogged(c.runtimeID, *f)
 		case *wire.LifecycleNotice:
 			if err := c.sink.LifecycleNoticed(c.runtimeID, *f); err != nil {
-				c.protocolFailure(err)
-				return
+				c.sink.RuntimeProtocolError(c.runtimeID, err)
 			}
 		case *wire.HookEvent:
 			c.protocolFailure(wire.ProtocolErrorf("unexpected hook_event from runtime"))
@@ -634,6 +631,20 @@ func ServeAfterHandshake(ctx context.Context, c *codec.Conn, handler Handler) er
 		}
 		return nil
 	}
+	writeAsync := func(frame any) error {
+		frames, err := expandFramesForWrite(frame)
+		if err != nil {
+			return nil
+		}
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		for _, item := range frames {
+			if err := c.Write(ctx, item); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	if source, ok := handler.(AsyncFrameSource); ok {
 		if frames := source.AsyncFrames(); frames != nil {
 			go func() {
@@ -648,7 +659,10 @@ func ServeAfterHandshake(ctx context.Context, c *codec.Conn, handler Handler) er
 						if frame == nil {
 							continue
 						}
-						if err := write(frame); err != nil && !errors.Is(err, io.EOF) {
+						if err := writeAsync(frame); err != nil {
+							if errors.Is(err, io.EOF) {
+								return
+							}
 							_ = c.CloseNow()
 							return
 						}
@@ -718,16 +732,13 @@ func ServeAfterHandshake(ctx context.Context, c *codec.Conn, handler Handler) er
 				return err
 			}
 		case *wire.HookEvent:
-			resp, err := handler.HookEvent(ctx, *f)
-			if err != nil {
-				return err
-			}
-			if resp.Op == "" {
-				continue
-			}
-			if err := write(resp); err != nil {
-				return err
-			}
+			go func(in wire.HookEvent) {
+				resp, err := handler.HookEvent(ctx, in)
+				if err != nil || resp.Op == "" {
+					return
+				}
+				_ = write(resp)
+			}(*f)
 		case *wire.CatalogUpdate, *wire.HookEventReply, *wire.PluginSend, *wire.PluginLog, *wire.LifecycleNotice:
 			return fmt.Errorf("unexpected runtime-originated async frame %T on server connection", frame)
 		default:
@@ -829,9 +840,9 @@ func sanitizeProtocolError(err error) string {
 
 func defaultHookReplyMode(event string) wire.HookReplyMode {
 	switch event {
-	case "after_message", "after_tool_call", "session_join", "session_end", "cancel":
+	case "after_message", "after_tool_call", "after_turn", "session_join", "session_end", "cancel":
 		return wire.HookReplyModeNone
-	case "before_message", "before_tool_call", "before_tool_result", "session_start", "before_prompt_build":
+	case "before_message", "before_tool_call", "before_tool_result", "session_start", "before_prompt_build", "before_turn", "before_compaction":
 		return wire.HookReplyModeModifying
 	default:
 		return wire.HookReplyModeModifying

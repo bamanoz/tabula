@@ -10,6 +10,7 @@ import (
 
 const turnCorrelationMetaKey = "turn_correlation_id"
 const preferredRuntimeKernelMetaKey = "preferred_runtime_id"
+const turnContextKernelMetaKey = "turn_context"
 
 func (h *Hub) prepareRoutedMessage(sender *Client, session string, scope string, msg *Message) *Message {
 	routed := cloneMessage(msg)
@@ -78,7 +79,16 @@ func withKernelMeta(raw json.RawMessage, kernel map[string]any) json.RawMessage 
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &meta)
 	}
-	meta["kernel"] = kernel
+	merged := map[string]any{}
+	if existing, ok := meta["kernel"].(map[string]any); ok {
+		for key, value := range existing {
+			merged[key] = value
+		}
+	}
+	for key, value := range kernel {
+		merged[key] = value
+	}
+	meta["kernel"] = merged
 	encoded, err := json.Marshal(meta)
 	if err != nil {
 		return raw
@@ -87,17 +97,25 @@ func withKernelMeta(raw json.RawMessage, kernel map[string]any) json.RawMessage 
 }
 
 func withKernelPreferredRuntime(raw json.RawMessage, runtimeID string) json.RawMessage {
-	if runtimeID == "" {
+	return withKernelMetaString(raw, preferredRuntimeKernelMetaKey, runtimeID)
+}
+
+func withKernelTurnContext(raw json.RawMessage, context string) json.RawMessage {
+	return withKernelMetaString(raw, turnContextKernelMetaKey, context)
+}
+
+func withKernelMetaString(raw json.RawMessage, key, value string) json.RawMessage {
+	if value == "" {
 		return raw
 	}
 	meta := metaMap(raw)
 	kernel := map[string]any{}
 	if existing, ok := meta["kernel"].(map[string]any); ok {
-		for key, value := range existing {
-			kernel[key] = value
+		for existingKey, existingValue := range existing {
+			kernel[existingKey] = existingValue
 		}
 	}
-	kernel[preferredRuntimeKernelMetaKey] = runtimeID
+	kernel[key] = value
 	meta["kernel"] = kernel
 	encoded, err := json.Marshal(meta)
 	if err != nil {

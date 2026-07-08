@@ -162,6 +162,20 @@ func TestConfiguredRuntimeIDBootstrapsMetadata(t *testing.T) {
 	}
 }
 
+func TestWorkerKernelURLUsesConfiguredURLWhenEnvUnset(t *testing.T) {
+	t.Setenv("TABULA_URL", "")
+	if got := workerKernelURL("ws://127.0.0.1:8089/ws"); got != "ws://127.0.0.1:8089/ws" {
+		t.Fatalf("workerKernelURL = %q", got)
+	}
+}
+
+func TestWorkerKernelURLPrefersEnvURL(t *testing.T) {
+	t.Setenv("TABULA_URL", "ws://127.0.0.1:9999/ws")
+	if got := workerKernelURL("ws://127.0.0.1:8089/ws"); got != "ws://127.0.0.1:9999/ws" {
+		t.Fatalf("workerKernelURL = %q", got)
+	}
+}
+
 func TestNewManifestStoreLoadsTenantCatalogs(t *testing.T) {
 	dir := t.TempDir()
 	writePlugin(t, filepath.Join(dir, "tenants", "alpha", "plugins", "fs", "plugin.toml"), `id = "fs"

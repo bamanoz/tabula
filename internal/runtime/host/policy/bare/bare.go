@@ -22,10 +22,10 @@ import (
 const defaultInitTimeout = 10 * time.Second
 
 const (
-	maxWorkerStderrLines           = 8
+	maxWorkerStderrLines           = 32
 	maxWorkerStderrBytes           = 8 * 1024
-	maxWorkerStderrSampleLines     = 4
-	maxWorkerStderrSampleLineBytes = 512
+	maxWorkerStderrSampleLines     = 32
+	maxWorkerStderrSampleLineBytes = 1024
 )
 
 // Policy spawns workers directly with os/exec. It is the M2 default policy;
@@ -450,9 +450,12 @@ func (w *worker) HookEvent(ctx context.Context, event workerwire.WorkerEvent) (*
 	if event.ReplyMode != workerwire.ReplyModeNone {
 		resultCh = make(chan eventResult, 1)
 		w.pendingEvents[event.CallID] = resultCh
+	} else if event.CallID != "" {
+		w.ignoredEvents[event.CallID] = struct{}{}
 	}
 	if err := w.writeFrame(ctx, &event); err != nil {
 		delete(w.pendingEvents, event.CallID)
+		delete(w.ignoredEvents, event.CallID)
 		w.eventInFlight = false
 		w.mu.Unlock()
 		return nil, fmt.Errorf("bare policy: send worker event: %w", err)
@@ -461,7 +464,9 @@ func (w *worker) HookEvent(ctx context.Context, event workerwire.WorkerEvent) (*
 	defer func() {
 		w.mu.Lock()
 		w.eventInFlight = false
-		delete(w.pendingEvents, event.CallID)
+		if event.ReplyMode != workerwire.ReplyModeNone {
+			delete(w.pendingEvents, event.CallID)
+		}
 		w.mu.Unlock()
 	}()
 
@@ -706,6 +711,8 @@ func (w *worker) readLoop() {
 	for {
 		env, frame, err := workerwire.ReadFrame(w.stdout)
 		if err != nil {
+			err = w.annotateErrWithStderr(err)
+			err = w.annotateErrWithExitInfo(err)
 			w.failPending(err)
 			w.publishAsync(policy.WorkerAsyncEvent{Envelope: env, Err: err})
 			return
@@ -736,6 +743,17 @@ func (w *worker) readLoop() {
 			return
 		}
 	}
+}
+
+func (w *worker) annotateErrWithExitInfo(err error) error {
+	if err == nil {
+		return nil
+	}
+	info, waitErr := w.Wait()
+	if waitErr != nil {
+		return fmt.Errorf("%w (worker exit code=%d signaled=%t message=%q wait_error=%v)", err, info.Code, info.Signaled, info.Message, waitErr)
+	}
+	return fmt.Errorf("%w (worker exit code=%d signaled=%t message=%q)", err, info.Code, info.Signaled, info.Message)
 }
 
 func (w *worker) deliverInit(ack workerwire.WorkerInitAck) {
@@ -807,6 +825,11 @@ func (w *worker) failPending(err error) {
 }
 
 func (w *worker) publishAsync(event policy.WorkerAsyncEvent) {
+	select {
+	case w.events <- event:
+		return
+	default:
+	}
 	select {
 	case w.events <- event:
 	case <-w.done:

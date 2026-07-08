@@ -133,6 +133,39 @@ func TestRuntimeConnConcurrentInvokesAndDisconnect(t *testing.T) {
 	}
 }
 
+func TestRuntimeConnContinuesAfterAsyncSinkError(t *testing.T) {
+	clientWS, serverWS := websocketNetPipe(t)
+	client := codec.New(clientWS)
+	server := codec.New(serverWS)
+	defer func() { _ = client.CloseNow() }()
+
+	go func() {
+		_ = ServeAuthenticated(context.Background(), server, testHandler{})
+	}()
+
+	ack, err := Handshake(context.Background(), client, wire.Hello{Op: wire.OpHello, RuntimeID: "local", Token: "redacted", ProtocolVersion: "1"})
+	if err != nil {
+		t.Fatalf("Handshake: %v", err)
+	}
+	if !ack.Accepted {
+		t.Fatalf("handshake rejected: %#v", ack)
+	}
+	rc := NewWithSink(client, "local", &failingAsyncSink{})
+
+	if err := server.Write(context.Background(), wire.LifecycleNotice{Op: wire.OpLifecycleNotice, Target: pluginTarget("bad"), State: wire.LifecycleStateCrashed}); err != nil {
+		t.Fatalf("write lifecycle notice: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	got, err := rc.Invoke(context.Background(), runtimeapi.InvokeReq{CallID: "call-after-async-error", TenantID: "default", Target: pluginTarget("fs"), Tool: "parallel"})
+	if err != nil {
+		t.Fatalf("Invoke after async sink error: %v", err)
+	}
+	if !got.OK || got.CallID != "call-after-async-error" {
+		t.Fatalf("connection did not remain usable after async sink error: %#v", got)
+	}
+}
+
 func TestServeMapsMalformedInvokeToProtocolError(t *testing.T) {
 	clientWS, serverWS := websocketNetPipe(t)
 	client := codec.New(clientWS)
@@ -452,6 +485,58 @@ func TestServeWritesHandlerAsyncFramesToClientSink(t *testing.T) {
 	t.Fatalf("handler async frames did not reach sink: %+v", sink)
 }
 
+func TestServeDropsMalformedHandlerAsyncFrameAndContinues(t *testing.T) {
+	clientWS, serverWS := websocketNetPipe(t)
+	client := codec.New(clientWS)
+	server := codec.New(serverWS)
+	defer func() { _ = client.CloseNow() }()
+
+	h := asyncHandler{frames: make(chan any, 8)}
+	go func() {
+		_ = ServeAuthenticated(context.Background(), server, h)
+	}()
+
+	ack, err := Handshake(context.Background(), client, wire.Hello{Op: wire.OpHello, RuntimeID: "local", Token: "redacted", ProtocolVersion: "1"})
+	if err != nil {
+		t.Fatalf("Handshake: %v", err)
+	}
+	if !ack.Accepted {
+		t.Fatalf("handshake rejected: %#v", ack)
+	}
+
+	sink := &recordingAsyncSink{}
+	rc := NewWithSink(client, "local", sink)
+	defer rc.Close()
+
+	h.frames <- wire.LifecycleNotice{Op: wire.OpLifecycleNotice, Target: pluginTarget("bad"), State: wire.LifecycleState("failed")}
+	h.frames <- wire.CatalogUpdate{Op: wire.OpCatalogUpdate, Target: pluginTarget("fs"), Tools: []wire.ToolSpec{{Name: "echo"}}, Revision: 5, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		sink.mu.Lock()
+		ready := sink.catalogRevision == 5
+		sink.mu.Unlock()
+		if ready {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	sink.mu.Lock()
+	revision := sink.catalogRevision
+	sink.mu.Unlock()
+	if revision != 5 {
+		t.Fatalf("valid async frame after malformed frame was not delivered: revision=%d", revision)
+	}
+
+	got, err := rc.Invoke(context.Background(), runtimeapi.InvokeReq{CallID: "call-after-malformed-async", TenantID: "default", Target: pluginTarget("fs"), Tool: "parallel"})
+	if err != nil {
+		t.Fatalf("Invoke after malformed async frame: %v", err)
+	}
+	if !got.OK || got.CallID != "call-after-malformed-async" {
+		t.Fatalf("connection did not remain usable after malformed async frame: %#v", got)
+	}
+}
+
 func TestServeHandlesHookEventFrames(t *testing.T) {
 	clientWS, serverWS := websocketNetPipe(t)
 	client := codec.New(clientWS)
@@ -484,7 +569,45 @@ func TestServeHandlesHookEventFrames(t *testing.T) {
 	}
 }
 
+func TestServeDoesNotBlockReadLoopBehindSlowHookEvent(t *testing.T) {
+	clientWS, serverWS := websocketNetPipe(t)
+	client := codec.New(clientWS)
+	server := codec.New(serverWS)
+	defer func() { _ = client.CloseNow() }()
+
+	go func() {
+		_ = ServeAuthenticated(context.Background(), server, slowHookHandler{})
+	}()
+
+	ack, err := Handshake(context.Background(), client, wire.Hello{Op: wire.OpHello, RuntimeID: "local", Token: "redacted", ProtocolVersion: "1"})
+	if err != nil {
+		t.Fatalf("Handshake: %v", err)
+	}
+	if !ack.Accepted {
+		t.Fatalf("handshake rejected: %#v", ack)
+	}
+
+	rc := New(client)
+	if err := rc.SendHookEvent(context.Background(), runtimeapi.HookEventReq{CallID: "slow-hook", Target: pluginTarget("fs"), Event: "before_tool_call", ReplyMode: wire.HookReplyModeModifying, Data: json.RawMessage(`{"tool":"slow"}`)}); err != nil {
+		t.Fatalf("SendHookEvent: %v", err)
+	}
+
+	invokeCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	got, err := rc.Invoke(invokeCtx, runtimeapi.InvokeReq{CallID: "call-behind-slow-hook", TenantID: "default", Target: pluginTarget("fs"), Tool: "parallel"})
+	if err != nil {
+		t.Fatalf("Invoke behind slow hook: %v", err)
+	}
+	if !got.OK || got.CallID != "call-behind-slow-hook" {
+		t.Fatalf("connection read loop blocked behind slow hook event: %#v", got)
+	}
+}
+
 type testHandler struct{}
+
+type slowHookHandler struct {
+	testHandler
+}
 
 type asyncHandler struct {
 	testHandler
@@ -528,6 +651,13 @@ func (testHandler) HookEvent(_ context.Context, in wire.HookEvent) (wire.HookEve
 	return wire.HookEventReply{Op: wire.OpHookEventReply, CallID: in.CallID, Action: wire.HookActionOK}, nil
 }
 
+func (slowHookHandler) HookEvent(_ context.Context, in wire.HookEvent) (wire.HookEventReply, error) {
+	if in.CallID == "slow-hook" {
+		time.Sleep(time.Second)
+	}
+	return wire.HookEventReply{Op: wire.OpHookEventReply, CallID: in.CallID, Action: wire.HookActionOK}, nil
+}
+
 type recordingAsyncSink struct {
 	mu              sync.Mutex
 	catalogRevision int64
@@ -535,6 +665,22 @@ type recordingAsyncSink struct {
 	send            wire.PluginSend
 	log             wire.PluginLog
 	notice          wire.LifecycleNotice
+}
+
+type failingAsyncSink struct {
+	recordingAsyncSink
+}
+
+func (s *failingAsyncSink) CatalogUpdated(string, wire.CatalogUpdate) error {
+	return errors.New("catalog sink failed")
+}
+
+func (s *failingAsyncSink) PluginSent(string, wire.PluginSend) error {
+	return errors.New("plugin send sink failed")
+}
+
+func (s *failingAsyncSink) LifecycleNoticed(string, wire.LifecycleNotice) error {
+	return errors.New("lifecycle sink failed")
 }
 
 func (s *recordingAsyncSink) CatalogUpdated(_ string, update wire.CatalogUpdate) error {

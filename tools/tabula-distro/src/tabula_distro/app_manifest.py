@@ -13,8 +13,6 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-import tomlkit
-
 from . import config as cfg
 from . import lock as distrolock
 from . import sources as srcmod
@@ -402,7 +400,7 @@ def _migrate_global_driver_config(path: Path) -> None:
         return
     plugins = doc.get("plugins")
     if not isinstance(plugins, dict):
-        plugins = tomlkit.table()
+        plugins = toml_io.require_tomlkit().table()
         doc["plugins"] = plugins
     existing = plugins.get("driver")
     if isinstance(existing, dict):

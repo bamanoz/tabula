@@ -242,7 +242,7 @@ Default general-purpose agent.
 - tools: workspace `fs`/`exec`, `sessions`, `pair`, `mcp`, `timer`, `cron`, `todo`
 - hooks: `hook-logger`, `hook-permissions`
 - observability: `observer`
-- mempalace: `mempalace-save`, `mempalace-search`, `mempalace-admin` (backed by MemPalace)
+- mempalace: `mempalace`, `mempalace-admin` (backed by MemPalace)
 - subagents: provider-matched, real processes
 
 ### `code`

@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/bamanoz/tabula/internal/runtime/wire"
 )
 
 type hookStrategy string
@@ -24,6 +26,7 @@ const hookTimeout = 5 * time.Second
 type hookEntry struct {
 	sub      HookSubscriber
 	subscrip HookSubscription
+	release  func()
 }
 
 type HookResult struct {
@@ -80,6 +83,7 @@ type pendingHook struct {
 	subscriber HookSubscriber
 	runtimeID  string
 	ch         chan *HookResult
+	release    func()
 }
 
 type HookEngine struct {
@@ -170,11 +174,15 @@ func (e *HookEngine) DispatchDetailedExcept(event string, payload json.RawMessag
 		if !entry.sub.ServesTenant(tenantID) {
 			continue
 		}
-		if entry.sub.IsBusy() && e.eventType(event) != HookSecurity {
+		if entry.sub.IsBusy() && e.eventType(event) != HookSecurity && runtimeHookReplyMode(event) != wire.HookReplyModeNone {
 			continue
 		}
 		if entry.sub.Session() == session || entry.sub.Session() == "" {
-			relevant = append(relevant, entry)
+			reserved, ok := e.reserveHookEntry(entry, event)
+			if !ok {
+				continue
+			}
+			relevant = append(relevant, reserved)
 		}
 	}
 	if len(relevant) == 0 {
@@ -184,6 +192,7 @@ func (e *HookEngine) DispatchDetailedExcept(event string, payload json.RawMessag
 
 	def, ok := HookEvents[event]
 	if !ok {
+		e.releaseReservedHooks(relevant)
 		return payload, true, nil
 	}
 
@@ -199,6 +208,38 @@ func (e *HookEngine) DispatchDetailedExcept(event string, payload json.RawMessag
 	default:
 		return payload, true, nil
 	}
+}
+
+func (e *HookEngine) reserveHookEntry(entry hookEntry, event string) (hookEntry, bool) {
+	if e.eventType(event) == HookSecurity || runtimeHookReplyMode(event) == wire.HookReplyModeNone {
+		return entry, true
+	}
+	runtimeSub, ok := entry.sub.(*runtimeHookSubscriber)
+	if !ok {
+		return entry, true
+	}
+	release, ok := runtimeSub.TryBusy()
+	if !ok {
+		return hookEntry{}, false
+	}
+	entry.release = release
+	return entry, true
+}
+
+func (e *HookEngine) releaseReservedHooks(entries []hookEntry) {
+	for _, entry := range entries {
+		if entry.release != nil {
+			entry.release()
+		}
+	}
+}
+
+func releaseHookEntryReservation(entry *hookEntry) {
+	if entry == nil || entry.release == nil {
+		return
+	}
+	entry.release()
+	entry.release = nil
 }
 
 func (e *HookEngine) eventType(event string) HookEventType {
@@ -284,8 +325,10 @@ func (e *HookEngine) ResumeModifying(decision *HookDispatchDecision) (json.RawMe
 }
 
 func (e *HookEngine) dispatchModifyingFrom(event string, payload json.RawMessage, tenantID, session string, entries []hookEntry, secure bool) (json.RawMessage, bool, *HookDispatchDecision) {
+	defer e.releaseReservedHooks(entries)
 	current := payload
-	for i, entry := range entries {
+	for i := range entries {
+		entry := &entries[i]
 		outcome := e.sendAndWait(entry, event, current, tenantID, session)
 		result := outcome.result
 		if result == nil {
@@ -370,7 +413,7 @@ func (e *HookEngine) mergePayload(event string, prev, next json.RawMessage) json
 
 func contextAdditiveHookEvent(event string) bool {
 	switch event {
-	case "session_start", "before_prompt_build":
+	case "session_start", "before_prompt_build", "before_turn":
 		return true
 	default:
 		return false
@@ -378,7 +421,9 @@ func contextAdditiveHookEvent(event string) bool {
 }
 
 func (e *HookEngine) dispatchClaiming(event string, payload json.RawMessage, tenantID, session string, entries []hookEntry) (json.RawMessage, bool) {
-	for _, entry := range entries {
+	defer e.releaseReservedHooks(entries)
+	for i := range entries {
+		entry := &entries[i]
 		outcome := e.sendAndWait(entry, event, payload, tenantID, session)
 		result := outcome.result
 		if result == nil {
@@ -394,7 +439,7 @@ func (e *HookEngine) dispatchClaiming(event string, payload json.RawMessage, ten
 	return payload, true
 }
 
-func (e *HookEngine) sendAndWait(entry hookEntry, event string, payload json.RawMessage, tenantID, session string) hookSendOutcome {
+func (e *HookEngine) sendAndWait(entry *hookEntry, event string, payload json.RawMessage, tenantID, session string) hookSendOutcome {
 	s := entry.sub
 	id := generateHookID()
 	ch := make(chan *HookResult, 1)
@@ -402,14 +447,20 @@ func (e *HookEngine) sendAndWait(entry hookEntry, event string, payload json.Raw
 	start := time.Now()
 	outcome := hookSendOutcome{status: "timeout", hookID: id}
 
-	s.SendMsg(&Message{
+	msg := &Message{
 		Type:     "hook",
 		ID:       id,
 		Name:     event,
 		Session:  session,
 		TenantID: e.sessionTenantID(tenantID, session),
 		Payload:  payload,
-	})
+	}
+	msg.release = entry.release
+	entry.release = nil
+	s.SendMsg(msg)
+	if msg.release != nil {
+		e.setPendingHookRelease(id, msg.release)
+	}
 
 	var result *HookResult
 	if entry.subscrip.TimeoutMs != nil && *entry.subscrip.TimeoutMs == 0 {
@@ -545,6 +596,21 @@ func (e *HookEngine) addPendingHook(id string, subscriber HookSubscriber, ch cha
 	e.pending[id] = pending
 }
 
+func (e *HookEngine) setPendingHookRelease(id string, release func()) {
+	if release == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	pending, ok := e.pending[id]
+	if !ok {
+		release()
+		return
+	}
+	pending.release = release
+	e.pending[id] = pending
+}
+
 func (e *HookEngine) addPendingRuntimeHook(id string, runtimeID string, ch chan *HookResult) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -553,8 +619,12 @@ func (e *HookEngine) addPendingRuntimeHook(id string, runtimeID string, ch chan 
 
 func (e *HookEngine) removePendingHook(id string) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	pending, ok := e.pending[id]
 	delete(e.pending, id)
+	e.mu.Unlock()
+	if ok && pending.release != nil {
+		pending.release()
+	}
 }
 
 func (e *HookEngine) pendingHook(id string) (pendingHook, bool) {

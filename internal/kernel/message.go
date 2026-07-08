@@ -39,7 +39,8 @@ type Message struct {
 	// Conventional uses:
 	//   - on `init`:        boot metadata such as `{"default_agent": "build"}`
 	//   - on `tool_result`: `{"diff": "...", "files": ["a", "b"], "summary": "..."}`
-	Meta json.RawMessage `json:"meta,omitempty"`
+	Meta    json.RawMessage `json:"meta,omitempty"`
+	release func()
 }
 
 func cloneMessage(msg *Message) *Message {
@@ -77,6 +78,7 @@ func cloneMessage(msg *Message) *Message {
 	if msg.Hooks != nil {
 		clone.Hooks = append([]HookSubscription(nil), msg.Hooks...)
 	}
+	clone.release = nil
 	return &clone
 }
 

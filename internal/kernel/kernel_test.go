@@ -448,6 +448,47 @@ func TestInitIncludesRuntimeManifestLoadedTools(t *testing.T) {
 	}
 }
 
+func TestInitToolsPreserveFullRuntimeSchema(t *testing.T) {
+	hub := NewHub(nil, 3, 5, nil)
+	schema := json.RawMessage(`{"type":"object","properties":{"server":{"type":"string","description":"Configured MCP server name."}},"required":["server"],"additionalProperties":false}`)
+	hub.syncRuntimeCapability("local", wire.Capability{
+		Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "mcp"},
+		Tools: []wire.ToolSpec{{
+			Name:        "mcp_list_tools",
+			Description: "List tools exposed by a single MCP server.",
+			Schema:      schema,
+		}},
+		State:  wire.CapabilityStateReady,
+		Source: wire.CapabilitySourceWorker,
+	})
+
+	var tools []map[string]any
+	if err := json.Unmarshal(hub.initToolsJSON(), &tools); err != nil {
+		t.Fatalf("unmarshal init tools: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("expected one tool, got %#v", tools)
+	}
+	tool := tools[0]
+	if got := tool["required"]; fmt.Sprint(got) != "[server]" {
+		t.Fatalf("expected legacy required field to remain, got %#v", got)
+	}
+	decoded, ok := tool["schema"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected full schema in init tool, got %#v", tool)
+	}
+	if decoded["additionalProperties"] != false {
+		t.Fatalf("expected full schema to preserve additionalProperties=false, got %#v", decoded)
+	}
+	properties, ok := decoded["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected schema properties, got %#v", decoded)
+	}
+	if _, ok := properties["server"].(map[string]any); !ok {
+		t.Fatalf("expected server property schema, got %#v", properties)
+	}
+}
+
 func TestInitSyncsAttachedRuntimeCapabilities(t *testing.T) {
 	hub := NewHub(nil, 3, 5, nil)
 	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
@@ -1337,6 +1378,57 @@ func TestSessionBusyQueuesConcurrentRootMessagesAndDispatchesAfterDone(t *testin
 	third := readMsg(t, driver)
 	if !isUserMessage(&third) || messageText(&third) != "third" {
 		t.Fatalf("expected turn to resume after done, got %+v", third)
+	}
+}
+
+func TestUserMessageQueuesUntilTurnReceiverJoins(t *testing.T) {
+	env := newTestEnv(t)
+	gateway := env.connectAndJoin("gateway", "main",
+		[]string{TopicMessageUser},
+		[]string{"error"})
+	var gatewayClient *Client
+	for _, client := range env.Hub.clients.All() {
+		if client.name == "gateway" {
+			gatewayClient = client
+			break
+		}
+	}
+	if gatewayClient == nil {
+		t.Fatal("gateway client should exist")
+	}
+	gatewayClient.meta = mustMarshalRaw(map[string]any{
+		"tabula.client_role": "ui",
+		"tabula.managed":     true,
+	})
+
+	writeJSON(t, gateway, userMessage("first"))
+	if msg := readMsgTimeout(t, gateway, 100*time.Millisecond); msg != nil {
+		t.Fatalf("message should queue without an immediate echo or error, got %+v", msg)
+	}
+	sess, ok := env.Hub.sessions.Get("main", "default")
+	if !ok {
+		t.Fatal("session main should exist")
+	}
+	if got := sess.PendingInputCount(); got != 1 {
+		t.Fatalf("pending input count = %d, want 1", got)
+	}
+	if sess.IsBusy() {
+		t.Fatal("session should not be busy before a turn-capable receiver joins")
+	}
+
+	driver := env.connectAndJoin("driver", "main",
+		[]string{TopicTurnDone},
+		[]string{TopicMessageUser})
+
+	delivered := readMsg(t, driver)
+	if !isUserMessage(&delivered) || messageText(&delivered) != "first" {
+		t.Fatalf("expected queued first message after driver join, got %+v", delivered)
+	}
+	if got := sess.PendingInputCount(); got != 0 {
+		t.Fatalf("pending input count after driver join = %d, want 0", got)
+	}
+	if !sess.IsBusy() {
+		t.Fatal("session should be busy after queued input dispatch")
 	}
 }
 

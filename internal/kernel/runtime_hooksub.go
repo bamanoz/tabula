@@ -16,16 +16,20 @@ type runtimeHookSubscriber struct {
 	conn       runtimeapi.RuntimeConn
 	done       <-chan struct{}
 	busy       func(string, wire.Target) bool
+	markBusy   func(string, wire.Target) func()
+	tryBusy    func(string, wire.Target) (func(), bool)
 	logger     *slog.Logger
 }
 
-func newRuntimeHookSubscriber(target runtimeHookTarget, busy func(string, wire.Target) bool, logger *slog.Logger) HookSubscriber {
+func newRuntimeHookSubscriber(target runtimeHookTarget, busy func(string, wire.Target) bool, markBusy func(string, wire.Target) func(), tryBusy func(string, wire.Target) (func(), bool), logger *slog.Logger) HookSubscriber {
 	return &runtimeHookSubscriber{
 		runtimeID:  target.RuntimeID,
 		capability: target.Capability,
 		conn:       target.Conn,
 		done:       target.Done,
 		busy:       busy,
+		markBusy:   markBusy,
+		tryBusy:    tryBusy,
 		logger:     logger,
 	}
 }
@@ -54,6 +58,13 @@ func (s *runtimeHookSubscriber) IsBusy() bool {
 	return s != nil && s.busy != nil && s.busy(s.runtimeID, s.capability.Target)
 }
 
+func (s *runtimeHookSubscriber) TryBusy() (func(), bool) {
+	if s == nil || s.tryBusy == nil {
+		return nil, true
+	}
+	return s.tryBusy(s.runtimeID, s.capability.Target)
+}
+
 func (s *runtimeHookSubscriber) Hooks() []HookSubscription {
 	if s == nil {
 		return nil
@@ -74,11 +85,11 @@ func (s *runtimeHookSubscriber) SendMsg(msg *Message) {
 	if s == nil || s.conn == nil || msg == nil || msg.Type != string(MsgHook) {
 		return
 	}
+	if msg.release == nil && s.markBusy != nil {
+		msg.release = s.markBusy(s.runtimeID, s.capability.Target)
+	}
 	replyMode := runtimeHookReplyMode(msg.Name)
 	callID := msg.ID
-	if replyMode == wire.HookReplyModeNone {
-		callID = ""
-	}
 	event := wire.HookEvent{
 		Op:        wire.OpHookEvent,
 		TenantID:  msg.TenantID,

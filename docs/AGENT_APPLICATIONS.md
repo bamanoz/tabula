@@ -195,7 +195,7 @@ Multiple applications can run against one kernel when each app has its own
 tenant id and runtime catalog surface. The local runtime config contains one
 `[[tenant]]` catalog per app, and reload coalesces rapid app updates by reloading
 the full local tenant set. Duplicate plugin ids such as `fs`, `exec`, and
-`mempalace-save` are scoped by tenant.
+`mempalace` are scoped by tenant.
 
 Installed coverage verifies two live Claw apps in one kernel with isolated
 `fs_write`/`fs_read`, tenant-specific `exec` cwd, project memory for one app, and

@@ -255,8 +255,8 @@ class InstallTests(unittest.TestCase):
 
             # bundle with two skills; legacy bundle-local _lib roots are ignored
             bundle = root / "ext" / "bundles" / "mempalace"
-            _make_skill(bundle, "mempalace-save", "save-v1")
-            _make_skill(bundle, "mempalace-search", "search-v1")
+            _make_skill(bundle, "mempalace", "save-v1")
+            _make_skill(bundle, "mempalace-auto", "search-v1")
             _touch(bundle / "_lib" / "python" / "src" / "pkg" / "__init__.py", "X=1\n")
 
             # standalone external skill
@@ -279,8 +279,8 @@ class InstallTests(unittest.TestCase):
             self.assertTrue(cur.is_symlink())
 
             for p in (
-                home / "distrib" / "demo" / "skills" / "mempalace-save" / "marker.txt",
-                home / "distrib" / "demo" / "skills" / "mempalace-search" / "marker.txt",
+                home / "distrib" / "demo" / "skills" / "mempalace" / "marker.txt",
+                home / "distrib" / "demo" / "skills" / "mempalace-auto" / "marker.txt",
                 home / "distrib" / "demo" / "skills" / "weather" / "marker.txt",
             ):
                 self.assertTrue(p.exists(), p)
@@ -302,7 +302,7 @@ class InstallTests(unittest.TestCase):
             distro = _make_minimal_distro(root, "demo")
 
             bundle = root / "ext" / "bundles" / "mempalace"
-            _make_skill(bundle, "mempalace-save", "save-v1")
+            _make_skill(bundle, "mempalace", "save-v1")
             _make_plugin(bundle, "sessions", "sessions-v1")
             _touch(bundle / "client-probe" / "app.toml", 'id = "client-probe"\nname = "client-probe"\nversion = "0.1.0"\nruntime = "python"\nentry = "run.py"\n')
             _touch(bundle / "client-probe" / "run.py", "# client\n")
@@ -322,12 +322,12 @@ class InstallTests(unittest.TestCase):
 
             for tenant_name in ("alpha", "beta"):
                 tenant_root = home / "tenants" / tenant_name
-                self.assertTrue((tenant_root / "skills" / "mempalace-save" / "marker.txt").exists())
+                self.assertTrue((tenant_root / "skills" / "mempalace" / "marker.txt").exists())
                 self.assertTrue((tenant_root / "plugins" / "sessions" / "marker.txt").exists())
                 self.assertTrue((tenant_root / "apps" / "client-probe" / "run.py").exists())
                 self.assertTrue((tenant_root / "packages").exists())
                 self.assertFalse((tenant_root / "_lib").exists())
-            self.assertTrue(os.path.samefile(home / "tenants" / "alpha" / "skills" / "mempalace-save" / "marker.txt", home / "tenants" / "beta" / "skills" / "mempalace-save" / "marker.txt"))
+            self.assertTrue(os.path.samefile(home / "tenants" / "alpha" / "skills" / "mempalace" / "marker.txt", home / "tenants" / "beta" / "skills" / "mempalace" / "marker.txt"))
 
     def test_install_tenant_filter_refreshes_only_requested_tenant(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -336,7 +336,7 @@ class InstallTests(unittest.TestCase):
             distro = _make_minimal_distro(root, "demo")
 
             bundle = root / "ext" / "bundles" / "mempalace"
-            _make_skill(bundle, "mempalace-save", "save-v1")
+            _make_skill(bundle, "mempalace", "save-v1")
             (distro / "distro.toml").write_text(
                 '[distro]\nid="tabula.demo"\nname="demo"\n\n'
                 '[[bundles]]\nname="mempalace"\nsource="local:../ext/bundles/mempalace"\n',
@@ -348,8 +348,8 @@ class InstallTests(unittest.TestCase):
 
             installmod.install(distro, home, tenant="alpha")
 
-            self.assertTrue((home / "tenants" / "alpha" / "skills" / "mempalace-save" / "marker.txt").exists())
-            self.assertFalse((home / "tenants" / "beta" / "skills" / "mempalace-save" / "marker.txt").exists())
+            self.assertTrue((home / "tenants" / "alpha" / "skills" / "mempalace" / "marker.txt").exists())
+            self.assertFalse((home / "tenants" / "beta" / "skills" / "mempalace" / "marker.txt").exists())
 
     def test_install_removes_legacy_tenant_lib_symlink_when_refreshing_surface(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -358,7 +358,7 @@ class InstallTests(unittest.TestCase):
             distro = _make_minimal_distro(root, "demo")
 
             bundle = root / "ext" / "bundles" / "mempalace"
-            _make_skill(bundle, "mempalace-save", "save-v1")
+            _make_skill(bundle, "mempalace", "save-v1")
             _touch(bundle / "_lib" / "python" / "src" / "pkg" / "__init__.py", "X=1\n")
             (distro / "distro.toml").write_text(
                 '[distro]\nid="tabula.demo"\nname="demo"\n\n'
@@ -384,7 +384,7 @@ class InstallTests(unittest.TestCase):
             distro = _make_minimal_distro(root, "demo")
 
             bundle = root / "ext" / "bundles" / "mempalace"
-            _make_skill(bundle, "mempalace-save", "save-v1")
+            _make_skill(bundle, "mempalace", "save-v1")
             (distro / "distro.toml").write_text(
                 '[distro]\nid="tabula.demo"\nname="demo"\n\n'
                 '[[bundles]]\nname="mempalace"\nsource="local:../ext/bundles/mempalace"\n',
@@ -395,13 +395,13 @@ class InstallTests(unittest.TestCase):
                 (home / "tenants" / tenant_name).mkdir(parents=True, exist_ok=True)
 
             installmod.install(distro, home)
-            _touch(bundle / "mempalace-save" / "marker.txt", "save-v2\n")
+            _touch(bundle / "mempalace" / "marker.txt", "save-v2\n")
 
             installmod.install(distro, home, update=True)
 
             for tenant_name in ("alpha", "beta"):
                 self.assertEqual(
-                    (home / "tenants" / tenant_name / "skills" / "mempalace-save" / "marker.txt").read_text(encoding="utf-8"),
+                    (home / "tenants" / tenant_name / "skills" / "mempalace" / "marker.txt").read_text(encoding="utf-8"),
                     "save-v2\n",
                 )
 
@@ -412,7 +412,7 @@ class InstallTests(unittest.TestCase):
             distro = _make_minimal_distro(root, "demo")
 
             bundle = root / "ext" / "bundles" / "mempalace"
-            _make_skill(bundle, "mempalace-save", "save-v1")
+            _make_skill(bundle, "mempalace", "save-v1")
             _make_plugin(bundle, "sessions", "sessions-v1")
             _touch(bundle / "_lib" / "python" / "src" / "pkg" / "__init__.py", "X=1\n")
             (distro / "distro.toml").write_text(
@@ -435,7 +435,7 @@ class InstallTests(unittest.TestCase):
 
             for tenant_name in ("alpha", "beta"):
                 tenant_root = home / "tenants" / tenant_name
-                self.assertTrue((tenant_root / "skills" / "mempalace-save" / "marker.txt").exists())
+                self.assertTrue((tenant_root / "skills" / "mempalace" / "marker.txt").exists())
                 self.assertTrue((tenant_root / "plugins" / "sessions" / "marker.txt").exists())
                 self.assertTrue((tenant_root / "packages").exists())
                 self.assertFalse((tenant_root / "_lib").exists())

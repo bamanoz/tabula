@@ -14,8 +14,6 @@ from urllib.error import URLError
 from urllib.parse import urlparse, urlunparse
 from urllib.request import urlopen
 
-import tomlkit
-
 from tabula_distro import toml_io
 from tabula_distro import runtime_config
 
@@ -268,6 +266,7 @@ def write_runtime_config(manifest: AppManifest, home: Path, *, distro_dir: Path 
     runtime_sock = _runtime_socket_path(home)
 
     doc = toml_io.load(path)
+    tomlkit = toml_io.require_tomlkit()
     doc["plugin_dirs"] = _string_array([])
     doc["skill_dirs"] = _string_array([])
 
@@ -303,7 +302,8 @@ def write_runtime_config(manifest: AppManifest, home: Path, *, distro_dir: Path 
     return path
 
 
-def _distro_table(distro_dir: Path) -> tomlkit.items.Table:
+def _distro_table(distro_dir: Path):
+    tomlkit = toml_io.require_tomlkit()
     distro_dir = distro_dir.expanduser().resolve()
     parent = distro_dir.parent
     if parent.name == "generations":
@@ -316,8 +316,8 @@ def _distro_table(distro_dir: Path) -> tomlkit.items.Table:
     return table
 
 
-def _string_array(values: list[str]) -> tomlkit.items.Array:
-    array = tomlkit.array()
+def _string_array(values: list[str]):
+    array = toml_io.require_tomlkit().array()
     for value in values:
         array.append(value)
     return array

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,15 +24,18 @@ func TestNewHubStartsWithoutDynamicDispatch(t *testing.T) {
 	}
 }
 
-func TestResolveToolDeadlineCapsAtFifteenMinutes(t *testing.T) {
+func TestResolveToolDeadlineCapsAtOneHour(t *testing.T) {
 	if got := resolveToolDeadline(0); got != 30*time.Second {
 		t.Fatalf("default deadline = %v, want 30s", got)
 	}
 	if got := resolveToolDeadline(900_000); got != 15*time.Minute {
 		t.Fatalf("fifteen-minute deadline = %v, want 15m", got)
 	}
-	if got := resolveToolDeadline(7_200_000); got != 15*time.Minute {
-		t.Fatalf("capped deadline = %v, want 15m", got)
+	if got := resolveToolDeadline(3_600_000); got != time.Hour {
+		t.Fatalf("one-hour deadline = %v, want 1h", got)
+	}
+	if got := resolveToolDeadline(7_200_000); got != time.Hour {
+		t.Fatalf("capped deadline = %v, want 1h", got)
 	}
 }
 
@@ -71,6 +75,50 @@ func TestHandleDynamicTool_RuntimeSourceInvokesAttachedRuntime(t *testing.T) {
 	recorded := rc.RecordedInvokes()
 	if len(recorded) != 1 || recorded[0].TenantID != "alpha" || recorded[0].Tool != "mcp__echo" || !sameRuntimeTarget(recorded[0].Target, target) {
 		t.Fatalf("unexpected runtime invoke record: %+v", recorded)
+	}
+}
+
+func TestRuntimeLifecycleCrashHidesToolFromPromptsButKeepsDispatchRoutable(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	rc := runtimemock.New()
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "memory"}
+	ready := wire.Capability{Target: target, Tools: []wire.ToolSpec{{Name: "mempalace_checkpoint"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}
+	failed := ready
+	failed.State = wire.CapabilityStateFailed
+	rc.WithCapabilities(ready)
+	rc.OnInvoke("alpha", target, "mempalace_checkpoint").Return([]byte(`"restarted"`))
+	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{ready}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	hub.syncRuntimeCapability("local", ready)
+	if !strings.Contains(string(hub.initToolsJSON("alpha")), "mempalace_checkpoint") {
+		t.Fatalf("expected ready memory tool in prompt surface: %s", string(hub.initToolsJSON("alpha")))
+	}
+
+	rc.WithCapabilities(failed)
+	if err := hub.runtimeAsyncSink().LifecycleNoticed("local", wire.LifecycleNotice{Target: target, State: wire.LifecycleStateCrashed}); err != nil {
+		t.Fatalf("LifecycleNoticed: %v", err)
+	}
+	entry := waitForToolDispatch(t, hub, "mempalace_checkpoint", func(entry toolDispatch) bool {
+		return !entry.Advertise
+	})
+	if !sameRuntimeTarget(entry.Target, target) {
+		t.Fatalf("stale dispatch target = %#v, want %#v", entry.Target, target)
+	}
+	if strings.Contains(string(hub.initToolsJSON("alpha")), "mempalace_checkpoint") {
+		t.Fatalf("failed runtime tool should be hidden from new prompt surface: %s", string(hub.initToolsJSON("alpha")))
+	}
+
+	c := addTenantCaptureClient(t, hub, "alpha", "test", "s1", []string{TopicToolResult}, nil)
+	hub.tools.handleDynamicTool("alpha", "s1", "tid-after-crash", "mempalace_checkpoint", json.RawMessage(`{}`), "")
+	msg := waitForMessage(t, c.recvCh)
+	if !isToolResult(msg) || msg.Output != "restarted" {
+		t.Fatalf("unexpected runtime tool result after crash: %+v", msg)
+	}
+	if invokes := rc.RecordedInvokes(); len(invokes) != 1 || invokes[0].Tool != "mempalace_checkpoint" {
+		t.Fatalf("expected stale dispatch to route invoke, got %+v", invokes)
 	}
 }
 
@@ -358,7 +406,8 @@ func TestBusyRuntimeTargetIsSkippedForPromptBuildHooks(t *testing.T) {
 		State:  wire.CapabilityStateReady,
 		Source: wire.CapabilitySourceWorker,
 	}
-	rc := runtimemock.New().WithCapabilities(capability)
+	rc := newOpenHookRuntimeConn()
+	rc.WithCapabilities(capability)
 	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{capability}, 0); err != nil {
 		t.Fatalf("RegisterHello: %v", err)
 	}
@@ -385,6 +434,143 @@ func TestBusyRuntimeTargetIsSkippedForPromptBuildHooks(t *testing.T) {
 	if payload["context"] != "base" || payload["session"] != "s1" || payload["tenant_id"] != tenant.DefaultID {
 		t.Fatalf("unexpected payload: %s", string(result))
 	}
+}
+
+func TestPendingRuntimeHookMarksTargetBusyForPromptBuildHooks(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	timeout := int64(200)
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "mempalace"}
+	capability := wire.Capability{
+		Target: target,
+		Hooks:  []wire.HookSpec{{Event: "before_prompt_build", Priority: 100, TimeoutMS: &timeout}},
+		State:  wire.CapabilityStateReady,
+		Source: wire.CapabilitySourceWorker,
+	}
+	rc := newOpenHookRuntimeConn()
+	rc.WithCapabilities(capability)
+	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{capability}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	hub.syncRuntimeCapability("local", capability)
+	hub.rebuildHookIndex()
+
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		hub.dispatchHook("before_prompt_build", json.RawMessage(`{"context":"first"}`), tenant.DefaultID, "s1")
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && !hub.isRuntimeTargetBusy("local", target) {
+		time.Sleep(time.Millisecond)
+	}
+	if !hub.isRuntimeTargetBusy("local", target) {
+		t.Fatal("pending runtime hook did not mark target busy")
+	}
+
+	started := time.Now()
+	result, ok := hub.dispatchHook("before_prompt_build", json.RawMessage(`{"context":"second"}`), tenant.DefaultID, "s1")
+	if !ok {
+		t.Fatal("busy runtime target hook should be skipped fail-open")
+	}
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("busy pending hook target was not skipped quickly: %s", elapsed)
+	}
+	if !hub.isRuntimeTargetBusy("local", target) {
+		t.Fatal("skipped hook should not release the first hook's busy marker")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(result, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload["context"] != "second" {
+		t.Fatalf("unexpected payload: %s", string(result))
+	}
+
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("first hook did not time out")
+	}
+	if hub.isRuntimeTargetBusy("local", target) {
+		t.Fatal("timed-out hook did not release target busy marker")
+	}
+}
+
+func TestConcurrentRuntimePromptBuildHooksReserveTargetOnce(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	timeout := int64(200)
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "mempalace"}
+	capability := wire.Capability{
+		Target: target,
+		Hooks:  []wire.HookSpec{{Event: "before_prompt_build", Priority: 100, TimeoutMS: &timeout}},
+		State:  wire.CapabilityStateReady,
+		Source: wire.CapabilitySourceWorker,
+	}
+	rc := newOpenHookRuntimeConn()
+	rc.WithCapabilities(capability)
+	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{capability}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	hub.syncRuntimeCapability("local", capability)
+	hub.rebuildHookIndex()
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			hub.dispatchHook("before_prompt_build", json.RawMessage(`{"context":"current"}`), tenant.DefaultID, "s1")
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if got := len(rc.HookEvents()); got != 1 {
+		t.Fatalf("expected one runtime hook event after concurrent dispatches, got %d", got)
+	}
+	if hub.isRuntimeTargetBusy("local", target) {
+		t.Fatal("timed-out hook did not release target busy marker")
+	}
+}
+
+type openHookRuntimeConn struct {
+	*runtimemock.RuntimeConn
+	done       chan struct{}
+	mu         sync.Mutex
+	hookEvents []runtimeapi.HookEventReq
+}
+
+func newOpenHookRuntimeConn() *openHookRuntimeConn {
+	return &openHookRuntimeConn{RuntimeConn: runtimemock.New(), done: make(chan struct{})}
+}
+
+func (c *openHookRuntimeConn) Done() <-chan struct{} { return c.done }
+
+func (c *openHookRuntimeConn) WithCapabilities(capabilities ...wire.Capability) *openHookRuntimeConn {
+	c.RuntimeConn.WithCapabilities(capabilities...)
+	return c
+}
+
+func (c *openHookRuntimeConn) SendHookEvent(ctx context.Context, req runtimeapi.HookEventReq) error {
+	c.mu.Lock()
+	c.hookEvents = append(c.hookEvents, req)
+	c.mu.Unlock()
+	return c.RuntimeConn.SendHookEvent(ctx, req)
+}
+
+func (c *openHookRuntimeConn) HookEvents() []runtimeapi.HookEventReq {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]runtimeapi.HookEventReq, len(c.hookEvents))
+	copy(out, c.hookEvents)
+	return out
 }
 
 func TestBusyRuntimeTargetIsNotSkippedForSecurityHooks(t *testing.T) {

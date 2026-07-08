@@ -4,10 +4,13 @@
 .playwright-mcp
 .tabula
 .venv
+.venv-*
 __pycache__
 *.pyc
 .pytest_cache
 .cache
+.codegraph
+.immune
 dist
 build
 *.egg-info

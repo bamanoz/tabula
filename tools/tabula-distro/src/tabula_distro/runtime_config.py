@@ -3,8 +3,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import tomlkit
-
 from tabula_distro import toml_io
 
 
@@ -25,6 +23,7 @@ def sync_for_distro(home: Path, distro_path: Path) -> Path:
 def write_kernel_config(home: Path, *, url: str = "ws://localhost:8089/ws") -> Path:
     path = home / "config" / "kernel.toml"
     doc = toml_io.load(path)
+    tomlkit = toml_io.require_tomlkit()
     kernel = doc.get("kernel")
     if not hasattr(kernel, "__setitem__"):
         kernel = tomlkit.table()
@@ -50,6 +49,7 @@ def write(home: Path, plugin_dirs: list[str], *, distro: dict[str, str] | None =
     path = home / "config" / "runtime.toml"
     runtime_sock = _runtime_socket_path(home)
     doc = toml_io.load(path)
+    tomlkit = toml_io.require_tomlkit()
 
     doc["plugin_dirs"] = _string_array(plugin_dirs)
     doc["skill_dirs"] = _string_array([str(home / "skills")])
@@ -96,8 +96,8 @@ def distro_metadata(home: Path, distro_dir: Path) -> dict[str, str]:
     return {"active": active, "dir": str(distro_dir)}
 
 
-def _string_array(values: list[str]) -> tomlkit.items.Array:
-    array = tomlkit.array()
+def _string_array(values: list[str]):
+    array = toml_io.require_tomlkit().array()
     for value in values:
         array.append(value)
     return array

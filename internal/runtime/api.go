@@ -62,14 +62,14 @@ type Target = wire.Target
 
 // InvokeReq is the kernel-facing request for a tenant-scoped tool call.
 type InvokeReq struct {
-	CallID    string
-	TenantID  string
-	SessionID string
+	CallID            string
+	TenantID          string
+	SessionID         string
 	TurnCorrelationID string
-	Target    Target
-	Tool      string
-	Args      json.RawMessage
-	TimeoutMS int64
+	Target            Target
+	Tool              string
+	Args              json.RawMessage
+	TimeoutMS         int64
 }
 
 // InvokeResp is the terminal result of an Invoke.

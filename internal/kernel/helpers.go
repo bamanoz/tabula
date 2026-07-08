@@ -46,7 +46,7 @@ func (h *Hub) allHookSubscribers() []HookSubscriber {
 		subs = append(subs, c)
 	}
 	for _, target := range runtimeTargets {
-		subs = append(subs, newRuntimeHookSubscriber(target, h.isRuntimeTargetBusy, h.Logger))
+		subs = append(subs, newRuntimeHookSubscriber(target, h.isRuntimeTargetBusy, h.markRuntimeTargetBusy, h.tryMarkRuntimeTargetBusy, h.Logger))
 	}
 	return subs
 }
@@ -81,6 +81,70 @@ func (h *Hub) emitAfterMessage(tenantID, session string, sender *Client) {
 	h.dispatchHook("after_message", payload, tenantID, session)
 }
 
+func (h *Hub) applyBeforeTurnContext(tenantID, session string, msg *Message) {
+	if msg == nil || session == "" {
+		return
+	}
+	context := h.policy.BeforeTurn(session, tenantID, msg)
+	if context == "" {
+		return
+	}
+	msg.Meta = withKernelTurnContext(msg.Meta, context)
+}
+
+func (h *Hub) emitAfterTurn(tenantID, session string, sender *Client, msg *Message) {
+	if msg == nil || session == "" {
+		return
+	}
+	payload := map[string]any{
+		"session":             session,
+		"tenant_id":           tenantID,
+		"sender":              kernelClientMeta(sender),
+		"message_id":          msg.ID,
+		"type":                msg.Type,
+		"topic":               msg.Topic,
+		"name":                msg.Name,
+		"text":                msg.Text,
+		"meta":                metaMap(msg.Meta),
+		"turn_correlation_id": metaString(msg.Meta, turnCorrelationMetaKey),
+	}
+	if msg.Type == string(MsgEvent) && msg.Topic == TopicTurnDone {
+		payload["status"] = "completed"
+	} else if MsgType(msg.Type) == MsgError {
+		payload["status"] = "error"
+	} else {
+		payload["status"] = "terminal"
+	}
+	hookPayload, _ := json.Marshal(payload)
+	h.dispatchHook("after_turn", hookPayload, tenantID, session)
+}
+
+func (h *Hub) emitBeforeCompaction(tenantID, session string, sender *Client, msg *Message) {
+	if msg == nil || session == "" {
+		return
+	}
+	payload := map[string]any{
+		"session":             session,
+		"tenant_id":           tenantID,
+		"sender":              kernelClientMeta(sender),
+		"message_id":          msg.ID,
+		"type":                msg.Type,
+		"topic":               msg.Topic,
+		"name":                msg.Name,
+		"text":                msg.Text,
+		"meta":                metaMap(msg.Meta),
+		"turn_correlation_id": metaString(msg.Meta, turnCorrelationMetaKey),
+	}
+	if len(msg.Data) > 0 {
+		payload["data"] = msg.Data
+	}
+	hookPayload, _ := json.Marshal(payload)
+	// This hook is synchronous so pre-compaction save hooks can finish before the
+	// compaction event reaches observers. The result is intentionally ignored:
+	// this is not an authorization boundary.
+	h.dispatchHook("before_compaction", hookPayload, tenantID, session)
+}
+
 func (h *Hub) emitAfterToolCall(tenantID, session, toolID string, payload map[string]string) {
 	payload["tenant_id"] = tenantID
 	if output, ok := payload["output"]; ok {
@@ -110,6 +174,14 @@ func clientPreferredRuntime(c *Client) string {
 		return ""
 	}
 	return normalizeClientRuntimeID(decodeClientMeta(c.meta).RuntimeID)
+}
+
+func clientIsManagedUserInput(c *Client) bool {
+	if c == nil {
+		return false
+	}
+	meta := decodeClientMeta(c.meta)
+	return meta.Managed && (meta.Role == "ui" || meta.Role == "api")
 }
 
 func (h *Hub) preferredRuntimeForMessage(sender *Client, tenantID, session string) string {

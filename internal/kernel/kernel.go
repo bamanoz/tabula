@@ -177,7 +177,10 @@ func (h *Hub) onClientDisconnect(c *Client) {
 		return
 	}
 	if sess.IsBusy() && c.canSend(TopicTurnDone) {
-		sess.EndTurn()
+		input, hasInput := h.interruptSessionTurn(c.tenantID, c.session)
+		if hasInput && clientIsManagedUserInput(input.exclude) {
+			input.exclude.SendMsg(&Message{Type: string(MsgEvent), Topic: TopicSessionStatus, Session: c.session, TenantID: c.tenantID, Data: mustMarshalRaw(map[string]any{"state": "waiting_for_driver", "reason": "turn_receiver_unavailable"})})
+		}
 	}
 	sess.RemoveClient(c.name)
 	if sess.ClientCount() == 0 {

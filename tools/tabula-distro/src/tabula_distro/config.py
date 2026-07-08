@@ -15,7 +15,7 @@ Schema (all sections optional; absent file = empty config, legacy behavior):
     [[bundles]]
     name       = "mempalace"
     source     = "source:tabula-bundles#path=mempalace"
-    components = ["mempalace-save", "mempalace-search"] # optional allowlist
+    components = ["mempalace"]                    # optional allowlist
     override   = false                            # explicit conflict override
 
     [[skills]]

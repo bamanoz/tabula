@@ -177,6 +177,9 @@ child_running() {
   local pid="$1"
   [ "$pid" -gt 0 ] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
+  if ! command -v ps >/dev/null 2>&1; then
+    return 0
+  fi
   local stat
   stat="$(ps -o stat= -p "$pid" 2>/dev/null || true)"
   [ -n "$stat" ] || return 1
