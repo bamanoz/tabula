@@ -36,6 +36,7 @@ func (h *Handler) AsyncFrames() <-chan any {
 		return nil
 	}
 	go h.pool.PrimeRuntimeTargets(context.Background(), nil)
+	go h.pool.PrimeDynamicTargets(context.Background(), nil)
 	return h.pool.AsyncFrames()
 }
 
@@ -122,6 +123,7 @@ func (h *Handler) Reload(_ context.Context, in wire.Reload) (wire.ReloadAck, err
 	if h.pool != nil {
 		evicted = h.pool.Reload(in.Target, in.Tenants...)
 		go h.pool.PrimeTargets(context.Background(), in.Target)
+		go h.pool.PrimeDynamicTargets(context.Background(), in.Target)
 	}
 	return wire.ReloadAck{Op: wire.OpReloadAck, EvictedTargets: evicted}, nil
 }

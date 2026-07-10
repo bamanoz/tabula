@@ -540,6 +540,47 @@ func TestConcurrentRuntimePromptBuildHooksReserveTargetOnce(t *testing.T) {
 	}
 }
 
+func TestConcurrentRuntimeSecurityHooksSerializeTarget(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	timeout := int64(200)
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-permissions"}
+	capability := wire.Capability{
+		Target: target,
+		Hooks:  []wire.HookSpec{{Event: "before_tool_call", Priority: 100, TimeoutMS: &timeout}},
+		State:  wire.CapabilityStateReady,
+		Source: wire.CapabilitySourceWorker,
+	}
+	rc := newOpenHookRuntimeConn()
+	rc.WithCapabilities(capability)
+	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{capability}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	hub.syncRuntimeCapability("local", capability)
+	hub.rebuildHookIndex()
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			hub.dispatchHook("before_tool_call", json.RawMessage(`{"tool":"fs_read","input":{}}`), tenant.DefaultID, "s1")
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if got := len(rc.HookEvents()); got != 2 {
+		t.Fatalf("expected both runtime security hooks to run serially, got %d", got)
+	}
+	if hub.isRuntimeTargetBusy("local", target) {
+		t.Fatal("timed-out security hook did not release target busy marker")
+	}
+}
+
 type openHookRuntimeConn struct {
 	*runtimemock.RuntimeConn
 	done       chan struct{}
@@ -573,7 +614,7 @@ func (c *openHookRuntimeConn) HookEvents() []runtimeapi.HookEventReq {
 	return out
 }
 
-func TestBusyRuntimeTargetIsNotSkippedForSecurityHooks(t *testing.T) {
+func TestBusyRuntimeTargetWaitsForSecurityHooks(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
 	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
@@ -585,7 +626,7 @@ func TestBusyRuntimeTargetIsNotSkippedForSecurityHooks(t *testing.T) {
 		State:  wire.CapabilityStateReady,
 		Source: wire.CapabilitySourceWorker,
 	}
-	rc := runtimemock.New().WithCapabilities(capability)
+	rc := newOpenHookRuntimeConn().WithCapabilities(capability)
 	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{capability}, 0); err != nil {
 		t.Fatalf("RegisterHello: %v", err)
 	}
@@ -593,15 +634,273 @@ func TestBusyRuntimeTargetIsNotSkippedForSecurityHooks(t *testing.T) {
 	hub.rebuildHookIndex()
 
 	release := hub.markRuntimeTargetBusy("local", target)
-	defer release()
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		release()
+	}()
 	started := time.Now()
-	_, ok := hub.dispatchHook("before_tool_call", json.RawMessage(`{"tool":"fs_read","input":{}}`), tenant.DefaultID, "s1")
+	_, ok, blocked := hub.hooks.DispatchDetailedExcept("before_tool_call", json.RawMessage(`{"tool":"fs_read","input":{}}`), tenant.DefaultID, "s1", nil)
 	elapsed := time.Since(started)
-	if ok {
-		t.Fatal("busy security hook target should not be skipped fail-open")
+	if ok || blocked == nil || blocked.Status != "timeout" {
+		t.Fatalf("security hook should run after busy target is released and then time out, ok=%v blocked=%+v", ok, blocked)
 	}
-	if elapsed > time.Second {
-		t.Fatalf("security hook should fail closed quickly in tests, elapsed=%s", elapsed)
+	if elapsed < 20*time.Millisecond {
+		t.Fatalf("security hook did not wait for busy target release, elapsed=%s", elapsed)
+	}
+	if got := len(rc.HookEvents()); got != 1 {
+		t.Fatalf("security hook should send after busy target release, got %d", got)
+	}
+}
+
+func TestUnavailableRuntimeSecurityHookFailsClosed(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetTenantStore(tenant.NewMemoryStore(
+		tenant.Tenant{ID: "alpha", CreatedAt: time.Now()},
+		tenant.Tenant{ID: "beta", CreatedAt: time.Now()},
+	))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	timeout := int64(20)
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-permissions"}
+	capability := wire.Capability{
+		Target:  target,
+		Hooks:   []wire.HookSpec{{Event: "before_tool_call", Priority: 100, TimeoutMS: &timeout}},
+		State:   wire.CapabilityStateReady,
+		Source:  wire.CapabilitySourceWorker,
+		Tenants: []string{"beta"},
+	}
+	rc := newOpenHookRuntimeConn().WithCapabilities(capability)
+	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{capability}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	hub.syncRuntimeCapability("local", capability)
+	hub.rebuildHookIndex()
+
+	_, ok, blocked := hub.hooks.DispatchDetailedExcept("before_tool_call", json.RawMessage(`{"tool":"exec_run","input":{"cmd":"echo should-not-run"}}`), "alpha", "s1", nil)
+	if ok || blocked == nil || blocked.Status != "unavailable" {
+		t.Fatalf("unavailable security hook should fail closed, ok=%v blocked=%+v", ok, blocked)
+	}
+	if got := len(rc.HookEvents()); got != 0 {
+		t.Fatalf("tenant-mismatched hook should not receive event, got %d", got)
+	}
+}
+
+func TestBusyRuntimeSecurityHookFailsClosedEvenWhenAnotherHookIsAvailable(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	short := int64(20)
+	availableTarget := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-permissions"}
+	busyTarget := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-approvals"}
+	available := wire.Capability{
+		Target: availableTarget,
+		Hooks:  []wire.HookSpec{{Event: "before_tool_call", Priority: 100, TimeoutMS: &short}},
+		State:  wire.CapabilityStateReady,
+		Source: wire.CapabilitySourceWorker,
+	}
+	busy := wire.Capability{
+		Target: busyTarget,
+		Hooks:  []wire.HookSpec{{Event: "before_tool_call", Priority: 80, TimeoutMS: &short}},
+		State:  wire.CapabilityStateReady,
+		Source: wire.CapabilitySourceWorker,
+	}
+	rc := newOpenHookRuntimeConn().WithCapabilities(available, busy)
+	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{available, busy}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	hub.syncRuntimeCapability("local", available)
+	hub.syncRuntimeCapability("local", busy)
+	hub.rebuildHookIndex()
+
+	releaseBusy := hub.markRuntimeTargetBusy("local", busyTarget)
+	defer releaseBusy()
+	_, ok, blocked := hub.hooks.DispatchDetailedExcept("before_tool_call", json.RawMessage(`{"tool":"fs_read","input":{}}`), tenant.DefaultID, "s1", nil)
+	if ok || blocked == nil || blocked.Target != "runtime:local:plugin:hook-approvals" || blocked.Status != "busy" {
+		t.Fatalf("busy security hook should fail closed before executing remaining hooks, ok=%v blocked=%+v", ok, blocked)
+	}
+	if got := len(rc.HookEvents()); got != 0 {
+		t.Fatalf("remaining security hooks must not run after a busy eligible hook, got %d", got)
+	}
+}
+
+func TestSuspendedSecurityHookReacquiresRemainingRuntimeHookOnResume(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: tenant.DefaultID, CreatedAt: time.Now()}))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	timeout := int64(200)
+	approvalTarget := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-approvals"}
+	policyTarget := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-permissions"}
+	approval := wire.Capability{
+		Target: approvalTarget,
+		Hooks:  []wire.HookSpec{{Event: "before_tool_call", Priority: 100, TimeoutMS: &timeout}},
+		State:  wire.CapabilityStateReady,
+		Source: wire.CapabilitySourceWorker,
+	}
+	duplicateApproval := approval
+	duplicateApproval.Tenants = []string{tenant.DefaultID}
+	policy := wire.Capability{
+		Target: policyTarget,
+		Hooks:  []wire.HookSpec{{Event: "before_tool_call", Priority: 10, TimeoutMS: &timeout}},
+		State:  wire.CapabilityStateReady,
+		Source: wire.CapabilitySourceWorker,
+	}
+	rc := newOpenHookRuntimeConn().WithCapabilities(approval, duplicateApproval, policy)
+	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{approval, duplicateApproval, policy}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	hub.syncRuntimeCapability("local", approval)
+	hub.syncRuntimeCapability("local", duplicateApproval)
+	hub.syncRuntimeCapability("local", policy)
+	hub.rebuildHookIndex()
+
+	type hookDispatchResult struct {
+		ok      bool
+		blocked *HookDispatchDecision
+	}
+	dispatchDone := make(chan hookDispatchResult, 1)
+	go func() {
+		_, ok, blocked := hub.hooks.DispatchDetailedExcept("before_tool_call", json.RawMessage(`{"tool":"fs_read","input":{}}`), tenant.DefaultID, "s1", nil)
+		dispatchDone <- hookDispatchResult{ok: ok, blocked: blocked}
+	}()
+	var firstEvents []runtimeapi.HookEventReq
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		firstEvents = rc.HookEvents()
+		if len(firstEvents) == 1 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if len(firstEvents) != 1 || firstEvents[0].Target.ID != approvalTarget.ID {
+		t.Fatalf("expected only approval hook before resume, got %+v", firstEvents)
+	}
+	hub.hooks.HandleRuntimeResult("local", &Message{ID: firstEvents[0].CallID, Action: string(ActionSuspend)})
+	var blocked *HookDispatchDecision
+	select {
+	case result := <-dispatchDone:
+		if result.ok || result.blocked == nil || !result.blocked.Pending {
+			t.Fatalf("expected suspended hook decision, ok=%v blocked=%+v", result.ok, result.blocked)
+		}
+		blocked = result.blocked
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for suspended hook decision")
+	}
+	if hub.isRuntimeTargetBusy("local", policyTarget) {
+		t.Fatal("remaining runtime hook target stayed busy while tool was suspended")
+	}
+
+	resumeDone := make(chan hookDispatchResult, 1)
+	go func() {
+		_, ok, blocked := hub.hooks.ResumeModifying(blocked)
+		resumeDone <- hookDispatchResult{ok: ok, blocked: blocked}
+	}()
+	var events []runtimeapi.HookEventReq
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		events = rc.HookEvents()
+		if len(events) == 2 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !hub.isRuntimeTargetBusy("local", policyTarget) {
+		t.Fatal("resumed remaining runtime hook did not reacquire busy marker")
+	}
+	if len(events) != 2 || events[1].Target.ID != policyTarget.ID {
+		t.Fatalf("expected policy hook after resume, got %+v", events)
+	}
+	hub.hooks.HandleRuntimeResult("local", &Message{ID: events[1].CallID, Action: string(ActionPass)})
+	select {
+	case result := <-resumeDone:
+		if !result.ok || result.blocked != nil {
+			t.Fatalf("expected resumed hook chain to continue, ok=%v blocked=%+v", result.ok, result.blocked)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for resumed hook chain")
+	}
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && hub.isRuntimeTargetBusy("local", policyTarget) {
+		time.Sleep(time.Millisecond)
+	}
+	if hub.isRuntimeTargetBusy("local", policyTarget) {
+		t.Fatal("resumed remaining runtime hook did not release busy marker after reply")
+	}
+}
+
+func TestRuntimeModifyingHookReplyReleasesBusyMarker(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: tenant.DefaultID, CreatedAt: time.Now()}))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	timeout := int64(200)
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-permissions"}
+	capability := wire.Capability{
+		Target: target,
+		Hooks:  []wire.HookSpec{{Event: "before_prompt_build", Priority: 100, TimeoutMS: &timeout}, {Event: "before_tool_call", Priority: 100, TimeoutMS: &timeout}},
+		State:  wire.CapabilityStateReady,
+		Source: wire.CapabilitySourceWorker,
+	}
+	rc := newOpenHookRuntimeConn().WithCapabilities(capability)
+	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{capability}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	hub.syncRuntimeCapability("local", capability)
+	hub.rebuildHookIndex()
+
+	done := make(chan struct{}, 1)
+	go func() {
+		_, ok := hub.hooks.Dispatch("before_prompt_build", json.RawMessage(`{"tools":[]}`), tenant.DefaultID, "s1")
+		if !ok {
+			t.Errorf("before_prompt_build dispatch failed")
+		}
+		done <- struct{}{}
+	}()
+	var event runtimeapi.HookEventReq
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		events := rc.HookEvents()
+		if len(events) == 1 {
+			event = events[0]
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if event.CallID == "" {
+		t.Fatal("expected runtime hook event")
+	}
+	hub.hooks.HandleRuntimeResult("local", &Message{ID: event.CallID, Action: string(ActionPass)})
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for hook dispatch")
+	}
+	if hub.isRuntimeTargetBusy("local", target) {
+		t.Fatal("runtime hook target stayed busy after modifying hook reply")
+	}
+}
+
+func TestRuntimeVoidHookDoesNotMarkTargetBusy(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-approvals"}
+	capability := wire.Capability{
+		Target: target,
+		Hooks:  []wire.HookSpec{{Event: "approval_resolved", Priority: 0}},
+		State:  wire.CapabilityStateReady,
+		Source: wire.CapabilitySourceWorker,
+	}
+	rc := newOpenHookRuntimeConn().WithCapabilities(capability)
+	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{capability}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	hub.syncRuntimeCapability("local", capability)
+	hub.rebuildHookIndex()
+
+	hub.dispatchHook("approval_resolved", json.RawMessage(`{"approval_id":"a1"}`), tenant.DefaultID, "s1")
+	if got := len(rc.HookEvents()); got != 1 {
+		t.Fatalf("expected one void runtime hook event, got %d", got)
+	}
+	if hub.isRuntimeTargetBusy("local", target) {
+		t.Fatal("void runtime hook left target busy")
 	}
 }
 
@@ -773,7 +1072,7 @@ func TestTenantScopedCapabilityUpdateDoesNotEvictSiblingTenantDispatch(t *testin
 	}
 }
 
-func TestTenantScopedCatalogUpdateExtendsRuntimeTenants(t *testing.T) {
+func TestTenantScopedCatalogUpdateDoesNotWidenRuntimeTenants(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 1, 1, nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(
 		tenant.Tenant{ID: "bootstrap", CreatedAt: time.Now()},
@@ -800,8 +1099,8 @@ func TestTenantScopedCatalogUpdateExtendsRuntimeTenants(t *testing.T) {
 	}
 	hub.syncRuntimeCapability("local", wire.Capability{Target: target, Tenants: []string{"alpha"}, Tools: []wire.ToolSpec{{Name: "fs_read"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker})
 
-	if !hub.runtimes.RuntimeAllowedForTenant("alpha", "local") {
-		t.Fatalf("runtime did not learn late tenant: %#v", hub.runtimes.Snapshot())
+	if hub.runtimes.RuntimeAllowedForTenant("alpha", "local") {
+		t.Fatalf("runtime unexpectedly learned late tenant: %#v", hub.runtimes.Snapshot())
 	}
 	alphaTools := string(hub.initToolsJSON("alpha"))
 	if strings.Count(alphaTools, "fs_read") != 1 {
@@ -822,7 +1121,7 @@ func TestInitRefreshesAttachedRuntimeCapabilitiesAfterLateTenantAppears(t *testi
 	conn := runtimemock.New().WithCapabilities(
 		bootstrapCapability,
 	)
-	if err := hub.runtimes.RegisterHello("local", conn, []wire.Capability{bootstrapCapability}, 0, []string{"bootstrap"}); err != nil {
+	if err := hub.runtimes.RegisterHello("local", conn, []wire.Capability{bootstrapCapability}, 0, []string{"*"}); err != nil {
 		t.Fatalf("RegisterHello: %v", err)
 	}
 	hub.syncRuntimeCapability("local", bootstrapCapability)

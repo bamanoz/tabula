@@ -54,6 +54,12 @@ and shared development tooling. Distro-specific product policy belongs in
 
 ## Tests
 
+- Bug fixes must be evidence-driven. Reproduce the reported behavior first and
+  base the fix on concrete evidence from tests, logs, traces, runtime state, or
+  another observable monitoring source. If existing diagnostics are insufficient,
+  add targeted temporary or permanent instrumentation, restart the affected
+  runtime/gateway/kernel as needed, and verify the live scenario before declaring
+  the bug fixed.
 - Write production-ready code on the first pass. Do not leave known race risks,
   cleanup gaps, TODO behavior, best-effort protocol validation, or unverified
   edge cases for a later hardening pass.

@@ -259,6 +259,30 @@ func (r *RuntimeRegistry) SetPID(runtimeID string, pid int) {
 	attachment.PID = pid
 }
 
+func (r *RuntimeRegistry) ReplaceTenantsServed(runtimeID string, tenants []string) ([]string, bool) {
+	if r == nil || strings.TrimSpace(runtimeID) == "" || len(tenants) == 0 {
+		return nil, false
+	}
+	for _, tenantID := range tenants {
+		tenantID = strings.TrimSpace(tenantID)
+		if tenantID == "*" {
+			continue
+		}
+		if err := wire.ValidateTenantID(tenantID); err != nil {
+			return nil, false
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	attachment := r.runtimes[runtimeID]
+	if attachment == nil || !attachment.Attached {
+		return nil, false
+	}
+	previous := append([]string(nil), attachment.TenantsServed...)
+	attachment.TenantsServed = append([]string(nil), tenants...)
+	return previous, true
+}
+
 func (r *RuntimeRegistry) ApplyCatalogUpdate(runtimeID string, update wire.CatalogUpdate) (runtimeapi.Capability, bool, error) {
 	if r == nil {
 		return runtimeapi.Capability{}, false, fmt.Errorf("runtime registry is nil")
@@ -273,7 +297,6 @@ func (r *RuntimeRegistry) ApplyCatalogUpdate(runtimeID string, update wire.Catal
 		return runtimeapi.Capability{}, false, fmt.Errorf("runtime %q is not attached", runtimeID)
 	}
 	updateTenants := normalizedCapabilityTenants(update.Tenants, attachment.TenantsServed)
-	attachment.TenantsServed = mergeRuntimeTenants(attachment.TenantsServed, updateTenants)
 	capability := runtimeapi.Capability{
 		Target:   update.Target,
 		Tenants:  updateTenants,
@@ -364,16 +387,105 @@ func (r *RuntimeRegistry) HookTargets() []runtimeHookTarget {
 		if attachment == nil || !attachment.Attached || attachment.conn == nil {
 			continue
 		}
+		byTarget := make(map[string]runtimeapi.Capability)
 		for _, capability := range attachment.Capabilities {
-			out = append(out, runtimeHookTarget{
-				RuntimeID:  runtimeID,
-				Capability: capability,
-				Conn:       attachment.conn,
-				Done:       attachment.done,
-			})
+			if len(capability.Hooks) == 0 {
+				continue
+			}
+			key := runtimeHookTargetKey(capability)
+			if !servesAllTenants(capability.Tenants) {
+				if existing, ok := byTarget[runtimeTargetKey(capability.Target)+":*"]; ok && !preferRuntimeHookCapability(capability, existing) {
+					continue
+				}
+			}
+			if servesAllTenants(capability.Tenants) {
+				prefix := runtimeTargetKey(capability.Target) + ":"
+				for existingKey, existing := range byTarget {
+					if strings.HasPrefix(existingKey, prefix) && existingKey != key && !preferRuntimeHookCapability(existing, capability) {
+						delete(byTarget, existingKey)
+					}
+				}
+			}
+			if existing, ok := byTarget[key]; !ok || preferRuntimeHookCapability(capability, existing) {
+				byTarget[key] = capability
+			}
+		}
+		capabilities := make([]runtimeapi.Capability, 0, len(byTarget))
+		for _, capability := range byTarget {
+			capabilities = append(capabilities, capability)
+		}
+		capabilities = dropCoveredManifestHookCapabilities(capabilities)
+		for _, capability := range capabilities {
+			out = append(out, runtimeHookTarget{RuntimeID: runtimeID, Capability: capability, Conn: attachment.conn, Done: attachment.done})
 		}
 	}
 	return out
+}
+
+func dropCoveredManifestHookCapabilities(capabilities []runtimeapi.Capability) []runtimeapi.Capability {
+	if len(capabilities) < 2 {
+		return capabilities
+	}
+	out := make([]runtimeapi.Capability, 0, len(capabilities))
+	for _, candidate := range capabilities {
+		if candidate.Source == wire.CapabilitySourceManifest && hookCapabilityCoveredByWorker(candidate, capabilities) {
+			continue
+		}
+		out = append(out, candidate)
+	}
+	return out
+}
+
+func hookCapabilityCoveredByWorker(candidate runtimeapi.Capability, capabilities []runtimeapi.Capability) bool {
+	for _, other := range capabilities {
+		if other.Source != wire.CapabilitySourceWorker || other.State != wire.CapabilityStateReady || !sameRuntimeTarget(other.Target, candidate.Target) {
+			continue
+		}
+		if hookTenantScopeCovers(other.Tenants, candidate.Tenants) {
+			return true
+		}
+	}
+	return false
+}
+
+func hookTenantScopeCovers(workerTenants, manifestTenants []string) bool {
+	if servesAllTenants(workerTenants) {
+		return true
+	}
+	if servesAllTenants(manifestTenants) {
+		return len(workerTenants) > 0
+	}
+	for _, tenantID := range manifestTenants {
+		if !runtimeServesTenant(workerTenants, tenantID) {
+			return false
+		}
+	}
+	return len(manifestTenants) > 0
+}
+
+func preferRuntimeHookCapability(candidate, existing runtimeapi.Capability) bool {
+	if candidate.State == wire.CapabilityStateReady && existing.State != wire.CapabilityStateReady {
+		return true
+	}
+	if candidate.State != wire.CapabilityStateReady && existing.State == wire.CapabilityStateReady {
+		return false
+	}
+	if candidate.Source == wire.CapabilitySourceWorker && existing.Source != wire.CapabilitySourceWorker {
+		return true
+	}
+	if candidate.Source != wire.CapabilitySourceWorker && existing.Source == wire.CapabilitySourceWorker {
+		return false
+	}
+	return candidate.Revision > existing.Revision
+}
+
+func runtimeHookTargetKey(capability runtimeapi.Capability) string {
+	if servesAllTenants(capability.Tenants) {
+		return runtimeTargetKey(capability.Target) + ":*"
+	}
+	tenants := append([]string(nil), capability.Tenants...)
+	sort.Strings(tenants)
+	return runtimeTargetKey(capability.Target) + ":" + strings.Join(tenants, ",")
 }
 
 // Snapshot returns a stable copy of the runtime read model.

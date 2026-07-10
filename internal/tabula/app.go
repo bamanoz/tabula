@@ -24,6 +24,7 @@ import (
 	"github.com/bamanoz/tabula/internal/logging"
 	runtimeauth "github.com/bamanoz/tabula/internal/runtime/auth"
 	runtimecodec "github.com/bamanoz/tabula/internal/runtime/codec"
+	runtimehostconfig "github.com/bamanoz/tabula/internal/runtime/host/config"
 	"github.com/bamanoz/tabula/internal/runtime/paths"
 	"github.com/bamanoz/tabula/internal/runtime/transport/unixsock"
 	"github.com/bamanoz/tabula/internal/runtime/transport/wss"
@@ -124,6 +125,22 @@ func registerKernelHTTPHandlers(mux *http.ServeMux, hub *kernel.Hub, listenerHos
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(hub.SnapshotRuntimes())
+	}))
+
+	mux.HandleFunc("/internal/reload/runtime", internalDiagnosticsGuard(listenerHost, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		if err := reloadRuntimeFromConfig(ctx, os.Getenv("TABULA_HOME"), hub); err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	}))
 }
 
@@ -561,15 +578,9 @@ func watchReloadTrigger(tabulaHome string, hub *kernel.Hub, stop <-chan struct{}
 		}
 		lastMtime = mt
 		reloadTenant := reloadTriggerTenant(triggerPath)
-		reloadTenants := reloadTenants(tabulaHome)
 		slog.Info("reload trigger fired", "path", triggerPath, "tenant_hint", reloadTenant)
-		if err := hub.ConfigureRuntimeRegistry(tabulaHome); err != nil {
-			slog.Error("runtime registry config reload failed", "error", err)
-			continue
-		}
-		hub.SetTenantStore(tenant.NewFSStore(tabulaHome))
 		reloadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err := reloadLocalRuntime(reloadCtx, hub, reloadTenants...)
+		err := reloadRuntimeFromConfig(reloadCtx, tabulaHome, hub)
 		cancel()
 		if err != nil {
 			slog.Error("runtime reload failed", "error", err)
@@ -577,6 +588,14 @@ func watchReloadTrigger(tabulaHome string, hub *kernel.Hub, stop <-chan struct{}
 		}
 		slog.Info("runtime reload complete")
 	}
+}
+
+func reloadRuntimeFromConfig(ctx context.Context, tabulaHome string, hub *kernel.Hub) error {
+	if err := hub.ConfigureRuntimeRegistry(tabulaHome); err != nil {
+		return fmt.Errorf("reload runtime registry config: %w", err)
+	}
+	hub.SetTenantStore(tenant.NewFSStore(tabulaHome))
+	return reloadLocalRuntime(ctx, hub, reloadTenants(tabulaHome)...)
 }
 
 func watchRuntimeTokenRevocations(store *runtimeauth.FileStore, hub *kernel.Hub, stop <-chan struct{}) {
@@ -624,26 +643,11 @@ func reloadLocalRuntime(ctx context.Context, reloader runtimeReloader, tenants .
 }
 
 func reloadTenants(tabulaHome string) []string {
-	definitions, err := kernel.LoadRuntimeDefinitions(tabulaHome)
-	if err != nil || len(definitions) != 1 || definitions[0].ID != runtimeauth.LocalRuntimeID {
+	cfg, err := runtimehostconfig.Load(filepath.Join(tabulaHome, "config", "runtime.toml"))
+	if err != nil || len(cfg.Kernels) != 1 {
 		return nil
 	}
-	store := tenant.NewFSStore(tabulaHome)
-	items, err := store.List()
-	if err != nil {
-		return nil
-	}
-	var tenants []string
-	for _, item := range items {
-		binding, err := kernel.LoadTenantRuntimeBinding(tabulaHome, item.ID, map[string]struct{}{runtimeauth.LocalRuntimeID: {}})
-		if err != nil {
-			return nil
-		}
-		if binding.DefaultRuntime == runtimeauth.LocalRuntimeID {
-			tenants = append(tenants, item.ID)
-		}
-	}
-	return tenants
+	return append([]string(nil), cfg.Kernels[0].Tenants...)
 }
 
 func reloadTriggerTenants(triggerPath, tabulaHome string) []string {

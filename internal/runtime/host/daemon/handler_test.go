@@ -187,9 +187,10 @@ func TestHandlerRoutesHookEventToWorker(t *testing.T) {
 	}
 }
 
-func TestHandlerAsyncFramesDoesNotPrimeManifestTargetsOnAttach(t *testing.T) {
+func TestHandlerAsyncFramesOnlyPrimeDynamicTargetsOnAttach(t *testing.T) {
 	dir := t.TempDir()
 	writeRuntimePlugin(t, dir)
+	writeDynamicRuntimePlugin(t, dir)
 	store, err := manifest.NewStore([]string{dir})
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -202,13 +203,31 @@ func TestHandlerAsyncFramesDoesNotPrimeManifestTargetsOnAttach(t *testing.T) {
 	if frames == nil {
 		t.Fatal("AsyncFrames returned nil")
 	}
-	time.Sleep(50 * time.Millisecond)
-	if health, err := h.Health(context.Background(), wire.Health{Op: wire.OpHealth}); err != nil || health.WorkerCount != 0 {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if health, err := h.Health(context.Background(), wire.Health{Op: wire.OpHealth}); err != nil {
+			t.Fatalf("Health after async attach = %#v, %v", health, err)
+		} else if health.WorkerCount == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if health, err := h.Health(context.Background(), wire.Health{Op: wire.OpHealth}); err != nil || health.WorkerCount != 1 {
 		t.Fatalf("Health after async attach = %#v, %v", health, err)
 	}
 	caps, err := h.ListCapabilities(context.Background(), wire.ListCapabilities{Op: wire.OpListCapabilities})
-	if err != nil || len(caps.Targets) != 1 || caps.Targets[0].State != wire.CapabilityStateManifestLoaded || caps.Targets[0].Source != wire.CapabilitySourceManifest {
+	if err != nil || len(caps.Targets) != 2 {
 		t.Fatalf("ListCapabilities after async attach = %#v, %v", caps, err)
+	}
+	byTarget := map[string]wire.Capability{}
+	for _, capability := range caps.Targets {
+		byTarget[capability.Target.ID] = capability
+	}
+	if byTarget["fs"].State != wire.CapabilityStateManifestLoaded || byTarget["fs"].Source != wire.CapabilitySourceManifest {
+		t.Fatalf("manifest target should stay lazy after async attach: %#v", byTarget["fs"])
+	}
+	if byTarget["dynamic"].State != wire.CapabilityStateReady || byTarget["dynamic"].Source != wire.CapabilitySourceWorker {
+		t.Fatalf("dynamic target should be ready after async attach: %#v", byTarget["dynamic"])
 	}
 }
 
@@ -317,5 +336,40 @@ for line in sys.stdin:
     sys.stdout.flush()
 `), 0o755); err != nil {
 		t.Fatalf("write worker: %v", err)
+	}
+}
+
+func writeDynamicRuntimePlugin(t *testing.T, root string) {
+	t.Helper()
+	dir := filepath.Join(root, "dynamic")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir dynamic plugin: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plugin.toml"), []byte(`id = "dynamic"
+name = "Dynamic"
+version = "0.1.0"
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`), 0o644); err != nil {
+		t.Fatalf("write dynamic manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "run.py"), []byte(`#!/usr/bin/env python3
+import json
+import sys
+
+json.loads(sys.stdin.readline())
+sys.stdout.write(json.dumps({"op":"init_ack","ready":True,"tools":[{"name":"dynamic_ping"}],"subscriptions":[]}) + "\n")
+sys.stdout.flush()
+for line in sys.stdin:
+    frame = json.loads(line)
+    if frame.get("op") == "shutdown":
+        break
+`), 0o755); err != nil {
+		t.Fatalf("write dynamic worker: %v", err)
 	}
 }

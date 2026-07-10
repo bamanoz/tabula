@@ -8,6 +8,7 @@ from pathlib import Path
 import json
 import subprocess
 import sys
+import tomllib
 import unittest
 import websocket
 
@@ -224,10 +225,12 @@ class SubagentsPluginSmoke(unittest.TestCase):
             self.assertIn("provider", properties)
 
     def test_subagent_manifest_uses_long_running_deadlines(self):
-        manifest = (Path(self.tabula_home) / "plugins" / "subagents" / "plugin.toml").read_text(encoding="utf-8")
-        self.assertIn('name = "subagent_spawn"', manifest)
-        self.assertIn('name = "subagent_wait"', manifest)
-        self.assertGreaterEqual(manifest.count("deadline_ms = 900000"), 2)
+        manifest_path = Path(self.tabula_home) / "plugins" / "subagents" / "plugin.toml"
+        manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+        tools = {tool.get("name"): tool for tool in manifest.get("tools", [])}
+        for name in ("subagent_spawn", "subagent_wait"):
+            self.assertIn(name, tools)
+            self.assertGreaterEqual(tools[name].get("deadline_ms", 0), 900000)
 
     def test_subagent_spawn_rejects_unknown_provider_override(self):
         with self.make_client("testbed-subagents-provider") as client:

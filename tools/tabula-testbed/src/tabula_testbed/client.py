@@ -38,11 +38,13 @@ class ToolResult:
 
 
 class TestbedClient:
-    def __init__(self, url: str = "ws://localhost:8089/ws", *, name: str | None = None):
+    def __init__(self, url: str = "ws://localhost:8089/ws", *, name: str | None = None, meta: dict[str, Any] | None = None):
         self.url = url
         self.name = name or f"testbed-{uuid.uuid4().hex[:8]}"
+        self.meta = dict(meta or {})
         self.ws: websocket.WebSocket | None = None
         self.init: dict[str, Any] = {}
+        self.recent_messages: list[dict[str, Any]] = []
 
     def __enter__(self) -> "TestbedClient":
         if self.ws is None:
@@ -64,6 +66,7 @@ class TestbedClient:
                 "send_topics": sends,
                 "receive_topics": receives,
                 "auth_token": kernel_auth_token(),
+                "meta": self.meta,
             },
         }
         self.ws.send(json.dumps(msg))
@@ -117,7 +120,7 @@ class TestbedClient:
         try:
             msg = self.wait_for(lambda m: m.get("type") == "reply" and m.get("topic") == "tool.result" and m.get("id") == call_id, timeout=timeout)
         except Exception as exc:
-            raise TimeoutError(f"timed out waiting for tool_result: tool={name!r} id={call_id!r} client={self.name!r}") from exc
+            raise TimeoutError(f"timed out waiting for tool_result: tool={name!r} id={call_id!r} client={self.name!r} recent={self.recent_messages[-10:]!r}") from exc
         return ToolResult(name=str(msg.get("name") or name), id=call_id, output=str(msg.get("output") or ""))
 
     def call_tool_async(self, name: str, input: dict[str, Any] | None = None, *, timeout: float = 10) -> "AsyncToolCall":
@@ -158,6 +161,9 @@ class TestbedClient:
             while True:
                 raw = self.ws.recv()
                 msg = json.loads(raw)
+                self.recent_messages.append(msg)
+                if len(self.recent_messages) > 50:
+                    del self.recent_messages[: len(self.recent_messages) - 50]
                 if type is None or msg.get("type") == type or _matches_expected_type(msg, type):
                     return msg
         except (TimeoutError, socket.timeout, WebSocketTimeoutException) as exc:

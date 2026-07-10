@@ -148,6 +148,7 @@ func (s *ToolService) resolvePendingApproval(approvalID string, approved bool, c
 	if !ok {
 		return false
 	}
+	defer releaseBlockedHookDecision(pending.BlockedDecision)
 	if !approved {
 		s.emitApprovalResolved(pending, choice, false)
 		s.hub.sendToolResultForTool(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, string(mustMarshalRaw(map[string]any{"ok": false, "error": "not_invoked", "kind": "approval_denied", "retryable": false, "approval_id": approvalID, "choice": choice})), nil, false)
@@ -179,6 +180,13 @@ func (s *ToolService) resolvePendingApproval(approvalID string, approved bool, c
 	s.broadcastFinalizedToolCall(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, input, pending.Meta, nil)
 	s.handleDynamicTool(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, input, pending.TurnCorrelationID)
 	return true
+}
+
+func releaseBlockedHookDecision(decision *HookDispatchDecision) {
+	if decision == nil || decision.continuation == nil || decision.continuation.blocked == nil {
+		return
+	}
+	releaseHookEntryReservation(decision.continuation.blocked)
 }
 
 func (s *ToolService) pendingCall(approvalID string) (pendingToolCall, bool) {

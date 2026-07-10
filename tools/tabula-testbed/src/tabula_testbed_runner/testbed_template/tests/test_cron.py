@@ -66,11 +66,13 @@ class CronPluginSmoke(unittest.TestCase):
                 check=True,
             )
             msg = receiver.recv(type="message.user", timeout=10)
+            data = msg.get("data") or {}
+            meta = msg.get("meta") or data.get("meta") or {}
             self.assertEqual(msg.get("id"), "testbed-cron-fire")
-            self.assertIn('<cron_job id="testbed-cron-fire"', msg.get("text", ""))
-            self.assertIn("scheduled hello", msg.get("text", ""))
-            self.assertEqual(msg.get("meta", {}).get("source"), "cron")
-            self.assertEqual(msg.get("meta", {}).get("job_id"), "testbed-cron-fire")
+            self.assertIn('<cron_job id="testbed-cron-fire"', data.get("text", ""))
+            self.assertIn("scheduled hello", data.get("text", ""))
+            self.assertEqual(meta.get("source"), "cron")
+            self.assertEqual(meta.get("job_id"), "testbed-cron-fire")
         finally:
             sender.call_tool("cron_remove", {"id": "testbed-cron-fire"})
             sender.close()

@@ -534,8 +534,13 @@ def _cmd_app_run(args: argparse.Namespace, home: Path) -> int:
         return 0
     result = runmod.execute(manifest, home, tabula_bin=_resolve_tabula_bin_arg(args.tabula_bin, home), foreground=bool(args.foreground), boot_path=install_result.generation.path)
     if result.started_kernel:
+        if not result.runtime_ready:
+            raise SystemExit(f"started kernel {result.plan.kernel_id}, but runtime is not ready for app tenant {result.plan.app_id}")
         print(f"started kernel {result.plan.kernel_id}")
     elif result.reused_kernel:
+        if not result.runtime_ready:
+            detail = f"; reload request failed: {result.runtime_reload_error}" if result.runtime_reload_error else ""
+            raise SystemExit(f"managed kernel {result.plan.kernel_id} is reachable, but runtime is not ready for app tenant {result.plan.app_id}{detail}")
         print(f"reused kernel {result.plan.kernel_id}")
     return 0
 

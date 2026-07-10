@@ -39,6 +39,14 @@ func (h *Hub) handleSessionMessage(sender *Client, msg *Message) {
 		}
 		h.forwardSessionMessage(sender, msg)
 	case MsgEvent:
+		if msg.Topic == TopicSessionArchive {
+			h.handleSessionArchive(sender, msg)
+			return
+		}
+		if msg.Topic == TopicSessionDelete {
+			h.handleSessionDelete(sender, msg)
+			return
+		}
 		if msg.Topic == TopicMessageUser {
 			h.handleUserMessage(sender, msg)
 			return
@@ -91,7 +99,7 @@ func (h *Hub) applyMessagePlan(sender *Client, msg *Message, plan messagePlan) {
 	if clientIsManagedUserInput(sender) && !h.hasTurnReceiver(sender, plan.tenantID, plan.targetSession) {
 		if h.queueMessagePlan(sender, msg, plan) {
 			h.endSessionTurn(plan.tenantID, plan.targetSession)
-			sender.SendMsg(&Message{Type: string(MsgEvent), Topic: TopicSessionStatus, Session: plan.targetSession, TenantID: plan.tenantID, Data: mustMarshalRaw(map[string]any{"state": "waiting_for_driver", "reason": "turn_receiver_unavailable"})})
+			h.sendWaitingForDriver(sender, plan.tenantID, plan.targetSession)
 			return
 		}
 		sender.SendMsg(&Message{Type: string(MsgError), Text: "session input queue full"})
@@ -100,13 +108,15 @@ func (h *Hub) applyMessagePlan(sender *Client, msg *Message, plan messagePlan) {
 	delivered := 0
 	if clientIsManagedUserInput(sender) {
 		delivered = h.broadcastToTurnReceivers(plan.tenantID, plan.targetSession, msg, sender, sender)
+		h.mirrorToNonTurnReceivers(plan.tenantID, plan.targetSession, msg, sender, sender)
 	} else {
 		delivered = h.broadcastToSessionFrom(plan.tenantID, plan.targetSession, messageCapability(msg), msg, sender, sender)
 	}
 	if delivered == 0 && clientIsManagedUserInput(sender) {
 		if h.queueMessagePlan(sender, msg, plan) {
+			h.mirrorToNonTurnReceivers(plan.tenantID, plan.targetSession, msg, sender, sender)
 			h.endSessionTurn(plan.tenantID, plan.targetSession)
-			sender.SendMsg(&Message{Type: string(MsgEvent), Topic: TopicSessionStatus, Session: plan.targetSession, TenantID: plan.tenantID, Data: mustMarshalRaw(map[string]any{"state": "waiting_for_driver", "reason": "turn_receiver_unavailable"})})
+			h.sendWaitingForDriver(sender, plan.tenantID, plan.targetSession)
 			return
 		}
 		sender.SendMsg(&Message{Type: string(MsgError), Text: "session input queue full"})
@@ -134,6 +144,10 @@ func (h *Hub) queueMessagePlan(sender *Client, msg *Message, plan messagePlan) b
 func (h *Hub) handleUserMessage(sender *Client, msg *Message) {
 	msg.Meta, _ = ensureTurnCorrelationMeta(msg.Meta)
 	plan := h.buildMessagePlan(sender, msg)
+	if !plan.blocked && h.sessionDeleted(plan.tenantID, plan.targetSession) {
+		sender.SendMsg(&Message{Type: string(MsgError), Text: "session deleted"})
+		return
+	}
 	h.stampMessagePreferredRuntime(sender, plan.tenantID, plan.targetSession, msg)
 	if !plan.blocked && h.sessionStuckSuspended(plan.tenantID, plan.targetSession) {
 		sender.SendMsg(&Message{Type: string(MsgError), Text: "session suspended_stuck"})
@@ -141,7 +155,9 @@ func (h *Hub) handleUserMessage(sender *Client, msg *Message) {
 	}
 	if !plan.blocked && clientIsManagedUserInput(sender) && !h.hasTurnReceiver(sender, plan.tenantID, plan.targetSession) {
 		if h.queueMessagePlan(sender, msg, plan) {
+			h.mirrorToNonTurnReceivers(plan.tenantID, plan.targetSession, msg, sender, sender)
 			h.persistSessionState(plan.tenantID, plan.targetSession)
+			h.sendWaitingForDriver(sender, plan.tenantID, plan.targetSession)
 			return
 		}
 		sender.SendMsg(&Message{Type: string(MsgError), Text: "session input queue full"})
@@ -150,6 +166,7 @@ func (h *Hub) handleUserMessage(sender *Client, msg *Message) {
 	if !plan.blocked && h.shouldStartSessionTurn(sender, plan.tenantID, plan.targetSession) {
 		if !h.tryBeginSessionTurn(plan.tenantID, plan.targetSession) {
 			if h.queueMessagePlan(sender, msg, plan) {
+				h.mirrorToNonTurnReceivers(plan.tenantID, plan.targetSession, msg, sender, sender)
 				h.persistSessionState(plan.tenantID, plan.targetSession)
 				return
 			}
@@ -159,6 +176,10 @@ func (h *Hub) handleUserMessage(sender *Client, msg *Message) {
 	}
 	h.applyMessagePreferredRuntime(plan.tenantID, plan.targetSession, msg)
 	h.applyMessagePlan(sender, msg, plan)
+}
+
+func (h *Hub) sendWaitingForDriver(sender *Client, tenantID, session string) {
+	sender.SendMsg(&Message{Type: string(MsgEvent), Topic: TopicSessionStatus, Session: session, TenantID: tenantID, Data: mustMarshalRaw(map[string]any{"state": "waiting_for_driver", "reason": "turn_receiver_unavailable"})})
 }
 
 func (h *Hub) sessionStuckSuspended(tenantID, session string) bool {
@@ -172,6 +193,10 @@ func (h *Hub) sessionStuckSuspended(tenantID, session string) bool {
 func (h *Hub) handleTurnSteer(sender *Client, msg *Message) {
 	msg.Meta, _ = ensureTurnCorrelationMeta(msg.Meta)
 	plan := h.buildMessagePlan(sender, msg)
+	if !plan.blocked && h.sessionDeleted(plan.tenantID, plan.targetSession) {
+		sender.SendMsg(&Message{Type: string(MsgError), Text: "session deleted"})
+		return
+	}
 	h.stampMessagePreferredRuntime(sender, plan.tenantID, plan.targetSession, msg)
 	if plan.blocked {
 		sender.SendMsg(&Message{Type: string(MsgError), Text: "message blocked"})

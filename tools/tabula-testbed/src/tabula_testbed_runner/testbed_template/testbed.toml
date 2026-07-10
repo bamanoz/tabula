@@ -122,6 +122,7 @@ runtime_tenants = ["*"]
 
 [suites.app-manifest]
 set = "empty"
+bundles = ["base"]
 components = ["workspace:fs", "workspace:exec"]
 tests = ["tests/test_app_manifest.py"]
 runtime_tenants = ["testbed-app"]
@@ -204,6 +205,7 @@ tests = ["tests/test_mempalace.py"]
 
 [suites.codegraph]
 set = "empty"
+bundles = ["base"]
 components = ["codegraph:codegraph-query", "codegraph:codegraph-admin"]
 tests = ["tests/test_codegraph.py"]
 
@@ -214,6 +216,7 @@ tests = ["tests/test_subagents.py"]
 
 [suites.compaction]
 set = "empty"
+bundles = ["base"]
 components = ["drivers:driver"]
 tests = ["tests/test_compaction.py", "tests/test_driver_config.py"]
 

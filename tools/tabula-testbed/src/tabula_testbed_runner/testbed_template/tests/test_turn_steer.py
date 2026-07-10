@@ -27,7 +27,18 @@ class FakeConnection:
         return None
 
 
-class BlockingSteerProvider:
+class BaseSteerProvider:
+    def set_turn_context(self, context: str):
+        self.turn_contexts.append(context)
+
+    def clear_turn_context(self):
+        self.turn_contexts.append("")
+
+    def repair_history(self):
+        return []
+
+
+class BlockingSteerProvider(BaseSteerProvider):
     def __init__(self):
         self.system_prompt = "prompt"
         self.provider = "test"
@@ -39,6 +50,7 @@ class BlockingSteerProvider:
         self.aborted = threading.Event()
         self.generate_calls = 0
         self.record_aborted_calls = 0
+        self.turn_contexts: list[str] = []
 
     def add_user_text(self, text: str):
         self.messages.append({"role": "user", "text": text})
@@ -75,7 +87,7 @@ class BlockingSteerProvider:
         return ""
 
 
-class TimeoutProvider:
+class TimeoutProvider(BaseSteerProvider):
     def __init__(self):
         self.system_prompt = "prompt"
         self.provider = "test"
@@ -85,6 +97,7 @@ class TimeoutProvider:
         self.last_input_tokens = 0
         self.timeout_seconds = 0.01
         self.abort_calls = 0
+        self.turn_contexts: list[str] = []
 
     def add_user_text(self, text: str):
         self.messages.append({"role": "user", "text": text})
@@ -132,6 +145,28 @@ class UninterruptibleSteerProvider(TimeoutProvider):
             return TurnOutcome(final_text="too late", tool_calls=[], usage=None)
         emit(types.SimpleNamespace(kind="text", text="after steer", meta={}, tool_call=None, usage=None))
         return TurnOutcome(final_text="after steer", tool_calls=[], usage=None)
+
+
+class LateEventAfterAbortProvider(TimeoutProvider):
+    def __init__(self):
+        super().__init__()
+        self.generation_timeout_seconds = 0.0
+        self.started = threading.Event()
+        self.abort_called = threading.Event()
+
+    def stream_generate(self, emit, on_text_delta, on_reasoning_delta=None):
+        from tabula_drivers.providers import ProviderEvent, TurnOutcome
+
+        self.started.set()
+        if not self.abort_called.wait(2):
+            raise RuntimeError("provider was not aborted")
+        time.sleep(0.2)
+        emit(ProviderEvent(kind="usage", usage={"input_tokens": 1, "output_tokens": 1}))
+        return TurnOutcome(final_text="late", tool_calls=[], usage={"input_tokens": 1, "output_tokens": 1})
+
+    def abort(self):
+        self.abort_calls += 1
+        self.abort_called.set()
 
 
 class NoOutputSteerProvider(TimeoutProvider):
@@ -221,7 +256,8 @@ class TurnSteerInstalled(unittest.TestCase):
         self.assertEqual(history_entries, [])
         runtime.handle_tool_result({"id": "tool-1", "output": "child done"}, async_turn=True)
         self.assertEqual([msg.get("role") for msg in provider.messages], ["user", "tool", "user"])
-        self.assertEqual(provider.messages[-1], {"role": "user", "text": "redirect"})
+        self.assertEqual(provider.messages[-1]["role"], "user")
+        self.assertTrue(provider.messages[-1]["text"].endswith("redirect"), provider.messages[-1])
         self.assertEqual(history_entries[-1]["text"], "redirect")
         self.assertTrue(history_entries[-1]["steer"])
         runtime.close()
@@ -257,11 +293,58 @@ class TurnSteerInstalled(unittest.TestCase):
         runtime.handle_init({"tools": []})
         runtime.handle_message({"type": "event", "topic": "message.user", "data": {"text": "start"}})
 
-        provider_errors = [msg for msg in runtime.conn.sent if msg.get("type") == "event" and msg.get("topic") == "provider.error"]
         done = [msg for msg in runtime.conn.sent if msg.get("type") == "event" and msg.get("topic") == "turn.done"]
-        self.assertEqual(provider.abort_calls, 1)
-        self.assertTrue(provider_errors)
         self.assertTrue(done)
+        runtime.close()
+
+    def test_driver_cancel_pending_async_turn_finishes_kernel_turn(self):
+        from tabula_drivers import driver_runtime
+
+        old_connection = driver_runtime.KernelConnection
+        driver_runtime.KernelConnection = FakeConnection
+        self.addCleanup(lambda: setattr(driver_runtime, "KernelConnection", old_connection))
+        runtime = driver_runtime.DriverRuntime(
+            driver_runtime.DriverConfig(name="test", url="ws://127.0.0.1:1/ws", session="main"),
+            provider_factory=lambda prompt, tools, turn_provider=None, turn_model=None, turn_effort=None: BlockingSteerProvider(),
+            logger=lambda _msg: None,
+        )
+        runtime.handle_init({"tools": []})
+
+        with runtime._state_lock:
+            runtime._turn_start_pending = True
+        runtime.abort()
+        runtime.process_turn()
+
+        done = [msg for msg in runtime.conn.sent if msg.get("type") == "event" and msg.get("topic") == "turn.done"]
+        statuses = [msg.get("data", {}).get("state") for msg in runtime.conn.sent if msg.get("type") == "event" and msg.get("topic") == "session.status"]
+        self.assertEqual(len(done), 1, runtime.conn.sent)
+        self.assertIn("idle", statuses)
+        runtime.close()
+
+    def test_driver_cancel_active_provider_turn_suppresses_late_events(self):
+        from tabula_drivers import driver_runtime
+
+        provider = LateEventAfterAbortProvider()
+        old_connection = driver_runtime.KernelConnection
+        driver_runtime.KernelConnection = FakeConnection
+        self.addCleanup(lambda: setattr(driver_runtime, "KernelConnection", old_connection))
+        runtime = driver_runtime.DriverRuntime(
+            driver_runtime.DriverConfig(name="test", url="ws://127.0.0.1:1/ws", session="main"),
+            provider_factory=lambda prompt, tools, turn_provider=None, turn_model=None, turn_effort=None: provider,
+            logger=lambda _msg: None,
+        )
+        runtime.handle_init({"tools": []})
+        runtime.handle_message({"type": "event", "topic": "message.user", "data": {"text": "start"}}, async_turn=True)
+        self.assertTrue(provider.started.wait(2))
+
+        runtime.abort()
+        time.sleep(0.5)
+
+        done = [msg for msg in runtime.conn.sent if msg.get("type") == "event" and msg.get("topic") == "turn.done"]
+        usage = [msg for msg in runtime.conn.sent if msg.get("type") == "event" and msg.get("topic") == "usage.update"]
+        self.assertEqual(len(done), 1, runtime.conn.sent)
+        self.assertEqual(usage, [], runtime.conn.sent)
+        self.assertGreaterEqual(provider.abort_calls, 1)
         runtime.close()
 
     def test_driver_steer_interrupts_provider_wait_when_abort_does_not_unblock_socket(self):

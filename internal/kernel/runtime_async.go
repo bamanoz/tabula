@@ -200,8 +200,7 @@ func (h *Hub) broadcastRuntimeCatalogRefreshForTenants(tenants []string) {
 		meta := h.initMetaJSON(sess.TenantID)
 		for _, client := range h.sessionClients(sess.TenantID, sess.ID) {
 			if client.canReceive(TopicSessionInit) {
-				context, filteredTools := h.policy.BeforePromptBuild(sess.ID, sess.TenantID, client.name, sess.GetInitContext(), tools, meta)
-				msg := h.initMessage(context, filteredTools, meta)
+				msg := h.initMessage(sess.GetInitContext(), tools, meta)
 				client.SendMsg(msg)
 				clientCount++
 			}
@@ -394,6 +393,10 @@ func (h *Hub) ReloadAttachedRuntime(ctx context.Context, runtimeID string, targe
 	if conn == nil {
 		return false, nil
 	}
+	previousTenants, replacedTenants := h.runtimes.ReplaceTenantsServed(runtimeID, tenants)
 	_, err := conn.Reload(ctx, runtimeapi.ReloadReq{Target: target, Tenants: tenants})
+	if err != nil && replacedTenants {
+		h.runtimes.ReplaceTenantsServed(runtimeID, previousTenants)
+	}
 	return true, err
 }

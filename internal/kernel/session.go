@@ -34,6 +34,8 @@ type Session struct {
 	State               SessionState
 	CreatedAt           time.Time
 	LastActiveAt        time.Time
+	ArchivedAt          time.Time
+	DeletedAt           time.Time
 	clients             map[string]bool // client name → true
 	inflightTurn        bool
 	inflightInput       queuedInput
@@ -161,6 +163,37 @@ func (s *Session) Touch() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.touchLocked()
+}
+
+func (s *Session) Archive() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ArchivedAt.IsZero() {
+		s.ArchivedAt = time.Now()
+	}
+	s.touchLocked()
+	return s.ArchivedAt
+}
+
+func (s *Session) MarkDeleted() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.DeletedAt.IsZero() {
+		s.DeletedAt = time.Now()
+	}
+	s.State = SessionClosing
+	s.inflightTurn = false
+	s.cancelRequested = false
+	s.pendingInputs = nil
+	s.pendingSteers = nil
+	s.touchLocked()
+	return s.DeletedAt
+}
+
+func (s *Session) IsDeleted() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return !s.DeletedAt.IsZero()
 }
 
 func (s *Session) AddClient(name string) {

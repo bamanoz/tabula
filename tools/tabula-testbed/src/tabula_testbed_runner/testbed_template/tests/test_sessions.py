@@ -67,7 +67,7 @@ class SessionsPluginSmoke(unittest.TestCase):
                     "reply_action": "block",
                     "dispatch_effect": "tool_not_invoked",
                     "status": "reply",
-                    "input_summary": {"tool": "exec_run", "tool_call_id": "call-1", "input_keys": ["command"]},
+                    "input_summary": {"tool": "exec_run", "tool_call_id": "call-1", "input_keys": ["cmd"]},
                 },
                 "ts": 1.0,
             }

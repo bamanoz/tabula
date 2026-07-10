@@ -38,7 +38,7 @@ class WorkspaceNoProjectRoot(unittest.TestCase):
             path = Path(self.tabula_home) / "fallback.txt"
             client.call_tool("fs_write", {"path": str(path), "content": "fallback"}, timeout=10).json()
             self.assertEqual(client.call_tool("fs_read", {"path": str(path)}, timeout=10).json()["content"], "fallback")
-            pwd = client.call_tool("exec_run", {"command": "pwd"}, timeout=10).json()
+            pwd = client.call_tool("exec_run", {"cmd": "pwd"}, timeout=10).json()
             self.assertEqual(Path(pwd["stdout"].strip()).resolve(), Path(self.tabula_home).resolve())
 
 

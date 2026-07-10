@@ -67,6 +67,21 @@ def run(cmd: list[str], *, env: dict[str, str] | None = None, cwd: Path | None =
         subprocess.run(cmd, cwd=str(cwd) if cwd else None, env=env, check=True)
 
 
+def run_with_retries(cmd: list[str], *, attempts: int = 3, env: dict[str, str] | None = None, cwd: Path | None = None) -> None:
+    last: subprocess.CalledProcessError | None = None
+    for attempt in range(attempts):
+        try:
+            run(cmd, env=env, cwd=cwd)
+            return
+        except subprocess.CalledProcessError as exc:
+            last = exc
+            if attempt == attempts - 1:
+                break
+            time.sleep(0.5 * (attempt + 1))
+    if last is not None:
+        raise last
+
+
 def output(cmd: list[str], *, cwd: Path | None = None) -> str:
     return subprocess.check_output(cmd, cwd=str(cwd) if cwd else None, text=True).strip()
 
@@ -750,12 +765,16 @@ def main(argv: list[str] | None = None) -> int:
         write_diagnostic(logs_dir / "testbed-sources.txt", describe_testbed_sources(source_roots))
 
         log("==> Installing isolated Python environment")
-        run([sys.executable, "-m", "venv", str(venv)])
+        run([sys.executable, "-m", "venv", "--without-pip", str(venv)])
         python = venv / "bin" / "python3"
-        pip = venv / "bin" / "pip"
-        run([str(pip), "install", "-q", "--upgrade", "pip"])
-        run([str(pip), "install", "-q", "-r", str(repo_root / "scripts" / "requirements-dev.txt")])
-        run([str(pip), "install", "-q", "-e", str(repo_root / "tools" / "tabula-distro")])
+        run_with_retries([str(python), "-m", "ensurepip", "--upgrade"])
+        run_with_retries([str(python), "-m", "pip", "install", "-q", "--upgrade", "pip"])
+        run_with_retries([str(python), "-m", "pip", "install", "-q", "-r", str(repo_root / "scripts" / "requirements-dev.txt")])
+        run_with_retries([str(python), "-m", "pip", "install", "-q", "-e", str(repo_root / "tools" / "tabula-distro")])
+        for script_name, module in (("tabula-distro", "tabula_distro.cli"), ("tabula-install", "tabula_distro.install_cli")):
+            target = bin_dir / script_name
+            target.write_text(f"#!{python}\nimport sys\nfrom {module} import main\nsys.exit(main())\n", encoding="utf-8")
+            target.chmod(target.stat().st_mode | stat.S_IXUSR)
 
         log("==> Building isolated kernel/runtime binaries")
         version = (repo_root / "VERSION").read_text(encoding="utf-8").strip()
@@ -835,6 +854,7 @@ def main(argv: list[str] | None = None) -> int:
         runner_lib = Path(__file__).resolve().parents[1]
         smoke_env = env.copy()
         smoke_env["TABULA_TESTBED_LIVE"] = "1"
+        smoke_env["TABULA_ROOT"] = str(repo_root)
         smoke_env["PYTHONPATH"] = f"{runner_lib}:{home / 'packages' / 'python' / 'src'}:{testbed_dir / 'tests'}"
         for test in tests:
             run([

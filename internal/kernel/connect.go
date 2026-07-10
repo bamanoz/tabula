@@ -118,7 +118,8 @@ func (h *Hub) handleCancel(tenantID, session string) {
 	}
 	payload, _ := json.Marshal(map[string]string{"session": session, "tenant_id": tenantID})
 	h.dispatchHook("cancel", payload, tenantID, session)
-	h.broadcastToSession(tenantID, session, TopicTurnCancel, &Message{Type: string(MsgEvent), Topic: TopicTurnCancel}, nil)
+	delivered := h.broadcastToSession(tenantID, session, TopicTurnCancel, &Message{Type: string(MsgEvent), Topic: TopicTurnCancel}, nil)
+	h.Logger.Info("turn cancel broadcast", "tenant_id", tenantID, "session", session, "delivered", delivered)
 }
 
 func makeCapabilitySet(items []string) map[string]bool {

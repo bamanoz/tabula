@@ -57,7 +57,7 @@ class TenantRuntimeWhitelistSmoke(unittest.TestCase):
             denied = beta.call_tool("testbed_tenant_note", {"note": "must-not-write"}, timeout=10)
 
         self.assertIn("ERROR:", denied.output)
-        self.assertIn("tenant \"beta\" is not served", denied.output)
+        self.assertIn("runtime \"local\" does not serve tenant \"beta\"", denied.output)
         self.assertFalse(beta_state_path.exists(), f"forbidden tenant wrote state: {beta_state_path}")
 
         status = self.status_json()

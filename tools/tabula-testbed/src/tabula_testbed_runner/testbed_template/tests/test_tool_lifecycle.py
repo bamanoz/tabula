@@ -59,6 +59,48 @@ class ToolLifecycleInstalled(unittest.TestCase):
         self.assertEqual(payload["kind"], "kernel_restarted")
         self.assertFalse(payload["retryable"])
 
+    def test_waiting_for_driver_status_retries_session_join(self):
+        home = Path(self.tabula_home)
+        daemon_path = home / "plugins" / "gateway-web" / "daemon.py"
+        self.assertTrue(daemon_path.is_file(), "gateway-web daemon missing from installed layout")
+
+        daemon = self.load_daemon(daemon_path)
+        session = object.__new__(daemon.GatewaySession)
+        sent = []
+        delivered = []
+
+        class FakeKernel:
+            def send(self, message):
+                sent.append(message)
+
+        class FakeBrowser:
+            def send_json(self, message):
+                delivered.append(message)
+
+        session.browser = FakeBrowser()
+        session.kernel = FakeKernel()
+        session.config = {"auto_driver": True}
+        session.session = "main"
+        session.tenant_id = "default"
+        session._inflight_lock = daemon.threading.Lock()
+        session._inflight_sessions = {("default", "main"): 1}
+        session._inflight_touched = {("default", "main"): daemon.time.monotonic()}
+        session._stream_routes = {}
+        session._tool_routes = {}
+        session._driver_wake_retries = {}
+
+        session._handle_kernel_message({
+            "type": "event",
+            "topic": "session.status",
+            "session": "main",
+            "tenant_id": "default",
+            "data": {"state": "waiting_for_driver", "reason": "turn_receiver_unavailable"},
+        })
+
+        self.assertEqual(sent, [{"type": "join", "session": "main", "tenant_id": "default"}])
+        self.assertEqual(delivered[-1]["type"], "session.status")
+        self.assertFalse(session._has_inflight("default", "main"))
+
     def load_daemon(self, path: Path):
         module_name = "testbed_gateway_web_daemon_tool_lifecycle"
         sys.modules.pop(module_name, None)

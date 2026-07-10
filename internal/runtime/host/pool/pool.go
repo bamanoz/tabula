@@ -111,6 +111,12 @@ func (p *Pool) PrimeRuntimeTargets(ctx context.Context, target *wire.Target) {
 	p.primeTargets(ctx, target, true)
 }
 
+// PrimeDynamicTargets initializes warm targets that do not publish any manifest
+// tools or hooks. These targets can only become visible after worker init.
+func (p *Pool) PrimeDynamicTargets(ctx context.Context, target *wire.Target) {
+	p.primeDynamicTargets(ctx, target)
+}
+
 func (p *Pool) primeTargets(ctx context.Context, target *wire.Target, runtimeScopeOnly bool) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -147,6 +153,35 @@ func (p *Pool) primeTargets(ctx context.Context, target *wire.Target, runtimeSco
 			}
 		}
 	}
+}
+
+func (p *Pool) primeDynamicTargets(ctx context.Context, target *wire.Target) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if p == nil || p.store == nil {
+		return
+	}
+	primedRuntimeTargets := map[string]bool{}
+	for _, tenantID := range p.capabilities.catalogTenants() {
+		plugins := p.orderedPrimePlugins(tenantID, target)
+		for _, plugin := range plugins {
+			if !shouldPrimeDynamicTarget(plugin) {
+				continue
+			}
+			if plugin.WorkerScope == wire.WorkerScopeRuntime {
+				if primedRuntimeTargets[plugin.ID] {
+					continue
+				}
+				primedRuntimeTargets[plugin.ID] = true
+			}
+			p.primeTarget(ctx, tenantID, plugin)
+		}
+	}
+}
+
+func shouldPrimeDynamicTarget(plugin manifest.Plugin) bool {
+	return plugin.WorkerMode != wire.WorkerModeCold && len(plugin.Tools) == 0 && len(plugin.Hooks) == 0
 }
 
 func (p *Pool) orderedPrimePlugins(tenantID string, target *wire.Target) []manifest.Plugin {
@@ -300,9 +335,7 @@ func (p *Pool) HookEvent(ctx context.Context, in wire.HookEvent) (*wire.HookEven
 		return nil, fmt.Errorf("%w: %q", ErrTargetNotFound, in.Target.ID)
 	}
 	e := p.registry.entryFor(p.workerKey(tenantID, plugin))
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	worker, _, err := p.ensureWorker(ctx, e, plugin, tenantID)
+	worker, err := p.acquireHookWorker(ctx, e, plugin, tenantID)
 	if err != nil {
 		return nil, errors.New(safeWorkerErrorMessage("worker initialization failed", err))
 	}
@@ -316,12 +349,41 @@ func (p *Pool) HookEvent(ctx context.Context, in wire.HookEvent) (*wire.HookEven
 		Data:              in.Data,
 	})
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			if p.shouldResetWarmWorkerAfterHookError(e, worker) {
+				p.resetWarmWorker(e, worker)
+			}
+		} else {
+			p.resetWarmWorkerAfterFailure(e, worker)
+		}
 		return nil, errors.New(safeWorkerErrorMessage("worker hook event failed", err))
 	}
 	if reply == nil {
 		return nil, nil
 	}
 	return &wire.HookEventReply{Op: wire.OpHookEventReply, CallID: reply.CallID, Action: reply.Action, Data: reply.Data, Reason: reply.Reason}, nil
+}
+
+func (p *Pool) acquireHookWorker(ctx context.Context, e *entry, plugin manifest.Plugin, tenantID string) (policy.Worker, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	e.mu.Lock()
+	worker, _, err := p.ensureWorker(ctx, e, plugin, tenantID)
+	e.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return worker, nil
+}
+
+func (p *Pool) shouldResetWarmWorkerAfterHookError(e *entry, worker policy.Worker) bool {
+	if e == nil || worker == nil {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.worker == worker && e.activeToolCallsLocked() == 0
 }
 
 func (p *Pool) invokeWarm(ctx context.Context, plugin manifest.Plugin, in wire.Invoke) wire.InvokeResult {
@@ -906,7 +968,11 @@ func (p *Pool) WorkerCount() int {
 
 // Close shuts down every tracked worker.
 func (p *Pool) Close() {
+	if p == nil {
+		return
+	}
 	_ = p.Reload(nil)
+	p.publisher.Close()
 }
 
 func failed(callID string, code wire.ErrorCode, message string) wire.InvokeResult {

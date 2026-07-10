@@ -21,6 +21,8 @@ type snapshotSessionInfo struct {
 	State               SessionState          `json:"state"`
 	CreatedAt           string                `json:"created_at"`
 	LastActiveAt        string                `json:"last_active_at"`
+	ArchivedAt          string                `json:"archived_at,omitempty"`
+	DeletedAt           string                `json:"deleted_at,omitempty"`
 	Busy                bool                  `json:"busy"`
 	CancelRequested     bool                  `json:"cancel_requested"`
 	PendingInputs       int                   `json:"pending_inputs"`
@@ -74,12 +76,18 @@ func (h *Hub) SnapshotSessions() []byte {
 
 	for _, sess := range h.sessions.All() {
 		sess.mu.RLock()
+		if !sess.DeletedAt.IsZero() {
+			sess.mu.RUnlock()
+			continue
+		}
 		info := &snapshotSessionInfo{
 			TenantID:            sess.TenantID,
 			PreferredRuntimeID:  sess.PreferredRuntimeID,
 			State:               sess.State,
 			CreatedAt:           sess.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
 			LastActiveAt:        sess.LastActiveAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			ArchivedAt:          formatSnapshotTime(sess.ArchivedAt),
+			DeletedAt:           formatSnapshotTime(sess.DeletedAt),
 			Busy:                sess.inflightTurn,
 			CancelRequested:     sess.cancelRequested,
 			PendingInputs:       len(sess.pendingInputs),
@@ -130,7 +138,7 @@ func snapshotRuntimes(h *Hub) []byte {
 			PID:                  attachment.PID,
 			Capabilities:         capabilities,
 			TenantsServed:        tenantsServed,
-			CapabilitiesByTenant: capabilitiesByTenant(tenantsServed, capabilities),
+			CapabilitiesByTenant: capabilitiesByTenant(tenantsServed, attachment.Capabilities),
 			WorkerCount:          attachment.Health.WorkerCount,
 			Targets:              runtimeTargets(attachment),
 		}
@@ -156,14 +164,38 @@ func normalizedTenantsServed(tenants []string) []string {
 	return out
 }
 
-func capabilitiesByTenant(tenants, capabilities []string) map[string][]string {
+func capabilitiesByTenant(tenants []string, capabilities []runtimeapi.Capability) map[string][]string {
 	out := make(map[string][]string, len(tenants))
 	for _, tenantID := range tenants {
-		out[tenantID] = append([]string(nil), capabilities...)
+		out[tenantID] = runtimeCapabilityNamesForTenant(capabilities, tenantID)
 	}
 	return out
 }
+
+func runtimeCapabilityNamesForTenant(capabilities []runtimeapi.Capability, tenantID string) []string {
+	set := make(map[string]struct{})
+	for _, capability := range capabilities {
+		if capability.State != wire.CapabilityStateReady || !runtimeServesTenant(capability.Tenants, tenantID) {
+			continue
+		}
+		for _, tool := range capability.Tools {
+			if tool.Name != "" {
+				set[tool.Name] = struct{}{}
+			}
+		}
+	}
+	names := make([]string, 0, len(set))
+	for name := range set {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func formatSnapshotTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
 	return t.UTC().Format("2006-01-02T15:04:05Z07:00")
 }
 

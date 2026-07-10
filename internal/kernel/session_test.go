@@ -3,6 +3,8 @@ package kernel
 import (
 	"encoding/json"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -122,6 +124,71 @@ func TestSetSessionStoreHydratesPersistedSessions(t *testing.T) {
 	if _, ok := snapshot["alpha/codegraph"]; !ok {
 		t.Fatalf("snapshot missing hydrated session: %s", string(hub.SnapshotSessions()))
 	}
+}
+
+func TestSessionArchiveLifecyclePersistsAndBroadcasts(t *testing.T) {
+	hub := NewHub(nil, 0, 0, slog.Default())
+	home := t.TempDir()
+	hub.SetSessionStore(NewDiskSessionStore(home))
+	client := addTenantCaptureClient(t, hub, "tenant", "gateway", "main", []string{TopicSessionArchived}, nil)
+	client.sends[TopicSessionArchive] = true
+
+	hub.handleSessionMessage(client, &Message{Type: string(MsgEvent), Topic: TopicSessionArchive, Session: "main", TenantID: "tenant"})
+
+	msg := waitForMessage(t, client.recvCh)
+	if msg.Topic != TopicSessionArchived {
+		t.Fatalf("topic = %q, want %q", msg.Topic, TopicSessionArchived)
+	}
+	record := readSessionStateFile(t, home, "tenant", "main")
+	if record["archived_at"] == "" {
+		t.Fatalf("expected archived_at in state: %+v", record)
+	}
+}
+
+func TestSessionDeleteLifecycleTombstonesAndBlocksTurns(t *testing.T) {
+	hub := NewHub(nil, 0, 0, slog.Default())
+	home := t.TempDir()
+	hub.SetSessionStore(NewDiskSessionStore(home))
+	client := addTenantCaptureClient(t, hub, "tenant", "gateway", "main", []string{TopicSessionDeleted}, nil)
+	client.sends[TopicSessionDelete] = true
+	client.sends[TopicMessageUser] = true
+
+	hub.handleSessionMessage(client, &Message{Type: string(MsgEvent), Topic: TopicSessionDelete, Session: "main", TenantID: "tenant"})
+
+	msg := waitForMessage(t, client.recvCh)
+	if msg.Topic != TopicSessionDeleted {
+		t.Fatalf("topic = %q, want %q", msg.Topic, TopicSessionDeleted)
+	}
+	record := readSessionStateFile(t, home, "tenant", "main")
+	if record["deleted_at"] == "" {
+		t.Fatalf("expected deleted_at in state: %+v", record)
+	}
+	var snapshot map[string]json.RawMessage
+	if err := json.Unmarshal(hub.SnapshotSessions(), &snapshot); err != nil {
+		t.Fatalf("snapshot sessions: %v", err)
+	}
+	if _, ok := snapshot["tenant/main"]; ok {
+		t.Fatalf("deleted session should be hidden from snapshot: %s", string(hub.SnapshotSessions()))
+	}
+
+	hub.handleSessionMessage(client, &Message{Type: string(MsgEvent), Topic: TopicMessageUser, Session: "main", TenantID: "tenant", Data: mustMarshalRaw(map[string]any{"text": "hello"})})
+	errMsg := waitForMessage(t, client.recvCh)
+	if errMsg.Type != string(MsgError) || errMsg.Text != "session deleted" {
+		t.Fatalf("expected session deleted error, got %+v", errMsg)
+	}
+}
+
+func readSessionStateFile(t *testing.T, home, tenantID, session string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(home, "tenants", tenantID, "state", "sessions", session+".json"))
+	if err != nil {
+		t.Fatalf("read session state: %v", err)
+	}
+	record := map[string]any{}
+	if err := json.Unmarshal(data, &record); err != nil {
+		t.Fatalf("decode session state: %v", err)
+	}
+	return record
 }
 
 func TestSessionCancelClearsStuckSuspension(t *testing.T) {

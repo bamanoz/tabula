@@ -16,6 +16,7 @@ import (
 type joinPlan struct {
 	session       string
 	tenantID      string
+	clientMeta    json.RawMessage
 	context       string
 	joined        *Message
 	memberJoined  *Message
@@ -29,8 +30,9 @@ func (h *Hub) buildJoinPlan(c *Client, session, tenantID string) joinPlan {
 		tenantID = tenant.DefaultID
 	}
 	plan := joinPlan{
-		session:  session,
-		tenantID: tenantID,
+		session:    session,
+		tenantID:   tenantID,
+		clientMeta: append(json.RawMessage(nil), c.meta...),
 		joined: &Message{
 			Type:     string(MsgJoined),
 			Session:  session,
@@ -74,7 +76,7 @@ func (h *Hub) applyJoinPlan(c *Client, plan joinPlan) {
 	}
 	h.resendPendingApprovals(c, plan.tenantID, plan.session)
 
-	h.policy.SessionJoin(plan.session, plan.tenantID, c.name)
+	h.policy.SessionJoin(plan.session, plan.tenantID, c.name, plan.clientMeta)
 	if c.canReceive(TopicMessageUser) && c.canSend(TopicTurnDone) {
 		if queued, ok := h.beginQueuedInput(plan.tenantID, plan.session); ok {
 			h.dispatchQueuedInput(plan.tenantID, plan.session, queued)
@@ -205,7 +207,7 @@ func (h *Hub) initToolsJSON(tenantID ...string) json.RawMessage {
 	}
 	h.toolExecMu.RLock()
 	for name, entry := range h.toolExec {
-		if entry.Source != toolSourceRuntime || !entry.Advertise || name == "" || !toolExecVisible(entry, resolvedTenantID) || !h.runtimeToolVisibleToTenant(entry, resolvedTenantID) {
+		if entry.Source != toolSourceRuntime || !entry.Advertise || name == "" || !toolExecVisible(entry, resolvedTenantID) {
 			continue
 		}
 		toolName := name
@@ -223,13 +225,6 @@ func (h *Hub) initToolsJSON(tenantID ...string) json.RawMessage {
 		return h.toolsJSON
 	}
 	return raw
-}
-
-func (h *Hub) runtimeToolVisibleToTenant(entry toolDispatch, tenantID string) bool {
-	if tenantID == "" || entry.RuntimeID == "" || h == nil || h.runtimes == nil {
-		return true
-	}
-	return h.runtimes.RuntimeAllowedForTenant(tenantID, entry.RuntimeID)
 }
 
 func (h *Hub) runtimeAllowedForTenant(tenantID, runtimeID string) bool {
@@ -255,6 +250,7 @@ func (h *Hub) syncAttachedRuntimeCapabilities() {
 	if h == nil || h.runtimes == nil {
 		return
 	}
+	changed := false
 	for _, attachment := range h.runtimes.Snapshot() {
 		if !attachment.Attached || attachment.ID == "" {
 			continue
@@ -295,8 +291,12 @@ func (h *Hub) syncAttachedRuntimeCapabilities() {
 				h.Logger.Warn("runtime capability apply failed", "runtime_id", attachment.ID, "target", capability.Target.ID, "err", err)
 			} else if ok {
 				h.syncRuntimeCapability(attachment.ID, capability)
+				changed = true
 			}
 		}
+	}
+	if changed {
+		h.rebuildHookIndex()
 	}
 }
 

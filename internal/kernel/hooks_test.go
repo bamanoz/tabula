@@ -823,7 +823,7 @@ func TestHookBeforeTurn_QueuedManagedInputRequeuesWhenBroadcastDeliversZero(t *t
 	}
 }
 
-func TestHookBeforeTurn_QueuedManagedInputIgnoresObserversForDelivery(t *testing.T) {
+func TestHookBeforeTurn_QueuedManagedInputMirrorsObserversWithoutCountingAsTurnDelivery(t *testing.T) {
 	env := newTestEnv(t)
 	hook := env.connectHook("memory", []HookSubscription{{Event: "before_turn", Priority: 100}})
 
@@ -834,6 +834,10 @@ func TestHookBeforeTurn_QueuedManagedInputIgnoresObserversForDelivery(t *testing
 	writeJSON(t, gw, userMessage("first"))
 	firstHook := readMsg(t, hook)
 	writeJSON(t, hook, Message{Type: "hook_reply", ID: firstHook.ID, Action: "pass"})
+	observedFirst := readMsg(t, observer)
+	if !isUserMessage(&observedFirst) || messageText(&observedFirst) != "first" {
+		t.Fatalf("observer expected mirrored first message, got %+v", observedFirst)
+	}
 	first := readMsg(t, drv)
 	if !isUserMessage(&first) || messageText(&first) != "first" {
 		t.Fatalf("driver expected first message, got %+v", first)
@@ -849,8 +853,8 @@ func TestHookBeforeTurn_QueuedManagedInputIgnoresObserversForDelivery(t *testing
 	}
 	writeJSON(t, hook, Message{Type: "hook_reply", ID: queuedHook.ID, Action: "pass"})
 
-	if observed := readMsgTimeout(t, observer, 50*time.Millisecond); observed != nil {
-		t.Fatalf("observer should not receive managed turn input, got %+v", *observed)
+	if observed := readMsgTimeout(t, observer, 50*time.Millisecond); observed == nil || !isUserMessage(observed) || messageText(observed) != "second" {
+		t.Fatalf("observer expected mirrored queued second message, got %+v", observed)
 	}
 	status := readMsg(t, gw)
 	if status.Type != string(MsgEvent) || status.Topic != TopicSessionStatus {

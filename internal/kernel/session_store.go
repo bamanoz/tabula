@@ -32,6 +32,8 @@ type sessionFile struct {
 	State               SessionState `json:"state"`
 	CreatedAt           string       `json:"created_at"`
 	LastActiveAt        string       `json:"last_active_at"`
+	ArchivedAt          string       `json:"archived_at,omitempty"`
+	DeletedAt           string       `json:"deleted_at,omitempty"`
 	Busy                bool         `json:"busy"`
 	CancelRequested     bool         `json:"cancel_requested"`
 	PendingInputs       int          `json:"pending_inputs"`
@@ -59,6 +61,8 @@ func (s *DiskSessionStore) Save(sess *Session) error {
 		State:               sess.State,
 		CreatedAt:           formatSnapshotTime(sess.CreatedAt),
 		LastActiveAt:        formatSnapshotTime(sess.LastActiveAt),
+		ArchivedAt:          formatSnapshotTime(sess.ArchivedAt),
+		DeletedAt:           formatSnapshotTime(sess.DeletedAt),
 		Busy:                sess.inflightTurn,
 		CancelRequested:     sess.cancelRequested,
 		PendingInputs:       len(sess.pendingInputs),
@@ -172,6 +176,9 @@ func (h *Hub) hydratePersistedSessions(store SessionStore) {
 		return
 	}
 	for _, record := range records {
+		if record.DeletedAt != "" {
+			continue
+		}
 		sess, created := h.sessions.GetOrCreateStatus(record.ID, record.TenantID)
 		if !created {
 			continue
@@ -200,6 +207,13 @@ func (s *Session) restorePersisted(record sessionFile) {
 	}
 	if lastActiveAt := parseSessionTime(record.LastActiveAt); !lastActiveAt.IsZero() {
 		s.LastActiveAt = lastActiveAt
+	}
+	if archivedAt := parseSessionTime(record.ArchivedAt); !archivedAt.IsZero() {
+		s.ArchivedAt = archivedAt
+	}
+	if deletedAt := parseSessionTime(record.DeletedAt); !deletedAt.IsZero() {
+		s.DeletedAt = deletedAt
+		s.State = SessionClosing
 	}
 	s.cancelRequested = record.CancelRequested
 	s.restartObservations = record.RestartObservations

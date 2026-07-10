@@ -33,6 +33,10 @@ def main() -> int:
         encoding="utf-8",
     )
 
+    permissions_config = tenant_dir / "config" / "plugins" / "hook-permissions"
+    permissions_config.mkdir(parents=True, exist_ok=True)
+    (permissions_config / "config.toml").write_text('default = "allow"\ndeny_untyped = true\n', encoding="utf-8")
+
     audit_dir = tenant_dir / "config"
     audit_dir.mkdir(parents=True, exist_ok=True)
     (audit_dir / "materializer.txt").write_text(

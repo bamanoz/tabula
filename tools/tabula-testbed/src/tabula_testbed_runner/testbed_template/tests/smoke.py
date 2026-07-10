@@ -85,7 +85,7 @@ class BaselineSmoke(TestbedCase):
             self.assertEqual(written["bytes_written"], len("baseline"))
             read = client.call_tool("fs_read", {"path": str(note)}, timeout=10).json()
             self.assertEqual(read["content"], "baseline")
-            exec_result = client.call_tool("exec_run", {"command": "pwd"}, timeout=10).json()
+            exec_result = client.call_tool("exec_run", {"cmd": "pwd"}, timeout=10).json()
             self.assertEqual(Path(exec_result["stdout"].strip()).resolve(), self.workspace_root.resolve())
 
     def test_skills_and_plugin_tools(self):

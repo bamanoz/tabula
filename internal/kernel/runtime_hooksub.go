@@ -85,10 +85,10 @@ func (s *runtimeHookSubscriber) SendMsg(msg *Message) {
 	if s == nil || s.conn == nil || msg == nil || msg.Type != string(MsgHook) {
 		return
 	}
-	if msg.release == nil && s.markBusy != nil {
+	replyMode := runtimeHookReplyMode(msg.Name)
+	if replyMode != wire.HookReplyModeNone && msg.release == nil && s.markBusy != nil {
 		msg.release = s.markBusy(s.runtimeID, s.capability.Target)
 	}
-	replyMode := runtimeHookReplyMode(msg.Name)
 	callID := msg.ID
 	event := wire.HookEvent{
 		Op:        wire.OpHookEvent,

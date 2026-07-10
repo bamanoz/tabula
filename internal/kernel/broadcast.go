@@ -29,7 +29,9 @@ func (h *Hub) broadcastToSessionFrom(tenantID, session, msgType string, msg *Mes
 		if !c.canReceive(msgType) {
 			continue
 		}
-		c.SendMsg(h.prepareRoutedMessage(sender, session, "session", msg))
+		if !c.queueMsg(h.prepareRoutedMessage(sender, session, "session", msg)) {
+			continue
+		}
 		seen[c] = true
 		delivered++
 	}
@@ -47,9 +49,11 @@ func (h *Hub) broadcastToSessionFrom(tenantID, session, msgType string, msg *Mes
 		}
 		globalMsg := h.prepareRoutedMessage(sender, session, "global", msg)
 		if globalMsg != nil {
-			c.SendMsg(globalMsg)
-		} else {
-			c.SendMsg(msg)
+			if !c.queueMsg(globalMsg) {
+				continue
+			}
+		} else if !c.queueMsg(msg) {
+			continue
 		}
 		delivered++
 	}
@@ -70,16 +74,53 @@ func (h *Hub) broadcastToTurnReceivers(tenantID, session string, msg *Message, s
 		if !c.canReceive(TopicMessageUser) || !c.canSend(TopicTurnDone) {
 			continue
 		}
-		c.SendMsg(h.prepareRoutedMessage(sender, session, "session", msg))
+		if !c.queueMsg(h.prepareRoutedMessage(sender, session, "session", msg)) {
+			continue
+		}
 		delivered++
 	}
 	h.Logger.Debug("broadcast turn input", "session", session, "delivered", delivered)
 	return delivered
 }
 
+func (h *Hub) mirrorToNonTurnReceivers(tenantID, session string, msg *Message, sender *Client, exclude *Client) int {
+	delivered := 0
+	seen := make(map[*Client]bool)
+	if tenantID == "" && sender != nil {
+		tenantID = sender.tenantID
+	}
+	for _, c := range h.sessionClients(tenantID, session) {
+		if c == exclude || !c.IsConnected() {
+			continue
+		}
+		if !c.canReceive(TopicMessageUser) || c.canSend(TopicTurnDone) {
+			continue
+		}
+		if !c.queueMsg(h.prepareRoutedMessage(sender, session, "session", msg)) {
+			continue
+		}
+		seen[c] = true
+		delivered++
+	}
+	for _, c := range h.allClients() {
+		if c == exclude || seen[c] || !c.IsConnected() {
+			continue
+		}
+		if c.canSend(TopicTurnDone) || !c.canReceiveGlobal(TopicMessageUser) {
+			continue
+		}
+		if !c.queueMsg(h.prepareRoutedMessage(sender, session, "global", msg)) {
+			continue
+		}
+		delivered++
+	}
+	h.Logger.Debug("mirror managed input", "session", session, "delivered", delivered)
+	return delivered
+}
+
 func (h *Hub) sendToolResultForTool(tenantID, session, toolID, toolName, output string, artifact json.RawMessage, truncated bool) {
 	h.recordToolTerminal(tenantID, session, toolID, toolName, "completed")
-	h.broadcastToSession(tenantID, session, TopicToolResult, &Message{
+	delivered := h.broadcastToSession(tenantID, session, TopicToolResult, &Message{
 		Type:      string(MsgReply),
 		Topic:     TopicToolResult,
 		ID:        toolID,
@@ -88,6 +129,7 @@ func (h *Hub) sendToolResultForTool(tenantID, session, toolID, toolName, output 
 		Artifact:  artifact,
 		Truncated: truncated,
 	}, nil)
+	h.Logger.Info("tool result broadcast", "tenant_id", tenantID, "session", session, "tool", toolName, "tool_call_id", toolID, "delivered", delivered, "output_bytes", len(output), "artifact_bytes", len(artifact), "truncated", truncated)
 }
 
 // broadcastProcessError sends an error message about a crashed process.

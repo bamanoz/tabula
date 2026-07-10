@@ -3,11 +3,14 @@ package kernel
 import (
 	"encoding/json"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
 
 const sendBufSize = 64
+
+const criticalSendTimeout = 5 * time.Second
 
 // ClientState represents the protocol lifecycle state of a client.
 type ClientState string
@@ -152,36 +155,69 @@ func (c *Client) canReceiveGlobal(msgType string) bool {
 
 // SendMsg marshals and queues a message for sending.
 func (c *Client) SendMsg(msg *Message) {
+	_ = c.queueMsg(msg)
+}
+
+func (c *Client) queueMsg(msg *Message) bool {
 	if msg != nil && msg.V == 0 {
 		msg.V = ProtocolVersion
 	}
 	if c.recvCh != nil {
 		// Internal client: send directly to receive channel.
+		if isCriticalClientMessage(msg) {
+			select {
+			case c.recvCh <- msg:
+				return true
+			case <-c.done:
+				return false
+			case <-time.After(criticalSendTimeout):
+				c.hub.Logger.Warn("dropping critical message to slow internal client", "client", c.name, "topic", msg.Topic)
+				return false
+			}
+		}
 		select {
 		case c.recvCh <- msg:
+			return true
 		default:
 			c.hub.Logger.Warn("dropping message to slow internal client", "client", c.name)
+			return false
 		}
-		return
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
-		return
+		return false
 	}
-	c.SendRaw(data)
+	return c.SendRaw(data, isCriticalClientMessage(msg))
+}
+
+func isCriticalClientMessage(msg *Message) bool {
+	return msg != nil && msg.Type == string(MsgReply) && msg.Topic == TopicToolResult
 }
 
 // SendRaw queues raw JSON bytes for sending.
-func (c *Client) SendRaw(data []byte) {
+func (c *Client) SendRaw(data []byte, critical bool) bool {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 	if c.sendClosed {
-		return
+		return false
+	}
+	if critical {
+		select {
+		case c.sendCh <- data:
+			return true
+		case <-c.done:
+			return false
+		case <-time.After(criticalSendTimeout):
+			c.hub.Logger.Warn("dropping critical message to slow client", "client", c.name)
+			return false
+		}
 	}
 	select {
 	case c.sendCh <- data:
+		return true
 	default:
 		c.hub.Logger.Warn("dropping message to slow client", "client", c.name)
+		return false
 	}
 }
 

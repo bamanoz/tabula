@@ -1272,6 +1272,41 @@ func TestSlowClientDropsMessages(t *testing.T) {
 	}
 }
 
+func TestCriticalToolResultWaitsForSlowInternalClient(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	c := &Client{
+		hub:      hub,
+		name:     "slow-internal",
+		recvCh:   make(chan *Message, 1),
+		receives: map[string]bool{TopicToolResult: true},
+		done:     make(chan struct{}),
+		state:    ClientJoined,
+	}
+	c.recvCh <- &Message{Type: string(MsgEvent), Topic: TopicSessionInit}
+	done := make(chan bool, 1)
+	go func() {
+		done <- c.queueMsg(&Message{Type: string(MsgReply), Topic: TopicToolResult, ID: "tool-1", Name: "fs_read"})
+	}()
+	select {
+	case delivered := <-done:
+		t.Fatalf("critical tool result returned before queue drained: delivered=%v", delivered)
+	case <-time.After(50 * time.Millisecond):
+	}
+	<-c.recvCh
+	select {
+	case delivered := <-done:
+		if !delivered {
+			t.Fatal("critical tool result was not delivered after queue drained")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for critical tool result delivery")
+	}
+	msg := <-c.recvCh
+	if msg.Topic != TopicToolResult || msg.ID != "tool-1" {
+		t.Fatalf("unexpected delivered message: %+v", msg)
+	}
+}
+
 func TestConcurrentMessages(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -1402,8 +1437,16 @@ func TestUserMessageQueuesUntilTurnReceiverJoins(t *testing.T) {
 	})
 
 	writeJSON(t, gateway, userMessage("first"))
-	if msg := readMsgTimeout(t, gateway, 100*time.Millisecond); msg != nil {
-		t.Fatalf("message should queue without an immediate echo or error, got %+v", msg)
+	status := readMsg(t, gateway)
+	if status.Type != string(MsgEvent) || status.Topic != TopicSessionStatus {
+		t.Fatalf("gateway expected waiting status, got %+v", status)
+	}
+	var statusData map[string]any
+	if err := json.Unmarshal(status.Data, &statusData); err != nil {
+		t.Fatalf("unmarshal waiting status data: %v", err)
+	}
+	if statusData["state"] != "waiting_for_driver" || statusData["reason"] != "turn_receiver_unavailable" {
+		t.Fatalf("unexpected waiting status data: %#v", statusData)
 	}
 	sess, ok := env.Hub.sessions.Get("main", "default")
 	if !ok {

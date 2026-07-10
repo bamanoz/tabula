@@ -178,7 +178,7 @@ func TestTenantScopedReloadTriggerStillReloadsAllLocalTenants(t *testing.T) {
 		t.Fatalf("write trigger: %v", err)
 	}
 	if err := runtimeconfig.Save(filepath.Join(tabulaHome, "config", "runtime.toml"), runtimeconfig.Config{
-		Kernels: []runtimeconfig.Kernel{{ID: runtimeauth.LocalRuntimeID, URL: "unix:///tmp/runtime.sock", TokenFile: "/tmp/runtime-token", Tenants: []string{"alpha", "beta"}}},
+		Kernels: []runtimeconfig.Kernel{{ID: "main", URL: "unix:///tmp/runtime.sock", TokenFile: "/tmp/runtime-token", Tenants: []string{"alpha", "beta"}}},
 	}); err != nil {
 		t.Fatalf("save runtime config: %v", err)
 	}
@@ -194,6 +194,27 @@ func TestTenantScopedReloadTriggerStillReloadsAllLocalTenants(t *testing.T) {
 			t.Fatalf("write tenant runtime config: %v", err)
 		}
 	}
+	got := reloadTriggerTenants(path, tabulaHome)
+	if len(got) != 2 || got[0] != "alpha" || got[1] != "beta" {
+		t.Fatalf("tenants = %#v", got)
+	}
+}
+
+func TestReloadTriggerTenantsUsesRuntimeConfigTenants(t *testing.T) {
+	tabulaHome := t.TempDir()
+	path := filepath.Join(tabulaHome, "run", "reload.touch")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir trigger: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("time=1\ntenant=alpha\n"), 0o644); err != nil {
+		t.Fatalf("write trigger: %v", err)
+	}
+	if err := runtimeconfig.Save(filepath.Join(tabulaHome, "config", "runtime.toml"), runtimeconfig.Config{
+		Kernels: []runtimeconfig.Kernel{{ID: "main", URL: "unix:///tmp/runtime.sock", TokenFile: "/tmp/runtime-token", Tenants: []string{"alpha", "beta"}}},
+	}); err != nil {
+		t.Fatalf("save runtime config: %v", err)
+	}
+
 	got := reloadTriggerTenants(path, tabulaHome)
 	if len(got) != 2 || got[0] != "alpha" || got[1] != "beta" {
 		t.Fatalf("tenants = %#v", got)

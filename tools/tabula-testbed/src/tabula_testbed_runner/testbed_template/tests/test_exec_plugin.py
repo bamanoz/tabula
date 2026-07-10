@@ -62,32 +62,32 @@ class ExecPluginSmoke(unittest.TestCase):
             if self.require_fs_absent:
                 self.assertFalse("fs_read" in advertised)
 
-            result = self.call_json(client, "exec_run", {"command": "pwd; printf :$TABULA_TENANT_ID; printf err >&2; exit 3"})
+            result = self.call_json(client, "exec_run", {"cmd": "pwd; printf :$TABULA_TENANT_ID; printf err >&2; exit 3"})
             self.assertEqual(Path(result["stdout"].splitlines()[0]).resolve(), self.workspace_root.resolve())
             self.assertTrue(result["stdout"].endswith(":default"))
             self.assertEqual(result["stderr"], "err")
             self.assertEqual(result["exit_code"], 3)
             self.assertFalse(result["timed_out"])
 
-            timed = self.call_json(client, "exec_run", {"command": "sleep 2", "timeout_seconds": 1}, timeout=10)
+            timed = self.call_json(client, "exec_run", {"cmd": "sleep 2", "timeout_seconds": 1}, timeout=10)
             self.assertTrue(timed["timed_out"])
 
-            too_long = client.call_tool("exec_run", {"command": "printf never", "timeout_seconds": 901}, timeout=10).output
+            too_long = client.call_tool("exec_run", {"cmd": "printf never", "timeout_seconds": 901}, timeout=10).output
             self.assertIn("timeout_seconds must be 120s or less", too_long)
             self.assertIn("exec_run_background", too_long)
 
-            tmp = self.call_json(client, "exec_run", {"command": "ls /tmp >/dev/null && printf ok"})
+            tmp = self.call_json(client, "exec_run", {"cmd": "ls /tmp >/dev/null && printf ok"})
             self.assertEqual(tmp["stdout"], "ok")
             self.assertEqual(tmp["exit_code"], 0)
 
-            denied = client.call_tool("exec_run", {"command": "echo forbidden"}, timeout=10)
+            denied = client.call_tool("exec_run", {"cmd": "echo forbidden"}, timeout=10)
             self.assertIn("command denied by pattern", denied.output)
             self.assertIn("forbidden", denied.output)
 
     def test_exec_run_silent_command_can_outlive_default_runtime_deadline(self) -> None:
         with self.make_client() as client:
             client.wait_tools({"exec_run"}, session="testbed-exec", tenant_id="default")
-            result = self.call_json(client, "exec_run", {"command": "sleep 40; printf done", "timeout_seconds": 60}, timeout=90)
+            result = self.call_json(client, "exec_run", {"cmd": "sleep 40; printf done", "timeout_seconds": 60}, timeout=90)
             self.assertEqual(result["stdout"], "done")
             self.assertEqual(result["exit_code"], 0)
             self.assertFalse(result["timed_out"])
@@ -95,7 +95,7 @@ class ExecPluginSmoke(unittest.TestCase):
     def test_background_spawn_list_and_kill(self) -> None:
         with self.make_client() as client:
             client.wait_tools({"exec_run_background", "exec_list_background", "exec_kill_background"}, session="testbed-exec", tenant_id="default")
-            started = self.call_json(client, "exec_run_background", {"command": "sleep 30"})
+            started = self.call_json(client, "exec_run_background", {"cmd": "sleep 30"})
             bg_id = started["bg_id"]
             listed = self.call_json(client, "exec_list_background", {})
             self.assertEqual([item["bg_id"] for item in listed["processes"]], [bg_id])

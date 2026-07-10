@@ -290,6 +290,56 @@ sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 	}
 }
 
+func TestPoolPrimeDynamicTargetsStartsWarmTargetsWithoutManifestCatalog(t *testing.T) {
+	dir := t.TempDir()
+	writePoolPluginBody(t, filepath.Join(dir, "dynamic", "plugin.toml"), `id = "dynamic"
+name = "Dynamic"
+version = "0.1.0"
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`)
+	writePoolPluginBody(t, filepath.Join(dir, "static", "plugin.toml"), `id = "static"
+name = "Static"
+version = "0.1.0"
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+
+[[tools]]
+name = "static_ping"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`)
+	store, err := manifest.NewTenantStore(map[string]manifest.SearchDirs{"alpha": {PluginDirs: []string{dir}}})
+	if err != nil {
+		t.Fatalf("NewTenantStore: %v", err)
+	}
+	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), nextWorker: newFakeWorker()}
+	p := New("main", store, fake, Options{AllowedTenants: []string{"alpha"}})
+	t.Cleanup(p.Close)
+
+	p.PrimeDynamicTargets(context.Background(), nil)
+
+	if got := fake.spawnCount.Load(); got != 1 {
+		t.Fatalf("spawn count = %d, want dynamic-only target", got)
+	}
+	req := fake.spawnRequests()[0]
+	if req.TargetID != "dynamic" {
+		t.Fatalf("spawn target = %q, want dynamic", req.TargetID)
+	}
+}
+
 func TestPoolInvokesColdPluginWithoutBlockingSecondCall(t *testing.T) {
 	dir := t.TempDir()
 	body := `id = "question"
@@ -875,6 +925,58 @@ func TestPoolHookEventRoutesToWorkerReply(t *testing.T) {
 	}
 	if reply == nil || reply.CallID != "hook-1" || reply.Action != wire.HookActionRewrite {
 		t.Fatalf("unexpected reply: %#v", reply)
+	}
+}
+
+func TestPoolReloadDoesNotBlockBehindInFlightHookEvent(t *testing.T) {
+	p, fake := testPool(t)
+	hookStarted := make(chan struct{}, 1)
+	hookDone := make(chan struct{})
+	w := newFakeWorker()
+	w.hookFn = func(ctx context.Context, event workerwire.WorkerEvent) (*workerwire.WorkerEventReply, error) {
+		hookStarted <- struct{}{}
+		select {
+		case <-hookDone:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return &workerwire.WorkerEventReply{Op: workerwire.OpEventReply, CallID: event.CallID, Action: wire.HookActionOK}, nil
+	}
+	fake.setNextWorker(w)
+
+	hookReply := make(chan error, 1)
+	go func() {
+		_, err := p.HookEvent(context.Background(), wire.HookEvent{Op: wire.OpHookEvent, CallID: "hook-slow", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Event: "before_tool_call", ReplyMode: wire.HookReplyModeModifying, Data: json.RawMessage(`{"tool":"echo"}`)})
+		hookReply <- err
+	}()
+
+	select {
+	case <-hookStarted:
+	case <-time.After(time.Second):
+		t.Fatal("hook event did not start")
+	}
+
+	reloadDone := make(chan []wire.Target, 1)
+	go func() {
+		reloadDone <- p.Reload(&wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"})
+	}()
+
+	select {
+	case evicted := <-reloadDone:
+		if len(evicted) != 1 || evicted[0].ID != "fs" {
+			t.Fatalf("evicted = %#v, want fs", evicted)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reload blocked behind in-flight hook event")
+	}
+	close(hookDone)
+	select {
+	case err := <-hookReply:
+		if err != nil {
+			t.Fatalf("hook reply error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("hook event did not finish")
 	}
 }
 
@@ -1730,6 +1832,7 @@ type fakeWorker struct {
 	initEvents []policy.WorkerAsyncEvent
 	callErr    error
 	callFn     func(context.Context, workerwire.WorkerCall) (workerwire.WorkerResult, error)
+	hookFn     func(context.Context, workerwire.WorkerEvent) (*workerwire.WorkerEventReply, error)
 	hookErr    error
 	waiters    map[string]chan workerwire.WorkerResult
 	events     chan policy.WorkerAsyncEvent
@@ -1790,13 +1893,17 @@ func (w *fakeWorker) Call(ctx context.Context, call workerwire.WorkerCall) (work
 	return workerwire.WorkerResult{Op: workerwire.OpResult, CallID: call.CallID, OK: true, Data: json.RawMessage(`{"ok":true}`)}, nil
 }
 
-func (w *fakeWorker) HookEvent(_ context.Context, event workerwire.WorkerEvent) (*workerwire.WorkerEventReply, error) {
+func (w *fakeWorker) HookEvent(ctx context.Context, event workerwire.WorkerEvent) (*workerwire.WorkerEventReply, error) {
 	w.mu.Lock()
+	hookFn := w.hookFn
 	hookErr := w.hookErr
 	if hookErr != nil {
 		w.alive = false
 	}
 	w.mu.Unlock()
+	if hookFn != nil {
+		return hookFn(ctx, event)
+	}
 	if hookErr != nil {
 		return nil, hookErr
 	}

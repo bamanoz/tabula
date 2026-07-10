@@ -61,7 +61,7 @@ class _Completions:
                 _chunk(tool_call={
                     "id": f"call-{user_count}",
                     "name": "exec_run",
-                    "arguments": json.dumps({"command": command}),
+                    "arguments": json.dumps({"cmd": command}),
                 })
             ])
         return _Stream([_chunk(text=f"turn-{user_count}-done")])
@@ -149,7 +149,7 @@ class ApprovalFlowInstalled(unittest.TestCase):
     def connect_client(self, session: str, *, timeout: float = 20) -> TestbedClient:
         deadline = time.time() + timeout
         last_tools: set[str] = set()
-        client = TestbedClient(self.url, name=f"testbed-approvals-{session}")
+        client = TestbedClient(self.url, name=f"testbed-approvals-{session}", meta={"tabula.client_role": "ui"})
         while time.time() < deadline:
             client.close()
             client.connect(
@@ -185,7 +185,7 @@ class ApprovalFlowInstalled(unittest.TestCase):
                     "type": "reply",
                     "topic": "exchange.approve",
                     "id": candidate.get("id", ""),
-                    "data": {"choice": approval_choice, "index": options.index(approval_choice)},
+                    "data": {"choice": approval_choice, "index": options.index(approval_choice), "approved": approval_choice.startswith("allow")},
                 })
                 continue
             if msg_type == "event" and msg.get("topic") == "stream.delta":
@@ -232,7 +232,7 @@ class ApprovalFlowInstalled(unittest.TestCase):
             "type": "reply",
             "topic": "exchange.approve",
             "id": resent_request.get("id", ""),
-            "data": {"choice": "allow once", "index": options.index("allow once")},
+            "data": {"choice": "allow once", "index": options.index("allow once"), "approved": True},
         })
 
         while time.time() < deadline:
@@ -302,7 +302,8 @@ class ApprovalFlowInstalled(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             '[plugins.driver]\n'
-            'provider = "openai"\n\n'
+            'provider = "openai"\n'
+            'session_autostart = false\n\n'
             '[plugins.driver.providers.openai]\n'
             'type = "openai"\n'
             'api_key = "test-key"\n'

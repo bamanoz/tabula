@@ -12,7 +12,7 @@ from pathlib import Path
 from tempfile import gettempdir
 from urllib.error import URLError
 from urllib.parse import urlparse, urlunparse
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from tabula_distro import toml_io
 from tabula_distro import runtime_config
@@ -41,6 +41,7 @@ class RunResult:
     started_kernel: bool = False
     reused_kernel: bool = False
     runtime_ready: bool = False
+    runtime_reload_error: str = ""
 
 
 def plan(manifest: AppManifest) -> RunPlan:
@@ -71,9 +72,10 @@ def execute(manifest: AppManifest, home: Path, *, tabula_bin: str = "tabula", ti
     if kernel_healthy(manifest.kernel.url, timeout_seconds=0.5):
         if foreground:
             raise AppRunError(f"kernel at {manifest.kernel.url} is already reachable; stop it before using --foreground")
-        if wait_for_runtime_ready(manifest.kernel.url, manifest.application.id, timeout_seconds=timeout_seconds):
+        reload_error = request_runtime_reload(manifest.kernel.url, home=home, timeout_seconds=min(5.0, timeout_seconds))
+        if wait_for_runtime_ready(manifest.kernel.url, manifest.application.id, home=home, tabula_bin=tabula_bin, timeout_seconds=timeout_seconds):
             return RunResult(plan=run_plan, reused_kernel=True, runtime_ready=True)
-        return RunResult(plan=run_plan, reused_kernel=True, runtime_ready=False)
+        return RunResult(plan=run_plan, reused_kernel=True, runtime_ready=False, runtime_reload_error=reload_error)
 
     env = os.environ.copy()
     env["TABULA_HOME"] = str(home)
@@ -108,7 +110,9 @@ def execute(manifest: AppManifest, home: Path, *, tabula_bin: str = "tabula", ti
         if proc.poll() is not None:
             raise AppRunError(f"managed kernel exited during startup with code {proc.returncode}; see {logs_dir / 'app-run-kernel.err.log'}")
         if kernel_healthy(manifest.kernel.url, timeout_seconds=0.5):
-            return RunResult(plan=run_plan, started_kernel=True)
+            if wait_for_runtime_ready(manifest.kernel.url, manifest.application.id, home=home, tabula_bin=tabula_bin, timeout_seconds=max(0.1, deadline - time.monotonic())):
+                return RunResult(plan=run_plan, started_kernel=True, runtime_ready=True)
+            return RunResult(plan=run_plan, started_kernel=True, runtime_ready=False)
         time.sleep(0.2)
     raise AppRunError(f"managed kernel did not become ready: {manifest.kernel.url}; see {logs_dir / 'app-run-kernel.err.log'}")
 
@@ -127,18 +131,36 @@ def kernel_healthy(kernel_url: str, *, timeout_seconds: float = 1.0) -> bool:
         return False
 
 
-def wait_for_runtime_ready(kernel_url: str, tenant_id: str, *, timeout_seconds: float = 10.0) -> bool:
+def wait_for_runtime_ready(kernel_url: str, tenant_id: str, *, home: Path | None = None, tabula_bin: str = "tabula", timeout_seconds: float = 10.0) -> bool:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        if _runtime_ready(kernel_url, tenant_id, timeout_seconds=min(1.0, max(0.1, deadline - time.monotonic()))):
+        probe_timeout = min(1.0, max(0.1, deadline - time.monotonic()))
+        if _runtime_ready(kernel_url, tenant_id, home=home, timeout_seconds=probe_timeout):
+            return True
+        if home is not None and _runtime_ready_from_status(home, tenant_id, tabula_bin=tabula_bin, timeout_seconds=probe_timeout):
             return True
         time.sleep(0.2)
     return False
 
 
-def _runtime_ready(kernel_url: str, tenant_id: str, *, timeout_seconds: float) -> bool:
+def request_runtime_reload(kernel_url: str, *, home: Path | None = None, timeout_seconds: float = 5.0) -> str:
     try:
-        snapshot_url = _internal_url(kernel_url, "/internal/snapshot/runtimes")
+        reload_url = _internal_url(kernel_url, "/internal/reload/runtime", home=home)
+    except ValueError as exc:
+        return str(exc)
+    request = Request(reload_url, data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(request, timeout=max(timeout_seconds, 0.1)) as resp:
+            if 200 <= resp.status < 300:
+                return ""
+            return f"POST {reload_url} returned HTTP {resp.status}"
+    except (OSError, URLError, ValueError) as exc:
+        return f"POST {reload_url}: {exc}"
+
+
+def _runtime_ready(kernel_url: str, tenant_id: str, *, home: Path | None = None, timeout_seconds: float) -> bool:
+    try:
+        snapshot_url = _internal_url(kernel_url, "/internal/snapshot/runtimes", home=home)
     except ValueError:
         return False
     try:
@@ -148,6 +170,38 @@ def _runtime_ready(kernel_url: str, tenant_id: str, *, timeout_seconds: float) -
             data = json.loads(resp.read().decode("utf-8"))
     except (OSError, URLError, ValueError, json.JSONDecodeError):
         return False
+    return _runtime_ready_from_snapshot(data, tenant_id)
+
+
+def _runtime_ready_from_status(home: Path, tenant_id: str, *, tabula_bin: str = "tabula", timeout_seconds: float) -> bool:
+    tabula = Path(tabula_bin)
+    if not tabula.is_absolute():
+        candidate = home / "bin" / tabula_bin
+        if candidate.is_file():
+            tabula = candidate
+    env = os.environ.copy()
+    env["TABULA_HOME"] = str(home)
+    try:
+        result = subprocess.run(
+            [str(tabula), "status", "--json"],
+            env=env,
+            timeout=max(timeout_seconds, 0.1),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return False
+    return _runtime_ready_from_snapshot(data, tenant_id)
+
+
+def _runtime_ready_from_snapshot(data: object, tenant_id: str) -> bool:
     runtimes = data.get("runtimes") if isinstance(data, dict) else None
     if not isinstance(runtimes, list):
         return False
@@ -157,18 +211,10 @@ def _runtime_ready(kernel_url: str, tenant_id: str, *, timeout_seconds: float) -
         served = runtime.get("tenants_served") or []
         if served and "*" not in served and tenant_id not in served:
             continue
-        targets = runtime.get("targets") or []
-        if not isinstance(targets, list):
-            return True
-        if not targets:
-            return True
-        for target in targets:
-            if not isinstance(target, dict):
-                continue
-            target_tenants = target.get("tenants") or []
-            if target_tenants and "*" not in target_tenants and tenant_id not in target_tenants:
-                continue
-            if target.get("state") in {"ready", "manifest_loaded", "initializing"}:
+        capabilities_by_tenant = runtime.get("capabilities_by_tenant")
+        if isinstance(capabilities_by_tenant, dict):
+            tenant_capabilities = capabilities_by_tenant.get(tenant_id)
+            if isinstance(tenant_capabilities, list) and tenant_capabilities:
                 return True
     return False
 
@@ -249,12 +295,28 @@ def _health_url(kernel_url: str) -> str:
     return _internal_url(kernel_url, "/health")
 
 
-def _internal_url(kernel_url: str, path: str) -> str:
+def _internal_url(kernel_url: str, path: str, *, home: Path | None = None) -> str:
+    if home is not None:
+        status_endpoint = _kernel_status_ws_endpoint(home)
+        if status_endpoint:
+            kernel_url = status_endpoint
     parsed = urlparse(kernel_url)
     scheme = {"ws": "http", "wss": "https"}.get(parsed.scheme, parsed.scheme)
     if not scheme or not parsed.netloc:
         raise ValueError(f"invalid kernel url: {kernel_url}")
     return urlunparse((scheme, parsed.netloc, path, "", "", ""))
+
+
+def _kernel_status_ws_endpoint(home: Path) -> str:
+    try:
+        data = json.loads((home / "run" / "kernel-status.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    endpoint = str(data.get("ws_endpoint") or "").strip() if isinstance(data, dict) else ""
+    parsed = urlparse(endpoint)
+    if parsed.scheme not in {"ws", "wss"} or not parsed.netloc:
+        return ""
+    return endpoint
 
 
 def write_runtime_config(manifest: AppManifest, home: Path, *, distro_dir: Path | None = None) -> Path:

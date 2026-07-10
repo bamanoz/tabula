@@ -47,19 +47,26 @@ func (pe *PolicyEngine) CanRespondHook(sender *Client, msg *Message) error {
 	return nil
 }
 
-func (pe *PolicyEngine) joinHookPayload(session string, tenantID string, clientName string) []byte {
-	hookPayload, _ := json.Marshal(map[string]string{
+func (pe *PolicyEngine) joinHookPayload(session string, tenantID string, clientName string, clientMeta json.RawMessage) []byte {
+	payload := map[string]any{
 		"session":   session,
 		"tenant_id": tenantID,
 		"client":    clientName,
-	})
+	}
+	if len(clientMeta) > 0 {
+		var meta map[string]any
+		if json.Unmarshal(clientMeta, &meta) == nil && len(meta) > 0 {
+			payload["meta"] = meta
+		}
+	}
+	hookPayload, _ := json.Marshal(payload)
 	return hookPayload
 }
 
 // StartSession runs the session_start hook once for a newly-created session and
 // returns (context, blocked). Returns ("", true) if the hook blocks startup.
 func (pe *PolicyEngine) StartSession(session string, tenantID string, clientName string) (string, bool) {
-	hookPayload := pe.joinHookPayload(session, tenantID, clientName)
+	hookPayload := pe.joinHookPayload(session, tenantID, clientName, nil)
 	result, ok := pe.hub.dispatchHook("session_start", hookPayload, tenantID, session)
 	if !ok {
 		return "", true
@@ -74,8 +81,8 @@ func (pe *PolicyEngine) StartSession(session string, tenantID string, clientName
 
 // SessionJoin emits a non-blocking observability event for every successful
 // join, including joins to existing sessions.
-func (pe *PolicyEngine) SessionJoin(session string, tenantID string, clientName string) {
-	pe.hub.dispatchHook("session_join", pe.joinHookPayload(session, tenantID, clientName), tenantID, session)
+func (pe *PolicyEngine) SessionJoin(session string, tenantID string, clientName string, clientMeta json.RawMessage) {
+	pe.hub.dispatchHook("session_join", pe.joinHookPayload(session, tenantID, clientName, clientMeta), tenantID, session)
 }
 
 // BeforePromptBuild lets plugins contribute prompt-build context and filter the

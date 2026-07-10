@@ -97,7 +97,7 @@ func TestPickRuntimeForSessionLogsPreferredRuntimeFallbackReason(t *testing.T) {
 	}
 }
 
-func TestRuntimeCatalogUpdateRebuildsPromptContext(t *testing.T) {
+func TestRuntimeCatalogUpdateRefreshesToolsWithoutPromptHooks(t *testing.T) {
 	env := newTestEnv(t)
 	driver := env.connectAndJoin("driver", "s1", []string{}, []string{TopicSessionInit})
 	_ = readMsg(t, driver) // initial init
@@ -110,20 +110,15 @@ func TestRuntimeCatalogUpdateRebuildsPromptContext(t *testing.T) {
 		State:  wire.CapabilityStateReady,
 	})
 
-	promptMsg := readMsg(t, promptHook)
-	writeJSON(t, promptHook, Message{
-		Type:    "hook_reply",
-		ID:      promptMsg.ID,
-		Action:  "modify",
-		Payload: json.RawMessage(`{"context":"fresh filesystem roots"}`),
-	})
-
 	init := readMsg(t, driver)
 	if !isSessionInit(&init) {
 		t.Fatalf("expected session.init, got %+v", init)
 	}
-	if init.Context != "fresh filesystem roots" {
-		t.Fatalf("expected fresh prompt context, got %q", init.Context)
+	if init.Context != "" {
+		t.Fatalf("catalog refresh should not rebuild prompt context, got %q", init.Context)
+	}
+	if msg := readMsgTimeout(t, promptHook, 100*time.Millisecond); msg != nil {
+		t.Fatalf("catalog refresh should not dispatch prompt hook, got %+v", msg)
 	}
 }
 

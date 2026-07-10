@@ -112,8 +112,7 @@ class AppManifestInstalledLayout(unittest.TestCase):
         materializer_text = materializer.read_text(encoding="utf-8")
         self.assertIn("phase=run", materializer_text)
         self.assertIn("dry_run=0", materializer_text)
-        time.sleep(2.5)
-        self.assert_app_claw_ready(home, project)
+        self.wait_app_runtime_ready(home, "testbed-app")
 
         with TestbedClient(self.url, name="testbed-app-manifest") as client:
             client.connect_join("testbed-app-manifest-tools", tenant_id="testbed-app")
@@ -123,25 +122,36 @@ class AppManifestInstalledLayout(unittest.TestCase):
             client.call_tool("fs_write", {"path": str(note), "content": "app tenant"}, timeout=10).json()
             self.assertEqual(client.call_tool("fs_read", {"path": str(note)}, timeout=10).json()["content"], "app tenant")
 
-            exec_result = client.call_tool("exec_run", {"command": "pwd; printf :$TABULA_TENANT_ID"}, timeout=10).json()
+            exec_result = client.call_tool("exec_run", {"cmd": "pwd; printf :$TABULA_TENANT_ID"}, timeout=10).json()
             self.assertEqual(Path(exec_result["stdout"].splitlines()[0]).resolve(), project.resolve())
             self.assertTrue(exec_result["stdout"].endswith(":testbed-app"))
 
-    def assert_app_claw_ready(self, home: Path, project: Path) -> None:
-        candidate = home / "bin" / "tabula-cli"
-        tabula_cli = str(candidate) if candidate.is_file() else "tabula-cli"
+    def wait_app_runtime_ready(self, home: Path, tenant_id: str) -> None:
         env = os.environ.copy()
         env["TABULA_HOME"] = str(home)
-        env["TABULA_URL"] = self.url
-        subprocess.run(
-            [tabula_cli, "--expected-distro-id", "tabula.claw", "--app", "testbed-app", "--kernel", "testbed-app", "--help"],
-            env=env,
-            cwd=project,
-            check=True,
-            timeout=10,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        deadline = time.monotonic() + 20
+        last = ""
+        while time.monotonic() < deadline:
+            result = subprocess.run(
+                [str(home / "bin" / "tabula"), "status", "--json"],
+                env=env,
+                timeout=5,
+                text=True,
+                capture_output=True,
+            )
+            last = result.stderr or result.stdout
+            if result.returncode == 0:
+                try:
+                    status = json.loads(result.stdout)
+                except json.JSONDecodeError:
+                    status = {}
+                for runtime in status.get("runtimes", []) if isinstance(status, dict) else []:
+                    caps = runtime.get("capabilities_by_tenant") if isinstance(runtime, dict) else None
+                    tenant_caps = caps.get(tenant_id) if isinstance(caps, dict) else None
+                    if isinstance(tenant_caps, list) and {"fs_read", "fs_write", "exec_run"}.issubset(set(tenant_caps)):
+                        return
+            time.sleep(0.5)
+        raise AssertionError(f"runtime did not expose app tenant capabilities for {tenant_id}: {last}")
 
     def app_manifest(self, home: Path, project: Path) -> str:
         source = "local:" + str(home / "generated-testbed")
@@ -150,8 +160,6 @@ id = "testbed-app"
 name = "Testbed App"
 
 [distro]
-id = "tabula.testbed"
-name = "testbed"
 source = {source!r}
 
 [kernel]

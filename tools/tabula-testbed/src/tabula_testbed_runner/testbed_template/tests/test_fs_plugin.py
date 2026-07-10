@@ -38,9 +38,12 @@ class FSPluginSmoke(unittest.TestCase):
         config_dir = Path(cls.tabula_home) / "config" / "plugins" / "fs"
         config_dir.mkdir(parents=True, exist_ok=True)
         (config_dir / "config.toml").write_text(
-            'roots = ["${project_root}"]\ndeny_globs = ["**/.env", "blocked", "blocked/**"]\nmax_read_bytes = 1048576\nfollow_symlinks = false\n',
+            'deny_globs = ["**/.env", "blocked", "blocked/**"]\nmax_read_bytes = 1048576\nfollow_symlinks = false\n',
             encoding="utf-8",
         )
+        tenant_config_dir = Path(cls.tabula_home) / "tenants" / "default" / "config" / "plugins" / "fs"
+        tenant_config_dir.mkdir(parents=True, exist_ok=True)
+        (tenant_config_dir / "config.toml").write_text('roots = ["${project_root}"]\n', encoding="utf-8")
         global_config = Path(cls.tabula_home) / "config" / "global.toml"
         existing = global_config.read_text(encoding="utf-8") if global_config.is_file() else ""
         global_config.write_text(existing + f'\n[plugins.fs]\nroots = ["{cls.shared_root}"]\n', encoding="utf-8")
@@ -143,6 +146,17 @@ class FSPluginSmoke(unittest.TestCase):
             next_root.mkdir(parents=True, exist_ok=True)
             env = os.environ.copy()
             env["TABULA_HOME"] = self.tabula_home
+
+            def restore_workspace_root() -> None:
+                subprocess.run(
+                    [self.tabula_bin(), "tenant", "set", "default", "--workspace-root", str(self.workspace_root)],
+                    env=env,
+                    check=True,
+                    timeout=30,
+                    stdout=subprocess.DEVNULL,
+                )
+
+            self.addCleanup(restore_workspace_root)
             subprocess.run(
                 [self.tabula_bin(), "tenant", "set", "default", "--workspace-root", str(next_root)],
                 env=env,

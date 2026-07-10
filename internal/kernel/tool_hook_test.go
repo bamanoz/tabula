@@ -776,7 +776,7 @@ func TestHookDispatchAuditRedactsExecCommandInput(t *testing.T) {
 	home := t.TempDir()
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.SetSessionStore(NewDiskSessionStore(home))
-	hub.dispatchHook("before_tool_call", json.RawMessage(`{"tool":"exec_run","id":"t-exec","input":{"command":"echo super-secret-token","timeout_seconds":30}}`), "default", "main")
+	hub.dispatchHook("before_tool_call", json.RawMessage(`{"tool":"exec_run","id":"t-exec","input":{"cmd":"echo super-secret-token","timeout_seconds":30}}`), "default", "main")
 	data, err := os.ReadFile(filepath.Join(home, "data", "sessions", "main", "ledger.jsonl"))
 	if err != nil {
 		t.Fatalf("read ledger: %v", err)
@@ -785,7 +785,7 @@ func TestHookDispatchAuditRedactsExecCommandInput(t *testing.T) {
 	if strings.Contains(text, "super-secret-token") {
 		t.Fatalf("expected exec command to be redacted from audit, got %q", text)
 	}
-	if !strings.Contains(text, `"command_sha256"`) || !strings.Contains(text, `"timeout_seconds":30`) {
+	if !strings.Contains(text, `"cmd_sha256"`) || !strings.Contains(text, `"timeout_seconds":30`) {
 		t.Fatalf("expected summarized exec command fields, got %q", text)
 	}
 }

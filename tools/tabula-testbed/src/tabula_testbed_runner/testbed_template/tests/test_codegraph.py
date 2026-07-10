@@ -34,6 +34,8 @@ class CodeGraphSmoke(unittest.TestCase):
             "        msg = json.loads(line)\n"
             "        if msg.get('method') == 'initialize':\n"
             "            print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'result':{'capabilities':{}}}), flush=True)\n"
+            "        elif msg.get('method') == 'tools/list':\n"
+            "            print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'result':{'tools':[]}}), flush=True)\n"
             "        elif msg.get('method') == 'tools/call':\n"
             "            payload = {'tool': msg['params']['name'], 'arguments': msg['params'].get('arguments'), 'project': project}\n"
             "            print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'result':{'content':[{'type':'text','text':json.dumps(payload)}]}}), flush=True)\n"
@@ -67,6 +69,7 @@ class CodeGraphSmoke(unittest.TestCase):
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run CodeGraph testbed smoke tests")
     parser.add_argument("--url", default=os.environ.get("TABULA_URL", "ws://localhost:8089/ws"))
+    parser.add_argument("--observer-url", default="")
     parser.add_argument("--home", default=os.environ.get("TABULA_HOME", ""))
     args = parser.parse_args()
     CodeGraphSmoke.url = args.url

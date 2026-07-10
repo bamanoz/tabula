@@ -400,6 +400,57 @@ exit 0
             with self.assertRaisesRegex(runmod.AppRunError, "not implemented yet"):
                 runmod.execute(manifest, home, tabula_bin="tabula-does-not-exist", timeout_seconds=0.1)
 
+    def test_started_managed_kernel_waits_for_runtime_readiness(self):
+        class FakeProc:
+            returncode = None
+
+            def poll(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            logs = home / "logs"
+            logs.mkdir(parents=True)
+            _make_distro(root)
+            tabula_bin = root / "bin" / "tabula"
+            runner_bin = root / "bin" / "tabula-runner"
+            _write(tabula_bin, "#!/bin/sh\n")
+            _write(runner_bin, "#!/bin/sh\nsleep 5\n")
+            os.chmod(runner_bin, 0o755)
+            manifest_path = root / "tabula.app.toml"
+            _write(manifest_path, _manifest(root))
+            manifest = appmod.load(manifest_path, tabula_home=home)
+
+            with mock.patch.object(runmod, "kernel_healthy", side_effect=[False, True]), mock.patch.object(runmod, "wait_for_runtime_ready", return_value=False), mock.patch.object(runmod.subprocess, "Popen", return_value=FakeProc()):
+                result = runmod.execute(manifest, home, tabula_bin=str(tabula_bin), timeout_seconds=1.0)
+
+            self.assertTrue(result.started_kernel)
+            self.assertFalse(result.runtime_ready)
+
+    def test_cli_reports_started_kernel_without_runtime_ready(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            _make_distro(root)
+            _write(home / "bin" / "tabula", "#!/bin/sh\n")
+            _write(home / "bin" / "tabula-runner", "#!/bin/sh\n")
+            manifest_path = root / "tabula.app.toml"
+            _write(manifest_path, _manifest(root))
+
+            fake_result = runmod.RunResult(plan=runmod.RunPlan(
+                app_id="claw-tabula",
+                kernel_id="claw-tabula",
+                kernel_mode="managed",
+                kernel_url="ws://127.0.0.1:65530/ws",
+                runtime_mode="managed",
+                runtime_ids=("local",),
+                execution_backends=("bare",),
+            ), started_kernel=True, runtime_ready=False)
+            with mock.patch.object(runmod, "execute", return_value=fake_result):
+                with self.assertRaisesRegex(SystemExit, "started kernel claw-tabula, but runtime is not ready"):
+                    self._run_cli(["--home", str(home), "app", "run", str(manifest_path)])
+
     def test_external_kernel_must_be_reachable(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -429,7 +480,7 @@ exit 0
             with mock.patch.dict("sys.modules", {"websocket": mock.Mock(create_connection=mock.Mock(return_value=FakeWS()))}):
                 self.assertTrue(runmod.kernel_healthy("ws://127.0.0.1:65530/ws", timeout_seconds=0.1))
 
-    def test_runtime_ready_requires_matching_tenant_target(self):
+    def test_runtime_ready_requires_matching_tenant_capability(self):
         class FakeResponse:
             status = 200
 
@@ -440,13 +491,13 @@ exit 0
                 return None
 
             def read(self) -> bytes:
-                return b'{"runtimes":[{"attached":true,"tenants_served":["first-app","claw-tabula"],"targets":[{"id":"fs","tenants":["claw-tabula"],"state":"ready"}]}]}'
+                return b'{"runtimes":[{"attached":true,"tenants_served":["first-app","claw-tabula"],"capabilities_by_tenant":{"claw-tabula":["fs_read"]}}]}'
 
         with mock.patch.object(runmod, "urlopen", return_value=FakeResponse()):
             self.assertTrue(runmod._runtime_ready("ws://127.0.0.1:65530/ws", "claw-tabula", timeout_seconds=0.1))
             self.assertFalse(runmod._runtime_ready("ws://127.0.0.1:65530/ws", "first-app", timeout_seconds=0.1))
 
-    def test_runtime_ready_accepts_attached_runtime_before_targets_prime(self):
+    def test_runtime_ready_rejects_attached_runtime_before_targets_prime(self):
         class FakeResponse:
             status = 200
 
@@ -460,7 +511,53 @@ exit 0
                 return b'{"runtimes":[{"attached":true,"tenants_served":["claw-tabula"],"targets":[]}]}'
 
         with mock.patch.object(runmod, "urlopen", return_value=FakeResponse()):
+            self.assertFalse(runmod._runtime_ready("ws://127.0.0.1:65530/ws", "claw-tabula", timeout_seconds=0.1))
+
+    def test_runtime_ready_accepts_tenant_capability_summary(self):
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return None
+
+            def read(self) -> bytes:
+                return b'{"runtimes":[{"attached":true,"tenants_served":["claw-tabula"],"capabilities_by_tenant":{"claw-tabula":["fs_read"]}}]}'
+
+        with mock.patch.object(runmod, "urlopen", return_value=FakeResponse()):
             self.assertTrue(runmod._runtime_ready("ws://127.0.0.1:65530/ws", "claw-tabula", timeout_seconds=0.1))
+
+    def test_runtime_ready_falls_back_to_local_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            tabula = home / "bin" / "tabula"
+            tabula.parent.mkdir(parents=True)
+            tabula.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+            status = json.dumps({"runtimes": [{"attached": True, "tenants_served": ["claw-tabula"], "capabilities_by_tenant": {"claw-tabula": ["fs_read"]}}]})
+            result = mock.Mock(returncode=0, stdout=status)
+            with mock.patch.object(runmod, "urlopen", side_effect=OSError("http unavailable")), mock.patch.object(runmod.subprocess, "run", return_value=result) as run:
+                self.assertTrue(runmod.wait_for_runtime_ready("ws://127.0.0.1:65530/ws", "claw-tabula", home=home, tabula_bin=str(tabula), timeout_seconds=0.1))
+            run.assert_called()
+
+    def test_internal_urls_prefer_kernel_status_endpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / "run").mkdir()
+            (home / "run" / "kernel-status.json").write_text('{"ws_endpoint":"ws://127.0.0.1:7777/ws"}', encoding="utf-8")
+
+            self.assertEqual(
+                runmod._internal_url("ws://127.0.0.1:65530/ws", "/internal/reload/runtime", home=home),
+                "http://127.0.0.1:7777/internal/reload/runtime",
+            )
+
+    def test_internal_urls_fall_back_when_kernel_status_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(
+                runmod._internal_url("ws://127.0.0.1:65530/ws", "/internal/reload/runtime", home=Path(tmp)),
+                "http://127.0.0.1:65530/internal/reload/runtime",
+            )
 
 
 if __name__ == "__main__":

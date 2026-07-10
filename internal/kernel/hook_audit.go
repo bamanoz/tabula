@@ -117,8 +117,8 @@ func addKnownInputSummary(summary map[string]any, tool string, input map[string]
 		if timeout, ok := numberField(input, "timeout_seconds"); ok {
 			summary["timeout_seconds"] = timeout
 		}
-		if command, ok := stringField(input, "command"); ok {
-			summary["command_sha256"] = sha256Hex([]byte(command))
+		if cmd, ok := stringField(input, "cmd"); ok {
+			summary["cmd_sha256"] = sha256Hex([]byte(cmd))
 		}
 	case strings.HasPrefix(tool, "fs_"):
 		for _, key := range []string{"path", "glob", "pattern"} {

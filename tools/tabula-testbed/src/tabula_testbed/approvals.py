@@ -33,7 +33,7 @@ from .client import kernel_auth_token
 
 APPROVE_TOPIC = "exchange.approve"
 
-ChoiceFn = Callable[[dict[str, Any]], str]
+ApprovalFn = Callable[[dict[str, Any]], bool]
 
 
 class ApprovalResponder:
@@ -42,7 +42,7 @@ class ApprovalResponder:
     Use as a context manager around any block that is expected to trigger a
     ``before_tool_call`` approval. Each incoming ``exchange.approve``
     request is logged into :attr:`requests` and a reply is sent back using
-    either the static ``choice`` argument or the ``choice_fn`` callback
+    either the static ``approved`` argument or the ``approved_fn`` callback
     when finer-grained per-request decisions are needed.
 
     Parameters
@@ -54,8 +54,9 @@ class ApprovalResponder:
         trigger approval prompts.
     tenant_id:
         Tenant id to join with. Defaults to ``"default"``.
-    choice / choice_fn:
-        Static answer or per-request callback returning the choice label.
+    approved / approved_fn:
+        Static answer or per-request callback returning the protocol-level
+        approval boolean.
     name:
         Client name for logging/diagnostics on the kernel side.
     """
@@ -66,15 +67,15 @@ class ApprovalResponder:
         *,
         session: str,
         tenant_id: str = "default",
-        choice: str = "allow once",
-        choice_fn: ChoiceFn | None = None,
+        approved: bool = True,
+        approved_fn: ApprovalFn | None = None,
         name: str = "testbed-approver",
     ) -> None:
         self.url = url
         self.session = session
         self.tenant_id = tenant_id
-        self.choice = choice
-        self.choice_fn = choice_fn
+        self.approved = approved
+        self.approved_fn = approved_fn
         self.name = name
         self.requests: list[dict[str, Any]] = []
         self._stop = threading.Event()
@@ -104,10 +105,10 @@ class ApprovalResponder:
         if self._error is not None:
             raise self._error
 
-    def _decide(self, payload: dict[str, Any]) -> str:
-        if self.choice_fn is not None:
-            return self.choice_fn(payload)
-        return self.choice
+    def _decide(self, payload: dict[str, Any]) -> bool:
+        if self.approved_fn is not None:
+            return bool(self.approved_fn(payload))
+        return bool(self.approved)
 
     def _run(self) -> None:
         try:
@@ -167,7 +168,7 @@ class ApprovalResponder:
                     "topic": APPROVE_TOPIC,
                     "id": msg.get("id"),
                     "session": msg.get("session") or self.session,
-                    "data": {"choice": self._decide(payload)},
+                    "data": {"approved": self._decide(payload)},
                 }))
         except BaseException as exc:  # noqa: BLE001 - propagate to test thread
             self._error = exc

@@ -563,6 +563,9 @@ func TestReloadAttachedRuntimeUsesAttachedConn(t *testing.T) {
 	if len(reloads) != 1 || reloads[0].Target == nil || reloads[0].Target.ID != "fs" || len(reloads[0].Tenants) != 1 || reloads[0].Tenants[0] != "alpha" {
 		t.Fatalf("recorded reloads = %#v", reloads)
 	}
+	if tenants := hub.runtimes.TenantsServed(runtimeauth.LocalRuntimeID); len(tenants) != 1 || tenants[0] != "alpha" {
+		t.Fatalf("tenants served after reload = %#v", tenants)
+	}
 
 	attempted, err = hub.ReloadAttachedRuntime(context.Background(), "missing", nil)
 	if err != nil {
@@ -570,6 +573,190 @@ func TestReloadAttachedRuntimeUsesAttachedConn(t *testing.T) {
 	}
 	if attempted {
 		t.Fatal("unexpected reload attempt for missing runtime")
+	}
+}
+
+func TestRuntimeSnapshotCapabilitiesByTenantUsesCapabilityTenants(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.runtimes = NewRuntimeRegistry()
+	alphaCapability := wire.Capability{
+		Target:  wire.Target{Kind: wire.TargetKindPlugin, ID: "alpha-fs"},
+		Tenants: []string{"alpha"},
+		Tools:   []wire.ToolSpec{{Name: "fs_read"}},
+		State:   wire.CapabilityStateReady,
+		Source:  wire.CapabilitySourceWorker,
+	}
+	rc := runtimemock.New()
+	if err := hub.runtimes.RegisterHello(runtimeauth.LocalRuntimeID, rc, []wire.Capability{alphaCapability}, 0, []string{"alpha", "beta"}); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+
+	var body struct {
+		Runtimes []struct {
+			CapabilitiesByTenant map[string][]string `json:"capabilities_by_tenant"`
+		} `json:"runtimes"`
+	}
+	if err := json.Unmarshal(hub.SnapshotRuntimes(), &body); err != nil {
+		t.Fatalf("unmarshal runtime snapshot: %v", err)
+	}
+	if len(body.Runtimes) != 1 {
+		t.Fatalf("expected one runtime, got %s", string(hub.SnapshotRuntimes()))
+	}
+	if got := body.Runtimes[0].CapabilitiesByTenant["alpha"]; len(got) != 1 || got[0] != "fs_read" {
+		t.Fatalf("alpha capabilities = %#v", got)
+	}
+	if got := body.Runtimes[0].CapabilitiesByTenant["beta"]; len(got) != 0 {
+		t.Fatalf("beta should not see alpha-scoped capability, got %#v", got)
+	}
+}
+
+func TestRuntimeHookTargetsDedupeManifestAndWorkerCapabilities(t *testing.T) {
+	registry := NewRuntimeRegistry()
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-permissions"}
+	manifest := wire.Capability{
+		Target: target,
+		Hooks:  []wire.HookSpec{{Event: "before_tool_call", Priority: 1}},
+		State:  wire.CapabilityStateManifestLoaded,
+		Source: wire.CapabilitySourceManifest,
+	}
+	worker := manifest
+	worker.State = wire.CapabilityStateReady
+	worker.Source = wire.CapabilitySourceWorker
+	worker.Revision = 2
+	if err := registry.RegisterHello(runtimeauth.LocalRuntimeID, runtimemock.New(), []wire.Capability{manifest, worker}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	targets := registry.HookTargets()
+	if len(targets) != 1 {
+		t.Fatalf("expected one hook target for duplicate manifest/worker capabilities, got %d", len(targets))
+	}
+	if targets[0].Capability.State != wire.CapabilityStateReady || targets[0].Capability.Source != wire.CapabilitySourceWorker {
+		t.Fatalf("expected worker ready capability, got state=%s source=%s", targets[0].Capability.State, targets[0].Capability.Source)
+	}
+}
+
+func TestRuntimeHookTargetsPreserveTenantScopedCapabilities(t *testing.T) {
+	registry := NewRuntimeRegistry()
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-permissions"}
+	alpha := wire.Capability{
+		Target:  target,
+		Tenants: []string{"alpha"},
+		Hooks:   []wire.HookSpec{{Event: "before_tool_call", Priority: 100}},
+		State:   wire.CapabilityStateManifestLoaded,
+		Source:  wire.CapabilitySourceManifest,
+	}
+	beta := alpha
+	beta.Tenants = []string{"beta"}
+	if err := registry.RegisterHello(runtimeauth.LocalRuntimeID, runtimemock.New(), []wire.Capability{alpha, beta}, 0, []string{"alpha", "beta"}); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+
+	targets := registry.HookTargets()
+	if len(targets) != 2 {
+		t.Fatalf("expected tenant-scoped hook targets to be preserved, got %d: %+v", len(targets), targets)
+	}
+	seen := map[string]bool{}
+	for _, target := range targets {
+		if len(target.Capability.Tenants) != 1 {
+			t.Fatalf("expected one tenant per hook target, got %+v", target.Capability.Tenants)
+		}
+		seen[target.Capability.Tenants[0]] = true
+	}
+	if !seen["alpha"] || !seen["beta"] {
+		t.Fatalf("missing tenant-scoped hook targets: %+v", seen)
+	}
+}
+
+func TestRuntimeHookTargetsDedupeWildcardManifestWithTenantManifest(t *testing.T) {
+	registry := NewRuntimeRegistry()
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-approvals"}
+	global := wire.Capability{
+		Target:  target,
+		Tenants: []string{"*"},
+		Hooks:   []wire.HookSpec{{Event: "before_tool_call", Priority: 80}},
+		State:   wire.CapabilityStateManifestLoaded,
+		Source:  wire.CapabilitySourceManifest,
+	}
+	tenantScoped := global
+	tenantScoped.Tenants = []string{"code-immune-tabula-dev"}
+	if err := registry.RegisterHello(runtimeauth.LocalRuntimeID, runtimemock.New(), []wire.Capability{global, tenantScoped}, 0, []string{"code-immune-tabula-dev"}); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+
+	targets := registry.HookTargets()
+	if len(targets) != 1 {
+		t.Fatalf("expected wildcard manifest hook target to cover tenant manifest, got %d: %+v", len(targets), targets)
+	}
+	if !servesAllTenants(targets[0].Capability.Tenants) {
+		t.Fatalf("expected wildcard hook capability, got tenants=%+v", targets[0].Capability.Tenants)
+	}
+}
+
+func TestRuntimeHookTargetsDropBroadManifestWhenTenantWorkerReady(t *testing.T) {
+	registry := NewRuntimeRegistry()
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-approvals"}
+	manifest := wire.Capability{
+		Target:  target,
+		Tenants: []string{"*"},
+		Hooks:   []wire.HookSpec{{Event: "before_tool_call", Priority: 80}},
+		State:   wire.CapabilityStateManifestLoaded,
+		Source:  wire.CapabilitySourceManifest,
+	}
+	worker := manifest
+	worker.Tenants = []string{"code-immune-tabula-dev"}
+	worker.State = wire.CapabilityStateReady
+	worker.Source = wire.CapabilitySourceWorker
+	worker.Revision = 2
+	if err := registry.RegisterHello(runtimeauth.LocalRuntimeID, runtimemock.New(), []wire.Capability{manifest, worker}, 0, []string{"code-immune-tabula-dev"}); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+
+	targets := registry.HookTargets()
+	if len(targets) != 1 {
+		t.Fatalf("expected broad manifest hook target to be dropped when tenant worker is ready, got %d: %+v", len(targets), targets)
+	}
+	if targets[0].Capability.Source != wire.CapabilitySourceWorker || !sameTenantSet(targets[0].Capability.Tenants, []string{"code-immune-tabula-dev"}) {
+		t.Fatalf("expected tenant worker hook capability, got source=%s tenants=%+v", targets[0].Capability.Source, targets[0].Capability.Tenants)
+	}
+}
+
+func TestSyncAttachedRuntimeCapabilitiesRebuildsHookIndex(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "code-immune-tabula-dev", CreatedAt: time.Now()}))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: runtimeauth.LocalRuntimeID, Backend: "local"})
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-approvals"}
+	manifest := wire.Capability{
+		Target:  target,
+		Tenants: []string{"*"},
+		Hooks:   []wire.HookSpec{{Event: "before_tool_call", Priority: 80}},
+		State:   wire.CapabilityStateManifestLoaded,
+		Source:  wire.CapabilitySourceManifest,
+	}
+	worker := manifest
+	worker.Tenants = []string{"code-immune-tabula-dev"}
+	worker.State = wire.CapabilityStateReady
+	worker.Source = wire.CapabilitySourceWorker
+	worker.Revision = 2
+	conn := runtimemock.New().WithCapabilities(manifest)
+	if err := hub.runtimes.RegisterHello(runtimeauth.LocalRuntimeID, conn, []wire.Capability{manifest}, 0, []string{"code-immune-tabula-dev"}); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	hub.syncRuntimeCapability(runtimeauth.LocalRuntimeID, manifest)
+	hub.rebuildHookIndex()
+	conn.WithCapabilities(manifest, worker)
+
+	hub.syncAttachedRuntimeCapabilities()
+
+	entries := hub.hooks.entries("before_tool_call")
+	if len(entries) != 1 {
+		t.Fatalf("expected hook index to contain only tenant worker subscriber after sync, got %d", len(entries))
+	}
+	sub, ok := entries[0].sub.(*runtimeHookSubscriber)
+	if !ok {
+		t.Fatalf("expected runtime hook subscriber, got %T", entries[0].sub)
+	}
+	if sub.capability.Source != wire.CapabilitySourceWorker || !sameTenantSet(sub.capability.Tenants, []string{"code-immune-tabula-dev"}) {
+		t.Fatalf("expected tenant worker subscriber, got source=%s tenants=%+v", sub.capability.Source, sub.capability.Tenants)
 	}
 }
 
