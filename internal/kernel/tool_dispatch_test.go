@@ -540,6 +540,58 @@ func TestConcurrentRuntimePromptBuildHooksReserveTargetOnce(t *testing.T) {
 	}
 }
 
+func TestParallelRuntimeApprovalHooksDoNotFailBusyWhileFirstIsSuspended(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	timeout := int64(1000)
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-approvals"}
+	capability := wire.Capability{
+		Target: target,
+		Hooks:  []wire.HookSpec{{Event: "before_tool_call", Priority: 100, TimeoutMS: &timeout}},
+		State:  wire.CapabilityStateReady,
+		Source: wire.CapabilitySourceWorker,
+	}
+	rc := newSuspendingApprovalRuntimeConn(hub)
+	rc.WithCapabilities(capability)
+	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{capability}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	hub.syncRuntimeCapability("local", capability)
+	hub.rebuildHookIndex()
+
+	var firstBlocked *HookDispatchDecision
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		_, ok, blocked := hub.hooks.DispatchDetailedExcept("before_tool_call", json.RawMessage(`{"tool":"exec_run","input":{"cmd":"one"}}`), tenant.DefaultID, "s1", nil)
+		if ok || blocked == nil || !blocked.Pending {
+			t.Errorf("expected first approval hook to suspend, ok=%v blocked=%+v", ok, blocked)
+			return
+		}
+		firstBlocked = blocked
+	}()
+
+	select {
+	case <-rc.FirstSuspended():
+	case <-time.After(time.Second):
+		t.Fatal("first approval hook did not suspend")
+	}
+
+	_, ok, blocked := hub.hooks.DispatchDetailedExcept("before_tool_call", json.RawMessage(`{"tool":"exec_run","input":{"cmd":"two"}}`), tenant.DefaultID, "s1", nil)
+	if !ok || blocked != nil {
+		t.Fatalf("expected second approval hook to wait and run instead of failing busy, ok=%v blocked=%+v", ok, blocked)
+	}
+
+	<-firstDone
+	if firstBlocked != nil {
+		releaseBlockedHookDecision(firstBlocked)
+	}
+	if got := len(rc.HookEvents()); got != 2 {
+		t.Fatalf("expected both approval hook events to run, got %d", got)
+	}
+}
+
 func TestConcurrentRuntimeSecurityHooksSerializeTarget(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
@@ -579,6 +631,40 @@ func TestConcurrentRuntimeSecurityHooksSerializeTarget(t *testing.T) {
 	if hub.isRuntimeTargetBusy("local", target) {
 		t.Fatal("timed-out security hook did not release target busy marker")
 	}
+}
+
+type suspendingApprovalRuntimeConn struct {
+	*openHookRuntimeConn
+	hub            *Hub
+	firstSuspended chan struct{}
+	once           sync.Once
+}
+
+func newSuspendingApprovalRuntimeConn(hub *Hub) *suspendingApprovalRuntimeConn {
+	return &suspendingApprovalRuntimeConn{openHookRuntimeConn: newOpenHookRuntimeConn(), hub: hub, firstSuspended: make(chan struct{})}
+}
+
+func (c *suspendingApprovalRuntimeConn) FirstSuspended() <-chan struct{} {
+	return c.firstSuspended
+}
+
+func (c *suspendingApprovalRuntimeConn) SendHookEvent(ctx context.Context, req runtimeapi.HookEventReq) error {
+	c.openHookRuntimeConn.SendHookEvent(ctx, req)
+	if len(c.HookEvents()) == 1 {
+		go func() {
+			c.hub.hooks.HandleRuntimeResult("local", &Message{
+				Type:    string(MsgHookReply),
+				ID:      req.CallID,
+				Action:  string(ActionSuspend),
+				Reason:  "approve exec",
+				Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve?","details":{"tool":"exec_run"},"options":["allow once","deny once"]}`),
+			})
+			c.once.Do(func() { close(c.firstSuspended) })
+		}()
+		return nil
+	}
+	go c.hub.hooks.HandleRuntimeResult("local", &Message{Type: string(MsgHookReply), ID: req.CallID, Action: string(ActionPass)})
+	return nil
 }
 
 type openHookRuntimeConn struct {

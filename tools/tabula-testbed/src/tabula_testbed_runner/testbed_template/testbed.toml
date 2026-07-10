@@ -10,6 +10,7 @@ baseline = ["base", "drivers", "workspace", "mempalace", "test-fixtures"]
 base = ["base", "test-fixtures"]
 workspace = ["base", "workspace", "test-fixtures"]
 caveman = ["base", "caveman", "test-fixtures"]
+openspec = ["base", "openspec", "test-fixtures"]
 all = [
   "base",
   "drivers",
@@ -17,6 +18,7 @@ all = [
   "mempalace",
   "codegraph",
   "caveman",
+  "openspec",
   "subagents",
   "code",
   "test-fixtures",
@@ -42,6 +44,9 @@ source = "source:tabula-bundles#path=codegraph"
 
 [bundles.caveman]
 source = "source:tabula-bundles#path=caveman"
+
+[bundles.openspec]
+source = "source:tabula-bundles#path=openspec"
 
 [bundles.subagents]
 source = "source:tabula-bundles#path=subagents"
@@ -208,6 +213,12 @@ set = "empty"
 bundles = ["base"]
 components = ["codegraph:codegraph-query", "codegraph:codegraph-admin"]
 tests = ["tests/test_codegraph.py"]
+
+[suites.openspec]
+set = "empty"
+bundles = ["base"]
+components = ["openspec:openspec-cli"]
+tests = ["tests/test_openspec.py"]
 
 [suites.subagents]
 set = "empty"

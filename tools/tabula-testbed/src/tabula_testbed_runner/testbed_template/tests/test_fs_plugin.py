@@ -88,7 +88,7 @@ class FSPluginSmoke(unittest.TestCase):
             self.assertEqual(stat["kind"], "file")
             self.assertGreater(stat["size"], 0)
 
-            globbed = self.call_json(client, "fs_glob", {"root": str(self.workspace_root), "pattern": "**/*.txt"})
+            globbed = self.call_json(client, "fs_glob", {"path": str(self.workspace_root), "pattern": "**/*.txt"})
             self.assertEqual(sorted(Path(path).name for path in globbed["paths"]), ["notes.txt", "other.txt"])
             self.assertEqual(globbed["denied_count"], 1 if symlink else 0)
 
@@ -115,7 +115,7 @@ class FSPluginSmoke(unittest.TestCase):
             self.assertEqual(sorted(entry["name"] for entry in listed["entries"]), ["nested", "notes.txt"])
             self.assertEqual(listed["denied_count"], 2)
 
-            globbed = self.call_json(client, "fs_glob", {"root": str(self.workspace_root), "pattern": "**/*"})
+            globbed = self.call_json(client, "fs_glob", {"path": str(self.workspace_root), "pattern": "**/*"})
             self.assertNotIn(".env", {Path(path).name for path in globbed["paths"]})
             self.assertNotIn("hidden.txt", {Path(path).name for path in globbed["paths"]})
             self.assertGreaterEqual(globbed["denied_count"], 2)
