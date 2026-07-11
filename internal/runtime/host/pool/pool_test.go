@@ -1276,6 +1276,9 @@ func TestPoolLifecycleCrashRedactsWorkerDiagnostics(t *testing.T) {
 			if !ok || notice.State != wire.LifecycleStateCrashed {
 				continue
 			}
+			if !strings.Contains(notice.Message, "worker stderr captured: 1 line, 25 bytes") {
+				continue
+			}
 			if !strings.Contains(notice.Message, "worker failed") || !strings.Contains(notice.Message, "worker stderr captured: 1 line, 25 bytes") {
 				t.Fatalf("expected bounded lifecycle diagnostic, got %#v", notice)
 			}

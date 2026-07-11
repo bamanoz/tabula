@@ -25,6 +25,8 @@ opencode.json
 
 # Tabula files
 .tabula
+.tabula-dev
+.tabula-prod
 tabula.app.lock
 global.toml
 secrets.json

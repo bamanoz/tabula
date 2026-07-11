@@ -1,8 +1,7 @@
-.PHONY: build build-windows build-linux build-all build-harness-bench-image test test-unit test-smoke test-e2e test-contract test-go test-go-unit test-go-smoke test-python test-python-unit test-python-smoke test-python-e2e test-python-contract testbed lint vet release-local release-local-dry-run push install install-agent agent agent-prepare agent-run agent-connect clean
+.PHONY: build build-windows build-linux build-all build-harness-bench-image test test-unit test-smoke test-e2e test-contract test-go test-go-unit test-go-smoke test-python test-python-unit test-python-smoke test-python-e2e test-python-contract testbed lint vet release-local release-local-dry-run push install install-agent agent agent-prepare agent-write-gateway-config agent-run agent-connect clean
 
 TABULA_HOME ?= .
 VENV_PYTHON = .venv/bin/python3
-AGENT_HOME ?= $(CURDIR)/.tabula
 HARNESS_BENCH_IMAGE ?= tabula-harness-bench:latest
 HARNESS_BENCH_DOCKERFILE ?= docker/harness-bench.Dockerfile
 TESTBED_VENV ?= $(CURDIR)/.venv-testbed
@@ -16,14 +15,29 @@ PRIMARY_GOAL := $(firstword $(MAKECMDGOALS))
 SECOND_GOAL := $(word 2,$(MAKECMDGOALS))
 THIRD_GOAL := $(word 3,$(MAKECMDGOALS))
 KNOWN_AGENT_ACTIONS := prepare run connect
+KNOWN_AGENT_PROFILES := dev prod
+AGENT_PROFILE := dev
 AGENT_ACTION :=
 
 ifeq ($(PRIMARY_GOAL),agent)
+ifneq ($(filter $(SECOND_GOAL),$(KNOWN_AGENT_PROFILES)),)
+AGENT_PROFILE := $(SECOND_GOAL)
+AGENT_ACTION := $(THIRD_GOAL)
+.PHONY: $(SECOND_GOAL)
+$(SECOND_GOAL):
+	@:
+ifneq ($(THIRD_GOAL),)
+.PHONY: $(THIRD_GOAL)
+$(THIRD_GOAL):
+	@:
+endif
+else
 ifneq ($(filter $(SECOND_GOAL),$(KNOWN_AGENT_ACTIONS)),)
 AGENT_ACTION := $(SECOND_GOAL)
 .PHONY: $(SECOND_GOAL)
 $(SECOND_GOAL):
 	@:
+endif
 endif
 endif
 
@@ -139,11 +153,12 @@ agent:
 	@ACTION="$(AGENT_ACTION)"; \
 	if [ -z "$$ACTION" ]; then ACTION=connect; fi; \
 	case "$$ACTION" in \
-	  prepare) $(MAKE) agent-prepare AGENT_HOME="$(AGENT_HOME)" ;; \
-	  run) $(MAKE) agent-run AGENT_HOME="$(AGENT_HOME)" ;; \
-	  connect) $(MAKE) agent-connect SESSION="$(SESSION)" ;; \
+	  prepare) $(MAKE) agent-prepare AGENT_PROFILE="$(AGENT_PROFILE)" ;; \
+	  run) $(MAKE) agent-run AGENT_PROFILE="$(AGENT_PROFILE)" ;; \
+	  connect) $(MAKE) agent-connect AGENT_PROFILE="$(AGENT_PROFILE)" SESSION="$(SESSION)" ;; \
 	  *) \
-	    printf 'usage: make agent {prepare|run|connect} [SESSION=id]\n'; \
+	    printf 'usage: make agent [dev|prod] {prepare|run|connect} [SESSION=id]\n'; \
+	    printf '       make agent {prepare|run|connect} [SESSION=id]  # dev alias\n'; \
 	    printf '       make agent-prepare\n'; \
 	    printf '       make agent-run\n'; \
 	    printf '       make agent-connect [SESSION=id]\n' >&2; \
@@ -153,19 +168,73 @@ agent:
 
 LOCAL_TABULA_DISTRIB ?= $(CURDIR)/../tabula-distrib
 LOCAL_TABULA_BUNDLES ?= $(CURDIR)/../tabula-bundles
+PROD_VERSION ?=
+
+AGENT_DEV_HOME ?= $(CURDIR)/.tabula-dev
+AGENT_PROD_HOME ?= $(CURDIR)/.tabula-prod
+AGENT_DEV_VENV ?= $(AGENT_DEV_HOME)/.venv-$(shell uname -s)-$(shell uname -m)
+AGENT_PROD_VENV ?= $(AGENT_PROD_HOME)/.venv
+AGENT_DEV_MANIFEST ?= $(CURDIR)/agent-profiles/dev/tabula.app.toml
+AGENT_PROD_MANIFEST ?= $(CURDIR)/agent-profiles/prod/tabula.app.toml
+AGENT_DEV_KERNEL_URL ?= ws://127.0.0.1:8189/ws
+AGENT_PROD_KERNEL_URL ?= ws://127.0.0.1:8089/ws
+AGENT_DEV_GATEWAY_WEB_PORT ?= 8865
+AGENT_PROD_GATEWAY_WEB_PORT ?= 8765
+
+ifeq ($(AGENT_PROFILE),prod)
+AGENT_HOME ?= $(AGENT_PROD_HOME)
+AGENT_VENV ?= $(AGENT_PROD_VENV)
+AGENT_MANIFEST ?= $(AGENT_PROD_MANIFEST)
+AGENT_KERNEL_URL ?= $(AGENT_PROD_KERNEL_URL)
+AGENT_GATEWAY_WEB_PORT ?= $(AGENT_PROD_GATEWAY_WEB_PORT)
+else
+AGENT_HOME ?= $(AGENT_DEV_HOME)
+AGENT_VENV ?= $(AGENT_DEV_VENV)
+AGENT_MANIFEST ?= $(AGENT_DEV_MANIFEST)
+AGENT_KERNEL_URL ?= $(AGENT_DEV_KERNEL_URL)
+AGENT_GATEWAY_WEB_PORT ?= $(AGENT_DEV_GATEWAY_WEB_PORT)
+endif
 
 agent-prepare:
-	TABULA_HOME="$(AGENT_HOME)" bash scripts/install-dev.sh
-	TABULA_HOME="$(AGENT_HOME)" \
-	TABULA_SOURCE_ALIAS_TABULA_DISTRIB="local:$(LOCAL_TABULA_DISTRIB)" \
-	TABULA_SOURCE_ALIAS_TABULA_BUNDLES="local:$(LOCAL_TABULA_BUNDLES)" \
-	"$(AGENT_HOME)/bin/tabula-install" app install "$(CURDIR)/tabula.app.toml" --workspace "$(CURDIR)" --update
+	@set -e; \
+	if [ "$(AGENT_PROFILE)" = "prod" ]; then \
+		TABULA_HOME="$(AGENT_HOME)" VERSION="$(PROD_VERSION)" bash scripts/install.sh app install "$(AGENT_MANIFEST)" --workspace "$(CURDIR)" --update; \
+		$(MAKE) agent-write-gateway-config AGENT_PROFILE="$(AGENT_PROFILE)" AGENT_HOME="$(AGENT_HOME)" AGENT_KERNEL_URL="$(AGENT_KERNEL_URL)" AGENT_GATEWAY_WEB_PORT="$(AGENT_GATEWAY_WEB_PORT)"; \
+		TABULA_HOME="$(AGENT_HOME)" TABULA_URL="$(AGENT_KERNEL_URL)" "$(AGENT_HOME)/bin/tabula-install" app install "$(AGENT_MANIFEST)" --workspace "$(CURDIR)" --update; \
+	else \
+		TABULA_HOME="$(AGENT_HOME)" bash scripts/install-dev.sh; \
+		$(MAKE) agent-write-gateway-config AGENT_PROFILE="$(AGENT_PROFILE)" AGENT_HOME="$(AGENT_HOME)" AGENT_KERNEL_URL="$(AGENT_KERNEL_URL)" AGENT_GATEWAY_WEB_PORT="$(AGENT_GATEWAY_WEB_PORT)"; \
+		TABULA_HOME="$(AGENT_HOME)" \
+		TABULA_URL="$(AGENT_KERNEL_URL)" \
+		TABULA_SOURCE_ALIAS_TABULA_DISTRIB="local:$(LOCAL_TABULA_DISTRIB)" \
+		TABULA_SOURCE_ALIAS_TABULA_BUNDLES="local:$(LOCAL_TABULA_BUNDLES)" \
+		"$(AGENT_HOME)/bin/tabula-install" app install "$(AGENT_MANIFEST)" --workspace "$(CURDIR)" --update; \
+	fi
+
+agent-write-gateway-config:
+	@mkdir -p "$(AGENT_HOME)/config/plugins/gateway-web"
+	@{ \
+		printf 'host = "127.0.0.1"\n'; \
+		printf 'port = %s\n' "$(AGENT_GATEWAY_WEB_PORT)"; \
+		printf 'kernel_url = "$(AGENT_KERNEL_URL)"\n'; \
+	} > "$(AGENT_HOME)/config/plugins/gateway-web/config.toml"
 
 agent-run:
-	TABULA_HOME="$(AGENT_HOME)" TABULA_BOOT="$(AGENT_HOME)/distrib/active/current" TABULA_LOG_LEVEL="$${TABULA_LOG_LEVEL:-info}" "$(AGENT_HOME)/bin/tabula-runner"
+	@if [ "$(AGENT_PROFILE)" = "prod" ]; then \
+		TABULA_HOME="$(AGENT_HOME)" TABULA_VENV="$(AGENT_VENV)" TABULA_PATH="$(AGENT_VENV)/bin:$(AGENT_HOME)/bin:$$PATH" TABULA_URL="$(AGENT_KERNEL_URL)" TABULA_LOG_LEVEL="$${TABULA_LOG_LEVEL:-info}" "$(AGENT_HOME)/bin/tabula-install" app run "$(AGENT_MANIFEST)" --update --foreground --tabula-bin "$(AGENT_HOME)/bin/tabula"; \
+	else \
+		TABULA_HOME="$(AGENT_HOME)" \
+		TABULA_VENV="$(AGENT_VENV)" \
+		TABULA_PATH="$(AGENT_VENV)/bin:$(AGENT_HOME)/bin:$$PATH" \
+		TABULA_URL="$(AGENT_KERNEL_URL)" \
+		TABULA_LOG_LEVEL="$${TABULA_LOG_LEVEL:-info}" \
+		TABULA_SOURCE_ALIAS_TABULA_DISTRIB="local:$(LOCAL_TABULA_DISTRIB)" \
+		TABULA_SOURCE_ALIAS_TABULA_BUNDLES="local:$(LOCAL_TABULA_BUNDLES)" \
+		"$(AGENT_HOME)/bin/tabula-install" app run "$(AGENT_MANIFEST)" --update --foreground --tabula-bin "$(AGENT_HOME)/bin/tabula"; \
+	fi
 
 agent-connect:
-	TABULA_HOME="$(AGENT_HOME)" "$(AGENT_HOME)/bin/tabula-cli" $(if $(SESSION),--session $(SESSION),)
+	TABULA_HOME="$(AGENT_HOME)" TABULA_VENV="$(AGENT_VENV)" TABULA_PATH="$(AGENT_VENV)/bin:$(AGENT_HOME)/bin:$$PATH" TABULA_URL="$(AGENT_KERNEL_URL)" "$(AGENT_HOME)/bin/tabula-cli" $(if $(SESSION),--session $(SESSION),)
 
 # Clean
 
