@@ -21,9 +21,32 @@ POST_INSTALL_ARGS=("$@")
 
 # Auth header for private repos (optional)
 AUTH_HEADER=()
-if [ -n "${GITHUB_TOKEN:-}" ]; then
-  AUTH_HEADER=(-H "Authorization: token $GITHUB_TOKEN")
-fi
+
+use_gh() {
+  command -v gh &>/dev/null && gh auth status &>/dev/null
+}
+
+github_token() {
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    printf '%s' "$GITHUB_TOKEN"
+    return
+  fi
+  if command -v gh &>/dev/null; then
+    gh auth token 2>/dev/null || true
+  fi
+}
+
+configure_auth_header() {
+  local token
+  token="$(github_token)"
+  if [ -n "$token" ]; then
+    GITHUB_TOKEN="$token"
+    export GITHUB_TOKEN
+    AUTH_HEADER=(-H "Authorization: Bearer $token")
+  fi
+}
+
+configure_auth_header
 
 # ── helpers ──────────────────────────────────────────────────────
 
@@ -64,6 +87,14 @@ resolve_version() {
   fi
 
   info "Fetching latest release..."
+  if use_gh; then
+    VERSION=$(gh release view --repo "${REPO}" --json tagName --jq .tagName 2>/dev/null || true)
+    if [ -n "$VERSION" ]; then
+      info "Latest version: $VERSION"
+      return
+    fi
+  fi
+
   local curl_args=(curl_retry -fsSL)
   if [ ${#AUTH_HEADER[@]} -gt 0 ]; then
     curl_args+=("${AUTH_HEADER[@]}")
@@ -266,7 +297,13 @@ main() {
   trap 'rm -rf "${tmp:-}"' EXIT
 
   # Download
-  if [ ${#AUTH_HEADER[@]} -gt 0 ]; then
+  if use_gh; then
+    info "Downloading assets with gh..."
+    gh release download "$VERSION" --repo "${REPO}" --pattern "$binary_archive" --dir "$tmp" --clobber >/dev/null || \
+      die "could not download $binary_archive from GitHub release $VERSION"
+    gh release download "$VERSION" --repo "${REPO}" --pattern "$skills_archive" --dir "$tmp" --clobber >/dev/null || \
+      die "could not download $skills_archive from GitHub release $VERSION"
+  elif [ ${#AUTH_HEADER[@]} -gt 0 ]; then
     # Private repo: download via GitHub API
     local api_url="https://api.github.com/repos/${REPO}/releases/tags/${VERSION}"
     local release_json
