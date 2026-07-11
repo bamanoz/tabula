@@ -482,7 +482,7 @@ Preserve plugin-defined policy, but make tool dispatch explicitly policy-aware:
 
 Introduce a generic tool-search/deferred-tool mechanism for large tool catalogs:
 
-- model sees a small stable base set plus `tool_search`;
+- model sees a small stable base set plus `deferred_tool_search`;
 - tool schemas are loaded on demand;
 - compaction boundaries preserve selected/deferred tool state;
 - prompt-cache stability becomes an explicit design goal.
