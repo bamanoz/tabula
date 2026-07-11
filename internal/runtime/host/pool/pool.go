@@ -1059,6 +1059,12 @@ func (p *Pool) markTargetInitializing(tenantID string, plugin manifest.Plugin) {
 
 func (p *Pool) markTargetFailed(tenantID string, plugin manifest.Plugin) {
 	p.setTargetState(tenantID, plugin, wire.CapabilityStateFailed)
+	p.publishCriticalFrame(wire.LifecycleNotice{
+		Op:     wire.OpLifecycleNotice,
+		Target: wire.Target{Kind: wire.TargetKindPlugin, ID: plugin.ID},
+		State:  wire.LifecycleStateCrashed,
+		Message: "worker initialization failed",
+	})
 }
 
 func (p *Pool) markTargetCrashed(tenantID string, plugin manifest.Plugin, err error) {

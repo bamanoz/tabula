@@ -339,6 +339,36 @@ func TestRuntimeLifecycleNonReadyDoesNotBroadcastTrimmedCatalog(t *testing.T) {
 	}
 }
 
+func TestRuntimeLifecycleCrashRemovesRuntimeHookTarget(t *testing.T) {
+	env := newTestEnv(t)
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "immune"}
+	capability := runtimeapi.Capability{
+		Target: target,
+		Hooks:  []wire.HookSpec{{Event: "before_tool_call", Priority: 20}},
+		State:  wire.CapabilityStateReady,
+		Source: wire.CapabilitySourceWorker,
+	}
+	if err := env.Hub.runtimes.RegisterHello("local", runtimemock.New(), []runtimeapi.Capability{capability}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	env.Hub.syncRuntimeCapability("local", capability)
+	env.Hub.rebuildHookIndex()
+	if got := len(env.Hub.runtimeHookTargets()); got != 1 {
+		t.Fatalf("runtime hook targets before crash = %d, want 1", got)
+	}
+
+	if err := env.Hub.runtimeAsyncSink().LifecycleNoticed("local", wire.LifecycleNotice{
+		Op:     wire.OpLifecycleNotice,
+		Target: target,
+		State:  wire.LifecycleStateCrashed,
+	}); err != nil {
+		t.Fatalf("LifecycleNoticed: %v", err)
+	}
+	if got := len(env.Hub.runtimeHookTargets()); got != 0 {
+		t.Fatalf("runtime hook targets after crash = %d, want 0", got)
+	}
+}
+
 func TestSnapshotRuntimesSanitizesRuntimeDiagnostics(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.runtimes = NewRuntimeRegistry()

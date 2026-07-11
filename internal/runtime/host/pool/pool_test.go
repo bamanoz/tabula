@@ -1134,6 +1134,18 @@ func TestPoolInitFailureMarksTargetFailed(t *testing.T) {
 	if len(caps) != 1 || caps[0].State != wire.CapabilityStateFailed {
 		t.Fatalf("failed capabilities = %#v", caps)
 	}
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case frame := <-p.AsyncFrames():
+			notice, ok := frame.(wire.LifecycleNotice)
+			if ok && notice.Target.ID == "fs" && notice.State == wire.LifecycleStateCrashed {
+				return
+			}
+		case <-deadline:
+			t.Fatal("init failure did not publish crashed lifecycle notice")
+		}
+	}
 }
 
 func TestPoolInitFailureReturnsRedactedWorkerDiagnostics(t *testing.T) {

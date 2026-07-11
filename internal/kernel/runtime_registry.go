@@ -389,7 +389,7 @@ func (r *RuntimeRegistry) HookTargets() []runtimeHookTarget {
 		}
 		byTarget := make(map[string]runtimeapi.Capability)
 		for _, capability := range attachment.Capabilities {
-			if len(capability.Hooks) == 0 {
+			if len(capability.Hooks) == 0 || !runtimeHookCapabilityDispatchable(capability) {
 				continue
 			}
 			key := runtimeHookTargetKey(capability)
@@ -420,6 +420,10 @@ func (r *RuntimeRegistry) HookTargets() []runtimeHookTarget {
 		}
 	}
 	return out
+}
+
+func runtimeHookCapabilityDispatchable(capability runtimeapi.Capability) bool {
+	return capability.State == wire.CapabilityStateReady || capability.State == wire.CapabilityStateManifestLoaded
 }
 
 func dropCoveredManifestHookCapabilities(capabilities []runtimeapi.Capability) []runtimeapi.Capability {
