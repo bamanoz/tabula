@@ -13,7 +13,6 @@ root = "${project_root}/../.."
 
 [values.workspace]
 path = "${project_root}/../.."
-extra_roots = ["${project_root}/../../.."]
 
 [values.prompt]
 project_files = ["AGENTS.md"]
