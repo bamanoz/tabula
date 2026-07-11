@@ -691,6 +691,51 @@ func TestConcurrentRuntimeSecurityHooksSerializeTarget(t *testing.T) {
 	}
 }
 
+func TestHandleToolUseSecurityHookTimeoutSendsTerminalResult(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
+	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-permissions"}
+	timeout := int64(10)
+	capability := wire.Capability{
+		Target: target,
+		Hooks:  []wire.HookSpec{{Event: "before_tool_call", Priority: 100, TimeoutMS: &timeout}},
+		State:  wire.CapabilityStateReady,
+		Source: wire.CapabilitySourceWorker,
+	}
+	rc := newOpenHookRuntimeConn()
+	rc.WithCapabilities(capability)
+	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{capability}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	hub.syncRuntimeCapability("local", capability)
+	hub.rebuildHookIndex()
+	c := addTenantCaptureClient(t, hub, "alpha", "driver", "s1", []string{TopicToolResult}, nil)
+
+	hub.tools.HandleToolUse(c, &Message{
+		Type:  string(MsgRequest),
+		Topic: TopicToolCall,
+		ID:    "call-timeout",
+		Name:  "exec_run",
+		Input: json.RawMessage(`{"cmd":"bad"}`),
+	})
+
+	msg := waitForMessage(t, c.recvCh)
+	if !isToolResult(msg) || msg.ID != "call-timeout" || msg.Name != "exec_run" {
+		t.Fatalf("expected terminal tool result for timed-out hook, got %+v", msg)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(msg.Output), &payload); err != nil {
+		t.Fatalf("tool result output is not structured JSON: %q", msg.Output)
+	}
+	if payload["error"] != "not_invoked" || payload["kind"] != "hook_timeout" {
+		t.Fatalf("unexpected not-invoked payload: %#v", payload)
+	}
+	if hub.isRuntimeTargetBusy("local", target) {
+		t.Fatal("timed-out security hook did not release target busy marker")
+	}
+}
+
 type suspendingApprovalRuntimeConn struct {
 	*openHookRuntimeConn
 	hub            *Hub
