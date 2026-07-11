@@ -23,16 +23,24 @@ POST_INSTALL_ARGS=("$@")
 AUTH_HEADER=()
 
 use_gh() {
-  command -v gh &>/dev/null && gh auth status &>/dev/null
+  command -v gh &>/dev/null && [ -n "${GH_RELEASE_TOKEN:-}" ]
 }
 
 github_token() {
+  if command -v gh &>/dev/null; then
+    local token
+    token="$(env -u GITHUB_TOKEN -u GH_TOKEN gh auth token 2>/dev/null || true)"
+    if [ -n "$token" ]; then
+      printf '%s' "$token"
+      return
+    fi
+  fi
   if [ -n "${GITHUB_TOKEN:-}" ]; then
     printf '%s' "$GITHUB_TOKEN"
     return
   fi
-  if command -v gh &>/dev/null; then
-    gh auth token 2>/dev/null || true
+  if [ -n "${GH_TOKEN:-}" ]; then
+    printf '%s' "$GH_TOKEN"
   fi
 }
 
@@ -40,8 +48,12 @@ configure_auth_header() {
   local token
   token="$(github_token)"
   if [ -n "$token" ]; then
+    GH_RELEASE_TOKEN="$token"
     GITHUB_TOKEN="$token"
+    GH_TOKEN="$token"
+    export GH_RELEASE_TOKEN
     export GITHUB_TOKEN
+    export GH_TOKEN
     AUTH_HEADER=(-H "Authorization: Bearer $token")
   fi
 }
