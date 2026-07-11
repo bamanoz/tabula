@@ -176,6 +176,56 @@ func TestWorkerKernelURLPrefersEnvURL(t *testing.T) {
 	}
 }
 
+func TestPrepareRuntimeEnvironmentPrependsConfiguredVenv(t *testing.T) {
+	home := t.TempDir()
+	venv := filepath.Join(home, "venv")
+	if err := os.MkdirAll(filepath.Join(venv, "bin"), 0o755); err != nil {
+		t.Fatalf("mkdir venv bin: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".env"), []byte("TABULA_VENV="+venv+"\n"), 0o644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	unsetEnvForTest(t, "TABULA_VENV")
+	unsetEnvForTest(t, "TABULA_PATH")
+	t.Setenv("PATH", "/usr/bin")
+
+	prepareRuntimeEnvironment(home)
+
+	if got, want := os.Getenv("PATH"), filepath.Join(venv, "bin")+string(os.PathListSeparator)+"/usr/bin"; got != want {
+		t.Fatalf("PATH = %q, want %q", got, want)
+	}
+}
+
+func TestPrepareRuntimeEnvironmentRestoresTabulaPath(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".env"), []byte("TABULA_VENV=/ignored\n"), 0o644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	t.Setenv("TABULA_PATH", "/runtime/bin:/usr/bin")
+	t.Setenv("PATH", "/usr/bin")
+
+	prepareRuntimeEnvironment(home)
+
+	if got := os.Getenv("PATH"); got != "/runtime/bin:/usr/bin" {
+		t.Fatalf("PATH = %q", got)
+	}
+}
+
+func unsetEnvForTest(t *testing.T, key string) {
+	t.Helper()
+	value, exists := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("unset %s: %v", key, err)
+	}
+	t.Cleanup(func() {
+		if exists {
+			_ = os.Setenv(key, value)
+			return
+		}
+		_ = os.Unsetenv(key)
+	})
+}
+
 func TestNewManifestStoreLoadsTenantCatalogs(t *testing.T) {
 	dir := t.TempDir()
 	writePlugin(t, filepath.Join(dir, "tenants", "alpha", "plugins", "fs", "plugin.toml"), `id = "fs"

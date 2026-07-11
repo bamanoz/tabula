@@ -68,6 +68,9 @@ func (h *Hub) ServeAuthenticatedRuntime(ctx context.Context, c *codec.Conn, opts
 		h.syncRuntimeCapability(hello.RuntimeID, capability)
 	}
 	h.rebuildHookIndex()
+	if runtimeCapabilitiesHaveHook(hello.Capabilities, "before_prompt_build") {
+		h.scheduleRuntimeCatalogRefreshForTenants(hello.TenantsServed, true)
+	}
 	if opts.Logger != nil {
 		opts.Logger.Info("runtime attached", "runtime_id", hello.RuntimeID)
 	}
@@ -78,10 +81,11 @@ func (h *Hub) ServeAuthenticatedRuntime(ctx context.Context, c *codec.Conn, opts
 		err = ctx.Err()
 	}
 	tenants := h.runtimes.TenantsServed(hello.RuntimeID)
+	rebuildContext := h.runtimeHasHook(hello.RuntimeID, "before_prompt_build")
 	h.runtimes.MarkDetached(hello.RuntimeID, err)
 	removedTools := h.removeRuntimeTools(hello.RuntimeID)
 	h.rebuildHookIndex()
-	go h.broadcastRuntimeCatalogRefreshForTenants(tenants)
+	h.scheduleRuntimeCatalogRefreshForTenants(tenants, rebuildContext)
 	if opts.Logger != nil {
 		opts.Logger.Warn("runtime detached", "runtime_id", hello.RuntimeID, "tenants", tenants, "removed_tools", removedTools, "err", err)
 	}
@@ -127,10 +131,11 @@ func (h *Hub) DetachRuntimeForRevoke(runtimeID string) {
 		_ = conn.Close()
 	}
 	tenants := h.runtimes.TenantsServed(runtimeID)
+	rebuildContext := h.runtimeHasHook(runtimeID, "before_prompt_build")
 	h.runtimes.MarkDetached(runtimeID, fmt.Errorf("runtime token revoked"))
 	removedTools := h.removeRuntimeTools(runtimeID)
 	h.rebuildHookIndex()
-	go h.broadcastRuntimeCatalogRefreshForTenants(tenants)
+	h.scheduleRuntimeCatalogRefreshForTenants(tenants, rebuildContext)
 	h.Logger.Warn("runtime detached for revoke", "runtime_id", runtimeID, "tenants", tenants, "removed_tools", removedTools)
 }
 

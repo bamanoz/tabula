@@ -18,6 +18,9 @@ type RuntimeConn struct {
 	capabilities   []wire.Capability
 	recorded       []runtimeapi.InvokeReq
 	recordedNotify chan struct{}
+	hookEvents     []runtimeapi.HookEventReq
+	hookNotify     chan struct{}
+	done           chan struct{}
 	cancels        []string
 	reloads        []runtimeapi.ReloadReq
 	pending        map[string]chan wire.Error
@@ -47,7 +50,7 @@ type invokeProgram struct {
 
 // New returns a new mock runtime connection.
 func New() *RuntimeConn {
-	return &RuntimeConn{programs: make(map[invokeKey]invokeProgram), recordedNotify: make(chan struct{}, 1), pending: make(map[string]chan wire.Error)}
+	return &RuntimeConn{programs: make(map[invokeKey]invokeProgram), recordedNotify: make(chan struct{}, 1), hookNotify: make(chan struct{}, 1), done: make(chan struct{}), pending: make(map[string]chan wire.Error)}
 }
 
 // OnInvoke starts configuring a response for a tenant/target/tool tuple.
@@ -220,8 +223,17 @@ func (m *RuntimeConn) Reload(_ context.Context, req runtimeapi.ReloadReq) (runti
 	return resp, nil
 }
 
-// SendHookEvent records no state in the in-memory mock yet.
-func (m *RuntimeConn) SendHookEvent(context.Context, runtimeapi.HookEventReq) error { return nil }
+// SendHookEvent records hook delivery for kernel-side tests.
+func (m *RuntimeConn) SendHookEvent(_ context.Context, req runtimeapi.HookEventReq) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.hookEvents = append(m.hookEvents, req)
+	select {
+	case m.hookNotify <- struct{}{}:
+	default:
+	}
+	return nil
+}
 
 // Close drains pending invokes with runtime_unavailable.
 func (m *RuntimeConn) Close() error {
@@ -231,6 +243,7 @@ func (m *RuntimeConn) Close() error {
 		return nil
 	}
 	m.closed = true
+	close(m.done)
 	for _, ch := range m.pending {
 		ch <- wire.Error{Code: wire.ErrorRuntimeUnavailable, Retryable: true}
 	}
@@ -240,6 +253,9 @@ func (m *RuntimeConn) Close() error {
 	return nil
 }
 
+// Done closes when the mock runtime is closed.
+func (m *RuntimeConn) Done() <-chan struct{} { return m.done }
+
 // RecordedInvokes returns invokes in chronological order.
 func (m *RuntimeConn) RecordedInvokes() []runtimeapi.InvokeReq {
 	m.mu.Lock()
@@ -247,6 +263,25 @@ func (m *RuntimeConn) RecordedInvokes() []runtimeapi.InvokeReq {
 	out := make([]runtimeapi.InvokeReq, len(m.recorded))
 	copy(out, m.recorded)
 	return out
+}
+
+// WaitHookEvent waits for a hook event to be delivered to the mock runtime.
+func (m *RuntimeConn) WaitHookEvent(ctx context.Context) (runtimeapi.HookEventReq, bool) {
+	for {
+		m.mu.Lock()
+		if len(m.hookEvents) > 0 {
+			req := m.hookEvents[0]
+			m.hookEvents = append([]runtimeapi.HookEventReq(nil), m.hookEvents[1:]...)
+			m.mu.Unlock()
+			return req, true
+		}
+		m.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return runtimeapi.HookEventReq{}, false
+		case <-m.hookNotify:
+		}
+	}
 }
 
 // RecordedCancels returns cancelled call IDs in chronological order.

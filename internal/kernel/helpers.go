@@ -46,7 +46,7 @@ func (h *Hub) allHookSubscribers() []HookSubscriber {
 		subs = append(subs, c)
 	}
 	for _, target := range runtimeTargets {
-		subs = append(subs, newRuntimeHookSubscriber(target, h.isRuntimeTargetBusy, h.markRuntimeTargetBusy, h.tryMarkRuntimeTargetBusy, h.Logger))
+		subs = append(subs, newRuntimeHookSubscriber(target, h.isRuntimeTargetBusy, h.markRuntimeTargetBusy, h.tryMarkRuntimeTargetBusy, h.runtimeTargetBusyDone, h.Logger))
 	}
 	return subs
 }

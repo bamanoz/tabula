@@ -35,20 +35,34 @@ const (
 
 // HookEventDef defines a hook event's strategy and security classification.
 type HookEventDef struct {
-	Strategy hookStrategy
-	Type     HookEventType
+	Strategy   hookStrategy
+	Type       HookEventType
+	BusyPolicy HookBusyPolicy
 }
+
+// HookBusyPolicy determines how a dispatch handles an already-running runtime
+// hook for the same target.
+type HookBusyPolicy string
+
+const (
+	// HookBusySkip continues without a busy domain hook.
+	HookBusySkip HookBusyPolicy = "skip"
+	// HookBusyWait waits for a busy hook target before dispatching.
+	HookBusyWait HookBusyPolicy = "wait"
+)
 
 // HookEvents is the canonical registry of all hook events.
 // Defined as a package-level var so it can be overridden in tests.
 var HookEvents = map[string]HookEventDef{
-	"before_message":      {Strategy: strategyModifying, Type: HookDomain},
-	"after_message":       {Strategy: strategyVoid, Type: HookObservability},
-	"before_tool_call":    {Strategy: strategyModifying, Type: HookSecurity},
-	"before_tool_result":  {Strategy: strategyModifying, Type: HookDomain},
-	"after_tool_call":     {Strategy: strategyVoid, Type: HookObservability},
-	"session_start":       {Strategy: strategyModifying, Type: HookDomain},
-	"before_prompt_build": {Strategy: strategyModifying, Type: HookDomain},
+	"before_message":     {Strategy: strategyModifying, Type: HookDomain},
+	"after_message":      {Strategy: strategyVoid, Type: HookObservability},
+	"before_tool_call":   {Strategy: strategyModifying, Type: HookSecurity},
+	"before_tool_result": {Strategy: strategyModifying, Type: HookDomain},
+	"after_tool_call":    {Strategy: strategyVoid, Type: HookObservability},
+	"session_start":      {Strategy: strategyModifying, Type: HookDomain},
+	// Prompt construction must not use a partial hook set merely because a
+	// concurrent catalog refresh is still running against one target.
+	"before_prompt_build": {Strategy: strategyModifying, Type: HookDomain, BusyPolicy: HookBusyWait},
 	"before_turn":         {Strategy: strategyModifying, Type: HookDomain},
 	"after_turn":          {Strategy: strategyVoid, Type: HookObservability},
 	"before_compaction":   {Strategy: strategyModifying, Type: HookDomain},

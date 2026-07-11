@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -65,6 +67,7 @@ func run(args []string, stderr io.Writer) int {
 }
 
 func stdioCmd(args []string, stderr io.Writer) int {
+	prepareRuntimeEnvironment(paths.Home())
 	fs := flag.NewFlagSet("stdio", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "", "path to runtime.toml")
@@ -135,6 +138,7 @@ func stdioCmd(args []string, stderr io.Writer) int {
 }
 
 func startCmd(args []string, stderr io.Writer) int {
+	prepareRuntimeEnvironment(paths.Home())
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "", "path to runtime.toml")
@@ -209,6 +213,53 @@ func workerKernelURL(configured string) string {
 		return envURL
 	}
 	return strings.TrimSpace(configured)
+}
+
+// prepareRuntimeEnvironment restores the installed Python environment before
+// runtime workers resolve commands such as python3 from PATH.
+func prepareRuntimeEnvironment(tabulaHome string) {
+	loadRuntimeEnvFile(filepath.Join(tabulaHome, ".env"))
+	if savedPath := strings.TrimSpace(os.Getenv("TABULA_PATH")); savedPath != "" {
+		_ = os.Setenv("PATH", savedPath)
+		return
+	}
+	venv := strings.TrimSpace(os.Getenv("TABULA_VENV"))
+	if venv == "" {
+		return
+	}
+	binDir := filepath.Join(venv, "bin")
+	if info, err := os.Stat(binDir); err != nil || !info.IsDir() {
+		return
+	}
+	path := os.Getenv("PATH")
+	if path == "" {
+		_ = os.Setenv("PATH", binDir)
+		return
+	}
+	_ = os.Setenv("PATH", binDir+string(os.PathListSeparator)+path)
+}
+
+func loadRuntimeEnvFile(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	for scanner := bufio.NewScanner(f); scanner.Scan(); {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			continue
+		}
+		if _, exists := os.LookupEnv(key); exists {
+			continue
+		}
+		_ = os.Setenv(key, strings.TrimSpace(value))
+	}
 }
 
 func printUsage(w io.Writer) {

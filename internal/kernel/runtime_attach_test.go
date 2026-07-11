@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -279,7 +280,7 @@ func TestRuntimeHookSubscriberConnectsManifestLoadedHookOnlyTarget(t *testing.T)
 			State:  wire.CapabilityStateManifestLoaded,
 			Source: wire.CapabilitySourceManifest,
 		},
-	}, nil, nil, nil, nil)
+	}, nil, nil, nil, nil, nil)
 	if !sub.IsConnected() {
 		t.Fatal("manifest-loaded hook-only runtime target should be dispatchable")
 	}
@@ -297,7 +298,7 @@ func TestRuntimeHookSubscriberSendsCallIDForVoidHooks(t *testing.T) {
 			State:   wire.CapabilityStateReady,
 			Source:  wire.CapabilitySourceWorker,
 		},
-	}, nil, nil, nil, nil)
+	}, nil, nil, nil, nil, nil)
 
 	sub.SendMsg(&Message{
 		Type:     string(MsgHook),
@@ -335,7 +336,7 @@ func TestRuntimeSessionJoinHookDeliveredWhenTargetBusy(t *testing.T) {
 		},
 	}, func(runtimeID string, busyTarget wire.Target) bool {
 		return runtimeID == runtimeauth.LocalRuntimeID && busyTarget == target
-	}, nil, nil, nil)
+	}, nil, nil, nil, nil)
 	engine := NewHookEngine(nil)
 	engine.RebuildIndex([]HookSubscriber{sub})
 
@@ -350,14 +351,100 @@ func TestRuntimeSessionJoinHookDeliveredWhenTargetBusy(t *testing.T) {
 	}
 }
 
+func TestManagedUIJoinDispatchesRuntimeSessionJoinHook(t *testing.T) {
+	env := newTestEnv(t)
+	env.Hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "code-immune-tabula-dev", CreatedAt: time.Now()}))
+	recorder := &recordingRuntimeConn{}
+	capability := wire.Capability{
+		Target:  wire.Target{Kind: wire.TargetKindPlugin, ID: "driver"},
+		Tenants: []string{"code-immune-tabula-dev"},
+		Hooks:   []wire.HookSpec{{Event: "session_join", Priority: 100}},
+		State:   wire.CapabilityStateReady,
+		Source:  wire.CapabilitySourceWorker,
+	}
+	ensureRuntimeDefinitionsForTest(t, env.Hub, RuntimeDefinition{ID: runtimeauth.LocalRuntimeID, Backend: "local"})
+	if err := env.Hub.runtimes.RegisterHello(runtimeauth.LocalRuntimeID, recorder, []wire.Capability{capability}, 0, []string{"code-immune-tabula-dev"}); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	env.Hub.syncRuntimeCapability(runtimeauth.LocalRuntimeID, capability)
+	env.Hub.rebuildHookIndex()
+
+	ui := env.dial()
+	writeJSON(t, ui, Message{
+		V:    ProtocolVersion,
+		Type: string(MsgHello),
+		Data: mustMarshalRaw(map[string]any{
+			"name":           "gateway-web",
+			"send_topics":    []string{TopicMessageUser},
+			"receive_topics": []string{TopicSessionInit, TopicSessionStatus},
+			"auth_token":     env.Token,
+			"meta": map[string]any{
+				"tabula.client_role": "ui",
+				"tabula.managed":     true,
+			},
+		}),
+	})
+	ack := readMsg(t, ui)
+	if ack.Type != string(MsgHelloAck) {
+		t.Fatalf("expected hello_ack, got %+v", ack)
+	}
+	writeJSON(t, ui, Message{Type: "join", TenantID: "code-immune-tabula-dev", Session: "web-fresh"})
+	joined := readMsg(t, ui)
+	if joined.Type != string(MsgJoined) {
+		t.Fatalf("expected joined, got %+v", joined)
+	}
+	_ = readMsg(t, ui) // session.init
+
+	got, ok := recorder.waitHookEvent(time.Second)
+	if !ok {
+		t.Fatal("expected one runtime session_join hook event")
+	}
+	if got.Event != "session_join" || got.Target.ID != "driver" || got.TenantID != "code-immune-tabula-dev" || got.SessionID != "web-fresh" {
+		t.Fatalf("unexpected runtime session_join hook event: %#v", got)
+	}
+}
+
 type recordingRuntimeConn struct {
 	testRuntimeConn
+	mu         sync.Mutex
 	hookEvents []runtimeapi.HookEventReq
+	hookCh     chan runtimeapi.HookEventReq
 }
 
 func (c *recordingRuntimeConn) SendHookEvent(_ context.Context, req runtimeapi.HookEventReq) error {
+	c.mu.Lock()
 	c.hookEvents = append(c.hookEvents, req)
+	ch := c.hookCh
+	c.mu.Unlock()
+	if ch != nil {
+		select {
+		case ch <- req:
+		default:
+		}
+	}
 	return nil
+}
+
+func (c *recordingRuntimeConn) waitHookEvent(timeout time.Duration) (runtimeapi.HookEventReq, bool) {
+	c.mu.Lock()
+	if len(c.hookEvents) > 0 {
+		event := c.hookEvents[0]
+		c.mu.Unlock()
+		return event, true
+	}
+	if c.hookCh == nil {
+		c.hookCh = make(chan runtimeapi.HookEventReq, 1)
+	}
+	ch := c.hookCh
+	c.mu.Unlock()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case event := <-ch:
+		return event, true
+	case <-timer.C:
+		return runtimeapi.HookEventReq{}, false
+	}
 }
 
 func TestServeAuthenticatedRuntimeInitialCapabilitiesReachInitTools(t *testing.T) {
@@ -541,6 +628,73 @@ func TestServeAuthenticatedRuntimeDetachRemovesRuntimeTools(t *testing.T) {
 	}
 	if strings.Contains(string(msg.Tools), "echo") {
 		t.Fatalf("expected refreshed catalog without echo, got %s", string(msg.Tools))
+	}
+}
+
+func TestServeAuthenticatedRuntimePromptHookCapabilityRefreshesPromptContext(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	store := runtimeauth.NewMemoryStore()
+	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good"}); err != nil {
+		t.Fatalf("store token: %v", err)
+	}
+	driver := addTenantCaptureClient(t, hub, tenant.DefaultID, "driver", "main", []string{TopicSessionInit}, nil)
+	clientWS, serverWS := runtimeConnWebsocketNetPipe(t)
+	client := codec.New(clientWS)
+	server := codec.New(serverWS)
+	defer func() { _ = client.CloseNow() }()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- hub.ServeAuthenticatedRuntime(context.Background(), server, RuntimeAttachOptions{
+			Auth: runtimeauth.Authenticator{Store: store, KernelID: "main"},
+		})
+	}()
+
+	if _, err := runtimeconn.Handshake(context.Background(), client, wire.Hello{
+		Op:              wire.OpHello,
+		RuntimeID:       runtimeauth.LocalRuntimeID,
+		Token:           "rtk_good",
+		ProtocolVersion: "1",
+		TenantsServed:   []string{tenant.DefaultID},
+		Capabilities: []wire.Capability{{
+			Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "skills"},
+			Hooks:  []wire.HookSpec{{Event: "before_prompt_build", Priority: 100}},
+			State:  wire.CapabilityStateReady,
+			Source: wire.CapabilitySourceWorker,
+		}},
+	}); err != nil {
+		t.Fatalf("Handshake: %v", err)
+	}
+
+	_, frame, err := client.Read(context.Background())
+	if err != nil {
+		t.Fatalf("read hook event: %v", err)
+	}
+	hookEvent, ok := frame.(*wire.HookEvent)
+	if !ok || hookEvent.Event != "before_prompt_build" {
+		t.Fatalf("expected before_prompt_build hook event, got %#v", frame)
+	}
+	payload, _ := json.Marshal(map[string]any{"context": "runtime prompt context"})
+	if err := client.Write(context.Background(), wire.HookEventReply{
+		Op:     wire.OpHookEventReply,
+		CallID: hookEvent.CallID,
+		Action: wire.HookActionRewrite,
+		Data:   payload,
+	}); err != nil {
+		t.Fatalf("write hook reply: %v", err)
+	}
+
+	msg := readCaptureMessageTimeout(driver.recvCh, time.Second)
+	if msg == nil || msg.Type != string(MsgEvent) || msg.Topic != TopicSessionInit {
+		t.Fatalf("expected refreshed session.init, got %+v", msg)
+	}
+	if !strings.Contains(msg.Context, "runtime prompt context") {
+		t.Fatalf("expected prompt hook context refresh, got %q", msg.Context)
+	}
+
+	_ = client.Close(websocket.StatusNormalClosure, "test close")
+	if err := <-done; err != nil {
+		t.Fatalf("ServeAuthenticatedRuntime returned error: %v", err)
 	}
 }
 

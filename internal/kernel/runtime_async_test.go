@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
 	runtimemock "github.com/bamanoz/tabula/internal/runtime/mock"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
+	"github.com/bamanoz/tabula/internal/tenant"
 )
 
 func TestHubRuntimeAsyncSinkRedactsStructuredPluginLogFields(t *testing.T) {
@@ -119,6 +121,180 @@ func TestRuntimeCatalogUpdateRefreshesToolsWithoutPromptHooks(t *testing.T) {
 	}
 	if msg := readMsgTimeout(t, promptHook, 100*time.Millisecond); msg != nil {
 		t.Fatalf("catalog refresh should not dispatch prompt hook, got %+v", msg)
+	}
+}
+
+func TestRuntimePromptHookCatalogUpdateRefreshesPromptContext(t *testing.T) {
+	env := newTestEnv(t)
+	driver := env.connectAndJoin("driver", "s1", []string{}, []string{TopicSessionInit})
+	initial := readMsg(t, driver)
+	if !isSessionInit(&initial) || strings.Contains(initial.Context, "runtime prompt context") {
+		t.Fatalf("unexpected initial session.init: %+v", initial)
+	}
+
+	runtimeConn := runtimemock.New()
+	if err := env.Hub.runtimes.RegisterHello("local", runtimeConn, nil, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		event, ok := runtimeConn.WaitHookEvent(ctx)
+		if !ok {
+			return
+		}
+		payload, _ := json.Marshal(map[string]any{"context": "runtime prompt context"})
+		_ = env.Hub.runtimeAsyncSink().HookEventReplied("local", wire.HookEventReply{
+			Op:     wire.OpHookEventReply,
+			CallID: event.CallID,
+			Action: wire.HookActionRewrite,
+			Data:   payload,
+		})
+	}()
+
+	if err := env.Hub.runtimeAsyncSink().CatalogUpdated("local", wire.CatalogUpdate{
+		Op:       wire.OpCatalogUpdate,
+		Target:   wire.Target{Kind: wire.TargetKindPlugin, ID: "skills"},
+		Hooks:    []wire.HookSpec{{Event: "before_prompt_build", Priority: 100}},
+		Revision: 1,
+		State:    wire.CapabilityStateReady,
+		Source:   wire.CapabilitySourceWorker,
+	}); err != nil {
+		t.Fatalf("CatalogUpdated: %v", err)
+	}
+
+	refreshed := readMsg(t, driver)
+	if !isSessionInit(&refreshed) {
+		t.Fatalf("expected refreshed session.init, got %+v", refreshed)
+	}
+	if !strings.Contains(refreshed.Context, "runtime prompt context") {
+		t.Fatalf("expected prompt hook context refresh, got %q", refreshed.Context)
+	}
+}
+
+func TestRuntimeToolCatalogUpdatePreservesActivePromptHookContext(t *testing.T) {
+	env := newTestEnv(t)
+	driver := env.connectAndJoin("driver", "s1", []string{}, []string{TopicSessionInit})
+	_ = readMsg(t, driver)
+
+	runtimeConn := runtimemock.New()
+	skills := runtimeapi.Capability{
+		Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "skills"},
+		Hooks:  []wire.HookSpec{{Event: "before_prompt_build", Priority: 100}},
+		State:  wire.CapabilityStateReady,
+		Source: wire.CapabilitySourceWorker,
+	}
+	if err := env.Hub.runtimes.RegisterHello("local", runtimeConn, []runtimeapi.Capability{skills}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	env.Hub.rebuildHookIndex()
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		event, ok := runtimeConn.WaitHookEvent(ctx)
+		if !ok {
+			return
+		}
+		payload, _ := json.Marshal(map[string]any{"context": "## Agent Skills\n\nskills context"})
+		_ = env.Hub.runtimeAsyncSink().HookEventReplied("local", wire.HookEventReply{
+			Op:     wire.OpHookEventReply,
+			CallID: event.CallID,
+			Action: wire.HookActionRewrite,
+			Data:   payload,
+		})
+	}()
+
+	env.Hub.broadcastRuntimeCatalogUpdate(runtimeapi.Capability{
+		Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"},
+		Tools:  []wire.ToolSpec{{Name: "fs_read"}},
+		State:  wire.CapabilityStateReady,
+	})
+
+	refreshed := readMsg(t, driver)
+	if !isSessionInit(&refreshed) {
+		t.Fatalf("expected refreshed session.init, got %+v", refreshed)
+	}
+	if !strings.Contains(refreshed.Context, "## Agent Skills") {
+		t.Fatalf("tool-only update dropped active prompt hook context: %q", refreshed.Context)
+	}
+}
+
+func TestRuntimeCatalogRefreshCoalescesConcurrentPromptBuilds(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	tenantID := tenant.DefaultID
+	client := addTenantCaptureClient(t, hub, tenantID, "driver", "s1", []string{TopicSessionInit}, nil)
+	timeout := int64(500)
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "skills"}
+	capability := runtimeapi.Capability{
+		Target: target,
+		Hooks: []wire.HookSpec{{
+			Event:     "before_prompt_build",
+			Priority:  100,
+			TimeoutMS: &timeout,
+		}},
+		State:  wire.CapabilityStateReady,
+		Source: wire.CapabilitySourceWorker,
+	}
+	runtimeConn := runtimemock.New()
+	if err := hub.runtimes.RegisterHello("local", runtimeConn, []runtimeapi.Capability{capability}, 0); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
+	hub.rebuildHookIndex()
+
+	hub.scheduleRuntimeCatalogRefreshForTenants([]string{tenantID}, true)
+	first := waitRuntimePromptHook(t, hub, runtimeConn)
+
+	// These two updates arrive during the in-flight refresh and must share one
+	// follow-up pass rather than each competing for the skills target.
+	hub.scheduleRuntimeCatalogRefreshForTenants([]string{tenantID}, true)
+	hub.scheduleRuntimeCatalogRefreshForTenants([]string{tenantID}, true)
+	replyRuntimePromptHook(t, hub, first, "skills context")
+
+	second := waitRuntimePromptHook(t, hub, runtimeConn)
+	replyRuntimePromptHook(t, hub, second, "skills context")
+
+	for range 2 {
+		msg := waitForMessage(t, client.recvCh)
+		if !isSessionInit(msg) || !strings.Contains(msg.Context, "skills context") {
+			t.Fatalf("expected refreshed skills context, got %+v", msg)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, ok := runtimeConn.WaitHookEvent(ctx); ok {
+		t.Fatal("concurrent refreshes were not coalesced")
+	}
+}
+
+func waitRuntimePromptHook(t *testing.T, hub *Hub, runtimeConn *runtimemock.RuntimeConn) runtimeapi.HookEventReq {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	event, ok := runtimeConn.WaitHookEvent(ctx)
+	if !ok {
+		t.Fatal("timed out waiting for runtime prompt hook")
+	}
+	if event.Event != "before_prompt_build" {
+		t.Fatalf("hook event = %q, want before_prompt_build", event.Event)
+	}
+	return event
+}
+
+func replyRuntimePromptHook(t *testing.T, hub *Hub, event runtimeapi.HookEventReq, context string) {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{"context": context})
+	if err != nil {
+		t.Fatalf("marshal hook reply: %v", err)
+	}
+	if err := hub.runtimeAsyncSink().HookEventReplied("local", wire.HookEventReply{
+		Op:     wire.OpHookEventReply,
+		CallID: event.CallID,
+		Action: wire.HookActionRewrite,
+		Data:   payload,
+	}); err != nil {
+		t.Fatalf("HookEventReplied: %v", err)
 	}
 }
 

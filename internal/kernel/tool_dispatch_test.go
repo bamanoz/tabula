@@ -394,15 +394,16 @@ func TestInvokeResultSpoolIdleTimeoutCancelsStartedStream(t *testing.T) {
 	}
 }
 
-func TestBusyRuntimeTargetIsSkippedForPromptBuildHooks(t *testing.T) {
+func TestBusyRuntimeTargetWaitsForPromptBuildHooks(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
 	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "subagents"}
+	timeout := int64(100)
 	capability := wire.Capability{
 		Target: target,
 		Tools:  []wire.ToolSpec{{Name: "subagent_spawn"}},
-		Hooks:  []wire.HookSpec{{Event: "before_prompt_build", Priority: 100}},
+		Hooks:  []wire.HookSpec{{Event: "before_prompt_build", Priority: 100, TimeoutMS: &timeout}},
 		State:  wire.CapabilityStateReady,
 		Source: wire.CapabilitySourceWorker,
 	}
@@ -418,14 +419,20 @@ func TestBusyRuntimeTargetIsSkippedForPromptBuildHooks(t *testing.T) {
 	}
 
 	release := hub.markRuntimeTargetBusy("local", target)
-	defer release()
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		release()
+	}()
 	started := time.Now()
 	result, ok := hub.dispatchHook("before_prompt_build", json.RawMessage(`{"context":"base"}`), tenant.DefaultID, "s1")
 	if !ok {
-		t.Fatal("busy runtime target hook should be skipped fail-open")
+		t.Fatal("busy runtime target hook should remain fail-open after its timeout")
 	}
-	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
-		t.Fatalf("busy hook target was not skipped quickly: %s", elapsed)
+	if elapsed := time.Since(started); elapsed < 20*time.Millisecond {
+		t.Fatalf("prompt build hook did not wait for target release: %s", elapsed)
+	}
+	if got := len(rc.HookEvents()); got != 1 {
+		t.Fatalf("prompt build hook was not dispatched after target release, got %d events", got)
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(result, &payload); err != nil {
@@ -436,7 +443,7 @@ func TestBusyRuntimeTargetIsSkippedForPromptBuildHooks(t *testing.T) {
 	}
 }
 
-func TestPendingRuntimeHookMarksTargetBusyForPromptBuildHooks(t *testing.T) {
+func TestPendingRuntimeHookQueuesPromptBuildHooks(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
 	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
@@ -469,17 +476,37 @@ func TestPendingRuntimeHookMarksTargetBusyForPromptBuildHooks(t *testing.T) {
 	if !hub.isRuntimeTargetBusy("local", target) {
 		t.Fatal("pending runtime hook did not mark target busy")
 	}
+	responsesDone := make(chan struct{})
+	go func() {
+		defer close(responsesDone)
+		for i := 0; i < 2; i++ {
+			deadline := time.Now().Add(time.Second)
+			var event runtimeapi.HookEventReq
+			for time.Now().Before(deadline) {
+				events := rc.HookEvents()
+				if len(events) > i {
+					event = events[i]
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if event.CallID == "" {
+				return
+			}
+			hub.hooks.HandleRuntimeResult("local", &Message{Type: string(MsgHookReply), ID: event.CallID, Action: string(ActionPass)})
+		}
+	}()
 
 	started := time.Now()
 	result, ok := hub.dispatchHook("before_prompt_build", json.RawMessage(`{"context":"second"}`), tenant.DefaultID, "s1")
 	if !ok {
-		t.Fatal("busy runtime target hook should be skipped fail-open")
+		t.Fatal("queued runtime target hook should complete")
 	}
-	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
-		t.Fatalf("busy pending hook target was not skipped quickly: %s", elapsed)
+	if elapsed := time.Since(started); elapsed < time.Millisecond {
+		t.Fatalf("second prompt build hook did not wait for first target reservation: %s", elapsed)
 	}
-	if !hub.isRuntimeTargetBusy("local", target) {
-		t.Fatal("skipped hook should not release the first hook's busy marker")
+	if got := len(rc.HookEvents()); got != 2 {
+		t.Fatalf("expected both prompt build hooks to be dispatched, got %d", got)
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(result, &payload); err != nil {
@@ -488,18 +515,23 @@ func TestPendingRuntimeHookMarksTargetBusyForPromptBuildHooks(t *testing.T) {
 	if payload["context"] != "second" {
 		t.Fatalf("unexpected payload: %s", string(result))
 	}
+	select {
+	case <-responsesDone:
+	case <-time.After(time.Second):
+		t.Fatal("prompt hook replies did not complete")
+	}
 
 	select {
 	case <-firstDone:
 	case <-time.After(time.Second):
-		t.Fatal("first hook did not time out")
+		t.Fatal("first hook did not complete")
 	}
 	if hub.isRuntimeTargetBusy("local", target) {
 		t.Fatal("timed-out hook did not release target busy marker")
 	}
 }
 
-func TestConcurrentRuntimePromptBuildHooksReserveTargetOnce(t *testing.T) {
+func TestConcurrentRuntimePromptBuildHooksSerializeTarget(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
 	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
@@ -519,6 +551,27 @@ func TestConcurrentRuntimePromptBuildHooksReserveTargetOnce(t *testing.T) {
 	hub.syncRuntimeCapability("local", capability)
 	hub.rebuildHookIndex()
 
+	responsesDone := make(chan struct{})
+	go func() {
+		defer close(responsesDone)
+		for i := 0; i < 2; i++ {
+			deadline := time.Now().Add(time.Second)
+			var event runtimeapi.HookEventReq
+			for time.Now().Before(deadline) {
+				events := rc.HookEvents()
+				if len(events) > i {
+					event = events[i]
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if event.CallID == "" {
+				return
+			}
+			hub.hooks.HandleRuntimeResult("local", &Message{Type: string(MsgHookReply), ID: event.CallID, Action: string(ActionPass)})
+		}
+	}()
+
 	var wg sync.WaitGroup
 	start := make(chan struct{})
 	for i := 0; i < 2; i++ {
@@ -532,8 +585,13 @@ func TestConcurrentRuntimePromptBuildHooksReserveTargetOnce(t *testing.T) {
 	close(start)
 	wg.Wait()
 
-	if got := len(rc.HookEvents()); got != 1 {
-		t.Fatalf("expected one runtime hook event after concurrent dispatches, got %d", got)
+	if got := len(rc.HookEvents()); got != 2 {
+		t.Fatalf("expected both runtime hook events after concurrent dispatches, got %d", got)
+	}
+	select {
+	case <-responsesDone:
+	case <-time.After(time.Second):
+		t.Fatal("prompt hook replies did not complete")
 	}
 	if hub.isRuntimeTargetBusy("local", target) {
 		t.Fatal("timed-out hook did not release target busy marker")

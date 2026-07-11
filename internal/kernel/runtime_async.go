@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
@@ -30,7 +31,7 @@ func (s hubRuntimeAsyncSink) CatalogUpdated(runtimeID string, update wire.Catalo
 	}
 	s.hub.rebuildHookIndex()
 	if ok {
-		go s.hub.broadcastRuntimeCatalogUpdate(capability)
+		s.hub.broadcastRuntimeCatalogUpdate(capability)
 	}
 	return nil
 }
@@ -182,10 +183,68 @@ func (h *Hub) broadcastRuntimeCatalogUpdate(capability runtimeapi.Capability) {
 	if h == nil || h.sessions == nil || capability.Target.Kind != wire.TargetKindPlugin {
 		return
 	}
-	h.broadcastRuntimeCatalogRefreshForTenants(capability.Tenants)
+	// A tool-only update must preserve context supplied by already-active prompt
+	// hooks. Checking only the capability being updated would send a base init
+	// after a later fs/tool update and overwrite a driver's enriched prompt.
+	rebuildContext := h.hasRuntimeHook("before_prompt_build")
+	h.scheduleRuntimeCatalogRefreshForTenants(capability.Tenants, rebuildContext)
 }
 
-func (h *Hub) broadcastRuntimeCatalogRefreshForTenants(tenants []string) {
+type catalogRefreshState struct {
+	running        bool
+	tenants        map[string]struct{}
+	rebuildContext bool
+}
+
+// scheduleRuntimeCatalogRefreshForTenants coalesces capability bursts into
+// sequential refreshes. A refresh added while one is running gets one follow-up
+// pass against the newest runtime hook index instead of competing for hooks.
+func (h *Hub) scheduleRuntimeCatalogRefreshForTenants(tenants []string, rebuildContext bool) {
+	if h == nil || h.sessions == nil {
+		return
+	}
+	h.catalogRefreshMu.Lock()
+	if h.catalogRefresh.tenants == nil {
+		h.catalogRefresh.tenants = make(map[string]struct{})
+	}
+	for _, tenantID := range tenants {
+		h.catalogRefresh.tenants[tenantID] = struct{}{}
+	}
+	if len(tenants) == 0 {
+		h.catalogRefresh.tenants["*"] = struct{}{}
+	}
+	h.catalogRefresh.rebuildContext = h.catalogRefresh.rebuildContext || rebuildContext
+	if h.catalogRefresh.running {
+		h.catalogRefreshMu.Unlock()
+		return
+	}
+	h.catalogRefresh.running = true
+	h.catalogRefreshMu.Unlock()
+	go h.runRuntimeCatalogRefreshes()
+}
+
+func (h *Hub) runRuntimeCatalogRefreshes() {
+	for {
+		h.catalogRefreshMu.Lock()
+		if len(h.catalogRefresh.tenants) == 0 {
+			h.catalogRefresh.running = false
+			h.catalogRefreshMu.Unlock()
+			return
+		}
+		tenants := make([]string, 0, len(h.catalogRefresh.tenants))
+		for tenantID := range h.catalogRefresh.tenants {
+			tenants = append(tenants, tenantID)
+		}
+		rebuildContext := h.catalogRefresh.rebuildContext
+		h.catalogRefresh.tenants = make(map[string]struct{})
+		h.catalogRefresh.rebuildContext = false
+		h.catalogRefreshMu.Unlock()
+
+		h.broadcastRuntimeCatalogRefreshForTenants(tenants, rebuildContext)
+	}
+}
+
+func (h *Hub) broadcastRuntimeCatalogRefreshForTenants(tenants []string, rebuildContext bool) {
 	if h == nil || h.sessions == nil {
 		return
 	}
@@ -200,7 +259,12 @@ func (h *Hub) broadcastRuntimeCatalogRefreshForTenants(tenants []string) {
 		meta := h.initMetaJSON(sess.TenantID)
 		for _, client := range h.sessionClients(sess.TenantID, sess.ID) {
 			if client.canReceive(TopicSessionInit) {
-				msg := h.initMessage(sess.GetInitContext(), tools, meta)
+				context := sess.GetInitContext()
+				clientTools := tools
+				if rebuildContext {
+					context, clientTools = h.policy.BeforePromptBuild(sess.ID, sess.TenantID, client.Name(), context, tools, meta)
+				}
+				msg := h.initMessage(context, clientTools, meta)
 				client.SendMsg(msg)
 				clientCount++
 			}
@@ -209,6 +273,49 @@ func (h *Hub) broadcastRuntimeCatalogRefreshForTenants(tenants []string) {
 	if sessionCount > 0 || clientCount > 0 {
 		h.Logger.Info("runtime catalog refresh broadcast", "tenants", tenants, "sessions", sessionCount, "apps", clientCount)
 	}
+}
+
+func capabilityHasHook(capability runtimeapi.Capability, event string) bool {
+	for _, hook := range capability.Hooks {
+		if hook.Event == event {
+			return true
+		}
+	}
+	return false
+}
+
+func runtimeCapabilitiesHaveHook(capabilities []runtimeapi.Capability, event string) bool {
+	for _, capability := range capabilities {
+		if capabilityHasHook(capability, event) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Hub) runtimeHasHook(runtimeID string, event string) bool {
+	if h == nil || h.runtimes == nil || runtimeID == "" || event == "" {
+		return false
+	}
+	for _, attachment := range h.runtimes.Snapshot() {
+		if attachment.ID != runtimeID {
+			continue
+		}
+		return runtimeCapabilitiesHaveHook(attachment.Capabilities, event)
+	}
+	return false
+}
+
+func (h *Hub) hasRuntimeHook(event string) bool {
+	if h == nil || h.runtimes == nil || event == "" {
+		return false
+	}
+	for _, attachment := range h.runtimes.Snapshot() {
+		if runtimeCapabilitiesHaveHook(attachment.Capabilities, event) {
+			return true
+		}
+	}
+	return false
 }
 
 func capabilityVisibleToTenant(capability runtimeapi.Capability, tenantID string) bool {
@@ -261,22 +368,33 @@ func (h *Hub) runtimeConn(runtimeID string) runtimeapi.RuntimeConn {
 	return h.runtimes.RuntimeConn(runtimeID)
 }
 
+type runtimeBusyState struct {
+	count int
+	done  chan struct{}
+}
+
+var closedRuntimeTargetBusyDone = func() <-chan struct{} {
+	done := make(chan struct{})
+	close(done)
+	return done
+}()
+
 func (h *Hub) markRuntimeTargetBusy(runtimeID string, target wire.Target) func() {
 	if h == nil || runtimeID == "" {
 		return func() {}
 	}
 	key := runtimeTargetBusyKey(runtimeID, target)
 	h.runtimeBusyMu.Lock()
-	h.runtimeBusy[key]++
+	state := h.runtimeBusy[key]
+	if state == nil {
+		state = &runtimeBusyState{done: make(chan struct{})}
+		h.runtimeBusy[key] = state
+	}
+	state.count++
 	h.runtimeBusyMu.Unlock()
+	var once sync.Once
 	return func() {
-		h.runtimeBusyMu.Lock()
-		defer h.runtimeBusyMu.Unlock()
-		if h.runtimeBusy[key] <= 1 {
-			delete(h.runtimeBusy, key)
-			return
-		}
-		h.runtimeBusy[key]--
+		once.Do(func() { h.releaseRuntimeTargetBusy(key, state) })
 	}
 }
 
@@ -287,19 +405,29 @@ func (h *Hub) tryMarkRuntimeTargetBusy(runtimeID string, target wire.Target) (fu
 	key := runtimeTargetBusyKey(runtimeID, target)
 	h.runtimeBusyMu.Lock()
 	defer h.runtimeBusyMu.Unlock()
-	if h.runtimeBusy[key] > 0 {
+	if h.runtimeBusy[key] != nil {
 		return nil, false
 	}
-	h.runtimeBusy[key] = 1
+	state := &runtimeBusyState{count: 1, done: make(chan struct{})}
+	h.runtimeBusy[key] = state
+	var once sync.Once
 	return func() {
-		h.runtimeBusyMu.Lock()
-		defer h.runtimeBusyMu.Unlock()
-		if h.runtimeBusy[key] <= 1 {
-			delete(h.runtimeBusy, key)
-			return
-		}
-		h.runtimeBusy[key]--
+		once.Do(func() { h.releaseRuntimeTargetBusy(key, state) })
 	}, true
+}
+
+func (h *Hub) releaseRuntimeTargetBusy(key string, state *runtimeBusyState) {
+	h.runtimeBusyMu.Lock()
+	defer h.runtimeBusyMu.Unlock()
+	if h.runtimeBusy[key] != state {
+		return
+	}
+	state.count--
+	if state.count > 0 {
+		return
+	}
+	delete(h.runtimeBusy, key)
+	close(state.done)
 }
 
 func (h *Hub) isRuntimeTargetBusy(runtimeID string, target wire.Target) bool {
@@ -308,7 +436,20 @@ func (h *Hub) isRuntimeTargetBusy(runtimeID string, target wire.Target) bool {
 	}
 	h.runtimeBusyMu.RLock()
 	defer h.runtimeBusyMu.RUnlock()
-	return h.runtimeBusy[runtimeTargetBusyKey(runtimeID, target)] > 0
+	return h.runtimeBusy[runtimeTargetBusyKey(runtimeID, target)] != nil
+}
+
+func (h *Hub) runtimeTargetBusyDone(runtimeID string, target wire.Target) <-chan struct{} {
+	if h == nil || runtimeID == "" {
+		return nil
+	}
+	h.runtimeBusyMu.RLock()
+	defer h.runtimeBusyMu.RUnlock()
+	state := h.runtimeBusy[runtimeTargetBusyKey(runtimeID, target)]
+	if state == nil {
+		return closedRuntimeTargetBusyDone
+	}
+	return state.done
 }
 
 func runtimeTargetBusyKey(runtimeID string, target wire.Target) string {

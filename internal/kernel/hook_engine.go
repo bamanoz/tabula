@@ -190,7 +190,7 @@ func (e *HookEngine) DispatchDetailedExcept(event string, payload json.RawMessag
 			}
 			continue
 		}
-		if entry.sub.IsBusy() && eventType != HookSecurity && runtimeHookReplyMode(event) != wire.HookReplyModeNone {
+		if entry.sub.IsBusy() && eventType != HookSecurity && hookBusyPolicy(event) != HookBusyWait && runtimeHookReplyMode(event) != wire.HookReplyModeNone {
 			continue
 		}
 		if entry.sub.Session() == session || entry.sub.Session() == "" {
@@ -250,8 +250,8 @@ func (e *HookEngine) reserveHookEntry(entry hookEntry, event string) (hookEntry,
 	if !ok {
 		return entry, true, ""
 	}
-	if e.eventType(event) == HookSecurity {
-		return e.waitRuntimeHookEntry(entry, runtimeSub)
+	if e.eventType(event) == HookSecurity || hookBusyPolicy(event) == HookBusyWait {
+		return e.waitRuntimeHookEntry(entry, runtimeSub, event)
 	}
 	release, ok := runtimeSub.TryBusy()
 	if !ok {
@@ -261,28 +261,38 @@ func (e *HookEngine) reserveHookEntry(entry hookEntry, event string) (hookEntry,
 	return entry, true, ""
 }
 
-func (e *HookEngine) waitRuntimeHookEntry(entry hookEntry, runtimeSub *runtimeHookSubscriber) (hookEntry, bool, string) {
+func (e *HookEngine) waitRuntimeHookEntry(entry hookEntry, runtimeSub *runtimeHookSubscriber, event string) (hookEntry, bool, string) {
 	if release, ok := runtimeSub.TryBusy(); ok {
 		entry.release = release
 		return entry, true, ""
 	}
-	timer := time.NewTimer(hookTimeout)
+	d := hookTimeout
+	if hookBusyPolicy(event) == HookBusyWait && entry.subscrip.TimeoutMs != nil && *entry.subscrip.TimeoutMs > 0 {
+		d = time.Duration(*entry.subscrip.TimeoutMs) * time.Millisecond
+	}
+	timer := time.NewTimer(d)
 	defer timer.Stop()
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
 	for {
+		busyDone := runtimeSub.BusyDone()
 		select {
 		case <-runtimeSub.Done():
 			return hookEntry{}, false, "disconnected"
 		case <-timer.C:
 			return hookEntry{}, false, "busy"
-		case <-ticker.C:
+		case <-busyDone:
 			if release, ok := runtimeSub.TryBusy(); ok {
 				entry.release = release
 				return entry, true, ""
 			}
 		}
 	}
+}
+
+func hookBusyPolicy(event string) HookBusyPolicy {
+	if def, ok := HookEvents[event]; ok {
+		return def.BusyPolicy
+	}
+	return HookBusySkip
 }
 
 func (e *HookEngine) releaseReservedHooks(entries []hookEntry) {
@@ -620,14 +630,10 @@ func (e *HookEngine) sendAndWait(entry *hookEntry, event string, payload json.Ra
 		}
 	}
 
-	if result != nil && HookAction(result.Action) == ActionSuspend {
-		pending, ok := e.takePendingHook(id)
-		if ok && pending.release != nil {
-			entry.release = pending.release
-		}
-	} else {
-		e.removePendingHook(id)
-	}
+	// A suspend reply means the hook handler finished and handed control to an
+	// external approval/exchange flow. Keep the tool call pending, but release the
+	// runtime hook target now so other approval-gated tool calls can reach it.
+	e.removePendingHook(id)
 	outcome.result = result
 	outcome.durationMs = time.Since(start).Milliseconds()
 	return outcome

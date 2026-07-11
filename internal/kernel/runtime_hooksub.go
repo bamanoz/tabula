@@ -18,10 +18,11 @@ type runtimeHookSubscriber struct {
 	busy       func(string, wire.Target) bool
 	markBusy   func(string, wire.Target) func()
 	tryBusy    func(string, wire.Target) (func(), bool)
+	busyDone   func(string, wire.Target) <-chan struct{}
 	logger     *slog.Logger
 }
 
-func newRuntimeHookSubscriber(target runtimeHookTarget, busy func(string, wire.Target) bool, markBusy func(string, wire.Target) func(), tryBusy func(string, wire.Target) (func(), bool), logger *slog.Logger) HookSubscriber {
+func newRuntimeHookSubscriber(target runtimeHookTarget, busy func(string, wire.Target) bool, markBusy func(string, wire.Target) func(), tryBusy func(string, wire.Target) (func(), bool), busyDone func(string, wire.Target) <-chan struct{}, logger *slog.Logger) HookSubscriber {
 	return &runtimeHookSubscriber{
 		runtimeID:  target.RuntimeID,
 		capability: target.Capability,
@@ -30,6 +31,7 @@ func newRuntimeHookSubscriber(target runtimeHookTarget, busy func(string, wire.T
 		busy:       busy,
 		markBusy:   markBusy,
 		tryBusy:    tryBusy,
+		busyDone:   busyDone,
 		logger:     logger,
 	}
 }
@@ -63,6 +65,13 @@ func (s *runtimeHookSubscriber) TryBusy() (func(), bool) {
 		return nil, true
 	}
 	return s.tryBusy(s.runtimeID, s.capability.Target)
+}
+
+func (s *runtimeHookSubscriber) BusyDone() <-chan struct{} {
+	if s == nil || s.busyDone == nil {
+		return nil
+	}
+	return s.busyDone(s.runtimeID, s.capability.Target)
 }
 
 func (s *runtimeHookSubscriber) Hooks() []HookSubscription {

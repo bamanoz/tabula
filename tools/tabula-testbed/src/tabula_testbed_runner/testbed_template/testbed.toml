@@ -231,6 +231,13 @@ bundles = ["base"]
 components = ["drivers:driver"]
 tests = ["tests/test_compaction.py", "tests/test_driver_config.py"]
 
+[suites.managed-driver-session]
+set = "empty"
+bundles = ["base"]
+components = ["drivers:driver"]
+tests = ["tests/test_managed_driver_session.py"]
+runtime_tenants = ["*"]
+
 [suites.acp]
 set = "empty"
 components = ["base:question", "base:hook-approvals", "base:hook-permissions", "drivers:driver", "gateways:gateway-acp", "workspace:exec"]
