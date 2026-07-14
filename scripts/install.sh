@@ -384,7 +384,17 @@ for a in data.get('assets', []):
   fi
   ok "Binaries installed"
 
-  tar -xzf "$tmp/$skills_archive" -C "$TABULA_HOME"
+  local skills_payload="$tmp/skills-payload"
+  mkdir -p "$skills_payload"
+  tar -xzf "$tmp/$skills_archive" -C "$skills_payload"
+  if [ -f "$skills_payload/config/global.toml" ]; then
+    mkdir -p "$skills_payload/config"
+    mv "$skills_payload/config/global.toml" "$skills_payload/config/global.toml.example"
+  fi
+  (cd "$skills_payload" && tar -cf - .) | tar -xf - -C "$TABULA_HOME"
+  if [ ! -f "$TABULA_HOME/config/global.toml" ] && [ -f "$TABULA_HOME/config/global.toml.example" ]; then
+    cp "$TABULA_HOME/config/global.toml.example" "$TABULA_HOME/config/global.toml"
+  fi
   # Record installed Tabula version for tabula-distro compatibility checks.
   printf '%s\n' "${VERSION#v}" > "$TABULA_HOME/VERSION"
   # Record the supported runtime plugin compatibility range so the distro tool

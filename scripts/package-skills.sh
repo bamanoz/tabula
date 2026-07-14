@@ -8,13 +8,25 @@ set -euo pipefail
 VERSION="${1:?usage: package-skills.sh <version>}"
 mkdir -p extra
 
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+payload="$tmp/payload"
+mkdir -p "$payload/bin" "$payload/config" "$payload/tools"
+cp config/global.toml "$payload/config/global.toml.example"
+cp bin/tabula-runner "$payload/bin/tabula-runner"
+cp bin/tabula-runner.ps1 "$payload/bin/tabula-runner.ps1"
+cp bin/tabula-cli "$payload/bin/tabula-cli"
+cp bin/tabula-cli.ps1 "$payload/bin/tabula-cli.ps1"
+cp -R tools/tabula-distro "$payload/tools/tabula-distro"
+
 tar -czf "extra/tabula-skills-${VERSION}.tar.gz" \
+  -C "$payload" \
   --exclude='skills/.venv' \
   --exclude='tools/tabula-distro/**/__pycache__' \
   --exclude='tools/tabula-distro/**/*.pyc' \
   --exclude='tools/tabula-distro/tests' \
   --exclude='tools/tabula-distro/.pytest_cache' \
-  config/global.toml \
+  config/global.toml.example \
   bin/tabula-runner \
   bin/tabula-runner.ps1 \
   bin/tabula-cli \
