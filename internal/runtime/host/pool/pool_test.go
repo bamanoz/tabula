@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -139,6 +140,53 @@ sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 	}
 	if got := fake.spawnCount.Load(); got != 1 {
 		t.Fatalf("spawn count after tenant reload = %d, want 1", got)
+	}
+}
+
+func TestPoolPrimeRuntimeTargetsRepublishesLateTenantWithoutRespawn(t *testing.T) {
+	home := t.TempDir()
+	pluginBody := `id = "driver"
+name = "Driver"
+version = "0.1.0"
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+scope = "runtime"
+[[hooks]]
+event = "session_join"
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`
+	bootstrapDir := filepath.Join(home, "tenants", "bootstrap", "plugins")
+	alphaDir := filepath.Join(home, "tenants", "alpha", "plugins")
+	writePoolPluginBody(t, filepath.Join(bootstrapDir, "driver", "plugin.toml"), pluginBody)
+	writePoolPluginBody(t, filepath.Join(alphaDir, "driver", "plugin.toml"), pluginBody)
+	store, err := manifest.NewTenantStore(map[string]manifest.SearchDirs{
+		"bootstrap": {PluginDirs: []string{bootstrapDir}},
+	})
+	if err != nil {
+		t.Fatalf("NewTenantStore: %v", err)
+	}
+	store.SetTabulaHome(home)
+	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), nextWorker: newFakeWorker()}
+	p := New("main", store, fake, Options{AllowedTenants: []string{"bootstrap"}})
+	t.Cleanup(p.Close)
+
+	p.PrimeRuntimeTargets(context.Background(), nil)
+	if err := store.ReloadTenant("alpha"); err != nil {
+		t.Fatalf("ReloadTenant: %v", err)
+	}
+	p.Reload(nil, "alpha")
+	p.PrimeRuntimeTargets(context.Background(), nil)
+
+	if got := fake.spawnCount.Load(); got != 1 {
+		t.Fatalf("spawn count = %d, want shared worker to be reused", got)
+	}
+	caps := p.Capabilities()
+	if len(caps) != 1 || !reflect.DeepEqual(caps[0].Tenants, []string{"alpha", "bootstrap"}) || caps[0].State != wire.CapabilityStateManifestLoaded {
+		t.Fatalf("late tenant capability = %#v", caps)
 	}
 }
 

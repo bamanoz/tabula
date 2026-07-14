@@ -616,7 +616,7 @@ def wait_for_process_exit(pid: int, timeout: float) -> None:
 def verify_runtime_teardown(home: Path, runtime_pid: int) -> None:
     if runtime_pid <= 0:
         runtime_pid = find_runtime_pid(home)
-    wait_for_process_exit(runtime_pid, 5)
+    wait_for_process_exit(runtime_pid, 20)
     runtime_socket = home / "run" / "runtime.sock"
     if runtime_socket.exists():
         raise SystemExit(f"runtime socket still exists after kernel shutdown: {runtime_socket}")

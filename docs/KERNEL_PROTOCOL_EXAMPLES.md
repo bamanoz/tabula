@@ -259,7 +259,8 @@ Reply:
   "id": "approve-1",
   "data": {
     "choice": "allow once",
-    "index": 0
+    "index": 0,
+    "approved": true
   }
 }
 ```

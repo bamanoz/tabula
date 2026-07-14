@@ -45,9 +45,10 @@ class _Completions:
             return SimpleNamespace(choices=[choice])
 
         user_messages = [message for message in messages if message.get("role") == "user"]
-        tool_messages = [message for message in messages if message.get("role") == "tool"]
         last_user = str(user_messages[-1].get("content") if user_messages else "")
-        if "__QUESTION__" in last_user and len(tool_messages) < len(user_messages):
+        following_messages = messages[messages.index(user_messages[-1]) + 1:] if user_messages else []
+        already_answered = any(message.get("role") in {"assistant", "tool"} for message in following_messages if isinstance(message, dict))
+        if "__QUESTION__" in last_user and not already_answered:
             return _Stream([
                 _chunk(tool_call={
                     "id": f"call-{len(user_messages)}",
@@ -55,7 +56,7 @@ class _Completions:
                     "arguments": json.dumps({"questions": [{"question": "Continue?", "options": [{"label": "yes"}, {"label": "no"}]}]}),
                 })
             ])
-        if "__USE_TOOL__" in last_user and len(tool_messages) < len(user_messages):
+        if "__USE_TOOL__" in last_user and not already_answered:
             return _Stream([
                 _chunk(tool_call={
                     "id": f"call-{len(user_messages)}",
@@ -180,6 +181,7 @@ class ACPGatewayInstalled(unittest.TestCase):
         self.write_exec_config()
         self.write_driver_config()
         self.write_fake_openai()
+        self.reload_runtime_workers()
         self.write_agent_catalog()
 
     def test_gateway_acp_client_is_installed(self):
@@ -189,6 +191,7 @@ class ACPGatewayInstalled(unittest.TestCase):
 
     def test_gateway_acp_full_protocol(self):
         client = self.start_gateway()
+        driver_processes: list[tuple[subprocess.Popen[bytes], object]] = []
         try:
             init, _ = client.request("initialize", {"protocolVersion": 1})
             self.assertEqual(init["protocolVersion"], 1)
@@ -201,6 +204,7 @@ class ACPGatewayInstalled(unittest.TestCase):
 
             created, _ = client.request("session/new", {"cwd": str(self.workspace), "title": "ACP Smoke"})
             session_id = str(created["sessionId"])
+            driver_processes.append(self.start_driver(session_id))
             self.assertEqual(created.get("models", {}).get("currentModelId"), "openai/o3")
             self.assertTrue(any(item.get("modelId") == "openai/o3" for item in created.get("models", {}).get("availableModels", []) if isinstance(item, dict)))
             modes = created.get("modes") or {}
@@ -272,6 +276,7 @@ class ACPGatewayInstalled(unittest.TestCase):
                 forked_id = f"fork-{int(time.time())}"
                 forked, _ = resumed.request("session/fork", {"sessionId": session_id, "cwd": str(self.workspace), "newSessionId": forked_id})
                 self.assertEqual(forked.get("sessionId"), forked_id)
+                driver_processes.append(self.start_driver(forked_id))
 
                 fork_prompt, fork_notifications = resumed.request(
                     "session/prompt",
@@ -290,6 +295,9 @@ class ACPGatewayInstalled(unittest.TestCase):
             finally:
                 resumed.close()
         finally:
+            for proc, handle in reversed(driver_processes):
+                self.stop_driver(proc)
+                handle.close()
             if client.proc.poll() is None:
                 client.close()
 
@@ -331,6 +339,45 @@ class ACPGatewayInstalled(unittest.TestCase):
         driver_stub.parent.mkdir(parents=True, exist_ok=True)
         driver_stub.write_text(FAKE_OPENAI, encoding="utf-8")
 
+    def start_driver(self, session_id: str) -> tuple[subprocess.Popen[bytes], object]:
+        python = self.home / ".venv" / "bin" / "python3"
+        if not python.is_file():
+            python = Path(sys.executable)
+        driver = self.home / "plugins" / "driver" / "run.py"
+        log_path = self.home / "logs" / f"testbed-acp-driver-{session_id}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+        env.update({
+            "TABULA_HOME": self.tabula_home,
+            "TABULA_URL": self.url,
+            "TABULA_VERBOSE": "1",
+            "TABULA_APP_ID": "default",
+            "TABULA_TENANT_ID": "default",
+            "TABULA_PLUGIN_DRIVER_OPENAI_API_KEY": "test-key",
+            "TABULA_PLUGIN_DRIVER_OPENAI_MODEL": "o3",
+            "PYTHONPATH": f"{self.stub_dir}{os.pathsep}{env.get('PYTHONPATH', '')}" if env.get("PYTHONPATH") else str(self.stub_dir),
+        })
+        log_handle = log_path.open("wb")
+        proc = subprocess.Popen(
+            [str(python), str(driver), "--session", session_id, "--provider", "openai", "--app", "default"],
+            env=env,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+        )
+        time.sleep(1)
+        self.assertIsNone(proc.poll(), log_path.read_text(encoding="utf-8", errors="replace"))
+        return proc, log_handle
+
+    def stop_driver(self, proc: subprocess.Popen[bytes]) -> None:
+        if proc.poll() is not None:
+            return
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+
     def write_agent_catalog(self) -> None:
         agent_dir = self.home / "agents"
         agent_dir.mkdir(parents=True, exist_ok=True)
@@ -360,6 +407,7 @@ class ACPGatewayInstalled(unittest.TestCase):
             """
 [plugins.driver]
 provider = "openai"
+session_autostart = false
 
 [plugins.driver.providers.openai]
 api_key = "test-key"

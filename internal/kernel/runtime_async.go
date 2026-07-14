@@ -535,9 +535,13 @@ func (h *Hub) ReloadAttachedRuntime(ctx context.Context, runtimeID string, targe
 		return false, nil
 	}
 	previousTenants, replacedTenants := h.runtimes.ReplaceTenantsServed(runtimeID, tenants)
+	if replacedTenants {
+		h.rebuildHookIndex()
+	}
 	_, err := conn.Reload(ctx, runtimeapi.ReloadReq{Target: target, Tenants: tenants})
 	if err != nil && replacedTenants {
 		h.runtimes.ReplaceTenantsServed(runtimeID, previousTenants)
+		h.rebuildHookIndex()
 	}
 	return true, err
 }

@@ -20,7 +20,7 @@ type toolLifecycleEvent struct {
 	ToolName      string
 	RunID         string
 	Status        string
-	ApprovalID    string
+	ExchangeID    string
 	Reason        string
 	PreviousRunID string
 }
@@ -40,8 +40,8 @@ func (h *Hub) recordToolStarted(tenantID, session, toolID, toolName string) {
 	h.recordToolLifecycle(tenantID, session, toolID, toolName, "started", nil)
 }
 
-func (h *Hub) recordToolSuspended(tenantID, session, toolID, toolName, approvalID string) {
-	extra := map[string]any{"approval_id": approvalID}
+func (h *Hub) recordToolSuspended(tenantID, session, toolID, toolName, exchangeID string) {
+	extra := map[string]any{"exchange_id": exchangeID}
 	h.recordToolLifecycle(tenantID, session, toolID, toolName, "suspended", extra)
 }
 
@@ -82,8 +82,8 @@ func (h *Hub) recordToolLifecycle(tenantID, session, toolID, toolName, state str
 	}
 	for key, value := range extra {
 		switch key {
-		case "approval_id":
-			event.ApprovalID = fmt.Sprint(value)
+		case "exchange_id":
+			event.ExchangeID = fmt.Sprint(value)
 		case "status":
 			event.Status = fmt.Sprint(value)
 		case "reason":

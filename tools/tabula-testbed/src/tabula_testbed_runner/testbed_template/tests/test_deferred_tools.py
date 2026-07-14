@@ -13,16 +13,26 @@ class DeferredToolsSmoke(unittest.TestCase):
     tabula_home = ""
     url = ""
 
-    def write_policy(self) -> None:
+    def write_policy(self) -> dict[Path, str | None]:
         cfg = Path(self.tabula_home) / "config" / "plugins" / "deferred-tools" / "config.toml"
+        permissions = Path(self.tabula_home) / "config" / "plugins" / "hook-permissions" / "config.toml"
+        originals = {path: path.read_text(encoding="utf-8") if path.is_file() else None for path in (cfg, permissions)}
         cfg.parent.mkdir(parents=True, exist_ok=True)
         cfg.write_text(
             'enabled = true\nbase_tools = ["tool_*", "session_*"]\ndeferred_tools = ["exec_run"]\n\n[search_tags]\nexec_run = ["shell", "command"]\n',
             encoding="utf-8",
         )
-        permissions = Path(self.tabula_home) / "config" / "plugins" / "hook-permissions" / "config.toml"
         permissions.parent.mkdir(parents=True, exist_ok=True)
         permissions.write_text('default = "allow"\ndeny_untyped = true\n', encoding="utf-8")
+        return originals
+
+    def restore_policy(self, originals: dict[Path, str | None]) -> None:
+        for path, content in originals.items():
+            if content is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
 
     def make_client(self, name: str, session: str = "testbed-deferred-tools") -> TestbedClient:
         client = TestbedClient(self.url, name=name)
@@ -30,19 +40,22 @@ class DeferredToolsSmoke(unittest.TestCase):
         return client
 
     def test_deferred_tool_search_and_status_round_trip(self):
-        self.write_policy()
-        with self.make_client("testbed-deferred-tools-client") as client:
-            client.wait_tools({"deferred_tool_search", "deferred_tool_discovery_status"}, session="testbed-deferred-tools")
-            search = client.call_tool("deferred_tool_search", {"query": "shell"}, timeout=10).json()
-            self.assertEqual(search.get("matches"), ["exec_run"])
-            self.assertEqual(search.get("discovered"), ["exec_run"])
+        originals = self.write_policy()
+        try:
+            with self.make_client("testbed-deferred-tools-client") as client:
+                client.wait_tools({"deferred_tool_search", "deferred_tool_discovery_status"}, session="testbed-deferred-tools")
+                search = client.call_tool("deferred_tool_search", {"query": "shell"}, timeout=10).json()
+                self.assertEqual(search.get("matches"), ["exec_run"])
+                self.assertEqual(search.get("discovered"), ["exec_run"])
 
-            status = client.call_tool("deferred_tool_discovery_status", {}, timeout=10).json()
-            self.assertEqual(status.get("discovered"), ["exec_run"])
+                status = client.call_tool("deferred_tool_discovery_status", {}, timeout=10).json()
+                self.assertEqual(status.get("discovered"), ["exec_run"])
 
-            executed = client.call_tool("exec_run", {"cmd": "printf deferred-ok"}, timeout=10).json()
-            self.assertEqual(executed.get("stdout"), "deferred-ok")
-            self.assertEqual(executed.get("exit_code"), 0)
+                executed = client.call_tool("exec_run", {"cmd": "printf deferred-ok"}, timeout=10).json()
+                self.assertEqual(executed.get("stdout"), "deferred-ok")
+                self.assertEqual(executed.get("exit_code"), 0)
+        finally:
+            self.restore_policy(originals)
 
 
 if __name__ == "__main__":

@@ -610,7 +610,7 @@ func TestParallelRuntimeApprovalHooksDoNotFailBusyWhileFirstIsSuspended(t *testi
 		State:  wire.CapabilityStateReady,
 		Source: wire.CapabilitySourceWorker,
 	}
-	rc := newSuspendingApprovalRuntimeConn(hub)
+	rc := newSuspendingExchangeRuntimeConn(hub)
 	rc.WithCapabilities(capability)
 	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{capability}, 0); err != nil {
 		t.Fatalf("RegisterHello: %v", err)
@@ -736,22 +736,22 @@ func TestHandleToolUseSecurityHookTimeoutSendsTerminalResult(t *testing.T) {
 	}
 }
 
-type suspendingApprovalRuntimeConn struct {
+type suspendingExchangeRuntimeConn struct {
 	*openHookRuntimeConn
 	hub            *Hub
 	firstSuspended chan struct{}
 	once           sync.Once
 }
 
-func newSuspendingApprovalRuntimeConn(hub *Hub) *suspendingApprovalRuntimeConn {
-	return &suspendingApprovalRuntimeConn{openHookRuntimeConn: newOpenHookRuntimeConn(), hub: hub, firstSuspended: make(chan struct{})}
+func newSuspendingExchangeRuntimeConn(hub *Hub) *suspendingExchangeRuntimeConn {
+	return &suspendingExchangeRuntimeConn{openHookRuntimeConn: newOpenHookRuntimeConn(), hub: hub, firstSuspended: make(chan struct{})}
 }
 
-func (c *suspendingApprovalRuntimeConn) FirstSuspended() <-chan struct{} {
+func (c *suspendingExchangeRuntimeConn) FirstSuspended() <-chan struct{} {
 	return c.firstSuspended
 }
 
-func (c *suspendingApprovalRuntimeConn) SendHookEvent(ctx context.Context, req runtimeapi.HookEventReq) error {
+func (c *suspendingExchangeRuntimeConn) SendHookEvent(ctx context.Context, req runtimeapi.HookEventReq) error {
 	c.openHookRuntimeConn.SendHookEvent(ctx, req)
 	if len(c.HookEvents()) == 1 {
 		go func() {
@@ -1070,10 +1070,10 @@ func TestRuntimeVoidHookDoesNotMarkTargetBusy(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
 	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
-	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-approvals"}
+	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "cancel-observer"}
 	capability := wire.Capability{
 		Target: target,
-		Hooks:  []wire.HookSpec{{Event: "approval_resolved", Priority: 0}},
+		Hooks:  []wire.HookSpec{{Event: "cancel", Priority: 0}},
 		State:  wire.CapabilityStateReady,
 		Source: wire.CapabilitySourceWorker,
 	}
@@ -1084,7 +1084,7 @@ func TestRuntimeVoidHookDoesNotMarkTargetBusy(t *testing.T) {
 	hub.syncRuntimeCapability("local", capability)
 	hub.rebuildHookIndex()
 
-	hub.dispatchHook("approval_resolved", json.RawMessage(`{"approval_id":"a1"}`), tenant.DefaultID, "s1")
+	hub.dispatchHook("cancel", json.RawMessage(`{"session":"s1"}`), tenant.DefaultID, "s1")
 	if got := len(rc.HookEvents()); got != 1 {
 		t.Fatalf("expected one void runtime hook event, got %d", got)
 	}

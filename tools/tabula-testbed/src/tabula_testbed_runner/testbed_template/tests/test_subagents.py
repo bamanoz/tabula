@@ -260,12 +260,12 @@ class SubagentsPluginSmoke(unittest.TestCase):
             "parent_session": "testbed-subagents",
             "status": "running",
             "pid": 0,
-            "allowed_tools": ["session_list"],
+            "allowed_tools": ["session_info"],
         }), encoding="utf-8")
         with self.make_client("testbed-subagent-child") as client:
             client.refresh_init("subagent-sa-testbed")
-            allowed = client.call_tool("session_list", {}, timeout=10).json()
-            self.assertIn("sessions", allowed)
+            allowed = client.call_tool("session_info", {"session": "subagent-sa-testbed"}, timeout=10).json()
+            self.assertIn("info", allowed)
             blocked = client.call_tool("subagent_list", {}, timeout=10).json()
             self.assertFalse(blocked.get("ok"), blocked)
             self.assertEqual(blocked.get("error"), "not_invoked")

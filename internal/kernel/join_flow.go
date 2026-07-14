@@ -74,7 +74,7 @@ func (h *Hub) applyJoinPlan(c *Client, plan joinPlan) {
 		c.SendMsg(init)
 		h.Logger.Debug("sent init", "client", c.name)
 	}
-	h.resendPendingApprovals(c, plan.tenantID, plan.session)
+	h.resendPendingSuspendedExchanges(c, plan.tenantID, plan.session)
 
 	h.policy.SessionJoin(plan.session, plan.tenantID, c.name, plan.clientMeta)
 	if c.canReceive(TopicMessageUser) && c.canSend(TopicTurnDone) {
@@ -92,6 +92,7 @@ func (h *Hub) leaveCurrentSession(c *Client, nextTenantID, nextSession string) {
 	if !ok {
 		return
 	}
+	h.removeSuspendedExchangeResponder(c)
 	sess.RemoveClient(c.name)
 	if sess.ClientCount() == 0 {
 		h.deleteSessionState(c.session, sess.TenantID)

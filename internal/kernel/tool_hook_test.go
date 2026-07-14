@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bamanoz/tabula/internal/tenant"
 )
 
 func TestBeforeToolCallHookCanModifyToolInput(t *testing.T) {
@@ -105,7 +107,6 @@ func TestBeforeToolCallHookCanSuspendForApprovalAndResume(t *testing.T) {
 
 	env := newTestEnvWithPluginTool(t)
 	hook := env.connectHook("approval", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
-	resolvedHook := env.connectHook("approval-recorder", []HookSubscription{{Event: "approval_resolved", Priority: 0}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolCall, TopicToolResult, "tool.suspended", "tool.resumed"})
 	ui := env.connectAndJoin("ui", "main", []string{TopicExchangeApprove}, []string{TopicExchangeApprove})
 	ui2 := env.connectAndJoin("telegram-ui", "main", []string{TopicExchangeApprove}, []string{TopicExchangeApprove, string(MsgError)})
@@ -139,6 +140,11 @@ func TestBeforeToolCallHookCanSuspendForApprovalAndResume(t *testing.T) {
 	}
 
 	writeJSON(t, ui, Message{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: approvalReq.ID, Data: json.RawMessage(`{"choice":"allow once","approved":true}`)})
+	resumedHook := readMsg(t, hook)
+	if resumedHook.Type != "hook" || resumedHook.Name != "before_tool_call" || !strings.Contains(string(resumedHook.Payload), "__tabula_exchange_reply") {
+		t.Fatalf("expected resumed before_tool_call hook with exchange reply, got %+v", resumedHook)
+	}
+	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: resumedHook.ID, Action: string(ActionPass)})
 	resolvedEvent := readMsg(t, ui2)
 	if resolvedEvent.Type != string(MsgEvent) || resolvedEvent.Topic != TopicExchangeApprove || resolvedEvent.ID != approvalReq.ID || !strings.Contains(string(resolvedEvent.Data), "exchange.resolved") {
 		t.Fatalf("expected exchange resolved for second UI, got %+v", resolvedEvent)
@@ -147,10 +153,6 @@ func TestBeforeToolCallHookCanSuspendForApprovalAndResume(t *testing.T) {
 	stale := readMsg(t, ui2)
 	if stale.Type != string(MsgError) || stale.Text != "client not allowed to answer exchange" {
 		t.Fatalf("expected stale approval reply rejection, got %+v", stale)
-	}
-	resolved := readMsg(t, resolvedHook)
-	if resolved.Type != "hook" || resolved.Name != "approval_resolved" || !strings.Contains(string(resolved.Payload), "allow once") {
-		t.Fatalf("expected approval_resolved hook, got %+v", resolved)
 	}
 
 	for i := 0; i < 3; i++ {
@@ -223,6 +225,11 @@ func TestBeforeToolCallHookCanSuspendForExchangeChooseAndResume(t *testing.T) {
 	}
 
 	writeJSON(t, ui, Message{Type: string(MsgReply), Topic: TopicExchangeChoose, ID: chooseReq.ID, Data: json.RawMessage(`{"answers":[["yes"]],"dismissed":false}`)})
+	resumedHook := readMsg(t, hook)
+	if resumedHook.Type != "hook" || resumedHook.Name != "before_tool_call" || !strings.Contains(string(resumedHook.Payload), "__tabula_exchange_reply") {
+		t.Fatalf("expected resumed before_tool_call hook with exchange reply, got %+v", resumedHook)
+	}
+	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: resumedHook.ID, Action: string(ActionPass)})
 
 	for i := 0; i < 4; i++ {
 		msg := readMsg(t, drv)
@@ -266,11 +273,16 @@ func TestSuspendedBeforeToolCallResumesLaterRewriteHookAfterApproval(t *testing.
 	if err := json.Unmarshal(approvalReq.Data, &approvalData); err != nil {
 		t.Fatalf("decode approval request data: %v", err)
 	}
-	if _, ok := approvalData["approval_id"]; !ok || len(approvalData) != 1 {
-		t.Fatalf("expected kernel to send only approval_id when hook provides no UI payload, got %s", string(approvalReq.Data))
+	if _, ok := approvalData["exchange_id"]; !ok || len(approvalData) != 1 {
+		t.Fatalf("expected kernel to send only exchange_id when hook provides no UI payload, got %s", string(approvalReq.Data))
 	}
 
 	writeJSON(t, ui, Message{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: approvalReq.ID, Data: json.RawMessage(`{"choice":"allow once","approved":true}`)})
+	resumedApprovalMsg := readMsg(t, approval)
+	if resumedApprovalMsg.Type != "hook" || resumedApprovalMsg.Name != "before_tool_call" || !strings.Contains(string(resumedApprovalMsg.Payload), "__tabula_exchange_reply") {
+		t.Fatalf("expected resumed approval before_tool_call with exchange reply, got %+v", resumedApprovalMsg)
+	}
+	writeJSON(t, approval, Message{Type: string(MsgHookReply), ID: resumedApprovalMsg.ID, Action: string(ActionPass)})
 
 	rewriteMsg := readMsg(t, rewriter)
 	if rewriteMsg.Type != "hook" || rewriteMsg.Name != "before_tool_call" {
@@ -333,6 +345,92 @@ func TestSuspendedApprovalResendsWhenUIRejoins(t *testing.T) {
 	if !strings.Contains(string(resent.Data), "Approve again?") {
 		t.Fatalf("expected original approval payload to be resent, got %s", string(resent.Data))
 	}
+}
+
+func TestSuspendedExchangeWithoutResponderStaysPendingUntilUIJoins(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	env := newTestEnvWithPluginTool(t)
+	hook := env.connectHook("exchange-gate", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
+	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult, "tool.suspended"})
+
+	go func() {
+		writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-no-responder", Input: json.RawMessage(`{"text":"needs exchange"}`)})
+	}()
+
+	hookMsg := readMsg(t, hook)
+	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: hookMsg.ID, Action: string(ActionSuspend), Reason: "needs exchange", Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve later?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`)})
+
+	suspended := readMsg(t, drv)
+	if suspended.Topic != "tool.suspended" {
+		t.Fatalf("expected tool.suspended, got %+v", suspended)
+	}
+	if msg := readMsgTimeout(t, drv, 150*time.Millisecond); msg != nil {
+		t.Fatalf("expected suspended tool to remain pending without responder, got %+v", msg)
+	}
+
+	ui := env.connectAndJoin("ui", "main", []string{TopicExchangeApprove}, []string{TopicExchangeApprove})
+	request := readMsg(t, ui)
+	if request.Type != string(MsgRequest) || request.Topic != TopicExchangeApprove || request.ID == "" {
+		t.Fatalf("expected pending exchange to be delivered when UI joins, got %+v", request)
+	}
+	if !strings.Contains(string(request.Data), "Approve later?") {
+		t.Fatalf("expected original exchange payload, got %s", string(request.Data))
+	}
+}
+
+func TestSuspendedExchangeRedeliversAfterUIProjectSwitch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	env := newTestEnvWithPluginTool(t)
+	env.Hub.SetTenantStore(tenant.NewMemoryStore(
+		tenant.Tenant{ID: "corex", CreatedAt: time.Now()},
+		tenant.Tenant{ID: "fujin", CreatedAt: time.Now()},
+	))
+	hook := env.connectHook("exchange-gate", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
+	drv := env.connectAndJoinTenant("driver", "corex", "main", []string{TopicToolCall}, []string{TopicToolResult, "tool.suspended"})
+	ui := env.connectAndJoinTenant("ui", "corex", "main", []string{TopicExchangeApprove}, []string{TopicExchangeApprove})
+
+	go func() {
+		writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-switch", Input: json.RawMessage(`{"text":"needs exchange"}`)})
+	}()
+
+	hookMsg := readMsg(t, hook)
+	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: hookMsg.ID, Action: string(ActionSuspend), Reason: "needs exchange", Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve after switch?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`)})
+
+	first := readMsg(t, ui)
+	if first.Type != string(MsgRequest) || first.Topic != TopicExchangeApprove || first.ID == "" {
+		t.Fatalf("expected first exchange request, got %+v", first)
+	}
+	writeJSON(t, ui, Message{Type: string(MsgJoin), TenantID: "fujin", Session: "main"})
+	_ = readMsg(t, ui)
+	if msg := readMsgTimeout(t, drv, 150*time.Millisecond); msg != nil && msg.Topic == TopicToolResult {
+		t.Fatalf("project switch must not deny suspended exchange, got %+v", msg)
+	}
+	writeJSON(t, ui, Message{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: first.ID, Data: json.RawMessage(`{"choice":"allow once","approved":true}`)})
+	staleReply := readMsg(t, ui)
+	if staleReply.Type != string(MsgError) {
+		t.Fatalf("switched-away UI must not answer old exchange, got %+v", staleReply)
+	}
+
+	writeJSON(t, ui, Message{Type: string(MsgJoin), TenantID: "corex", Session: "main"})
+	for i := 0; i < 4; i++ {
+		resent := readMsg(t, ui)
+		if resent.Topic == TopicExchangeApprove {
+			if resent.ID != first.ID {
+				t.Fatalf("expected exchange %q to be redelivered, got %q", first.ID, resent.ID)
+			}
+			if !strings.Contains(string(resent.Data), "Approve after switch?") {
+				t.Fatalf("expected original exchange payload, got %s", string(resent.Data))
+			}
+			return
+		}
+	}
+	t.Fatal("expected pending exchange to redeliver after returning to project")
 }
 
 // Interactive approval-style hook: timeout_ms=0 means wait until the

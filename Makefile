@@ -102,10 +102,6 @@ test-python-contract:
 	TABULA_HOME=$(TABULA_HOME) ./scripts/test-python.sh contract
 
 testbed:
-	@if [ -z "$(SUITE)" ]; then \
-		printf 'usage: make testbed SUITE=<suite> [TESTBED_DIR=path] [LOCAL_TABULA_BUNDLES=path] [TESTBED_EXTRA_ARGS="..."]\n' >&2; \
-		exit 2; \
-	fi
 	@if [ ! -x "$(TESTBED_PYTHON)" ]; then \
 		python3 -m venv "$(TESTBED_VENV)"; \
 		"$(TESTBED_VENV)/bin/python" -m pip install -q --upgrade pip setuptools wheel; \
@@ -117,7 +113,7 @@ testbed:
 	$(TESTBED_PYTHON) -m tabula_testbed_runner.cli run \
 		--tabula-root "$(CURDIR)" \
 		--testbed-dir "$(TESTBED_DIR)" \
-		--suite "$(SUITE)" \
+		$(if $(SUITE),--suite "$(SUITE)",--all) \
 		--source tabula-bundles="$(LOCAL_TABULA_BUNDLES)" \
 		$(if $(TESTBED_HOME),--home "$(TESTBED_HOME)",) \
 		$(if $(filter 1 true yes,$(TESTBED_KEEP)),--keep,) \

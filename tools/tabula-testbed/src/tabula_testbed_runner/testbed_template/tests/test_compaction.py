@@ -71,16 +71,18 @@ class CompactionSmoke(unittest.TestCase):
     def test_driver_history_compacts_and_restores_after_restart(self):
         home = Path(self.tabula_home)
         session = "testbed-compaction"
-        history_path = home / "data" / "sessions" / session / "history.jsonl"
+        history_path = home / "tenants" / "default" / "state" / "sessions" / session / "history.jsonl"
         stub_dir = home / "data" / "testbed" / "fake-openai"
         stub_dir.mkdir(parents=True, exist_ok=True)
         (stub_dir / "openai.py").write_text(FAKE_OPENAI, encoding="utf-8")
+        (home / "plugins" / "driver" / "openai.py").write_text(FAKE_OPENAI, encoding="utf-8")
         driver_config = home / "config" / "plugins" / "driver" / "config.toml"
         driver_config.parent.mkdir(parents=True, exist_ok=True)
         driver_config.write_text(
             """
 provider = "openai"
 session_autostart = false
+compaction_threshold = 0.0001
 
 [providers.openai]
 type = "openai"

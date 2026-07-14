@@ -25,25 +25,25 @@ type Hub struct {
 	// `creative-plugin-runtime.md` §4 (D1.7). Keyed by tool name, value
 	// carries the runtime routing payload. Entries are synchronized from
 	// attached Runtime API targets.
-	toolExec          map[string]toolDispatch
-	toolExecMu        sync.RWMutex
-	exchanges         map[string]pendingExchange
-	exchangesMu       sync.Mutex
-	approvalExchanges map[string]pendingApprovalExchange
-	approvalMu        sync.Mutex
-	toolLifecycleMu   sync.Mutex
-	runtimeBusy       map[string]*runtimeBusyState
-	runtimeBusyMu     sync.RWMutex
-	catalogRefreshMu  sync.Mutex
-	catalogRefresh    catalogRefreshState
-	runID             string
-	toolsJSON         json.RawMessage
-	initMeta          json.RawMessage
-	tenantInitMeta    map[string]json.RawMessage
-	clientAuthToken   string
-	Logger            *slog.Logger
-	MaxClients        int           // max concurrent clients (default 100)
-	ShutdownTimeout   time.Duration // grace period before SIGKILL (default 3s)
+	toolExec            map[string]toolDispatch
+	toolExecMu          sync.RWMutex
+	exchanges           map[string]pendingExchange
+	exchangesMu         sync.Mutex
+	suspendedExchanges  map[string]pendingSuspendedExchange
+	suspendedExchangeMu sync.Mutex
+	toolLifecycleMu     sync.Mutex
+	runtimeBusy         map[string]*runtimeBusyState
+	runtimeBusyMu       sync.RWMutex
+	catalogRefreshMu    sync.Mutex
+	catalogRefresh      catalogRefreshState
+	runID               string
+	toolsJSON           json.RawMessage
+	initMeta            json.RawMessage
+	tenantInitMeta      map[string]json.RawMessage
+	clientAuthToken     string
+	Logger              *slog.Logger
+	MaxClients          int           // max concurrent clients (default 100)
+	ShutdownTimeout     time.Duration // grace period before SIGKILL (default 3s)
 }
 
 func (h *Hub) SetInitMeta(meta json.RawMessage) {
@@ -74,22 +74,22 @@ func NewHub(toolsJSON json.RawMessage, _ int, _ int, logger *slog.Logger) *Hub {
 		logger = slog.Default()
 	}
 	hub := &Hub{
-		clients:           NewClientRegistry(),
-		sessions:          NewSessionRegistry(),
-		processes:         NewProcessSupervisor(logger, 3*time.Second),
-		hooks:             NewHookEngine(logger),
-		runtimes:          NewRuntimeRegistry(),
-		tenants:           tenant.NewMemoryStore(tenant.Tenant{ID: tenant.DefaultID, CreatedAt: time.Now().UTC()}),
-		toolExec:          make(map[string]toolDispatch),
-		exchanges:         make(map[string]pendingExchange),
-		approvalExchanges: make(map[string]pendingApprovalExchange),
-		runtimeBusy:       make(map[string]*runtimeBusyState),
-		tenantInitMeta:    map[string]json.RawMessage{},
-		runID:             newKernelRunID(),
-		toolsJSON:         toolsJSON,
-		Logger:            logger,
-		MaxClients:        100,
-		ShutdownTimeout:   3 * time.Second,
+		clients:            NewClientRegistry(),
+		sessions:           NewSessionRegistry(),
+		processes:          NewProcessSupervisor(logger, 3*time.Second),
+		hooks:              NewHookEngine(logger),
+		runtimes:           NewRuntimeRegistry(),
+		tenants:            tenant.NewMemoryStore(tenant.Tenant{ID: tenant.DefaultID, CreatedAt: time.Now().UTC()}),
+		toolExec:           make(map[string]toolDispatch),
+		exchanges:          make(map[string]pendingExchange),
+		suspendedExchanges: make(map[string]pendingSuspendedExchange),
+		runtimeBusy:        make(map[string]*runtimeBusyState),
+		tenantInitMeta:     map[string]json.RawMessage{},
+		runID:              newKernelRunID(),
+		toolsJSON:          toolsJSON,
+		Logger:             logger,
+		MaxClients:         100,
+		ShutdownTimeout:    3 * time.Second,
 	}
 	hub.hooks.SetSessionTenantResolver(hub.sessionTenantID)
 	hub.hooks.SetAuditRecorder(hub.recordHookDispatchAudit)

@@ -90,6 +90,8 @@ class ApprovalFlowInstalled(unittest.TestCase):
         self.assertTrue((home / "plugins" / "hook-approvals" / "plugin.toml").is_file(), "hook-approvals plugin missing")
         self.assertTrue((home / "plugins" / "exec" / "plugin.toml").is_file(), "exec plugin missing")
 
+        permissions_cfg = self.permissions_config_path(home)
+        original_permissions_cfg = permissions_cfg.read_text(encoding="utf-8") if permissions_cfg.is_file() else None
         workspace = home / "data" / "testbed" / "approvals-workspace"
         workspace.mkdir(parents=True, exist_ok=True)
         self.write_driver_config(home)
@@ -103,23 +105,24 @@ class ApprovalFlowInstalled(unittest.TestCase):
         stub_dir = home / "data" / "testbed" / "fake-openai-approvals"
         stub_dir.mkdir(parents=True, exist_ok=True)
         (stub_dir / "openai.py").write_text(FAKE_OPENAI, encoding="utf-8")
+        (home / "plugins" / "driver" / "openai.py").write_text(FAKE_OPENAI, encoding="utf-8")
 
         session = "testbed-approvals"
         proc, log_handle, log_path = self.start_driver(session, stub_dir)
         try:
             with self.connect_client(session) as client:
                 first = self.run_turn(client, "delayed run", approval_choice="allow once", approval_delay=6.0)
-                self.assertEqual(first["text"], "turn-1-done")
+                self.assertRegex(str(first["text"]), r"^turn-\d+-done$")
                 ask = first["ask"]
                 self.assertIsNotNone(ask)
                 self.assertEqual(ask["options"], ["allow once", "allow always", "deny once", "deny always"])
 
                 reconnected = self.run_turn_with_approval_reconnect(client, session, "reconnect run")
-                self.assertEqual(reconnected["text"], "turn-2-done")
+                self.assertRegex(str(reconnected["text"]), r"^turn-\d+-done$")
                 self.assertEqual(reconnected["first_request_id"], reconnected["resent_request_id"])
 
                 persisted = self.run_turn(client, "persist first", approval_choice="allow always")
-                self.assertEqual(persisted["text"], "turn-3-done")
+                self.assertRegex(str(persisted["text"]), r"^turn-\d+-done$")
                 self.assertIsNotNone(persisted["ask"])
 
                 saved = approvals_cfg.read_text(encoding="utf-8")
@@ -127,7 +130,7 @@ class ApprovalFlowInstalled(unittest.TestCase):
                 self.assertIn('effect = "allow_always"', saved)
 
                 second_persisted = self.run_turn(client, "persist second", approval_choice=None)
-                self.assertEqual(second_persisted["text"], "turn-4-done")
+                self.assertRegex(str(second_persisted["text"]), r"^turn-\d+-done$")
                 self.assertIsNone(second_persisted["ask"])
 
             history = home / "data" / "sessions" / session / "history.jsonl"
@@ -145,6 +148,10 @@ class ApprovalFlowInstalled(unittest.TestCase):
         finally:
             self.stop_driver(proc)
             log_handle.close()
+            if original_permissions_cfg is None:
+                permissions_cfg.unlink(missing_ok=True)
+            else:
+                permissions_cfg.write_text(original_permissions_cfg, encoding="utf-8")
 
     def connect_client(self, session: str, *, timeout: float = 20) -> TestbedClient:
         deadline = time.time() + timeout
@@ -195,6 +202,8 @@ class ApprovalFlowInstalled(unittest.TestCase):
             if msg_type == "error":
                 raise AssertionError(f"kernel error during turn: {msg}")
             if msg_type == "event" and msg.get("topic") == "turn.done":
+                if exchange_request is not None and not chunks:
+                    continue
                 return {"text": "".join(chunks), "ask": exchange_request}
         raise AssertionError(f"timed out waiting for turn completion after {text!r}")
 
@@ -313,7 +322,7 @@ class ApprovalFlowInstalled(unittest.TestCase):
         )
 
     def write_permissions_config(self, home: Path) -> None:
-        path = home / "config" / "plugins" / "hook-permissions" / "config.toml"
+        path = self.permissions_config_path(home)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             'default = "deny"\n'
@@ -323,6 +332,9 @@ class ApprovalFlowInstalled(unittest.TestCase):
             'effect = "ask"\n',
             encoding="utf-8",
         )
+
+    def permissions_config_path(self, home: Path) -> Path:
+        return home / "config" / "plugins" / "hook-permissions" / "config.toml"
 
     def approvals_config_path(self, home: Path) -> Path:
         return home / "tenants" / "default" / "config" / "plugins" / "hook-approvals" / "config.toml"

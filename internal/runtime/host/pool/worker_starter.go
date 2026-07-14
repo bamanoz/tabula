@@ -6,6 +6,7 @@ import (
 
 	"github.com/bamanoz/tabula/internal/runtime/host/manifest"
 	"github.com/bamanoz/tabula/internal/runtime/host/policy"
+	runtimewire "github.com/bamanoz/tabula/internal/runtime/wire"
 	workerwire "github.com/bamanoz/tabula/internal/runtime/worker/wire"
 )
 
@@ -77,6 +78,9 @@ func (s *workerStarter) spawnReq(tenantID string, plugin manifest.Plugin) policy
 	}
 	if s.env != nil {
 		req.Env = s.env(tenantID)
+		if plugin.WorkerScope == runtimewire.WorkerScopeRuntime {
+			delete(req.Env, "TABULA_TENANT_DIR")
+		}
 	}
 	return req
 }

@@ -62,6 +62,19 @@ func TestWorkerStarterSpawnsInitializesAndMarksReady(t *testing.T) {
 	}
 }
 
+func TestWorkerStarterDoesNotPinRuntimeScopedWorkerToTenantDir(t *testing.T) {
+	starter, _, plugin := testWorkerStarter(t)
+	plugin.WorkerScope = runtimewire.WorkerScopeRuntime
+
+	req := starter.spawnReq("tenant-a", plugin)
+	if _, ok := req.Env["TABULA_TENANT_DIR"]; ok {
+		t.Fatalf("runtime-scoped worker env must not pin tenant dir: %#v", req.Env)
+	}
+	if got := req.Env["TABULA_HOME"]; got != "/tmp/tabula" {
+		t.Fatalf("TABULA_HOME = %q, want /tmp/tabula", got)
+	}
+}
+
 func TestWorkerStarterInitFailureClearsEntryAndShutsDownWorker(t *testing.T) {
 	starter, _, plugin := testWorkerStarter(t)
 	w := newFakeWorker()
@@ -139,7 +152,10 @@ func testWorkerStarter(t *testing.T) (*workerStarter, *fakePolicy, manifest.Plug
 	}
 	fake := &fakePolicy{spawned: make(chan *fakeWorker, 1), nextWorker: newFakeWorker()}
 	starter := newWorkerStarter("kernel", fake, func(tenantID string) map[string]string {
-		return map[string]string{"TABULA_TENANT_DIR": filepath.Join("/tmp/tabula", "tenants", tenantID)}
+		return map[string]string{
+			"TABULA_HOME":       "/tmp/tabula",
+			"TABULA_TENANT_DIR": filepath.Join("/tmp/tabula", "tenants", tenantID),
+		}
 	})
 	return starter, fake, plugin
 }

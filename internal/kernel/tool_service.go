@@ -52,8 +52,8 @@ type activeRuntimeCall struct {
 }
 
 type pendingToolCall struct {
-	ApprovalID        string
-	ApprovalData      json.RawMessage
+	ExchangeID        string
+	ExchangeData      json.RawMessage
 	BlockedDecision   *HookDispatchDecision
 	ExchangeTopic     string
 	ExchangeReply     json.RawMessage
@@ -84,7 +84,7 @@ func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 	effectiveInput, blocked := s.hub.policy.CanUseTool(sender, toolName, toolID, msg.Input, msg.Meta, session)
 	if blocked != nil {
 		if blocked.Pending {
-			s.suspendForApproval(tenantID, session, toolID, toolName, effectiveInput, msg.Meta, turnCorrelationID, blocked)
+			s.suspendForExchange(tenantID, session, toolID, toolName, effectiveInput, msg.Meta, turnCorrelationID, blocked)
 			return
 		}
 		s.hub.Logger.Warn("tool call blocked by policy", "tool", toolName, "tool_call_id", toolID, "turn_correlation_id", turnCorrelationID, "tenant_id", tenantID, "session", session, "input_bytes", len(msg.Input))
@@ -110,15 +110,15 @@ func (s *ToolService) broadcastFinalizedToolCall(tenantID, session, toolID, tool
 	}, sender, sender)
 }
 
-func (s *ToolService) suspendForApproval(tenantID, session, toolID, toolName string, input, meta json.RawMessage, turnCorrelationID string, blocked *HookDispatchDecision) {
-	approvalID := approvalIDFromPayload(blocked.Payload)
-	if approvalID == "" {
-		approvalID = generateApprovalID()
+func (s *ToolService) suspendForExchange(tenantID, session, toolID, toolName string, input, meta json.RawMessage, turnCorrelationID string, blocked *HookDispatchDecision) {
+	exchangeID := exchangeIDFromPayload(blocked.Payload)
+	if exchangeID == "" {
+		exchangeID = generateExchangeID()
 	}
 	exchangeTopic := exchangeTopicFromPayload(blocked.Payload)
 	pending := pendingToolCall{
-		ApprovalID:        approvalID,
-		ApprovalData:      approvalRequestDataFromDecision(toolName, blocked),
+		ExchangeID:        exchangeID,
+		ExchangeData:      exchangeRequestDataFromDecision(toolName, blocked),
 		BlockedDecision:   blocked,
 		ExchangeTopic:     exchangeTopic,
 		TenantID:          tenantID,
@@ -130,55 +130,48 @@ func (s *ToolService) suspendForApproval(tenantID, session, toolID, toolName str
 		TurnCorrelationID: turnCorrelationID,
 	}
 	s.mu.Lock()
-	s.pendingCalls[approvalID] = pending
+	s.pendingCalls[exchangeID] = pending
 	s.mu.Unlock()
-	s.hub.Logger.Info("tool call suspended for approval", "approval_id", approvalID, "tool", toolName, "tool_call_id", toolID, "turn_correlation_id", turnCorrelationID, "tenant_id", tenantID, "session", session)
-	s.hub.recordToolSuspended(tenantID, session, toolID, toolName, approvalID)
-	s.hub.broadcastToSession(tenantID, session, "tool.suspended", &Message{Type: string(MsgEvent), Topic: "tool.suspended", ID: toolID, Name: toolName, Data: mustMarshalRaw(map[string]any{"approval_id": approvalID, "tool_call_id": toolID, "tool": toolName, "reason": blocked.Reason})}, nil)
-	s.hub.requestApprovalForPendingTool(pending, blocked)
+	s.hub.Logger.Info("tool call suspended for exchange", "exchange_id", exchangeID, "tool", toolName, "tool_call_id", toolID, "turn_correlation_id", turnCorrelationID, "tenant_id", tenantID, "session", session)
+	s.hub.recordToolSuspended(tenantID, session, toolID, toolName, exchangeID)
+	s.hub.broadcastToSession(tenantID, session, "tool.suspended", &Message{Type: string(MsgEvent), Topic: "tool.suspended", ID: toolID, Name: toolName, Data: mustMarshalRaw(map[string]any{"exchange_id": exchangeID, "tool_call_id": toolID, "tool": toolName, "reason": blocked.Reason})}, nil)
+	s.hub.requestExchangeForPendingTool(pending, blocked)
 }
 
-func (s *ToolService) resolvePendingApproval(approvalID string, approved bool, choice string) bool {
+func (s *ToolService) resolvePendingExchange(exchangeID string) bool {
 	s.mu.Lock()
-	pending, ok := s.pendingCalls[approvalID]
+	pending, ok := s.pendingCalls[exchangeID]
 	if ok {
-		delete(s.pendingCalls, approvalID)
+		delete(s.pendingCalls, exchangeID)
 	}
 	s.mu.Unlock()
 	if !ok {
 		return false
 	}
-	defer releaseBlockedHookDecision(pending.BlockedDecision)
-	if !approved {
-		s.emitApprovalResolved(pending, choice, false)
-		s.hub.sendToolResultForTool(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, string(mustMarshalRaw(map[string]any{"ok": false, "error": "not_invoked", "kind": "approval_denied", "retryable": false, "approval_id": approvalID, "choice": choice})), nil, false)
-		return true
-	}
-	s.emitApprovalResolved(pending, choice, true)
-	s.hub.broadcastToSession(pending.TenantID, pending.Session, "tool.resumed", &Message{Type: string(MsgEvent), Topic: "tool.resumed", ID: pending.ToolID, Name: pending.ToolName, Data: mustMarshalRaw(map[string]any{"approval_id": approvalID, "tool_call_id": pending.ToolID, "tool": pending.ToolName, "choice": choice})}, nil)
-	effectivePayload, ok, blocked := s.hub.hooks.ResumeModifying(pending.BlockedDecision)
-	effectiveInput := inputFromToolHookPayload(effectivePayload, pending.Input)
+	releaseBlockedHookDecision(pending.BlockedDecision)
+	s.hub.broadcastToSession(pending.TenantID, pending.Session, "tool.resumed", &Message{Type: string(MsgEvent), Topic: "tool.resumed", ID: pending.ToolID, Name: pending.ToolName, Data: mustMarshalRaw(map[string]any{"exchange_id": exchangeID, "tool_call_id": pending.ToolID, "tool": pending.ToolName})}, nil)
+
+	inputWithReply := markToolInputExchangeReply(pending.Input, pending.ExchangeReply)
+	hookPayload, _ := json.Marshal(map[string]any{
+		"tool": pending.ToolName, "id": pending.ToolID, "input": inputWithReply, "meta": pending.Meta, "tenant_id": pending.TenantID,
+	})
+	effectivePayload, ok, blocked := s.hub.hooks.DispatchDetailedExcept("before_tool_call", hookPayload, pending.TenantID, pending.Session, nil)
+	effectiveInput := inputFromToolHookPayload(effectivePayload, inputWithReply)
 	if blocked != nil {
 		if blocked.Pending {
-			s.suspendForApproval(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, effectiveInput, pending.Meta, pending.TurnCorrelationID, blocked)
+			s.suspendForExchange(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, effectiveInput, pending.Meta, pending.TurnCorrelationID, blocked)
 			return true
 		}
-		s.hub.Logger.Warn("tool call blocked by policy after approval", "tool", pending.ToolName, "tool_call_id", pending.ToolID, "turn_correlation_id", pending.TurnCorrelationID, "tenant_id", pending.TenantID, "session", pending.Session, "input_bytes", len(pending.Input))
+		s.hub.Logger.Warn("tool call blocked by policy after exchange", "tool", pending.ToolName, "tool_call_id", pending.ToolID, "turn_correlation_id", pending.TurnCorrelationID, "tenant_id", pending.TenantID, "session", pending.Session, "input_bytes", len(pending.Input))
 		s.hub.sendToolResultForTool(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, buildNotInvokedToolResult(blocked), nil, false)
 		return true
 	}
 	if !ok {
-		s.hub.sendToolResultForTool(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, buildNotInvokedToolResult(&HookDispatchDecision{Reason: "tool hook dispatch did not complete after approval"}), nil, false)
+		s.hub.sendToolResultForTool(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, buildNotInvokedToolResult(&HookDispatchDecision{Reason: "tool hook dispatch did not complete after exchange"}), nil, false)
 		return true
 	}
-	input := effectiveInput
-	if pending.ExchangeTopic == TopicExchangeChoose {
-		input = markToolInputExchangeReply(input, pending.ExchangeReply)
-	} else {
-		input = markToolInputApproved(input)
-	}
-	s.broadcastFinalizedToolCall(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, input, pending.Meta, nil)
-	s.handleDynamicTool(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, input, pending.TurnCorrelationID)
+	s.broadcastFinalizedToolCall(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, effectiveInput, pending.Meta, nil)
+	s.handleDynamicTool(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, effectiveInput, pending.TurnCorrelationID)
 	return true
 }
 
@@ -189,22 +182,22 @@ func releaseBlockedHookDecision(decision *HookDispatchDecision) {
 	releaseHookEntryReservation(decision.continuation.blocked)
 }
 
-func (s *ToolService) pendingCall(approvalID string) (pendingToolCall, bool) {
+func (s *ToolService) pendingCall(exchangeID string) (pendingToolCall, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	pending, ok := s.pendingCalls[approvalID]
+	pending, ok := s.pendingCalls[exchangeID]
 	return pending, ok
 }
 
-func (s *ToolService) setPendingExchangeReply(approvalID string, reply json.RawMessage) {
+func (s *ToolService) setPendingExchangeReply(exchangeID string, reply json.RawMessage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	pending, ok := s.pendingCalls[approvalID]
+	pending, ok := s.pendingCalls[exchangeID]
 	if !ok {
 		return
 	}
 	pending.ExchangeReply = append(json.RawMessage(nil), reply...)
-	s.pendingCalls[approvalID] = pending
+	s.pendingCalls[exchangeID] = pending
 }
 
 func inputFromToolHookPayload(raw json.RawMessage, fallback json.RawMessage) json.RawMessage {
@@ -217,41 +210,17 @@ func inputFromToolHookPayload(raw json.RawMessage, fallback json.RawMessage) jso
 	return fallback
 }
 
-func (s *ToolService) emitApprovalResolved(pending pendingToolCall, choice string, approved bool) {
-	if s == nil || s.hub == nil {
-		return
-	}
-	payload := map[string]any{"approval_id": pending.ApprovalID, "choice": choice, "approved": approved, "tool": pending.ToolName, "tool_call_id": pending.ToolID}
-	if normalized := approvalNormalizedDetails(pending.ApprovalData); normalized != nil {
-		payload["normalized"] = normalized
-	}
-	s.hub.dispatchHook("approval_resolved", mustMarshalRaw(payload), pending.TenantID, pending.Session)
-}
-
-func approvalNormalizedDetails(raw json.RawMessage) map[string]any {
-	if len(raw) == 0 {
-		return nil
-	}
-	var payload struct {
-		Details map[string]any `json:"details"`
-	}
-	if json.Unmarshal(raw, &payload) != nil || payload.Details == nil {
-		return nil
-	}
-	return payload.Details
-}
-
-func approvalIDFromPayload(raw json.RawMessage) string {
+func exchangeIDFromPayload(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
 	var payload struct {
-		ApprovalID string `json:"approval_id"`
+		ExchangeID string `json:"exchange_id"`
 	}
 	if json.Unmarshal(raw, &payload) != nil {
 		return ""
 	}
-	return strings.TrimSpace(payload.ApprovalID)
+	return strings.TrimSpace(payload.ExchangeID)
 }
 
 func exchangeTopicFromPayload(raw json.RawMessage) string {
@@ -272,20 +241,8 @@ func exchangeTopicFromPayload(raw json.RawMessage) string {
 	}
 }
 
-func generateApprovalID() string {
-	return "approval-" + generateHookID()
-}
-
-func markToolInputApproved(raw json.RawMessage) json.RawMessage {
-	var input map[string]any
-	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &input)
-	}
-	if input == nil {
-		input = map[string]any{}
-	}
-	input["approved"] = true
-	return mustMarshalRaw(input)
+func generateExchangeID() string {
+	return "exchange-" + generateHookID()
 }
 
 func markToolInputExchangeReply(raw json.RawMessage, reply json.RawMessage) json.RawMessage {

@@ -1060,9 +1060,9 @@ func (p *Pool) markTargetInitializing(tenantID string, plugin manifest.Plugin) {
 func (p *Pool) markTargetFailed(tenantID string, plugin manifest.Plugin) {
 	p.setTargetState(tenantID, plugin, wire.CapabilityStateFailed)
 	p.publishCriticalFrame(wire.LifecycleNotice{
-		Op:     wire.OpLifecycleNotice,
-		Target: wire.Target{Kind: wire.TargetKindPlugin, ID: plugin.ID},
-		State:  wire.LifecycleStateCrashed,
+		Op:      wire.OpLifecycleNotice,
+		Target:  wire.Target{Kind: wire.TargetKindPlugin, ID: plugin.ID},
+		State:   wire.LifecycleStateCrashed,
 		Message: "worker initialization failed",
 	})
 }
@@ -1084,6 +1084,11 @@ func (p *Pool) publishTargetSnapshot(tenantID, targetID string) {
 	capability, ok := p.capabilities.readySnapshot(tenantID, targetID)
 	if !ok {
 		return
+	}
+	if p.store != nil {
+		if plugin, pluginOK := p.store.GetForTenant(tenantID, targetID); pluginOK && plugin.WorkerScope == wire.WorkerScopeRuntime {
+			capability.Tenants = p.capabilities.runtimeCapabilityTenants(targetID)
+		}
 	}
 	p.publishCriticalFrame(wire.CatalogUpdate{Op: wire.OpCatalogUpdate, Target: capability.Target, Tenants: append([]string(nil), capability.Tenants...), Tools: cloneToolSpecs(capability.Tools), Hooks: cloneHookSpecs(capability.Hooks), Revision: capability.Revision, State: capability.State, Source: capability.Source})
 	p.publishCriticalFrame(wire.LifecycleNotice{Op: wire.OpLifecycleNotice, Target: capability.Target, State: wire.LifecycleStateReady})

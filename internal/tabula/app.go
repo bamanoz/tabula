@@ -387,6 +387,10 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 		fmt.Fprintf(os.Stderr, "error: runtime registry config failed: %v\n", err)
 		return 1
 	}
+	if err := hub.ConfigureTenantInitMeta(tabulaHome); err != nil {
+		fmt.Fprintf(os.Stderr, "error: tenant init meta config failed: %v\n", err)
+		return 1
+	}
 	runtimeDefinitions, err := kernel.LoadRuntimeDefinitions(tabulaHome)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: runtime registry config failed: %v\n", err)
@@ -593,6 +597,9 @@ func watchReloadTrigger(tabulaHome string, hub *kernel.Hub, stop <-chan struct{}
 func reloadRuntimeFromConfig(ctx context.Context, tabulaHome string, hub *kernel.Hub) error {
 	if err := hub.ConfigureRuntimeRegistry(tabulaHome); err != nil {
 		return fmt.Errorf("reload runtime registry config: %w", err)
+	}
+	if err := hub.ConfigureTenantInitMeta(tabulaHome); err != nil {
+		return fmt.Errorf("reload tenant init meta: %w", err)
 	}
 	hub.SetTenantStore(tenant.NewFSStore(tabulaHome))
 	return reloadLocalRuntime(ctx, hub, reloadTenants(tabulaHome)...)
@@ -802,6 +809,10 @@ func runCmd(args []string, build BuildInfo) int {
 	hub.SetSessionStore(kernel.NewDiskSessionStore(tabulaHome))
 	if err := hub.ConfigureRuntimeRegistry(tabulaHome); err != nil {
 		fmt.Fprintf(os.Stderr, "error: runtime registry config failed: %v\n", err)
+		return 1
+	}
+	if err := hub.ConfigureTenantInitMeta(tabulaHome); err != nil {
+		fmt.Fprintf(os.Stderr, "error: tenant init meta config failed: %v\n", err)
 		return 1
 	}
 	hub.StartReaper()

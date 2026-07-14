@@ -20,8 +20,8 @@ func (s *DiskSessionStore) AppendToolLifecycle(session, tenantID string, event t
 	if event.Status != "" {
 		payload["status"] = event.Status
 	}
-	if event.ApprovalID != "" {
-		payload["approval_id"] = event.ApprovalID
+	if event.ExchangeID != "" {
+		payload["exchange_id"] = event.ExchangeID
 	}
 	if event.Reason != "" {
 		payload["reason"] = event.Reason

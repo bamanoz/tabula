@@ -69,7 +69,6 @@ var HookEvents = map[string]HookEventDef{
 	"session_join":        {Strategy: strategyVoid, Type: HookObservability},
 	"session_end":         {Strategy: strategyVoid, Type: HookObservability},
 	"cancel":              {Strategy: strategyVoid, Type: HookObservability},
-	"approval_resolved":   {Strategy: strategyVoid, Type: HookObservability},
 }
 
 func (h *Hub) rebuildHookIndex() {

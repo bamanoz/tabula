@@ -280,6 +280,11 @@ func (r *RuntimeRegistry) ReplaceTenantsServed(runtimeID string, tenants []strin
 	}
 	previous := append([]string(nil), attachment.TenantsServed...)
 	attachment.TenantsServed = append([]string(nil), tenants...)
+	for i := range attachment.Capabilities {
+		if sameTenantSet(attachment.Capabilities[i].Tenants, previous) {
+			attachment.Capabilities[i].Tenants = append([]string(nil), tenants...)
+		}
+	}
 	return previous, true
 }
 

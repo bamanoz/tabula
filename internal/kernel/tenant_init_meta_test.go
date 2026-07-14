@@ -39,6 +39,38 @@ project_root = "/repo"
 	}
 }
 
+func TestConfigureTenantInitMetaLoadsNewTenantWorkspace(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, "tenants", "mj", "config", "tenant.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir tenant config: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`[application]
+prompt_builder = "code_immune_prompt.builder"
+
+[workspace]
+project_root = "/Users/mak/src/mj"
+`), 0o644); err != nil {
+		t.Fatalf("write tenant config: %v", err)
+	}
+
+	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.SetInitMeta(json.RawMessage(`{"workspace":{"path":"/private/tmp/tabula-browser-project"}}`))
+	if err := hub.ConfigureTenantInitMeta(home); err != nil {
+		t.Fatalf("ConfigureTenantInitMeta: %v", err)
+	}
+
+	msg := hub.initMessage("", hub.initToolsJSON("mj"), hub.initMetaJSON("mj"))
+	var meta map[string]any
+	if err := json.Unmarshal(msg.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	workspace := meta["workspace"].(map[string]any)
+	if workspace["path"] != "/Users/mak/src/mj" {
+		t.Fatalf("tenant workspace did not replace stale global workspace: %#v", workspace)
+	}
+}
+
 func TestInitMessageMergesTenantInitMeta(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
 	hub.SetInitMeta(json.RawMessage(`{"prompt_builder":"global.builder","workspace":{"path":"/global"}}`))

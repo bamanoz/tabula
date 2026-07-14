@@ -841,7 +841,8 @@ Then kernel delivers the reply to the requester:
   "session": "main",
   "tenant_id": "default",
   "data": {
-    "choice": "allow_once"
+    "choice": "allow_once",
+    "approved": true
   },
   "meta": {
     "kernel": {
@@ -1207,7 +1208,9 @@ Default responder selection for `exchange.*`:
 5. Prefer the gateway that originated the current turn if known.
 6. Otherwise choose most recent interactive gateway in session.
 
-If no responder exists, the kernel replies to requester:
+If no responder exists for a suspended tool exchange, the kernel keeps the exchange pending and redelivers it when an eligible responder joins the same tenant/session. The kernel does not synthesize a product-specific denial result for the suspended tool.
+
+For ordinary exchange requests without suspended tool ownership, the kernel may reply:
 
 ```json
 {
