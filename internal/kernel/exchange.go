@@ -302,7 +302,7 @@ func exchangeResponderScore(c *Client) int {
 	}
 	meta := decodeClientMeta(c.meta)
 	score := 0
-	if meta.Role == "ui" {
+	if meta.Role == "user" {
 		score += 2
 	}
 	if meta.Managed {

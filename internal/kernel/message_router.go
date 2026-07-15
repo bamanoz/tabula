@@ -106,7 +106,7 @@ func (h *Hub) applyMessagePlan(sender *Client, msg *Message, plan messagePlan) {
 		return
 	}
 	delivered := 0
-	if clientIsManagedUserInput(sender) {
+	if h.hasTurnReceiver(sender, plan.tenantID, plan.targetSession) {
 		delivered = h.broadcastToTurnReceivers(plan.tenantID, plan.targetSession, msg, sender, sender)
 		h.mirrorToNonTurnReceivers(plan.tenantID, plan.targetSession, msg, sender, sender)
 	} else {

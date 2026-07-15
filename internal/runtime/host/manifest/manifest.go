@@ -80,9 +80,12 @@ type Kind struct {
 // route hooks in M2, but preserving this field in the normalized manifest keeps
 // the runtime-side parser aligned with current plugin authoring schema.
 type Hook struct {
-	Event     string `toml:"event" json:"event"`
-	Priority  int    `toml:"priority" json:"priority,omitempty"`
-	TimeoutMS *int64 `toml:"timeout_ms" json:"timeout_ms,omitempty"`
+	Event               string               `toml:"event" json:"event"`
+	Priority            int                  `toml:"priority" json:"priority,omitempty"`
+	TimeoutMS           *int64               `toml:"timeout_ms" json:"timeout_ms,omitempty"`
+	Concurrency         wire.ToolConcurrency `toml:"concurrency" json:"concurrency,omitempty"`
+	ExecutionGroup      string               `toml:"execution_group" json:"execution_group,omitempty"`
+	ConflictsWithGroups []string             `toml:"conflicts_with_groups" json:"conflicts_with_groups,omitempty"`
 }
 
 // Requires mirrors the current plugin compatibility block. The runtime does not
@@ -376,7 +379,7 @@ func Load(path string) (Plugin, error) {
 		plugin.Tools = append(plugin.Tools, normalizeTool(parsed))
 	}
 	for _, hook := range raw.Hooks {
-		plugin.Hooks = append(plugin.Hooks, Hook{Event: strings.TrimSpace(hook.Event), Priority: hook.Priority, TimeoutMS: hook.TimeoutMS})
+		plugin.Hooks = append(plugin.Hooks, normalizeHook(hook))
 	}
 	if raw.Requires != nil {
 		plugin.Requires = &Requires{Kernel: strings.TrimSpace(raw.Requires.Kernel), ProtocolVersion: raw.Requires.ProtocolVersion, SDK: strings.TrimSpace(raw.Requires.SDK)}
@@ -489,6 +492,24 @@ func (p Plugin) Validate() error {
 		}
 		if hook.TimeoutMS != nil && *hook.TimeoutMS < 0 {
 			return fmt.Errorf("hooks[%d].timeout_ms must be >= 0", i)
+		}
+		switch hook.Concurrency {
+		case wire.ToolConcurrencySerial, wire.ToolConcurrencyParallel:
+		default:
+			return fmt.Errorf("hooks[%d].concurrency %q must be serial or parallel", i, hook.Concurrency)
+		}
+		if !executionGroupPattern.MatchString(hook.ExecutionGroup) {
+			return fmt.Errorf("hooks[%d].execution_group %q is invalid", i, hook.ExecutionGroup)
+		}
+		seen := map[string]struct{}{}
+		for j, group := range hook.ConflictsWithGroups {
+			if !executionGroupPattern.MatchString(group) {
+				return fmt.Errorf("hooks[%d].conflicts_with_groups[%d] %q is invalid", i, j, group)
+			}
+			if _, dup := seen[group]; dup {
+				return fmt.Errorf("hooks[%d].conflicts_with_groups has duplicate %q", i, group)
+			}
+			seen[group] = struct{}{}
 		}
 	}
 	if p.WorkerMode == wire.WorkerModeCold && len(p.Hooks) > 0 {
@@ -730,7 +751,14 @@ func (p Plugin) Capability() wire.Capability {
 	sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
 	hooks := make([]wire.HookSpec, 0, len(p.Hooks))
 	for _, hook := range p.Hooks {
-		hooks = append(hooks, wire.HookSpec{Event: hook.Event, Priority: hook.Priority, TimeoutMS: hook.TimeoutMS})
+		hooks = append(hooks, wire.HookSpec{
+			Event:               hook.Event,
+			Priority:            hook.Priority,
+			TimeoutMS:           hook.TimeoutMS,
+			Concurrency:         hook.Concurrency,
+			ExecutionGroup:      hook.ExecutionGroup,
+			ConflictsWithGroups: append([]string(nil), hook.ConflictsWithGroups...),
+		})
 	}
 	sort.Slice(hooks, func(i, j int) bool {
 		if hooks[i].Event == hooks[j].Event {
@@ -797,6 +825,35 @@ func normalizeTool(tool Tool) Tool {
 	}
 	groups := make([]string, 0, len(tool.ConflictsWithGroups))
 	for _, group := range tool.ConflictsWithGroups {
+		group = strings.TrimSpace(group)
+		if group == "" {
+			continue
+		}
+		groups = append(groups, group)
+	}
+	if len(groups) == 0 {
+		groups = []string{normalized.ExecutionGroup}
+	}
+	normalized.ConflictsWithGroups = groups
+	return normalized
+}
+
+func normalizeHook(hook Hook) Hook {
+	normalized := Hook{
+		Event:          strings.TrimSpace(hook.Event),
+		Priority:       hook.Priority,
+		TimeoutMS:      hook.TimeoutMS,
+		Concurrency:    hook.Concurrency,
+		ExecutionGroup: strings.TrimSpace(hook.ExecutionGroup),
+	}
+	if normalized.Concurrency == "" {
+		normalized.Concurrency = wire.ToolConcurrencySerial
+	}
+	if normalized.ExecutionGroup == "" {
+		normalized.ExecutionGroup = "hook-" + normalized.Event
+	}
+	groups := make([]string, 0, len(hook.ConflictsWithGroups))
+	for _, group := range hook.ConflictsWithGroups {
 		group = strings.TrimSpace(group)
 		if group == "" {
 			continue

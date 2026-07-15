@@ -222,7 +222,7 @@ tests = ["tests/test_openspec.py"]
 
 [suites.subagents]
 set = "empty"
-components = ["base:sessions", "drivers:driver", "subagents:subagent", "subagents:subagent-acp", "subagents:subagents"]
+components = ["base:sessions", "drivers:driver", "workspace:exec", "subagents:subagent", "subagents:subagent-acp", "subagents:subagents"]
 tests = ["tests/test_subagents.py"]
 
 [suites.compaction]

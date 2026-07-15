@@ -379,7 +379,7 @@ func TestManagedUIJoinDispatchesRuntimeSessionJoinHook(t *testing.T) {
 			"receive_topics": []string{TopicSessionInit, TopicSessionStatus},
 			"auth_token":     env.Token,
 			"meta": map[string]any{
-				"tabula.client_role": "ui",
+				"tabula.client_role": "user",
 				"tabula.managed":     true,
 			},
 		}),

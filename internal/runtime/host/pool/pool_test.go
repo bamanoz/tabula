@@ -622,6 +622,167 @@ sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 	}
 }
 
+func TestPoolRunsDefaultHookWhileWarmToolIsActive(t *testing.T) {
+	dir := t.TempDir()
+	body := `id = "subagents"
+name = "Subagents"
+version = "0.1.0"
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+
+[[tools]]
+name = "subagent_spawn"
+concurrency = "parallel"
+execution_group = "subagents"
+conflicts_with_groups = ["subagents-exclusive"]
+
+[[hooks]]
+event = "before_tool_call"
+priority = 80
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`
+	writePoolPluginBody(t, filepath.Join(dir, "subagents", "plugin.toml"), body)
+	store, err := manifest.NewTenantStore(map[string]manifest.SearchDirs{"tenant-a": {PluginDirs: []string{dir}}})
+	if err != nil {
+		t.Fatalf("NewTenantStore: %v", err)
+	}
+	toolStarted := make(chan struct{}, 1)
+	toolDone := make(chan struct{})
+	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), workerFactory: func(req policy.SpawnReq) *fakeWorker {
+		w := newFakeWorker()
+		w.callFn = func(ctx context.Context, call workerwire.WorkerCall) (workerwire.WorkerResult, error) {
+			toolStarted <- struct{}{}
+			select {
+			case <-toolDone:
+			case <-ctx.Done():
+				return workerwire.WorkerResult{}, ctx.Err()
+			}
+			return workerwire.WorkerResult{Op: workerwire.OpResult, CallID: call.CallID, OK: true, Data: json.RawMessage(`{"ok":true}`)}, nil
+		}
+		return w
+	}}
+	p := New("main", store, fake, Options{AllowedTenants: []string{"tenant-a"}})
+	t.Cleanup(p.Close)
+
+	invokeDone := make(chan wire.InvokeResult, 1)
+	go func() {
+		resp, _ := p.Invoke(context.Background(), wire.Invoke{Op: wire.OpInvoke, CallID: "spawn-sync", TenantID: "tenant-a", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "subagents"}, Tool: "subagent_spawn"})
+		invokeDone <- resp
+	}()
+	<-toolStarted
+
+	hookDone := make(chan *wire.HookEventReply, 1)
+	go func() {
+		reply, _ := p.HookEvent(context.Background(), wire.HookEvent{Op: wire.OpHookEvent, TenantID: "tenant-a", CallID: "hook-1", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "subagents"}, Event: "before_tool_call", ReplyMode: wire.HookReplyModeModifying, Data: json.RawMessage(`{"tool":"exec_run"}`)})
+		hookDone <- reply
+	}()
+
+	select {
+	case reply := <-hookDone:
+		if reply == nil || reply.CallID != "hook-1" {
+			t.Fatalf("hook reply = %#v", reply)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("default hook blocked behind compatible active tool")
+	}
+	close(toolDone)
+	if resp := <-invokeDone; !resp.OK {
+		t.Fatalf("invoke = %#v", resp)
+	}
+}
+
+func TestPoolBlocksHookWhenExecutionGroupsConflict(t *testing.T) {
+	dir := t.TempDir()
+	body := `id = "subagents"
+name = "Subagents"
+version = "0.1.0"
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+
+[[tools]]
+name = "subagent_spawn"
+concurrency = "parallel"
+execution_group = "subagents"
+conflicts_with_groups = ["subagents-exclusive"]
+
+[[hooks]]
+event = "before_tool_call"
+priority = 80
+concurrency = "serial"
+execution_group = "subagents-permissions"
+conflicts_with_groups = ["subagents"]
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`
+	writePoolPluginBody(t, filepath.Join(dir, "subagents", "plugin.toml"), body)
+	store, err := manifest.NewTenantStore(map[string]manifest.SearchDirs{"tenant-a": {PluginDirs: []string{dir}}})
+	if err != nil {
+		t.Fatalf("NewTenantStore: %v", err)
+	}
+	toolStarted := make(chan struct{}, 1)
+	toolDone := make(chan struct{})
+	hookStarted := make(chan struct{}, 1)
+	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), workerFactory: func(req policy.SpawnReq) *fakeWorker {
+		w := newFakeWorker()
+		w.callFn = func(ctx context.Context, call workerwire.WorkerCall) (workerwire.WorkerResult, error) {
+			toolStarted <- struct{}{}
+			select {
+			case <-toolDone:
+			case <-ctx.Done():
+				return workerwire.WorkerResult{}, ctx.Err()
+			}
+			return workerwire.WorkerResult{Op: workerwire.OpResult, CallID: call.CallID, OK: true, Data: json.RawMessage(`{"ok":true}`)}, nil
+		}
+		w.hookFn = func(ctx context.Context, event workerwire.WorkerEvent) (*workerwire.WorkerEventReply, error) {
+			hookStarted <- struct{}{}
+			return &workerwire.WorkerEventReply{Op: workerwire.OpEventReply, CallID: event.CallID, Action: wire.HookActionOK}, nil
+		}
+		return w
+	}}
+	p := New("main", store, fake, Options{AllowedTenants: []string{"tenant-a"}})
+	t.Cleanup(p.Close)
+
+	invokeDone := make(chan wire.InvokeResult, 1)
+	go func() {
+		resp, _ := p.Invoke(context.Background(), wire.Invoke{Op: wire.OpInvoke, CallID: "spawn-sync", TenantID: "tenant-a", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "subagents"}, Tool: "subagent_spawn"})
+		invokeDone <- resp
+	}()
+	<-toolStarted
+
+	hookDone := make(chan *wire.HookEventReply, 1)
+	go func() {
+		reply, _ := p.HookEvent(context.Background(), wire.HookEvent{Op: wire.OpHookEvent, TenantID: "tenant-a", CallID: "hook-1", Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "subagents"}, Event: "before_tool_call", ReplyMode: wire.HookReplyModeModifying, Data: json.RawMessage(`{"tool":"exec_run"}`)})
+		hookDone <- reply
+	}()
+
+	select {
+	case <-hookStarted:
+		t.Fatal("conflicting hook started before active tool completed")
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(toolDone)
+	if resp := <-invokeDone; !resp.OK {
+		t.Fatalf("invoke = %#v", resp)
+	}
+	select {
+	case reply := <-hookDone:
+		if reply == nil || reply.CallID != "hook-1" {
+			t.Fatalf("hook reply = %#v", reply)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("conflicting hook did not run after tool completed")
+	}
+}
+
 func TestPoolBlocksConflictingWarmExecutionGroups(t *testing.T) {
 	dir := t.TempDir()
 	body := `id = "fs"

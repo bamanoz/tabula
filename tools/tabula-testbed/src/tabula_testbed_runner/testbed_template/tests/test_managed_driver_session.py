@@ -60,7 +60,7 @@ class ManagedDriverSessionInstalled(unittest.TestCase):
         client = TestbedClient(
             self.url,
             name="testbed-managed-ui",
-            meta={"tabula.client_role": "ui", "tabula.managed": True},
+            meta={"tabula.client_role": "user", "tabula.managed": True},
         )
         try:
             init = client.connect_join(

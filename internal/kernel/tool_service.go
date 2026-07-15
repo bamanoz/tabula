@@ -352,8 +352,6 @@ func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName stri
 			s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: runtime tool %s is unavailable", toolName), nil, false)
 			return
 		}
-		releaseRuntimeTarget := s.hub.markRuntimeTargetBusy(pickedRuntimeID, entry.Target)
-		defer releaseRuntimeTarget()
 		unregisterActiveCall := s.registerActiveRuntimeCall(tenantID, session, toolID, activeRuntimeCall{callID: toolID, conn: conn})
 		defer unregisterActiveCall()
 		deadline := resolveToolDeadline(entry.DeadlineMs)

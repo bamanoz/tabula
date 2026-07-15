@@ -61,7 +61,7 @@ func (e *testEnv) connectHook(name string, hooks []HookSubscription) *websocket.
 }
 
 func (e *testEnv) connectManagedUIAndJoin(name, session string, sends, receives []string) *websocket.Conn {
-	return e.connectManagedUserInputAndJoin(name, "ui", session, sends, receives)
+	return e.connectManagedUserInputAndJoin(name, "user", session, sends, receives)
 }
 
 func (e *testEnv) connectManagedUserInputAndJoin(name, role, session string, sends, receives []string) *websocket.Conn {
@@ -679,74 +679,70 @@ func TestHookBeforeTurn_QueuedInputRunsAtDispatchTime(t *testing.T) {
 }
 
 func TestHookBeforeTurn_ManagedInputQueuesWhenReceiverDisconnectsDuringHook(t *testing.T) {
-	for _, role := range []string{"ui", "api"} {
-		t.Run(role, func(t *testing.T) {
-			env := newTestEnv(t)
-			hook := env.connectHook("memory", []HookSubscription{{Event: "before_turn", Priority: 100}})
+	env := newTestEnv(t)
+	hook := env.connectHook("memory", []HookSubscription{{Event: "before_turn", Priority: 100}})
 
-			gw := env.connectManagedUserInputAndJoin("gw", role, "s1", []string{TopicMessageUser}, []string{TopicTurnDone})
-			drv := env.connectAndJoin("drv", "s1", []string{TopicTurnDone}, []string{TopicMessageUser})
+	gw := env.connectManagedUserInputAndJoin("gw", "user", "s1", []string{TopicMessageUser}, []string{TopicTurnDone})
+	drv := env.connectAndJoin("drv", "s1", []string{TopicTurnDone}, []string{TopicMessageUser})
 
-			go func() {
-				writeJSON(t, gw, userMessage("hello"))
-			}()
+	go func() {
+		writeJSON(t, gw, userMessage("hello"))
+	}()
 
-			hookMsg := readMsg(t, hook)
-			if hookMsg.Type != "hook" || hookMsg.Name != "before_turn" {
-				t.Fatalf("expected hook/before_turn, got %s/%s", hookMsg.Type, hookMsg.Name)
-			}
-			if err := drv.Close(); err != nil {
-				t.Fatalf("close driver: %v", err)
-			}
-			waitForNoTurnReceiver(t, env.Hub, tenant.DefaultID, "s1", "gw")
+	hookMsg := readMsg(t, hook)
+	if hookMsg.Type != "hook" || hookMsg.Name != "before_turn" {
+		t.Fatalf("expected hook/before_turn, got %s/%s", hookMsg.Type, hookMsg.Name)
+	}
+	if err := drv.Close(); err != nil {
+		t.Fatalf("close driver: %v", err)
+	}
+	waitForNoTurnReceiver(t, env.Hub, tenant.DefaultID, "s1", "gw")
 
-			writeJSON(t, hook, Message{
-				Type:    "hook_reply",
-				ID:      hookMsg.ID,
-				Action:  "modify",
-				Payload: json.RawMessage(`{"context":"remembered"}`),
-			})
-			status := readMsg(t, gw)
-			if status.Type != string(MsgEvent) || status.Topic != TopicSessionStatus {
-				t.Fatalf("gateway expected waiting status, got %+v", status)
-			}
-			var statusData map[string]any
-			if err := json.Unmarshal(status.Data, &statusData); err != nil {
-				t.Fatalf("unmarshal waiting status data: %v", err)
-			}
-			if statusData["state"] != "waiting_for_driver" || statusData["reason"] != "turn_receiver_unavailable" {
-				t.Fatalf("unexpected waiting status data: %#v", statusData)
-			}
+	writeJSON(t, hook, Message{
+		Type:    "hook_reply",
+		ID:      hookMsg.ID,
+		Action:  "modify",
+		Payload: json.RawMessage(`{"context":"remembered"}`),
+	})
+	status := readMsg(t, gw)
+	if status.Type != string(MsgEvent) || status.Topic != TopicSessionStatus {
+		t.Fatalf("gateway expected waiting status, got %+v", status)
+	}
+	var statusData map[string]any
+	if err := json.Unmarshal(status.Data, &statusData); err != nil {
+		t.Fatalf("unmarshal waiting status data: %v", err)
+	}
+	if statusData["state"] != "waiting_for_driver" || statusData["reason"] != "turn_receiver_unavailable" {
+		t.Fatalf("unexpected waiting status data: %#v", statusData)
+	}
 
-			replacement := env.connectAndJoin("drv2", "s1", []string{TopicTurnDone}, []string{TopicMessageUser})
-			queuedHook := readMsg(t, hook)
-			if queuedHook.Type != "hook" || queuedHook.Name != "before_turn" {
-				t.Fatalf("expected queued hook/before_turn, got %s/%s", queuedHook.Type, queuedHook.Name)
-			}
-			writeJSON(t, hook, Message{
-				Type:    "hook_reply",
-				ID:      queuedHook.ID,
-				Action:  "modify",
-				Payload: json.RawMessage(`{"context":"remembered"}`),
-			})
-			queued := readMsg(t, replacement)
-			if !isUserMessage(&queued) || messageText(&queued) != "hello" {
-				t.Fatalf("replacement driver expected queued message/hello, got %+v", queued)
-			}
-			var meta map[string]any
-			if err := json.Unmarshal(queued.Meta, &meta); err != nil {
-				t.Fatalf("unmarshal queued message meta: %v", err)
-			}
-			kernel, _ := meta["kernel"].(map[string]any)
-			if kernel[turnContextKernelMetaKey] != "remembered" {
-				t.Fatalf("expected queued turn context remembered, got %#v", kernel[turnContextKernelMetaKey])
-			}
-			writeJSON(t, replacement, Message{Type: string(MsgEvent), Topic: TopicTurnDone, Meta: queued.Meta})
-			done := readMsg(t, gw)
-			if done.Type != string(MsgEvent) || done.Topic != TopicTurnDone {
-				t.Fatalf("gateway expected turn.done, got %+v", done)
-			}
-		})
+	replacement := env.connectAndJoin("drv2", "s1", []string{TopicTurnDone}, []string{TopicMessageUser})
+	queuedHook := readMsg(t, hook)
+	if queuedHook.Type != "hook" || queuedHook.Name != "before_turn" {
+		t.Fatalf("expected queued hook/before_turn, got %s/%s", queuedHook.Type, queuedHook.Name)
+	}
+	writeJSON(t, hook, Message{
+		Type:    "hook_reply",
+		ID:      queuedHook.ID,
+		Action:  "modify",
+		Payload: json.RawMessage(`{"context":"remembered"}`),
+	})
+	queued := readMsg(t, replacement)
+	if !isUserMessage(&queued) || messageText(&queued) != "hello" {
+		t.Fatalf("replacement driver expected queued message/hello, got %+v", queued)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(queued.Meta, &meta); err != nil {
+		t.Fatalf("unmarshal queued message meta: %v", err)
+	}
+	kernel, _ := meta["kernel"].(map[string]any)
+	if kernel[turnContextKernelMetaKey] != "remembered" {
+		t.Fatalf("expected queued turn context remembered, got %#v", kernel[turnContextKernelMetaKey])
+	}
+	writeJSON(t, replacement, Message{Type: string(MsgEvent), Topic: TopicTurnDone, Meta: queued.Meta})
+	done := readMsg(t, gw)
+	if done.Type != string(MsgEvent) || done.Topic != TopicTurnDone {
+		t.Fatalf("gateway expected turn.done, got %+v", done)
 	}
 }
 
@@ -754,7 +750,7 @@ func TestHookBeforeTurn_ManagedInputQueuesWhenBroadcastDeliversZero(t *testing.T
 	env := newTestEnv(t)
 	hook := env.connectHook("memory", []HookSubscription{{Event: "before_turn", Priority: 100}})
 
-	gw := env.connectManagedUserInputAndJoin("gw", "api", "s1", []string{TopicMessageUser}, []string{TopicTurnDone, TopicSessionStatus})
+	gw := env.connectManagedUserInputAndJoin("gw", "user", "s1", []string{TopicMessageUser}, []string{TopicTurnDone, TopicSessionStatus})
 	drv := env.connectAndJoin("drv", "s1", []string{TopicTurnDone}, []string{TopicMessageUser})
 
 	go func() {
@@ -785,7 +781,7 @@ func TestHookBeforeTurn_QueuedManagedInputRequeuesWhenBroadcastDeliversZero(t *t
 	env := newTestEnv(t)
 	hook := env.connectHook("memory", []HookSubscription{{Event: "before_turn", Priority: 100}})
 
-	gw := env.connectManagedUserInputAndJoin("gw", "api", "s1", []string{TopicMessageUser}, []string{TopicTurnDone, TopicSessionStatus})
+	gw := env.connectManagedUserInputAndJoin("gw", "user", "s1", []string{TopicMessageUser}, []string{TopicTurnDone, TopicSessionStatus})
 	drv := env.connectAndJoin("drv", "s1", []string{TopicTurnDone}, []string{TopicMessageUser})
 
 	writeJSON(t, gw, userMessage("first"))
@@ -827,7 +823,7 @@ func TestHookBeforeTurn_QueuedManagedInputMirrorsObserversWithoutCountingAsTurnD
 	env := newTestEnv(t)
 	hook := env.connectHook("memory", []HookSubscription{{Event: "before_turn", Priority: 100}})
 
-	gw := env.connectManagedUserInputAndJoin("gw", "api", "s1", []string{TopicMessageUser}, []string{TopicTurnDone, TopicSessionStatus})
+	gw := env.connectManagedUserInputAndJoin("gw", "user", "s1", []string{TopicMessageUser}, []string{TopicTurnDone, TopicSessionStatus})
 	observer := env.connectAndJoin("observer", "s1", nil, []string{TopicMessageUser})
 	drv := env.connectAndJoin("drv", "s1", []string{TopicTurnDone}, []string{TopicMessageUser})
 
@@ -908,7 +904,7 @@ func TestHookBeforeCompaction_FiresBeforeForwardingCompactionStart(t *testing.T)
 	env := newTestEnv(t)
 	hook := env.connectHook("memory", []HookSubscription{{Event: "before_compaction", Priority: 100}})
 
-	ui := env.connectAndJoin("ui", "s1", []string{}, []string{TopicCompactionStart})
+	ui := env.connectAndJoin("user", "s1", []string{}, []string{TopicCompactionStart})
 	drv := env.connectAndJoin("drv", "s1", []string{TopicCompactionStart}, []string{})
 
 	go func() {

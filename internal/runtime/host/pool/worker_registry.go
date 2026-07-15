@@ -85,8 +85,21 @@ func newEntry() *entry {
 	return &entry{activeGroups: map[string]int{}, waitCh: make(chan struct{})}
 }
 
-func (e *entry) canRunLocked(tool manifest.Tool) bool {
-	for _, group := range tool.ConflictsWithGroups {
+type operationSpec struct {
+	ExecutionGroup      string
+	ConflictsWithGroups []string
+}
+
+func toolOperation(tool manifest.Tool) operationSpec {
+	return operationSpec{ExecutionGroup: tool.ExecutionGroup, ConflictsWithGroups: append([]string(nil), tool.ConflictsWithGroups...)}
+}
+
+func hookOperation(hook manifest.Hook) operationSpec {
+	return operationSpec{ExecutionGroup: hook.ExecutionGroup, ConflictsWithGroups: append([]string(nil), hook.ConflictsWithGroups...)}
+}
+
+func (e *entry) canRunLocked(op operationSpec) bool {
+	for _, group := range op.ConflictsWithGroups {
 		if e.activeGroups[group] > 0 {
 			return false
 		}
@@ -94,22 +107,22 @@ func (e *entry) canRunLocked(tool manifest.Tool) bool {
 	return true
 }
 
-func (e *entry) startToolLocked(tool manifest.Tool) {
-	if tool.ExecutionGroup == "" {
+func (e *entry) startOperationLocked(op operationSpec) {
+	if op.ExecutionGroup == "" {
 		return
 	}
-	e.activeGroups[tool.ExecutionGroup]++
+	e.activeGroups[op.ExecutionGroup]++
 }
 
-func (e *entry) finishToolLocked(tool manifest.Tool) {
-	if tool.ExecutionGroup == "" {
+func (e *entry) finishOperationLocked(op operationSpec) {
+	if op.ExecutionGroup == "" {
 		e.notifyWaitersLocked()
 		return
 	}
-	if count := e.activeGroups[tool.ExecutionGroup]; count <= 1 {
-		delete(e.activeGroups, tool.ExecutionGroup)
+	if count := e.activeGroups[op.ExecutionGroup]; count <= 1 {
+		delete(e.activeGroups, op.ExecutionGroup)
 	} else {
-		e.activeGroups[tool.ExecutionGroup] = count - 1
+		e.activeGroups[op.ExecutionGroup] = count - 1
 	}
 	e.notifyWaitersLocked()
 }

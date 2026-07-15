@@ -181,7 +181,7 @@ func clientIsManagedUserInput(c *Client) bool {
 		return false
 	}
 	meta := decodeClientMeta(c.meta)
-	return meta.Managed && (meta.Role == "ui" || meta.Role == "api")
+	return meta.Managed && meta.Role == "user"
 }
 
 func (h *Hub) preferredRuntimeForMessage(sender *Client, tenantID, session string) string {

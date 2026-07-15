@@ -156,7 +156,7 @@ class ApprovalFlowInstalled(unittest.TestCase):
     def connect_client(self, session: str, *, timeout: float = 20) -> TestbedClient:
         deadline = time.time() + timeout
         last_tools: set[str] = set()
-        client = TestbedClient(self.url, name=f"testbed-approvals-{session}", meta={"tabula.client_role": "ui"})
+        client = TestbedClient(self.url, name=f"testbed-approvals-{session}", meta={"tabula.client_role": "user"})
         while time.time() < deadline:
             client.close()
             client.connect(

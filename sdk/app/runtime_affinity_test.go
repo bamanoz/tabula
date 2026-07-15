@@ -53,7 +53,7 @@ func TestWithRuntimeAffinityAddsRuntimeIDToMeta(t *testing.T) {
 		t.Fatalf("Ensure: %v", err)
 	}
 
-	raw, err := WithRuntimeAffinity(json.RawMessage(`{"tabula.client_role":"ui"}`))
+	raw, err := WithRuntimeAffinity(json.RawMessage(`{"tabula.client_role":"user"}`))
 	if err != nil {
 		t.Fatalf("WithRuntimeAffinity: %v", err)
 	}
@@ -64,8 +64,8 @@ func TestWithRuntimeAffinityAddsRuntimeIDToMeta(t *testing.T) {
 	if got[RuntimeIDMetaKey] != meta.RuntimeID {
 		t.Fatalf("%s = %v, want %q", RuntimeIDMetaKey, got[RuntimeIDMetaKey], meta.RuntimeID)
 	}
-	if got["tabula.client_role"] != "ui" {
-		t.Fatalf("tabula.client_role = %v, want ui", got["tabula.client_role"])
+	if got["tabula.client_role"] != "user" {
+		t.Fatalf("tabula.client_role = %v, want user", got["tabula.client_role"])
 	}
 }
 
@@ -73,11 +73,11 @@ func TestWithRuntimeAffinityLeavesMetaUnchangedWhenMissing(t *testing.T) {
 	paths.SetForTests(t.TempDir())
 	t.Cleanup(func() { paths.SetForTests("") })
 
-	raw, err := WithRuntimeAffinity(json.RawMessage(`{"tabula.client_role":"ui"}`))
+	raw, err := WithRuntimeAffinity(json.RawMessage(`{"tabula.client_role":"user"}`))
 	if err != nil {
 		t.Fatalf("WithRuntimeAffinity: %v", err)
 	}
-	if string(raw) != `{"tabula.client_role":"ui"}` {
+	if string(raw) != `{"tabula.client_role":"user"}` {
 		t.Fatalf("meta = %s", string(raw))
 	}
 }

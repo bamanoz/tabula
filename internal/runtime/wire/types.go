@@ -233,12 +233,31 @@ type HookSpec struct {
 	Priority int `json:"priority,omitempty"`
 	// TimeoutMS optionally overrides the default hook timeout.
 	TimeoutMS *int64 `json:"timeout_ms,omitempty"`
+	// Concurrency declares whether this hook may overlap with other inflight operations.
+	Concurrency ToolConcurrency `json:"concurrency,omitempty"`
+	// ExecutionGroup is the plugin-declared execution domain for this hook.
+	ExecutionGroup string `json:"execution_group,omitempty"`
+	// ConflictsWithGroups lists execution groups that must be idle before this hook runs.
+	ConflictsWithGroups []string `json:"conflicts_with_groups,omitempty"`
 }
 
 // Validate returns a protocol error when the hook metadata is incomplete.
 func (h HookSpec) Validate() error {
 	if h.Event == "" {
 		return ProtocolErrorf("hook event is required")
+	}
+	switch h.Concurrency {
+	case "", ToolConcurrencySerial, ToolConcurrencyParallel:
+	default:
+		return ProtocolErrorf("unknown hook concurrency %q", h.Concurrency)
+	}
+	if h.ExecutionGroup == "" && len(h.ConflictsWithGroups) > 0 {
+		return ProtocolErrorf("execution_group is required when conflicts_with_groups is set")
+	}
+	for i, group := range h.ConflictsWithGroups {
+		if group == "" {
+			return ProtocolErrorf("conflicts_with_groups[%d] is required", i)
+		}
 	}
 	return nil
 }

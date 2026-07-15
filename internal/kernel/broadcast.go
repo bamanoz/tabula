@@ -63,10 +63,25 @@ func (h *Hub) broadcastToSessionFrom(tenantID, session, msgType string, msg *Mes
 }
 
 func (h *Hub) broadcastToTurnReceivers(tenantID, session string, msg *Message, sender *Client, exclude *Client) int {
-	delivered := 0
+	receiver := h.pickTurnReceiver(tenantID, session, sender, exclude)
+	if receiver == nil {
+		h.Logger.Debug("broadcast turn input", "session", session, "delivered", 0)
+		return 0
+	}
+	if !receiver.queueMsg(h.prepareRoutedMessage(sender, session, "session", msg)) {
+		h.Logger.Debug("broadcast turn input", "session", session, "delivered", 0, "receiver", receiver.name)
+		return 0
+	}
+	h.Logger.Debug("broadcast turn input", "session", session, "delivered", 1, "receiver", receiver.name)
+	return 1
+}
+
+func (h *Hub) pickTurnReceiver(tenantID, session string, sender *Client, exclude *Client) *Client {
 	if tenantID == "" && sender != nil {
 		tenantID = sender.tenantID
 	}
+	var receiver *Client
+	count := 0
 	for _, c := range h.sessionClients(tenantID, session) {
 		if c == exclude || !c.IsConnected() {
 			continue
@@ -74,13 +89,14 @@ func (h *Hub) broadcastToTurnReceivers(tenantID, session string, msg *Message, s
 		if !c.canReceive(TopicMessageUser) || !c.canSend(TopicTurnDone) {
 			continue
 		}
-		if !c.queueMsg(h.prepareRoutedMessage(sender, session, "session", msg)) {
-			continue
-		}
-		delivered++
+		count++
+		receiver = c
 	}
-	h.Logger.Debug("broadcast turn input", "session", session, "delivered", delivered)
-	return delivered
+	if count > 1 {
+		h.Logger.Warn("ambiguous turn receivers", "tenant", tenantID, "session", session, "count", count)
+		return nil
+	}
+	return receiver
 }
 
 func (h *Hub) mirrorToNonTurnReceivers(tenantID, session string, msg *Message, sender *Client, exclude *Client) int {

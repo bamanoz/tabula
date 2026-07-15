@@ -334,11 +334,13 @@ func (p *Pool) HookEvent(ctx context.Context, in wire.HookEvent) (*wire.HookEven
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", ErrTargetNotFound, in.Target.ID)
 	}
+	hook := pluginHook(plugin, in.Event)
 	e := p.registry.entryFor(p.workerKey(tenantID, plugin))
-	worker, err := p.acquireHookWorker(ctx, e, plugin, tenantID)
+	worker, err := p.acquireWarmOperationSlot(ctx, e, plugin, tenantID, hookOperation(hook))
 	if err != nil {
 		return nil, errors.New(safeWorkerErrorMessage("worker initialization failed", err))
 	}
+	defer p.releaseWarmOperationSlot(e, hookOperation(hook))
 	reply, err := worker.HookEvent(ctx, workerwire.WorkerEvent{
 		CallID:            in.CallID,
 		TenantID:          tenantID,
@@ -364,19 +366,6 @@ func (p *Pool) HookEvent(ctx context.Context, in wire.HookEvent) (*wire.HookEven
 	return &wire.HookEventReply{Op: wire.OpHookEventReply, CallID: reply.CallID, Action: reply.Action, Data: reply.Data, Reason: reply.Reason}, nil
 }
 
-func (p *Pool) acquireHookWorker(ctx context.Context, e *entry, plugin manifest.Plugin, tenantID string) (policy.Worker, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	e.mu.Lock()
-	worker, _, err := p.ensureWorker(ctx, e, plugin, tenantID)
-	e.mu.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	return worker, nil
-}
-
 func (p *Pool) shouldResetWarmWorkerAfterHookError(e *entry, worker policy.Worker) bool {
 	if e == nil || worker == nil {
 		return false
@@ -395,7 +384,7 @@ func (p *Pool) invokeWarm(ctx context.Context, plugin manifest.Plugin, in wire.I
 		return failed(in.CallID, wire.ErrorToolNotFound, fmt.Sprintf("tool %q not found on target %q", in.Tool, in.Target.ID))
 	}
 	e := p.registry.entryFor(p.workerKey(in.TenantID, plugin))
-	worker, err := p.acquireWarmToolSlot(ctx, e, plugin, in.TenantID, tool)
+	worker, err := p.acquireWarmOperationSlot(ctx, e, plugin, in.TenantID, toolOperation(tool))
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return failed(in.CallID, wire.ErrorTimeout, "invoke timed out")
@@ -408,7 +397,7 @@ func (p *Pool) invokeWarm(ctx context.Context, plugin manifest.Plugin, in wire.I
 		}
 		return failed(in.CallID, wire.ErrorInternal, safeWorkerErrorMessage("worker initialization failed", err))
 	}
-	defer p.releaseWarmToolSlot(e, tool)
+	defer p.releaseWarmOperationSlot(e, toolOperation(tool))
 	result, err := worker.Call(ctx, workerwire.WorkerCall{CallID: in.CallID, TenantID: in.TenantID, Tool: in.Tool, Args: in.Args, SessionID: in.SessionID, TurnCorrelationID: in.TurnCorrelationID})
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -436,7 +425,7 @@ func (p *Pool) invokeWarm(ctx context.Context, plugin manifest.Plugin, in wire.I
 	return wire.InvokeResult{Op: wire.OpInvokeResult, CallID: in.CallID, OK: true, Data: append(json.RawMessage(nil), result.Data...)}
 }
 
-func (p *Pool) acquireWarmToolSlot(ctx context.Context, e *entry, plugin manifest.Plugin, tenantID string, tool manifest.Tool) (policy.Worker, error) {
+func (p *Pool) acquireWarmOperationSlot(ctx context.Context, e *entry, plugin manifest.Plugin, tenantID string, op operationSpec) (policy.Worker, error) {
 	for {
 		e.mu.Lock()
 		worker, _, err := p.ensureWorker(ctx, e, plugin, tenantID)
@@ -444,8 +433,8 @@ func (p *Pool) acquireWarmToolSlot(ctx context.Context, e *entry, plugin manifes
 			e.mu.Unlock()
 			return nil, err
 		}
-		if e.canRunLocked(tool) {
-			e.startToolLocked(tool)
+		if e.canRunLocked(op) {
+			e.startOperationLocked(op)
 			e.mu.Unlock()
 			return worker, nil
 		}
@@ -460,12 +449,12 @@ func (p *Pool) acquireWarmToolSlot(ctx context.Context, e *entry, plugin manifes
 	}
 }
 
-func (p *Pool) releaseWarmToolSlot(e *entry, tool manifest.Tool) {
+func (p *Pool) releaseWarmOperationSlot(e *entry, op operationSpec) {
 	if e == nil {
 		return
 	}
 	e.mu.Lock()
-	e.finishToolLocked(tool)
+	e.finishOperationLocked(op)
 	e.mu.Unlock()
 }
 
@@ -513,6 +502,16 @@ func pluginTool(plugin manifest.Plugin, name string) (manifest.Tool, bool) {
 		}
 	}
 	return manifest.Tool{}, false
+}
+
+func pluginHook(plugin manifest.Plugin, event string) manifest.Hook {
+	for _, hook := range plugin.Hooks {
+		if hook.Event == event {
+			return hook
+		}
+	}
+	group := "hook-" + event
+	return manifest.Hook{Event: event, Concurrency: wire.ToolConcurrencySerial, ExecutionGroup: group, ConflictsWithGroups: []string{group}}
 }
 
 func (p *Pool) pluginTool(tenantID string, plugin manifest.Plugin, name string) (manifest.Tool, bool) {

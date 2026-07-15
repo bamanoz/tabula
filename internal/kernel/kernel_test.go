@@ -88,6 +88,60 @@ func TestBroadcastToSessionStampsSessionAndTenantForAllReceivers(t *testing.T) {
 	}
 }
 
+func TestBroadcastToTurnReceiversDeliversToOneReceiver(t *testing.T) {
+	env := newTestEnv(t)
+	driver := addCaptureClient(t, env.Hub, "driver", "child", []string{TopicMessageUser}, nil)
+	driver.sends = map[string]bool{TopicTurnDone: true}
+
+	delivered := env.Hub.broadcastToTurnReceivers(tenant.DefaultID, "child", &Message{Type: string(MsgEvent), Topic: TopicMessageUser, Data: mustMarshalRaw(map[string]any{"text": "run once"})}, nil, nil)
+
+	if delivered != 1 {
+		t.Fatalf("expected one turn receiver delivery, got %d", delivered)
+	}
+	msg := waitForMessage(t, driver.recvCh)
+	if msg.Session != "child" || msg.Topic != TopicMessageUser {
+		t.Fatalf("unexpected message: %+v", msg)
+	}
+}
+
+func TestBroadcastToTurnReceiversRejectsAmbiguousReceivers(t *testing.T) {
+	env := newTestEnv(t)
+	first := addCaptureClient(t, env.Hub, "first-driver", "child", []string{TopicMessageUser}, nil)
+	second := addCaptureClient(t, env.Hub, "second-driver", "child", []string{TopicMessageUser}, nil)
+	first.sends = map[string]bool{TopicTurnDone: true}
+	second.sends = map[string]bool{TopicTurnDone: true}
+
+	delivered := env.Hub.broadcastToTurnReceivers(tenant.DefaultID, "child", &Message{Type: string(MsgEvent), Topic: TopicMessageUser, Data: mustMarshalRaw(map[string]any{"text": "run once"})}, nil, nil)
+
+	if delivered != 0 {
+		t.Fatalf("expected ambiguous turn receiver delivery to fail closed, got %d", delivered)
+	}
+	if got := readCaptureMessageTimeout(first.recvCh, 50*time.Millisecond); got != nil {
+		t.Fatalf("first driver received ambiguous turn input: %+v", got)
+	}
+	if got := readCaptureMessageTimeout(second.recvCh, 50*time.Millisecond); got != nil {
+		t.Fatalf("second driver received ambiguous turn input: %+v", got)
+	}
+}
+
+func TestNonManagedUserMessageTargetsSingleTurnReceiver(t *testing.T) {
+	env := newTestEnv(t)
+	bootstrap := addCaptureClient(t, env.Hub, "child-bootstrap", "child", []string{TopicSessionInit}, nil)
+	driver := addCaptureClient(t, env.Hub, "driver", "child", []string{TopicMessageUser}, nil)
+	observer := addCaptureClient(t, env.Hub, "observer", "child", []string{TopicMessageUser}, nil)
+	driver.sends = map[string]bool{TopicTurnDone: true}
+
+	env.Hub.handleUserMessage(bootstrap, &Message{Type: string(MsgEvent), Topic: TopicMessageUser, Data: mustMarshalRaw(map[string]any{"text": "run once"})})
+
+	msg := waitForMessage(t, driver.recvCh)
+	if msg.Session != "child" || msg.Topic != TopicMessageUser {
+		t.Fatalf("unexpected turn receiver message: %+v", msg)
+	}
+	if got := readCaptureMessageTimeout(observer.recvCh, 50*time.Millisecond); got == nil {
+		t.Fatal("observer did not receive mirrored user message")
+	}
+}
+
 // wsURL returns the WebSocket URL for the test server.
 func (e *testEnv) wsURL() string {
 	return "ws" + strings.TrimPrefix(e.Server.URL, "http") + "/ws"
@@ -933,7 +987,7 @@ func TestLateExchangeApprovalReplyAfterRequesterDisconnectIsRejected(t *testing.
 	ui := addCaptureClient(t, hub, "gateway-web", "main", []string{TopicExchangeApprove, string(MsgError)}, []string{TopicExchangeApprove, string(MsgError)})
 	approval.sends[TopicExchangeApprove] = true
 	ui.sends[TopicExchangeApprove] = true
-	ui.meta = mustMarshalRaw(map[string]any{"tabula.client_role": "ui", "tabula.managed": true})
+	ui.meta = mustMarshalRaw(map[string]any{"tabula.client_role": "user", "tabula.managed": true})
 
 	hub.HandleMessage(approval, &Message{
 		V:     ProtocolVersion,
@@ -976,7 +1030,7 @@ func TestPickExchangeResponderPrefersManagedUIClient(t *testing.T) {
 	ui.sends[TopicExchangeChoose] = true
 	generic.id = 1
 	ui.id = 2
-	ui.meta = mustMarshalRaw(map[string]any{"tabula.client_role": "ui", "tabula.managed": true})
+	ui.meta = mustMarshalRaw(map[string]any{"tabula.client_role": "user", "tabula.managed": true})
 
 	hub.HandleMessage(requester, &Message{
 		V:     ProtocolVersion,
@@ -1005,8 +1059,8 @@ func TestPickExchangeResponderFansOutToAllEqualPreferredUIClients(t *testing.T) 
 	newer.sends[TopicExchangeChoose] = true
 	older.id = 10
 	newer.id = 11
-	older.meta = mustMarshalRaw(map[string]any{"tabula.client_role": "ui", "tabula.managed": true})
-	newer.meta = mustMarshalRaw(map[string]any{"tabula.client_role": "ui", "tabula.managed": true})
+	older.meta = mustMarshalRaw(map[string]any{"tabula.client_role": "user", "tabula.managed": true})
+	newer.meta = mustMarshalRaw(map[string]any{"tabula.client_role": "user", "tabula.managed": true})
 
 	hub.HandleMessage(requester, &Message{
 		V:     ProtocolVersion,
@@ -1432,7 +1486,7 @@ func TestUserMessageQueuesUntilTurnReceiverJoins(t *testing.T) {
 		t.Fatal("gateway client should exist")
 	}
 	gatewayClient.meta = mustMarshalRaw(map[string]any{
-		"tabula.client_role": "ui",
+		"tabula.client_role": "user",
 		"tabula.managed":     true,
 	})
 

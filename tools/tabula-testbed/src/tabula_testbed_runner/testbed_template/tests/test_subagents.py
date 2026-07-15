@@ -6,6 +6,7 @@ import time
 import os
 from pathlib import Path
 import json
+import signal
 import subprocess
 import sys
 import tomllib
@@ -80,6 +81,46 @@ for raw in sys.stdin:
         sys.stdout.write(json.dumps(note) + '\\n')
         sys.stdout.write(json.dumps({'jsonrpc': '2.0', 'id': message['id'], 'result': {'stopReason': 'end_turn'}}) + '\\n')
         sys.stdout.flush()
+    elif method in {'session/cancel', 'session/close'}:
+        sys.stdout.write(json.dumps({'jsonrpc': '2.0', 'id': message['id'], 'result': {}}) + '\\n')
+        sys.stdout.flush()
+    else:
+        sys.stdout.write(json.dumps({'jsonrpc': '2.0', 'id': message.get('id'), 'error': {'code': -32601, 'message': f'method not found: {method}'}}) + '\\n')
+        sys.stdout.flush()
+"""
+
+
+HANGING_ACP = """#!/usr/bin/env python3
+import json
+import sys
+import time
+from uuid import uuid4
+
+session_id = None
+
+for raw in sys.stdin:
+    if not raw.strip():
+        continue
+    message = json.loads(raw)
+    method = message.get('method')
+    if method == 'initialize':
+        sys.stdout.write(json.dumps({
+            'jsonrpc': '2.0',
+            'id': message['id'],
+            'result': {
+                'protocolVersion': 1,
+                'agentInfo': {'name': 'hanging-acp', 'version': '0.1.0'},
+                'agentCapabilities': {'loadSession': True, 'promptCapabilities': {'embeddedContext': True}, 'sessionCapabilities': {'close': {}, 'list': {}, 'resume': {}}},
+                'authMethods': [],
+            },
+        }) + '\\n')
+        sys.stdout.flush()
+    elif method == 'session/new':
+        session_id = f'acp-{uuid4().hex[:8]}'
+        sys.stdout.write(json.dumps({'jsonrpc': '2.0', 'id': message['id'], 'result': {'sessionId': session_id}}) + '\\n')
+        sys.stdout.flush()
+    elif method == 'session/prompt':
+        time.sleep(300)
     elif method in {'session/cancel', 'session/close'}:
         sys.stdout.write(json.dumps({'jsonrpc': '2.0', 'id': message['id'], 'result': {}}) + '\\n')
         sys.stdout.flush()
@@ -288,6 +329,71 @@ class SubagentsPluginSmoke(unittest.TestCase):
             client.refresh_init("subagent-sa-empty-tools")
             listed = client.call_tool("subagent_list", {}, timeout=10).json()
             self.assertIn("items", listed)
+
+    def test_sync_subagent_does_not_block_child_tool_hooks(self):
+        home = Path(self.tabula_home)
+        fake_acp = home / "data" / "testbed" / "hanging-acp-agent.py"
+        fake_acp.parent.mkdir(parents=True, exist_ok=True)
+        fake_acp.write_text(HANGING_ACP, encoding="utf-8")
+        python = home / ".venv" / "bin" / "python3"
+        if not python.is_file():
+            python = Path(sys.executable)
+        sid = f"sa-sync-hook-busy-{int(time.time() * 1000)}"
+        parent = TestbedClient(self.url, name="testbed-subagents-sync-parent")
+        child = TestbedClient(self.url, name="testbed-subagents-sync-child")
+        observer = TestbedClient(self.url, name="testbed-subagents-sync-observer")
+        child_session = f"subagent-{sid}"
+        registry = home / "tenants" / "default" / "state" / "plugins" / "subagents" / f"{sid}.json"
+        try:
+            parent.connect_join("testbed-subagents-sync-parent")
+            parent.wait_tools({"subagent_spawn"}, session="testbed-subagents-sync-parent")
+            observer.connect_join(child_session)
+            parent.call_tool_async(
+                "subagent_spawn",
+                {
+                    "type": "acp",
+                    "task": "hang until test kills process",
+                    "id": sid,
+                    "mode": "sync",
+                    "timeout": 60,
+                    "acp_command": [str(python), str(fake_acp)],
+                },
+                timeout=60,
+            )
+
+            deadline = time.time() + 10
+            while time.time() < deadline and not registry.is_file():
+                time.sleep(0.1)
+            self.assertTrue(registry.is_file(), f"subagent registry was not created: {registry}")
+
+            visible_prompt = observer.wait_for(
+                lambda msg: msg.get("type") == "event"
+                and msg.get("topic") == "message.user"
+                and isinstance(msg.get("data"), dict)
+                and "hang until test kills process" in str(msg["data"].get("text") or ""),
+                timeout=10,
+            )
+            self.assertTrue(visible_prompt.get("meta", {}).get("initial_task"), visible_prompt)
+
+            child.connect_join(child_session)
+            child.wait_tools({"exec_run"}, session=child_session)
+            payload = child.call_tool("exec_run", {"cmd": "printf child-exec-ok"}, timeout=10).json()
+            self.assertNotEqual(payload.get("error"), "not_invoked", payload)
+            self.assertEqual(payload.get("stdout"), "child-exec-ok")
+        finally:
+            try:
+                if registry.is_file():
+                    entry = json.loads(registry.read_text(encoding="utf-8"))
+                    pid = int(entry.get("pid") or 0)
+                    if pid > 0:
+                        os.killpg(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except Exception:
+                pass
+            observer.close()
+            child.close()
+            parent.close()
 
     def test_subagent_wait_timeout_is_structured_and_capped(self):
         home = Path(self.tabula_home)
