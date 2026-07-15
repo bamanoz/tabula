@@ -55,13 +55,50 @@ function Runtime-SocketPath {
     return ($Matches[1])
 }
 
+function Load-AppEnv {
+    if ($env:TABULA_APP_ID) {
+        return
+    }
+    $runtimeConfig = Join-Path $env:TABULA_HOME "config" "runtime.toml"
+    if (-not (Test-Path $runtimeConfig)) {
+        return
+    }
+    $tenantIDs = New-Object System.Collections.Generic.List[string]
+    $inTenant = $false
+    foreach ($line in Get-Content $runtimeConfig) {
+        $trimmed = $line.Trim()
+        if ($trimmed -eq "[[tenant]]") {
+            $inTenant = $true
+            continue
+        }
+        if ($trimmed.StartsWith("[[") -or ($trimmed.StartsWith("[") -and $trimmed -ne "[[tenant]]")) {
+            $inTenant = $false
+            continue
+        }
+        if ($inTenant -and $trimmed -match '^id\s*=\s*"([^"]+)"\s*$') {
+            $tenantIDs.Add($Matches[1])
+        }
+    }
+    if ($tenantIDs.Count -eq 1) {
+        $env:TABULA_APP_ID = $tenantIDs[0]
+        if (-not $env:TABULA_TENANT_ID) {
+            $env:TABULA_TENANT_ID = $tenantIDs[0]
+        }
+        if (-not $env:TABULA_TENANT_DIR) {
+            $env:TABULA_TENANT_DIR = Join-Path (Join-Path $env:TABULA_HOME "tenants") $tenantIDs[0]
+        }
+    }
+}
+
 Load-TabulaEnv
+Load-AppEnv
 
 $binDir = Join-Path $env:TABULA_HOME "bin"
 $tabulaBin = Join-Path $binDir "tabula.exe"
 $runtimeBin = Join-Path $binDir "tabula-runtime.exe"
+$venv = if ($env:TABULA_VENV) { $env:TABULA_VENV } else { Join-Path $env:TABULA_HOME ".venv" }
 if (-not $env:TABULA_PATH) {
-    $env:TABULA_PATH = "$(Join-Path $env:TABULA_HOME '.venv' 'Scripts');$binDir;$env:Path"
+    $env:TABULA_PATH = "$(Join-Path $venv 'Scripts');$binDir;$env:Path"
 }
 $env:Path = $env:TABULA_PATH
 if ($env:PYTHONPATH) {

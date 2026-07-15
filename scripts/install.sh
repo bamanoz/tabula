@@ -435,9 +435,9 @@ for a in data.get('assets', []):
   local env_file="$TABULA_HOME/.env"
   save_path_to_env "$env_file"
 
-  # Env file for API keys (skills read it at startup, no kernel restart needed)
-  if [ ! -f "$env_file" ]; then
-    printf '# API keys — loaded by skills at startup.\nANTHROPIC_API_KEY=\n# OPENAI_API_KEY=\n# TABULA_PROVIDER=anthropic\n' >> "$env_file"
+  # Env file for API keys (plugins read it at startup, no kernel restart needed)
+  if ! grep -q '^ANTHROPIC_API_KEY=' "$env_file" 2>/dev/null; then
+    printf '\n# API keys — loaded by plugins at startup.\nANTHROPIC_API_KEY=\n# OPENAI_API_KEY=\n# TABULA_PROVIDER=anthropic\n' >> "$env_file"
     chmod 600 "$env_file"
   fi
 

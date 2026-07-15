@@ -24,6 +24,7 @@ class PackageSkillsTests(unittest.TestCase):
 
         self.assertIn("config/global.toml.example", names)
         self.assertNotIn("config/global.toml", names)
+        self.assertFalse(any(".egg-info" in name for name in names))
 
 
 if __name__ == "__main__":

@@ -29,13 +29,14 @@ function Load-TabulaEnv {
 
 Load-TabulaEnv
 
-$VenvPython = Join-Path $env:TABULA_HOME ".venv" "Scripts" "python.exe"
+$Venv = if ($env:TABULA_VENV) { $env:TABULA_VENV } else { Join-Path $env:TABULA_HOME ".venv" }
+$VenvPython = Join-Path $Venv "Scripts" "python.exe"
 
 if (-not (Test-Path $VenvPython)) {
-    Write-Error "venv not found at $env:TABULA_HOME\.venv — run install.ps1 first."
+    Write-Error "venv not found at $Venv — run install.ps1 first."
     exit 1
 }
 
-$Gateway = Join-Path $env:TABULA_HOME "skills" "gateway-cli" "run.py"
+$Gateway = Join-Path $env:TABULA_HOME "apps" "gateway-cli" "run.py"
 
 & $VenvPython $Gateway @args

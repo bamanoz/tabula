@@ -24,6 +24,7 @@ tar -czf "extra/tabula-skills-${VERSION}.tar.gz" \
   --exclude='skills/.venv' \
   --exclude='tools/tabula-distro/**/__pycache__' \
   --exclude='tools/tabula-distro/**/*.pyc' \
+  --exclude='tools/tabula-distro/**/*.egg-info' \
   --exclude='tools/tabula-distro/tests' \
   --exclude='tools/tabula-distro/.pytest_cache' \
   config/global.toml.example \

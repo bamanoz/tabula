@@ -85,6 +85,30 @@ function Check-Python {
     return $py
 }
 
+function Save-PathToEnv {
+    param([string]$EnvFile)
+    $PathLine = "TABULA_PATH=$Venv\Scripts;$BinDir;$env:Path"
+    if (Test-Path $EnvFile) {
+        $lines = Get-Content $EnvFile | Where-Object { $_ -notmatch '^TABULA_PATH=' }
+        @($lines + $PathLine) | Set-Content -Path $EnvFile
+    } else {
+        Set-Content -Path $EnvFile -Value $PathLine
+    }
+    Ok "Saved login PATH to .env"
+}
+
+function Ensure-EnvTemplate {
+    param([string]$EnvFile)
+    if (-not (Test-Path $EnvFile)) {
+        Set-Content -Path $EnvFile -Value "# API keys - loaded by plugins at startup.`nANTHROPIC_API_KEY=`n# OPENAI_API_KEY=`n# TABULA_PROVIDER=anthropic"
+        return
+    }
+    $content = Get-Content $EnvFile -Raw
+    if ($content -notmatch '(?m)^ANTHROPIC_API_KEY=') {
+        Add-Content -Path $EnvFile -Value "`n# API keys - loaded by plugins at startup.`nANTHROPIC_API_KEY=`n# OPENAI_API_KEY=`n# TABULA_PROVIDER=anthropic"
+    }
+}
+
 function Install-PythonDeps {
     $RequirementsUrl = "https://raw.githubusercontent.com/$Repo/$Version/scripts/requirements-runtime.txt"
     $RequirementsPath = Join-Path $TmpDir "requirements-runtime.txt"
@@ -228,9 +252,22 @@ try {
 
     # Extract skills tarball
     tar -xzf (Join-Path $TmpDir $SkillsArchive) -C $TabulaHome
+    $ConfigDir = Join-Path $TabulaHome "config"
+    $GlobalConfig = Join-Path $ConfigDir "global.toml"
+    $GlobalExample = Join-Path $ConfigDir "global.toml.example"
+    if (-not (Test-Path $GlobalConfig) -and (Test-Path $GlobalExample)) {
+        Copy-Item $GlobalExample $GlobalConfig
+    }
     # Record installed kernel version for tabula-distro compatibility checks.
     Set-Content -Path (Join-Path $TabulaHome "VERSION") -Value $VerBare -NoNewline
-    $InstalledBinDir = Join-Path $TabulaHome "bin"
+    # Record the supported runtime plugin compatibility range so the distro tool
+    # can enforce requires.protocol_version offline.
+    $ProtocolPath = Join-Path $TabulaHome "PROTOCOL"
+    try {
+        & (Join-Path $BinDir "tabula.exe") --protocol | Set-Content -Path $ProtocolPath
+    } catch {
+        Set-Content -Path $ProtocolPath -Value '{"plugin_protocol_min":1,"plugin_protocol_max":1}'
+    }
     Ok "Skills and config installed"
 
     # Restore user config if it existed
@@ -298,11 +335,10 @@ try {
         Install-Service
     }
 
-    # Env file for API keys
+    # Env file for PATH and API keys
     $EnvFile = Join-Path $TabulaHome ".env"
-    if (-not (Test-Path $EnvFile)) {
-        Set-Content -Path $EnvFile -Value "ANTHROPIC_API_KEY=`n# OPENAI_API_KEY=`n# TABULA_PROVIDER=anthropic"
-    }
+    Save-PathToEnv $EnvFile
+    Ensure-EnvTemplate $EnvFile
 
     Write-Host ""
     Write-Host "Tabula $Version kernel installed!" -ForegroundColor Green
@@ -310,8 +346,8 @@ try {
 
     if ($PostInstallArgs.Count -gt 0) {
         $TabulaInstall = Join-Path $BinDir "tabula-install.exe"
-        Info "Running: tabula-install $($PostInstallArgs -join ' ')"
-        & $TabulaInstall @PostInstallArgs
+        Info "Running: tabula-install --home $TabulaHome $($PostInstallArgs -join ' ')"
+        & $TabulaInstall --home $TabulaHome @PostInstallArgs
         exit $LASTEXITCODE
     }
 
