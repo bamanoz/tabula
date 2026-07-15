@@ -74,16 +74,53 @@ func (h *Hub) requestExchangeForPendingTool(pending pendingToolCall, blocked *Ho
 		topic = TopicExchangeApprove
 	}
 	responders := h.pickExchangeResponders(nil, pending.TenantID, pending.Session, topic)
+	responderSet := clientSet(responders)
 	h.suspendedExchangeMu.Lock()
-	h.suspendedExchanges[pending.ExchangeID] = pendingSuspendedExchange{responders: clientSet(responders), tenantID: pending.TenantID, session: pending.Session, exchangeID: pending.ExchangeID}
+	h.suspendedExchanges[pending.ExchangeID] = pendingSuspendedExchange{responders: responderSet, tenantID: pending.TenantID, session: pending.Session, exchangeID: pending.ExchangeID}
 	h.suspendedExchangeMu.Unlock()
+	data := exchangeRequestData(pending, blocked)
+	h.broadcastSuspendedExchangePending(pending, topic, responderSet, data)
 	if len(responders) == 0 {
 		h.Logger.Warn("no responder for suspended exchange", "exchange_id", pending.ExchangeID, "topic", topic, "tool", pending.ToolName, "tool_call_id", pending.ToolID, "tenant_id", pending.TenantID, "session", pending.Session)
 		return
 	}
-	data := exchangeRequestData(pending, blocked)
 	for _, responder := range responders {
 		responder.SendMsg(h.prepareRoutedMessage(nil, pending.Session, "exchange", &Message{Type: string(MsgRequest), Topic: topic, ID: pending.ExchangeID, Session: pending.Session, TenantID: pending.TenantID, Data: data}))
+	}
+}
+
+func (h *Hub) broadcastSuspendedExchangePending(pending pendingToolCall, topic string, responders map[*Client]bool, data json.RawMessage) {
+	if h == nil {
+		return
+	}
+	payload := map[string]any{
+		"type":         "exchange.pending",
+		"id":           pending.ExchangeID,
+		"topic":        topic,
+		"session":      pending.Session,
+		"tenant_id":    pending.TenantID,
+		"tool":         pending.ToolName,
+		"tool_call_id": pending.ToolID,
+	}
+	if len(data) > 0 {
+		var request map[string]any
+		if json.Unmarshal(data, &request) == nil {
+			for key, value := range request {
+				if _, exists := payload[key]; !exists {
+					payload[key] = value
+				}
+			}
+		}
+	}
+	msg := &Message{Type: string(MsgEvent), Topic: topic, ID: pending.ExchangeID, Session: pending.Session, TenantID: pending.TenantID, Data: mustMarshalRaw(payload)}
+	for _, client := range h.allClients() {
+		if client == nil || responders[client] || !client.IsConnected() || !client.canReceiveGlobal(topic) {
+			continue
+		}
+		if client.tenantID != "" && client.tenantID != pending.TenantID {
+			continue
+		}
+		client.SendMsg(h.prepareRoutedMessage(nil, pending.Session, "exchange", msg))
 	}
 }
 

@@ -347,6 +347,56 @@ func TestSuspendedApprovalResendsWhenUIRejoins(t *testing.T) {
 	}
 }
 
+func TestSuspendedExchangeBroadcastsPendingToGlobalListeners(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+
+	env := newTestEnvWithPluginTool(t)
+	hook := env.connectHook("approval", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
+	drv := env.connectAndJoinTenant("driver", tenant.DefaultID, "subagent-sa-test", []string{TopicToolCall}, []string{TopicToolResult})
+	targetUI := env.connectAndJoinTenant("target-ui", tenant.DefaultID, "subagent-sa-test", []string{TopicExchangeApprove}, []string{TopicExchangeApprove})
+
+	globalUI := env.dial()
+	writeJSON(t, globalUI, Message{
+		V:    ProtocolVersion,
+		Type: string(MsgHello),
+		Data: mustMarshalRaw(map[string]any{
+			"name":           "web-404b9",
+			"send_topics":    []string{TopicExchangeApprove},
+			"receive_topics": []string{TopicExchangeApprove},
+			"global_topics":  []string{TopicExchangeApprove},
+			"auth_token":     env.Token,
+		}),
+	})
+	if msg := readMsg(t, globalUI); msg.Type != string(MsgHelloAck) {
+		t.Fatalf("expected hello_ack, got %+v", msg)
+	}
+	writeJSON(t, globalUI, Message{Type: string(MsgJoin), TenantID: tenant.DefaultID, Session: "web-404b9"})
+	if msg := readMsg(t, globalUI); msg.Type != string(MsgJoined) {
+		t.Fatalf("expected joined, got %+v", msg)
+	}
+
+	go func() {
+		writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-global-pending", Input: json.RawMessage(`{"text":"needs approval"}`)})
+	}()
+	hookMsg := readMsg(t, hook)
+	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: hookMsg.ID, Action: string(ActionSuspend), Reason: "approve exec", Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve from another session?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`)})
+
+	request := readMsg(t, targetUI)
+	if request.Type != string(MsgRequest) || request.Topic != TopicExchangeApprove || request.ID == "" {
+		t.Fatalf("expected target approval request, got %+v", request)
+	}
+
+	pending := readMsg(t, globalUI)
+	if pending.Type != string(MsgEvent) || pending.Topic != TopicExchangeApprove || pending.ID != request.ID {
+		t.Fatalf("expected global pending event for %q, got %+v", request.ID, pending)
+	}
+	if !strings.Contains(string(pending.Data), "exchange.pending") || !strings.Contains(string(pending.Data), "Approve from another session?") {
+		t.Fatalf("expected pending payload with approval question, got %s", string(pending.Data))
+	}
+}
+
 func TestSuspendedExchangeWithoutResponderStaysPendingUntilUIJoins(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on windows")
