@@ -11,6 +11,7 @@ DATE="${DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 OUT_DIR="${OUT_DIR:-$ROOT_DIR/dist/release-$TAG}"
 DRY_RUN="${DRY_RUN:-0}"
 NOTES="${NOTES:-Manual release for $TAG.}"
+RELEASE_REPO="${RELEASE_REPO:-${GITHUB_REPOSITORY:-bamanoz/tabula}}"
 
 info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 ok() { printf '\033[1;32m  ✓\033[0m %s\n' "$*"; }
@@ -83,12 +84,12 @@ main() {
   head_tag="$(git tag --points-at HEAD | grep -Fx "$TAG" || true)"
   [ -n "$head_tag" ] || die "HEAD is not tagged with $TAG"
 
-  info "Publishing GitHub release $TAG"
-  if gh release view "$TAG" >/dev/null 2>&1; then
-    gh release upload "$TAG" "$OUT_DIR"/* --clobber
-    gh release edit "$TAG" --draft=false --latest --notes "$NOTES"
+  info "Publishing GitHub release $TAG to $RELEASE_REPO"
+  if gh release view "$TAG" --repo "$RELEASE_REPO" >/dev/null 2>&1; then
+    gh release upload "$TAG" "$OUT_DIR"/* --clobber --repo "$RELEASE_REPO"
+    gh release edit "$TAG" --draft=false --latest --notes "$NOTES" --repo "$RELEASE_REPO"
   else
-    gh release create "$TAG" "$OUT_DIR"/* --title "$TAG" --notes "$NOTES" --latest
+    gh release create "$TAG" "$OUT_DIR"/* --title "$TAG" --notes "$NOTES" --latest --repo "$RELEASE_REPO"
   fi
   ok "release published: $TAG"
 }
