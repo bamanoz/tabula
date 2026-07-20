@@ -2,6 +2,18 @@
 # Usage: tabula-cli.ps1 [--resume SESSION_ID]
 $env:TABULA_HOME = if ($env:TABULA_HOME) { $env:TABULA_HOME } else { Join-Path $HOME ".tabula" }
 
+function Join-Paths {
+    param(
+        [string]$Base,
+        [string[]]$Children
+    )
+    $Path = $Base
+    foreach ($Child in $Children) {
+        $Path = Join-Path $Path $Child
+    }
+    return $Path
+}
+
 function Load-TabulaEnv {
     $envFile = Join-Path $env:TABULA_HOME ".env"
     if (-not (Test-Path $envFile)) {
@@ -30,13 +42,13 @@ function Load-TabulaEnv {
 Load-TabulaEnv
 
 $Venv = if ($env:TABULA_VENV) { $env:TABULA_VENV } else { Join-Path $env:TABULA_HOME ".venv" }
-$VenvPython = Join-Path $Venv "Scripts" "python.exe"
+$VenvPython = Join-Paths $Venv @("Scripts", "python.exe")
 
 if (-not (Test-Path $VenvPython)) {
     Write-Error "venv not found at $Venv — run install.ps1 first."
     exit 1
 }
 
-$Gateway = Join-Path $env:TABULA_HOME "apps" "gateway-cli" "run.py"
+$Gateway = Join-Paths $env:TABULA_HOME @("apps", "gateway-cli", "run.py")
 
 & $VenvPython $Gateway @args

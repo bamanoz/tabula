@@ -88,16 +88,25 @@ func newManagedLocalRuntime(cmd *exec.Cmd) *managedLocalRuntime {
 }
 
 func newLocalRuntimeCommand(tabulaPath, tabulaHome string, stderr io.Writer, lookPath func(string) (string, error)) (*exec.Cmd, error) {
+	return newLocalRuntimeCommandForOS(runtime.GOOS, tabulaPath, tabulaHome, stderr, lookPath)
+}
+
+func newLocalRuntimeCommandForOS(goos, tabulaPath, tabulaHome string, stderr io.Writer, lookPath func(string) (string, error)) (*exec.Cmd, error) {
 	tabulaHome = strings.TrimSpace(tabulaHome)
 	if tabulaHome == "" {
 		return nil, fmt.Errorf("TABULA_HOME is required")
 	}
-	binary, err := resolveLocalRuntimeBinary(tabulaPath, lookPath)
-	if err != nil {
-		return nil, err
-	}
 	configPath := filepath.Join(tabulaHome, "config", "runtime.toml")
-	cmd := exec.Command(binary, "start", "--config", configPath, "--runtime-id", runtimeauth.LocalRuntimeID)
+	var cmd *exec.Cmd
+	if goos == "windows" && strings.TrimSpace(tabulaPath) != "" {
+		cmd = exec.Command(tabulaPath, "runtime", "host", "start", "--config", configPath, "--runtime-id", runtimeauth.LocalRuntimeID)
+	} else {
+		binary, err := resolveLocalRuntimeBinary(tabulaPath, lookPath)
+		if err != nil {
+			return nil, err
+		}
+		cmd = exec.Command(binary, "start", "--config", configPath, "--runtime-id", runtimeauth.LocalRuntimeID)
+	}
 	cmd.Env = append(os.Environ(), "TABULA_HOME="+tabulaHome)
 	if stderr != nil {
 		cmd.Stdout = stderr

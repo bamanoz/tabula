@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -634,11 +635,18 @@ func (p *Pool) spawnEnv(tenantID string) map[string]string {
 	if strings.TrimSpace(p.opts.TabulaHome) == "" {
 		return nil
 	}
-	return map[string]string{
+	env := map[string]string{
 		"TABULA_HOME":       p.opts.TabulaHome,
 		"TABULA_TENANT_DIR": filepath.Join(p.opts.TabulaHome, "tenants", tenantID),
 		"TABULA_URL":        p.opts.KernelURL,
 	}
+	if venv := strings.TrimSpace(os.Getenv("TABULA_VENV")); venv != "" {
+		env["TABULA_VENV"] = venv
+	}
+	if venv := strings.TrimSpace(os.Getenv("VIRTUAL_ENV")); venv != "" {
+		env["VIRTUAL_ENV"] = venv
+	}
+	return env
 }
 
 func (p *Pool) workerKey(tenantID string, plugin manifest.Plugin) key {

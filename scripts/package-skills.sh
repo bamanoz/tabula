@@ -11,8 +11,9 @@ mkdir -p extra
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 payload="$tmp/payload"
-mkdir -p "$payload/bin" "$payload/config" "$payload/tools"
+mkdir -p "$payload/bin" "$payload/config" "$payload/libexec" "$payload/tools"
 cp config/global.toml "$payload/config/global.toml.example"
+cp scripts/install_payload.py "$payload/libexec/install_payload.py"
 cp bin/tabula-runner "$payload/bin/tabula-runner"
 cp bin/tabula-runner.ps1 "$payload/bin/tabula-runner.ps1"
 cp bin/tabula-cli "$payload/bin/tabula-cli"
@@ -28,6 +29,7 @@ tar -czf "extra/tabula-skills-${VERSION}.tar.gz" \
   --exclude='tools/tabula-distro/tests' \
   --exclude='tools/tabula-distro/.pytest_cache' \
   config/global.toml.example \
+  libexec/install_payload.py \
   bin/tabula-runner \
   bin/tabula-runner.ps1 \
   bin/tabula-cli \

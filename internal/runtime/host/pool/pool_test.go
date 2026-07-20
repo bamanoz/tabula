@@ -1553,6 +1553,26 @@ func TestPoolSetsTenantDirOnWarmWorkers(t *testing.T) {
 	}
 }
 
+func TestPoolPassesVirtualEnvToWarmWorkers(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TABULA_VENV", filepath.Join(home, ".venv"))
+	t.Setenv("VIRTUAL_ENV", filepath.Join(home, ".virtual"))
+	p, fake := testPoolWithOptions(t, Options{TabulaHome: home})
+	if resp, err := p.Invoke(context.Background(), invoke("warm-venv", "alpha", "echo")); err != nil || !resp.OK {
+		t.Fatalf("warm invoke = %#v, %v", resp, err)
+	}
+	reqs := fake.spawnRequests()
+	if len(reqs) != 1 {
+		t.Fatalf("spawn requests = %#v", reqs)
+	}
+	if got := reqs[0].Env["TABULA_VENV"]; got != filepath.Join(home, ".venv") {
+		t.Fatalf("TABULA_VENV = %q", got)
+	}
+	if got := reqs[0].Env["VIRTUAL_ENV"]; got != filepath.Join(home, ".virtual") {
+		t.Fatalf("VIRTUAL_ENV = %q", got)
+	}
+}
+
 func TestPoolReturnsRawLargeToolResults(t *testing.T) {
 	home := t.TempDir()
 	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), workerFactory: func(req policy.SpawnReq) *fakeWorker {

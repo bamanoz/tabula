@@ -14,12 +14,14 @@ from tabula_testbed_runner.runner import (
     format_protocol_markers,
     lint_selection,
     manifest_launch_details,
+    process_alive,
     prune_old_testbed_homes,
     resolve_selection,
     runtime_tenants_for_suites,
     selected_bundles,
     set_runtime_tenants,
     SuiteSpec,
+    virtualenv_layout,
     verify_kernel_config,
     verify_runtime_sidecar_layout,
     wait_for_supervised_runtime,
@@ -27,6 +29,17 @@ from tabula_testbed_runner.runner import (
 
 
 class RunnerProtocolMarkerTests(unittest.TestCase):
+    def test_process_alive_detects_current_process(self) -> None:
+        self.assertTrue(process_alive(os.getpid()))
+
+    def test_virtualenv_layout_uses_platform_specific_context(self) -> None:
+        with TemporaryDirectory() as raw:
+            python, bin_dir = virtualenv_layout(Path(raw) / ".venv")
+
+            self.assertEqual(python.parent, bin_dir)
+            self.assertEqual(bin_dir.name, "Scripts" if os.name == "nt" else "bin")
+            self.assertEqual(python.suffix, ".exe" if os.name == "nt" else "")
+
     def test_prune_old_testbed_homes_removes_siblings_but_not_current(self) -> None:
         with TemporaryDirectory() as raw:
             root = Path(raw)
@@ -182,6 +195,21 @@ class RunnerProtocolMarkerTests(unittest.TestCase):
             self.assertIn(f"entry_path = {worker_path.resolve()}", summary)
             self.assertIn("entry:m2-worker-init-ack", summary)
             self.assertIn("entry:m2-worker-tools-updated", summary)
+
+    def test_manifest_launch_details_uses_runtime_entry_when_worker_only_sets_mode(self) -> None:
+        with TemporaryDirectory() as raw:
+            manifest_path = Path(raw) / "plugin.toml"
+            entry_path = manifest_path.parent / "run.py"
+            entry_path.write_text("from tabula_plugin_sdk import run\n", encoding="utf-8")
+
+            details = manifest_launch_details(
+                manifest_path,
+                {"runtime": "python", "entry": "run.py", "worker": {"mode": "warm"}},
+            )
+
+            summary = "\n".join(details["summary"])
+            self.assertIn("runtime = python", summary)
+            self.assertIn("entry = run.py", summary)
 
     @unittest.skipIf(os.name == "nt", "test creates a POSIX executable shim")
     def test_runtime_sidecar_layout_writes_protocol_marker_summary(self) -> None:

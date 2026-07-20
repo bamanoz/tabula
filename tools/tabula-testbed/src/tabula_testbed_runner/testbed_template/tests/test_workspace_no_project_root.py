@@ -16,7 +16,7 @@ class WorkspaceNoProjectRoot(unittest.TestCase):
 
     @classmethod
     def tabula_bin(cls) -> str:
-        candidate = Path(cls.tabula_home) / "bin" / "tabula"
+        candidate = Path(cls.tabula_home) / "bin" / ("tabula.exe" if os.name == "nt" else "tabula")
         return str(candidate) if candidate.is_file() else "tabula"
 
     @classmethod
@@ -38,7 +38,8 @@ class WorkspaceNoProjectRoot(unittest.TestCase):
             path = Path(self.tabula_home) / "fallback.txt"
             client.call_tool("fs_write", {"path": str(path), "content": "fallback"}, timeout=10).json()
             self.assertEqual(client.call_tool("fs_read", {"path": str(path)}, timeout=10).json()["content"], "fallback")
-            pwd = client.call_tool("exec_run", {"cmd": "pwd"}, timeout=10).json()
+            command = "[Console]::Out.Write((Get-Location).Path)" if os.name == "nt" else "pwd"
+            pwd = client.call_tool("exec_run", {"cmd": command}, timeout=10).json()
             self.assertEqual(Path(pwd["stdout"].strip()).resolve(), Path(self.tabula_home).resolve())
 
 

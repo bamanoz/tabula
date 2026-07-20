@@ -34,7 +34,7 @@ class TestbedCase(unittest.TestCase):
 
     @classmethod
     def tabula_bin(cls) -> str:
-        candidate = Path(cls.tabula_home) / "bin" / "tabula"
+        candidate = Path(cls.tabula_home) / "bin" / ("tabula.exe" if os.name == "nt" else "tabula")
         return str(candidate) if candidate.is_file() else "tabula"
 
     @classmethod
@@ -85,7 +85,8 @@ class BaselineSmoke(TestbedCase):
             self.assertEqual(written["bytes_written"], len("baseline"))
             read = client.call_tool("fs_read", {"path": str(note)}, timeout=10).json()
             self.assertEqual(read["content"], "baseline")
-            exec_result = client.call_tool("exec_run", {"cmd": "pwd"}, timeout=10).json()
+            command = "[Console]::Out.Write((Get-Location).Path)" if os.name == "nt" else "pwd"
+            exec_result = client.call_tool("exec_run", {"cmd": command}, timeout=10).json()
             self.assertEqual(Path(exec_result["stdout"].strip()).resolve(), self.workspace_root.resolve())
 
     def test_skills_and_plugin_tools(self):

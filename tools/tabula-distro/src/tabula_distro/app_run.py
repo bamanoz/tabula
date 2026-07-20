@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import hashlib
 import json
+import shutil
 import subprocess
 import time
 import tomllib
@@ -87,9 +88,12 @@ def execute(manifest: AppManifest, home: Path, *, tabula_bin: str = "tabula", ti
     env["TABULA_PRESERVE_RUNTIME_CONFIG"] = "1"
     if boot_path is not None:
         env["TABULA_BOOT"] = str(boot_path)
-    argv = _kernel_launch_argv(tabula_bin, run_plan.runtime_mode)
+    argv = _kernel_launch_argv(tabula_bin, run_plan.runtime_mode, env=env, home=home)
     _require_launch_binary(argv[0], tabula_bin=tabula_bin, runtime_mode=run_plan.runtime_mode)
     if foreground:
+        if os.name == "nt":
+            result = subprocess.run(argv, env=env, check=False)
+            raise SystemExit(result.returncode)
         os.execvpe(argv[0], argv, env)
         return RunResult(plan=run_plan, started_kernel=True)
     logs_dir = home / "logs"
@@ -260,16 +264,72 @@ def _check_runtime_execution_support(runtimes: tuple[RuntimeTopology, ...]) -> N
             raise AppRunError(f"managed runtime execution backend {backend!r} is not implemented yet")
 
 
-def _kernel_launch_argv(tabula_bin: str, runtime_mode: str) -> list[str]:
+def _kernel_launch_argv(tabula_bin: str, runtime_mode: str, *, env: dict[str, str] | None = None, home: Path | None = None) -> list[str]:
     if runtime_mode == "managed":
-        return [_tabula_server_bin(tabula_bin)]
+        return _tabula_server_argv(tabula_bin, runtime_mode=runtime_mode, env=env, home=home)
     return [tabula_bin, "serve", "--foreground", "--runtime-mode", "external"]
 
 
-def _tabula_server_bin(tabula_bin: str) -> str:
+def _tabula_server_argv(
+    tabula_bin: str,
+    *,
+    runtime_mode: str = "managed",
+    env: dict[str, str] | None = None,
+    home: Path | None = None,
+) -> list[str]:
     if any(sep in tabula_bin for sep in ("/", "\\")):
-        return str(Path(tabula_bin).with_name("tabula-runner"))
-    return "tabula-runner"
+        runner = Path(tabula_bin).with_name("tabula-runner")
+        if runner.is_file():
+            return [str(runner), "--runtime-mode", runtime_mode]
+        runner_ps1 = runner.with_suffix(".ps1")
+        if runner_ps1.is_file():
+            return _powershell_runner_argv(runner_ps1, runtime_mode=runtime_mode, env=env, home=home)
+        return [str(runner), "--runtime-mode", runtime_mode]
+    if os.name == "nt":
+        runner_ps1 = shutil.which("tabula-runner.ps1")
+        if runner_ps1:
+            return _powershell_runner_argv(Path(runner_ps1), runtime_mode=runtime_mode, env=env, home=home)
+    return ["tabula-runner", "--runtime-mode", runtime_mode]
+
+
+def _powershell_runner_argv(
+    runner_ps1: Path,
+    *,
+    runtime_mode: str = "managed",
+    env: dict[str, str] | None = None,
+    home: Path | None = None,
+) -> list[str]:
+    argv = [_powershell_bin(), "-ExecutionPolicy", "Bypass", "-File", str(runner_ps1)]
+    if home is not None:
+        argv.extend(["-TabulaHome", str(home)])
+    if not env:
+        return argv
+    for flag, key in (
+        ("-TabulaVenv", "TABULA_VENV"),
+        ("-TabulaAppId", "TABULA_APP_ID"),
+        ("-TabulaTenantId", "TABULA_TENANT_ID"),
+        ("-TabulaTenantDir", "TABULA_TENANT_DIR"),
+        ("-TabulaUrl", "TABULA_URL"),
+        ("-TabulaPath", "TABULA_PATH"),
+        ("-TabulaBoot", "TABULA_BOOT"),
+    ):
+        value = env.get(key, "").strip()
+        if value:
+            argv.extend([flag, value])
+    if env.get("TABULA_PRESERVE_RUNTIME_CONFIG", "").strip():
+        argv.append("-PreserveRuntimeConfig")
+    if runtime_mode:
+        argv.extend(["--runtime-mode", runtime_mode])
+    return argv
+
+
+def _powershell_bin() -> str:
+    return (
+        shutil.which("pwsh.exe")
+        or shutil.which("powershell.exe")
+        or shutil.which("powershell")
+        or "powershell.exe"
+    )
 
 
 def _require_launch_binary(path: str, *, tabula_bin: str, runtime_mode: str) -> None:
@@ -349,6 +409,8 @@ def write_runtime_config(manifest: AppManifest, home: Path, *, distro_dir: Path 
     kernel["tenants"] = _string_array(tenant_ids)
     kernel_aot.append(kernel)
     doc["kernel"] = kernel_aot
+
+    runtime_config.write_python_runtime(doc)
 
     plugin_kinds = tomlkit.table()
     gateway = tomlkit.table()

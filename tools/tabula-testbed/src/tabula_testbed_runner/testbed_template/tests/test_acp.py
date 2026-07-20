@@ -5,9 +5,10 @@ import argparse
 import json
 import os
 from pathlib import Path
-import select
+import queue
 import subprocess
 import sys
+import threading
 import time
 import unittest
 
@@ -92,6 +93,17 @@ class ACPProcessClient:
         self.proc = proc
         self._next_id = 0
         self.permission_requests: list[dict[str, object]] = []
+        self._stdout: queue.Queue[str | None] = queue.Queue()
+        self._reader = threading.Thread(target=self._read_stdout, daemon=True)
+        self._reader.start()
+
+    def _read_stdout(self) -> None:
+        assert self.proc.stdout is not None
+        try:
+            for line in self.proc.stdout:
+                self._stdout.put(line)
+        finally:
+            self._stdout.put(None)
 
     def request(self, method: str, params: dict[str, object] | None = None, *, timeout: float = 20.0) -> tuple[dict[str, object], list[dict[str, object]]]:
         self._next_id += 1
@@ -126,12 +138,11 @@ class ACPProcessClient:
                 notifications.append(msg)
 
     def _read_message(self, *, timeout: float) -> dict[str, object]:
-        assert self.proc.stdout is not None
-        ready, _, _ = select.select([self.proc.stdout], [], [], timeout)
-        if not ready:
+        try:
+            line = self._stdout.get(timeout=timeout)
+        except queue.Empty:
             raise AssertionError(f"timed out waiting for ACP stdout; proc={self.proc.poll()}")
-        line = self.proc.stdout.readline()
-        if not line:
+        if line is None:
             raise AssertionError(f"ACP process exited early with code {self.proc.poll()}")
         return json.loads(line)
 
@@ -178,11 +189,34 @@ class ACPGatewayInstalled(unittest.TestCase):
         self.home = Path(self.tabula_home)
         self.workspace = self.home / "data" / "testbed" / "acp-workspace"
         self.workspace.mkdir(parents=True, exist_ok=True)
+        self._mutated_files = (
+            self.home / "config" / "plugins" / "exec" / "config.toml",
+            self.home / "config" / "global.toml",
+            self.home / "plugins" / "driver" / "openai.py",
+            self.home / "agents" / "build.md",
+            self.home / "agents" / "plan.md",
+        )
+        self._original_files = {
+            path: path.read_bytes() if path.is_file() else None
+            for path in self._mutated_files
+        }
         self.write_exec_config()
         self.write_driver_config()
         self.write_fake_openai()
         self.reload_runtime_workers()
         self.write_agent_catalog()
+
+    def tearDown(self) -> None:
+        for path, content in self._original_files.items():
+            if content is None:
+                path.unlink(missing_ok=True)
+                continue
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        reload_touch = self.home / "run" / "reload.touch"
+        reload_touch.parent.mkdir(parents=True, exist_ok=True)
+        reload_touch.touch()
+        time.sleep(2.5)
 
     def test_gateway_acp_client_is_installed(self):
         self.assertTrue((self.home / "apps" / "gateway-acp" / "app.toml").is_file())

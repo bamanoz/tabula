@@ -37,6 +37,16 @@ func TestParseServeFlagsRuntimeModeFlag(t *testing.T) {
 	}
 }
 
+func TestParseServeFlagsAcceptsManagedRuntimeMode(t *testing.T) {
+	opts, code := parseServeFlags([]string{"--runtime-mode", "managed"})
+	if code != 0 {
+		t.Fatalf("parseServeFlags managed runtime-mode = %d", code)
+	}
+	if opts.runtimeMode != localRuntimeModeManaged {
+		t.Fatalf("runtimeMode = %q, want managed", opts.runtimeMode)
+	}
+}
+
 func TestParseServeFlagsRuntimeModeEnv(t *testing.T) {
 	t.Setenv("TABULA_LOCAL_RUNTIME_MODE", "disabled")
 	opts, code := parseServeFlags(nil)

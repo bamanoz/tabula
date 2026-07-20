@@ -47,7 +47,12 @@ class CodeGraphSmoke(unittest.TestCase):
         for plugin in ("codegraph-query", "codegraph-admin"):
             cfg = home / "config" / "plugins" / plugin / "config.toml"
             cfg.parent.mkdir(parents=True, exist_ok=True)
-            cfg.write_text(f'command = "{fake}"\ndefault_project_path = "{project}"\ntimeout_seconds = 20\n', encoding="utf-8")
+            cfg.write_text(
+                f"command = {json.dumps(str(fake))}\n"
+                f"default_project_path = {json.dumps(str(project))}\n"
+                "timeout_seconds = 20\n",
+                encoding="utf-8",
+            )
         return project
 
     def test_codegraph_installed_wrappers_execute(self):

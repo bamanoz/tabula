@@ -93,9 +93,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$RUNTIME_MODE" in
-  external|disabled) ;;
+  external|managed|disabled) ;;
   *)
-    echo "error: tabula-runner supports only --runtime-mode external|disabled" >&2
+    echo "error: tabula-runner supports only --runtime-mode external|managed|disabled" >&2
     exit 2
     ;;
 esac
@@ -105,6 +105,13 @@ if [ "$RUNTIME_MODE" = "disabled" ]; then
     exec "$TABULA_HOME/bin/tabula" serve --runtime-mode disabled
   fi
   exec "$TABULA_HOME/bin/tabula" serve --runtime-mode disabled "${ARGS[@]}"
+fi
+
+if [ "$RUNTIME_MODE" = "managed" ]; then
+  if [ "${#ARGS[@]}" -eq 0 ]; then
+    exec "$TABULA_HOME/bin/tabula" serve --runtime-mode managed
+  fi
+  exec "$TABULA_HOME/bin/tabula" serve --runtime-mode managed "${ARGS[@]}"
 fi
 
 KERNEL_PID=0

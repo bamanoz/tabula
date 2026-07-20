@@ -11,6 +11,7 @@ from pathlib import Path
 
 from . import config as cfg
 from . import generations as gens
+from . import links
 from . import lock as lockmod
 from . import requirements as reqmod
 from . import runtime_config as runtimecfg
@@ -27,7 +28,13 @@ from .semver import Constraint, Version, VersionError
 from .sources import GitSource, LocalSource, Source
 
 
-IGNORE_NAMES = {"__pycache__", ".pytest_cache", ".git", ".DS_Store"}
+IGNORE_NAMES = {
+    "__pycache__",
+    ".pytest_cache",
+    ".git",
+    ".DS_Store",
+    "node_modules",
+}
 
 
 def _write_kernel_config(home: Path) -> None:
@@ -44,11 +51,8 @@ def _copytree(src: Path, dst: Path) -> None:
 
 
 def _replace_dir(target: Path) -> None:
-    if target.is_symlink() or target.exists():
-        if target.is_dir() and not target.is_symlink():
-            shutil.rmtree(target)
-        else:
-            target.unlink()
+    if links.is_reference(target) or target.exists():
+        links.remove_path(target)
 
 
 class InstallError(RuntimeError):
@@ -980,34 +984,22 @@ def _expose_current(home: Path, distro_name: str) -> None:
     root = gens.distro_root(home, distro_name)
     for entry in ("skills", "plugins", "apps", "templates", "packages"):
         link = root / entry
-        if link.exists() or link.is_symlink():
-            if link.is_dir() and not link.is_symlink():
-                shutil.rmtree(link)
-            else:
-                link.unlink()
-        link.symlink_to(Path("current") / entry)
+        links.remove_path(link)
+        links.create_directory_reference(link, Path("current") / entry)
 
 
 def _set_active(home: Path, distro_name: str, *, expose_global_boot: bool = True) -> None:
     distrib_root = home / "distrib"
     distrib_root.mkdir(parents=True, exist_ok=True)
     active = distrib_root / "active"
-    if active.exists() or active.is_symlink():
-        if active.is_dir() and not active.is_symlink():
-            shutil.rmtree(active)
-        else:
-            active.unlink()
-    active.symlink_to(Path(distro_name))
+    links.remove_path(active)
+    links.create_directory_reference(active, Path(distro_name))
 
 
 
 def _refresh_runtime_surface(home: Path, *, tenant: str | None = None) -> None:
     for obsolete in (home / "drivers", home / "gateways", home / "_lib"):
-        if obsolete.exists() or obsolete.is_symlink():
-            if obsolete.is_dir() and not obsolete.is_symlink():
-                shutil.rmtree(obsolete)
-            else:
-                obsolete.unlink(missing_ok=True)
+        links.remove_path(obsolete)
     _link_runtime(home / "distrib" / "active" / "packages", home / "packages")
     _link_runtime(home / "distrib" / "active" / "apps", home / "apps")
     _link_runtime(home / "distrib" / "active" / "templates", home / "templates")
@@ -1030,11 +1022,7 @@ def _tenant_roots(home: Path, *, tenant: str | None = None) -> list[Path]:
 
 def _refresh_tenant_runtime_surface(home: Path, tenant_dir: Path) -> None:
     obsolete = tenant_dir / "_lib"
-    if obsolete.exists() or obsolete.is_symlink():
-        if obsolete.is_dir() and not obsolete.is_symlink():
-            shutil.rmtree(obsolete)
-        else:
-            obsolete.unlink(missing_ok=True)
+    links.remove_path(obsolete)
     _link_runtime(home / "distrib" / "active" / "packages", tenant_dir / "packages")
     _link_runtime(home / "distrib" / "active" / "apps", tenant_dir / "apps")
     _link_runtime(home / "distrib" / "active" / "templates", tenant_dir / "templates")
@@ -1077,23 +1065,24 @@ def _touch_reload_trigger(home: Path, *, tenant: str | None = None) -> None:
 
 def _link_runtime(src_dir: Path, dst_dir: Path, preserve: set[str] | None = None) -> None:
     preserve = preserve or set()
-    if dst_dir.is_symlink() or (dst_dir.exists() and not dst_dir.is_dir()):
-        dst_dir.unlink(missing_ok=True)
+    if links.is_reference(dst_dir) or (dst_dir.exists() and not dst_dir.is_dir()):
+        links.remove_path(dst_dir)
     dst_dir.mkdir(parents=True, exist_ok=True)
     for existing in list(dst_dir.iterdir()):
         if existing.name in preserve:
             continue
-        if existing.is_dir() and not existing.is_symlink():
-            shutil.rmtree(existing)
-        else:
-            existing.unlink(missing_ok=True)
+        links.remove_path(existing)
     if not src_dir.is_dir():
         return
     for entry in src_dir.iterdir():
         if entry.name in preserve:
             continue
         target = dst_dir / entry.name
-        target.symlink_to(Path(os.path.relpath(entry, start=dst_dir)))
+        relative = Path(os.path.relpath(entry, start=dst_dir))
+        if entry.is_dir():
+            links.create_directory_reference(target, relative)
+        else:
+            links.create_file_reference(target, relative)
 
 
 def rollback(home: Path, distro_name: str, *, to: int | None = None) -> gens.Generation:

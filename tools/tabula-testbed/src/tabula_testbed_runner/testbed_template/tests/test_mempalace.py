@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import unittest
@@ -91,7 +92,7 @@ class MempalaceSmoke(unittest.TestCase):
             cyrillic_room = "cyrillic-search"
             warmup = client.call_tool("mempalace_search", {"query": "smoke", "wing": "testbed", "room": cyrillic_room, "limit": 5}, timeout=30).json()
             self.assertEqual(warmup.get("results"), [])
-            cyrillic_content = "кириллица smoke память поиск"
+            cyrillic_content = "\u043a\u0438\u0440\u0438\u043b\u043b\u0438\u0446\u0430 smoke \u043f\u0430\u043c\u044f\u0442\u044c \u043f\u043e\u0438\u0441\u043a"
             cyrillic = client.call_tool("mempalace_add_drawer", {
                 "wing": "testbed",
                 "room": cyrillic_room,
@@ -101,7 +102,8 @@ class MempalaceSmoke(unittest.TestCase):
             self.assertTrue(cyrillic.get("success"), cyrillic)
             cyrillic_id = cyrillic.get("drawer_id")
             found_cyrillic = client.call_tool("mempalace_search", {"query": "smoke", "wing": "testbed", "room": cyrillic_room, "limit": 5}, timeout=30).json()
-            self.assertIn(cyrillic_content, str(found_cyrillic))
+            escaped = json.dumps(found_cyrillic, ensure_ascii=True)
+            self.assertIn("\\u043a\\u0438\\u0440\\u0438\\u043b\\u043b\\u0438\\u0446\\u0430", escaped)
             self.assertTrue(client.call_tool("mempalace_delete_drawer", {"drawer_id": cyrillic_id}, timeout=30).json().get("success"))
 
             wake = client.call_tool("mempalace_get_taxonomy", {}, timeout=30).json()

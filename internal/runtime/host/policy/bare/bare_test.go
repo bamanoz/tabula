@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	goruntime "runtime"
 	"strings"
 	"sync"
@@ -73,7 +75,7 @@ func TestWarmWorkerAcceptsConcurrentCallsWithOutOfOrderResults(t *testing.T) {
 		KernelID:   "main",
 		TenantID:   "tenant-a",
 		TargetID:   "fs",
-		Command:    []string{"./worker.py"},
+		Command:    []string{testPython(t), "worker.py"},
 		Manifest:   json.RawMessage(`{"id":"fs"}`),
 		WorkingDir: dir,
 		Mode:       policy.SpawnModeWarm,
@@ -200,7 +202,7 @@ func TestBarePolicySpawnSupportsCanonicalWorkerCommand(t *testing.T) {
 		t.Skip("test uses POSIX executable path")
 	}
 	req := testSpawnReq(t, policy.SpawnModeWarm)
-	req.Command = []string{"./worker.py"}
+	req.Command = []string{testPython(t), "worker.py"}
 	req.Runtime = ""
 	req.Entry = ""
 	worker, err := New().Spawn(context.Background(), req)
@@ -220,33 +222,28 @@ func TestBarePolicySpawnSupportsCanonicalWorkerCommand(t *testing.T) {
 	}
 }
 
-func TestWorkerEnvPreservesGenericPathAndTabulaEnv(t *testing.T) {
+func TestWorkerEnvInheritsHostEnvironmentAndAppliesOverrides(t *testing.T) {
 	t.Setenv("TABULA_HOME", "/tmp/tabula-home")
-	t.Setenv("TABULA_URL", "ws://127.0.0.1:9999/ws")
-	t.Setenv("PATH", "/custom/bin")
-	t.Setenv("PYTHONPATH", "/custom/packages")
-	env := workerEnv(policy.SpawnReq{KernelID: "main", TenantID: "default", TargetID: "plugin"})
-	if got := envValue(env, "PATH"); got != "/custom/bin" {
-		t.Fatalf("PATH = %q, want passthrough PATH", got)
+	t.Setenv("BARE_POLICY_HOST_MARKER", "inherited")
+	env := workerEnv(policy.SpawnReq{
+		KernelID: "main", TenantID: "default", TargetID: "plugin",
+		Env: map[string]string{"BARE_POLICY_HOST_MARKER": "overridden"},
+	})
+	if got := envValue(env, "BARE_POLICY_HOST_MARKER"); got != "overridden" {
+		t.Fatalf("host environment override = %q", got)
 	}
-	if got := envValue(env, "PYTHONPATH"); got != "/custom/packages" {
-		t.Fatalf("PYTHONPATH = %q, want passthrough PYTHONPATH", got)
-	}
-	if got := envValue(env, "TABULA_URL"); got != "ws://127.0.0.1:9999/ws" {
-		t.Fatalf("TABULA_URL = %q", got)
-	}
-	if got := envValue(env, "TABULA_BOOT_PATH"); got != "" {
-		t.Fatalf("TABULA_BOOT_PATH leaked into worker env: %q", got)
+	if got := envValue(env, "TABULA_TENANT_DIR"); got != filepath.Join("/tmp/tabula-home", "tenants", "default") {
+		t.Fatalf("TABULA_TENANT_DIR = %q", got)
 	}
 }
 
 func TestRuntimeCommandUsesConfiguredRuntimeCommand(t *testing.T) {
-	policy := &Policy{RuntimeCommands: map[string]string{"custom": "/bin/custom"}}
-	if got := policy.runtimeCommand("custom"); got != "/bin/custom" {
-		t.Fatalf("runtimeCommand(custom) = %q", got)
+	policy := &Policy{RuntimeCommands: map[string][]string{"custom": {"/bin/custom", "--flag"}}}
+	if got := policy.runtimeCommand("custom"); !reflect.DeepEqual(got, []string{"/bin/custom", "--flag"}) {
+		t.Fatalf("runtimeCommand(custom) = %#v", got)
 	}
-	if got := policy.runtimeCommand("missing"); got != "" {
-		t.Fatalf("runtimeCommand(missing) = %q, want empty", got)
+	if got := policy.runtimeCommand("missing"); got != nil {
+		t.Fatalf("runtimeCommand(missing) = %#v, want nil", got)
 	}
 }
 
@@ -263,6 +260,23 @@ func TestCanonicalWorkerCommandUsesPathAsDeclared(t *testing.T) {
 		t.Fatalf("cmd.Path = %q, want worker-binary", cmd.Path)
 	}
 	if len(cmd.Args) != 2 || cmd.Args[0] != "worker-binary" || cmd.Args[1] != "--flag" {
+		t.Fatalf("cmd.Args = %#v", cmd.Args)
+	}
+}
+
+func TestConfiguredRuntimeCommandAppendsAbsoluteEntry(t *testing.T) {
+	python := filepath.Join(t.TempDir(), "python")
+	workingDir := t.TempDir()
+	req := policy.SpawnReq{KernelID: "main", TenantID: "tenant-a", TargetID: "driver", Runtime: "python", Entry: "run.py", WorkingDir: workingDir, Mode: policy.SpawnModeWarm}
+	configured := &Policy{RuntimeCommands: map[string][]string{"python": {python, "-I"}}}
+	cmd, err := configured.buildCommand(context.Background(), req)
+	if err != nil {
+		t.Fatalf("buildCommand: %v", err)
+	}
+	if cmd.Path != python {
+		t.Fatalf("cmd.Path = %q, want %q", cmd.Path, python)
+	}
+	if want := []string{python, "-I", filepath.Join(workingDir, "run.py")}; !reflect.DeepEqual(cmd.Args, want) {
 		t.Fatalf("cmd.Args = %#v", cmd.Args)
 	}
 }
@@ -394,7 +408,7 @@ sys.exit(1)
 		KernelID:   "main",
 		TenantID:   "default",
 		TargetID:   "legacy-plugin",
-		Command:    []string{"./worker.py"},
+		Command:    []string{testPython(t), "worker.py"},
 		WorkingDir: dir,
 		Mode:       policy.SpawnModeWarm,
 	})
@@ -437,7 +451,7 @@ sys.exit(1)
 		KernelID:   "main",
 		TenantID:   "default",
 		TargetID:   "codegraph-query",
-		Command:    []string{"./worker.py"},
+		Command:    []string{testPython(t), "worker.py"},
 		WorkingDir: dir,
 		Mode:       policy.SpawnModeWarm,
 	})
@@ -474,7 +488,7 @@ sys.exit(1)
 		KernelID:   "main",
 		TenantID:   "default",
 		TargetID:   "driver",
-		Command:    []string{"./worker.py"},
+		Command:    []string{testPython(t), "worker.py"},
 		WorkingDir: dir,
 		Mode:       policy.SpawnModeWarm,
 	})
@@ -523,11 +537,26 @@ func testSpawnReq(t *testing.T, mode policy.SpawnMode) policy.SpawnReq {
 		KernelID:   "main",
 		TenantID:   "tenant-a",
 		TargetID:   "fs",
-		Command:    []string{"./worker.py"},
+		Command:    []string{testPython(t), "worker.py"},
 		Manifest:   json.RawMessage(`{"id":"fs"}`),
 		WorkingDir: dir,
 		Mode:       mode,
 	}
+}
+
+func testPython(t *testing.T) string {
+	t.Helper()
+	for _, candidate := range []string{"python3", "python"} {
+		resolved, err := exec.LookPath(candidate)
+		if err != nil {
+			continue
+		}
+		if err := exec.Command(resolved, "--version").Run(); err == nil {
+			return resolved
+		}
+	}
+	t.Skip("Python interpreter required for bare policy worker tests")
+	return ""
 }
 
 func writeFile(t *testing.T, path string, contents string) {

@@ -136,12 +136,12 @@ func TestNewLocalRuntimeCommand_UsesResolvedBinaryAndConfig(t *testing.T) {
 		t.Fatalf("write tabula stub: %v", err)
 	}
 	var lookedUp string
-	cmd, err := newLocalRuntimeCommand(tabulaPath, tabulaHome, nil, func(name string) (string, error) {
+	cmd, err := newLocalRuntimeCommandForOS("linux", tabulaPath, tabulaHome, nil, func(name string) (string, error) {
 		lookedUp = name
 		return filepath.Join(string(filepath.Separator), "usr", "local", "bin", name), nil
 	})
 	if err != nil {
-		t.Fatalf("newLocalRuntimeCommand: %v", err)
+		t.Fatalf("newLocalRuntimeCommandForOS: %v", err)
 	}
 	if lookedUp != localRuntimeBinaryName() {
 		t.Fatalf("looked up %q", lookedUp)
@@ -150,6 +150,37 @@ func TestNewLocalRuntimeCommand_UsesResolvedBinaryAndConfig(t *testing.T) {
 		t.Fatalf("cmd.Path = %q, want %q", got, want)
 	}
 	wantArgs := []string{cmd.Path, "start", "--config", filepath.Join(tabulaHome, "config", "runtime.toml"), "--runtime-id", runtimeauth.LocalRuntimeID}
+	if !reflect.DeepEqual(cmd.Args, wantArgs) {
+		t.Fatalf("cmd.Args = %#v, want %#v", cmd.Args, wantArgs)
+	}
+	if env := lastEnvValue(cmd.Env, "TABULA_HOME"); env != tabulaHome {
+		t.Fatalf("TABULA_HOME env = %q", env)
+	}
+}
+
+func TestNewLocalRuntimeCommandForWindows_UsesTabulaHostSubcommand(t *testing.T) {
+	tabulaHome := t.TempDir()
+	tabulaPath := filepath.Join(t.TempDir(), "tabula.exe")
+	cmd, err := newLocalRuntimeCommandForOS("windows", tabulaPath, tabulaHome, nil, func(name string) (string, error) {
+		t.Fatalf("unexpected runtime binary lookup %q", name)
+		return "", nil
+	})
+	if err != nil {
+		t.Fatalf("newLocalRuntimeCommandForOS: %v", err)
+	}
+	if cmd.Path != tabulaPath {
+		t.Fatalf("cmd.Path = %q, want %q", cmd.Path, tabulaPath)
+	}
+	wantArgs := []string{
+		tabulaPath,
+		"runtime",
+		"host",
+		"start",
+		"--config",
+		filepath.Join(tabulaHome, "config", "runtime.toml"),
+		"--runtime-id",
+		runtimeauth.LocalRuntimeID,
+	}
 	if !reflect.DeepEqual(cmd.Args, wantArgs) {
 		t.Fatalf("cmd.Args = %#v, want %#v", cmd.Args, wantArgs)
 	}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import tomllib
 import unittest
@@ -153,6 +154,25 @@ source = "local:./claw"
             self.assertEqual(lock.distro_name, "claw")
             self.assertEqual(lock.distro_lock["distro_version"], "0.1.0")
             self.assertEqual(lock.kernel["mode"], "managed")
+
+    def test_normalize_materializer_command_rewrites_python_launchers_on_windows(self):
+        original_name = appmod.os.name
+        try:
+            appmod.os.name = "nt"
+            self.assertEqual(
+                appmod._normalize_materializer_command(["python3", "materialize.py"]),
+                [sys.executable, "materialize.py"],
+            )
+            self.assertEqual(
+                appmod._normalize_materializer_command(["py", "-3", "materialize.py"]),
+                [sys.executable, "materialize.py"],
+            )
+            self.assertEqual(
+                appmod._normalize_materializer_command(["node", "materialize.js"]),
+                ["node", "materialize.js"],
+            )
+        finally:
+            appmod.os.name = original_name
 
 
 class AppCLITests(unittest.TestCase):

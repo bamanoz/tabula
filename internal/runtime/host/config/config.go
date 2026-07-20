@@ -22,8 +22,15 @@ type Config struct {
 	SkillDirs   []string              `toml:"skill_dirs"`
 	Tenants     []Tenant              `toml:"tenant"`
 	Pool        Pool                  `toml:"pool"`
+	Runtimes    map[string]Runtime    `toml:"runtimes"`
 	PluginKinds map[string]PluginKind `toml:"plugin_kinds"`
 	Distro      Distro                `toml:"distro"`
+}
+
+// Runtime maps a platform-neutral manifest runtime name to the executable
+// command installed on this host. The plugin entry path is appended to Command.
+type Runtime struct {
+	Command []string `toml:"command"`
 }
 
 // PluginKind describes runtime composition policy for plugins that declare the
@@ -134,11 +141,11 @@ func (c *Config) Validate() error {
 	for i := range c.Kernels {
 		k := &c.Kernels[i]
 		k.ID = strings.TrimSpace(k.ID)
-		k.URL = os.ExpandEnv(strings.TrimSpace(k.URL))
-		k.TokenFile = os.ExpandEnv(strings.TrimSpace(k.TokenFile))
-		k.CAFile = os.ExpandEnv(strings.TrimSpace(k.CAFile))
-		k.CertFile = os.ExpandEnv(strings.TrimSpace(k.CertFile))
-		k.KeyFile = os.ExpandEnv(strings.TrimSpace(k.KeyFile))
+		k.URL = cleanEndpoint(os.ExpandEnv(strings.TrimSpace(k.URL)))
+		k.TokenFile = cleanPath(os.ExpandEnv(strings.TrimSpace(k.TokenFile)))
+		k.CAFile = cleanPath(os.ExpandEnv(strings.TrimSpace(k.CAFile)))
+		k.CertFile = cleanPath(os.ExpandEnv(strings.TrimSpace(k.CertFile)))
+		k.KeyFile = cleanPath(os.ExpandEnv(strings.TrimSpace(k.KeyFile)))
 		if k.ID == "" {
 			return fmt.Errorf("kernel[%d].id is required", i)
 		}
@@ -178,7 +185,7 @@ func (c *Config) Validate() error {
 		c.PluginDirs = []string{paths.PluginsDir()}
 	}
 	for i := range c.PluginDirs {
-		c.PluginDirs[i] = os.ExpandEnv(strings.TrimSpace(c.PluginDirs[i]))
+		c.PluginDirs[i] = cleanPath(os.ExpandEnv(strings.TrimSpace(c.PluginDirs[i])))
 		if c.PluginDirs[i] == "" {
 			return fmt.Errorf("plugin_dirs[%d] is empty", i)
 		}
@@ -195,20 +202,20 @@ func (c *Config) Validate() error {
 		}
 		seenTenantCatalogs[tenant.ID] = struct{}{}
 		for j := range tenant.PluginDirs {
-			tenant.PluginDirs[j] = os.ExpandEnv(strings.TrimSpace(tenant.PluginDirs[j]))
+			tenant.PluginDirs[j] = cleanPath(os.ExpandEnv(strings.TrimSpace(tenant.PluginDirs[j])))
 			if tenant.PluginDirs[j] == "" {
 				return fmt.Errorf("tenant[%d].plugin_dirs[%d] is empty", i, j)
 			}
 		}
 		for j := range tenant.SkillDirs {
-			tenant.SkillDirs[j] = os.ExpandEnv(strings.TrimSpace(tenant.SkillDirs[j]))
+			tenant.SkillDirs[j] = cleanPath(os.ExpandEnv(strings.TrimSpace(tenant.SkillDirs[j])))
 			if tenant.SkillDirs[j] == "" {
 				return fmt.Errorf("tenant[%d].skill_dirs[%d] is empty", i, j)
 			}
 		}
 	}
 	for i := range c.SkillDirs {
-		c.SkillDirs[i] = os.ExpandEnv(strings.TrimSpace(c.SkillDirs[i]))
+		c.SkillDirs[i] = cleanPath(os.ExpandEnv(strings.TrimSpace(c.SkillDirs[i])))
 		if c.SkillDirs[i] == "" {
 			return fmt.Errorf("skill_dirs[%d] is empty", i)
 		}
@@ -226,6 +233,29 @@ func (c *Config) Validate() error {
 		if limits.ColdWorkersMax < 0 {
 			return fmt.Errorf("pool.tenants.%s.cold_workers_max must be >= 0", tenantID)
 		}
+	}
+	if len(c.Runtimes) > 0 {
+		normalizedRuntimes := make(map[string]Runtime, len(c.Runtimes))
+		for rawName, runtime := range c.Runtimes {
+			name := strings.TrimSpace(rawName)
+			if name == "" {
+				return fmt.Errorf("runtimes contains an empty runtime name")
+			}
+			if len(runtime.Command) == 0 {
+				return fmt.Errorf("runtimes.%s.command must not be empty", name)
+			}
+			for i, arg := range runtime.Command {
+				runtime.Command[i] = os.ExpandEnv(strings.TrimSpace(arg))
+				if runtime.Command[i] == "" {
+					return fmt.Errorf("runtimes.%s.command[%d] is empty", name, i)
+				}
+			}
+			if _, ok := normalizedRuntimes[name]; ok {
+				return fmt.Errorf("runtimes contains duplicate runtime %q", name)
+			}
+			normalizedRuntimes[name] = runtime
+		}
+		c.Runtimes = normalizedRuntimes
 	}
 	if len(c.PluginKinds) > 0 {
 		normalizedKinds := make(map[string]PluginKind, len(c.PluginKinds))
@@ -257,11 +287,26 @@ func (c *Config) Validate() error {
 		c.PluginKinds = normalizedKinds
 	}
 	c.Distro.Active = strings.TrimSpace(c.Distro.Active)
-	c.Distro.Dir = os.ExpandEnv(strings.TrimSpace(c.Distro.Dir))
+	c.Distro.Dir = cleanPath(os.ExpandEnv(strings.TrimSpace(c.Distro.Dir)))
 	if (c.Distro.Active == "") != (c.Distro.Dir == "") {
 		return fmt.Errorf("distro.active and distro.dir must be set together")
 	}
 	return nil
+}
+
+func cleanPath(value string) string {
+	if value == "" {
+		return ""
+	}
+	return filepath.Clean(value)
+}
+
+func cleanEndpoint(value string) string {
+	const unixPrefix = "unix://"
+	if strings.HasPrefix(value, unixPrefix) {
+		return unixPrefix + cleanPath(strings.TrimPrefix(value, unixPrefix))
+	}
+	return value
 }
 
 // SingleKernel returns the sole kernel entry supported by M2-02.

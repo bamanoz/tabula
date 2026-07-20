@@ -18,6 +18,7 @@ from . import app_run as runmod
 from . import config as cfg
 from . import generations as gens
 from . import install as installmod
+from . import links
 from . import lock as lockmod
 from . import requirements as reqmod
 from . import runtime_config as runtimecfg
@@ -403,7 +404,6 @@ def _cmd_app_apply(args: argparse.Namespace, home: Path) -> int:
         base_dir=manifest.path.parent,
         offline=bool(args.frozen),
         update=bool(args.update),
-        tenant=manifest.application.id,
         expose_global_boot=False,
     )
     materialized = appmod.run_materializer(manifest, home, lock_path=lock_path, phase="apply")
@@ -434,7 +434,6 @@ def _cmd_app_install(args: argparse.Namespace, home: Path) -> int:
         base_dir=manifest.path.parent,
         offline=bool(args.frozen),
         update=bool(args.update),
-        tenant=manifest.application.id,
         expose_global_boot=False,
     )
     materialized = appmod.run_materializer(manifest, home, lock_path=lock_path, phase="apply")
@@ -461,7 +460,6 @@ def _cmd_app_prepare(args: argparse.Namespace, home: Path) -> int:
         base_dir=manifest.path.parent,
         offline=bool(args.frozen),
         update=bool(args.update),
-        tenant=manifest.application.id,
         expose_global_boot=False,
     )
     materialized = appmod.run_materializer(manifest, home, lock_path=lock_path, phase="run", dry_run=True)
@@ -519,7 +517,6 @@ def _cmd_app_run(args: argparse.Namespace, home: Path) -> int:
         base_dir=manifest.path.parent,
         offline=bool(args.frozen),
         update=bool(args.update),
-        tenant=manifest.application.id,
         expose_global_boot=False,
     )
     materialized = appmod.run_materializer(manifest, home, lock_path=lock_path, phase="run", dry_run=bool(args.dry_run))
@@ -547,10 +544,19 @@ def _cmd_app_run(args: argparse.Namespace, home: Path) -> int:
 
 def _resolve_tabula_bin_arg(value: str, home: Path) -> str:
     if value != "tabula":
+        candidate = Path(value).expanduser()
+        if candidate.suffix == "" and os.name == "nt":
+            candidate_exe = candidate.with_suffix(".exe")
+            if candidate_exe.is_file():
+                return str(candidate_exe)
         return value
     installed = home / "bin" / "tabula"
     if installed.is_file():
         return str(installed)
+    if os.name == "nt":
+        installed_exe = installed.with_suffix(".exe")
+        if installed_exe.is_file():
+            return str(installed_exe)
     return value
 
 
@@ -864,10 +870,10 @@ def _print_run_plan(plan: runmod.RunPlan, tenant_dir: Path) -> None:
 
 def _active_name(home: Path) -> str:
     active = home / "distrib" / "active"
-    if not active.is_symlink():
+    target = links.resolve_reference(active)
+    if target is None:
         return ""
-    target = os.readlink(active)
-    return Path(target).name
+    return target.name
 
 
 def _active_source(home: Path, distro_name: str) -> str | None:

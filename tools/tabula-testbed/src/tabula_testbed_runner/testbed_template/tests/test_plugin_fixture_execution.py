@@ -5,6 +5,7 @@ import argparse
 import os
 from pathlib import Path
 import re
+import shutil
 import unittest
 
 from tabula_testbed import TestbedClient
@@ -30,9 +31,11 @@ class PluginFixtureExecutionSmoke(unittest.TestCase):
     def test_fixture_plugins_execute_installed_tools(self):
         expected = {
             "testbed_cold_python": "testbed-cold-python",
-            "testbed_cold_bash": "testbed-cold-bash",
-            "testbed_cold_node": "testbed-cold-node",
         }
+        if shutil.which("node"):
+            expected["testbed_cold_node"] = "testbed-cold-node"
+        if os.name != "nt":
+            expected["testbed_cold_bash"] = "testbed-cold-bash"
         with self.make_client("testbed-plugin-fixture") as client:
             client.wait_tools(set(expected), session="testbed-plugin-fixture")
             for tool, plugin_name in expected.items():

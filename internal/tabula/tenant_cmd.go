@@ -242,7 +242,8 @@ func mirrorRuntimeSurface(srcDir, dstDir string) error {
 	}
 	for _, entry := range entries {
 		path := filepath.Join(dstDir, entry.Name())
-		if entry.IsDir() && entry.Type()&os.ModeSymlink == 0 {
+		info, statErr := os.Stat(path)
+		if statErr == nil && info.IsDir() && entry.Type()&os.ModeSymlink == 0 {
 			if err := os.RemoveAll(path); err != nil {
 				return err
 			}
@@ -260,12 +261,13 @@ func mirrorRuntimeSurface(srcDir, dstDir string) error {
 		return err
 	}
 	for _, entry := range entries {
-		target := filepath.Join(dstDir, entry.Name())
-		rel, err := filepath.Rel(dstDir, filepath.Join(srcDir, entry.Name()))
+		source := filepath.Join(srcDir, entry.Name())
+		info, err := os.Stat(source)
 		if err != nil {
 			return err
 		}
-		if err := os.Symlink(rel, target); err != nil {
+		target := filepath.Join(dstDir, entry.Name())
+		if err := platformCreateReference(source, target, info.IsDir()); err != nil {
 			return err
 		}
 	}
@@ -285,11 +287,7 @@ func linkSharedTree(src, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err
 	}
-	rel, err := filepath.Rel(filepath.Dir(dst), src)
-	if err != nil {
-		return err
-	}
-	return os.Symlink(rel, dst)
+	return platformCreateReference(src, dst, true)
 }
 
 func seedTenantConfigTemplates(tabulaHome, tenantID string) error {

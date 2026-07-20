@@ -20,6 +20,8 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import links
+
 
 GENERATION_PREFIX_WIDTH = 4
 LEGACY_MARKER = "legacy"
@@ -69,7 +71,7 @@ def current_generation(home: Path, distro_name: str) -> Generation | None:
     link = current_link(home, distro_name)
     if not link.exists():
         return None
-    target = link.resolve()
+    target = links.resolve_reference(link) or link.resolve()
     for g in list_generations(home, distro_name):
         if g.path.resolve() == target:
             return g
@@ -108,11 +110,7 @@ def set_current(home: Path, distro_name: str, gen: Generation) -> None:
     link = current_link(home, distro_name)
     target = Path("generations") / gen.name
     link.parent.mkdir(parents=True, exist_ok=True)
-    tmp = link.with_name(link.name + ".tmp")
-    if tmp.exists() or tmp.is_symlink():
-        tmp.unlink()
-    tmp.symlink_to(target)
-    os.replace(tmp, link)
+    links.replace_directory_reference(link, target)
 
 
 def prune(home: Path, distro_name: str, *, keep: int) -> list[Generation]:

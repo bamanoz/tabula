@@ -140,6 +140,44 @@ token_file = "/tmp/runtime-token"
 	}
 }
 
+func TestLoadRuntimeConfigParsesRuntimeCommands(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TABULA_PYTHON", filepath.Join(dir, "python"))
+	path := filepath.Join(dir, "runtime.toml")
+	writeFile(t, path, `[runtimes.python]
+command = ["${TABULA_PYTHON}", "-I"]
+
+[[kernel]]
+id = "local"
+url = "unix:///tmp/runtime.sock"
+token_file = "/tmp/runtime-token"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{filepath.Join(dir, "python"), "-I"}
+	if !reflect.DeepEqual(cfg.Runtimes["python"].Command, want) {
+		t.Fatalf("python runtime command = %#v, want %#v", cfg.Runtimes["python"].Command, want)
+	}
+}
+
+func TestLoadRuntimeConfigRejectsEmptyRuntimeCommand(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime.toml")
+	writeFile(t, path, `[runtimes.python]
+command = []
+
+[[kernel]]
+id = "local"
+url = "unix:///tmp/runtime.sock"
+token_file = "/tmp/runtime-token"
+`)
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "runtimes.python.command") {
+		t.Fatalf("expected runtime command validation error, got %v", err)
+	}
+}
+
 func TestLoadRuntimeConfigRejectsInvalidPluginKindDependencies(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "runtime.toml")
 	writeFile(t, path, `plugin_dirs = ["/tmp/plugins"]
@@ -341,6 +379,7 @@ func TestSaveRoundTripsRuntimeConfig(t *testing.T) {
 		PluginDirs: []string{"/tmp/plugins", "/tmp/extra-plugins"},
 		SkillDirs:  []string{"/tmp/skills"},
 		Pool:       Pool{ColdWorkersPerTenantMax: 8, Tenants: map[string]TenantPool{"alpha": {ColdWorkersMax: 3}}},
+		Runtimes:   map[string]Runtime{"python": {Command: []string{"/opt/tabula/python", "-I"}}},
 		PluginKinds: map[string]PluginKind{
 			"gateway": {DependsOn: []string{"driver"}},
 		},
@@ -355,10 +394,10 @@ func TestSaveRoundTripsRuntimeConfig(t *testing.T) {
 	if !reflect.DeepEqual(loaded.Kernels, cfg.Kernels) {
 		t.Fatalf("kernels = %#v, want %#v", loaded.Kernels, cfg.Kernels)
 	}
-	if len(loaded.PluginDirs) != 2 || loaded.PluginDirs[0] != "/tmp/plugins" || loaded.PluginDirs[1] != "/tmp/extra-plugins" {
+	if len(loaded.PluginDirs) != 2 || loaded.PluginDirs[0] != filepath.Clean("/tmp/plugins") || loaded.PluginDirs[1] != filepath.Clean("/tmp/extra-plugins") {
 		t.Fatalf("plugin dirs = %#v", loaded.PluginDirs)
 	}
-	if len(loaded.SkillDirs) != 1 || loaded.SkillDirs[0] != "/tmp/skills" {
+	if len(loaded.SkillDirs) != 1 || loaded.SkillDirs[0] != filepath.Clean("/tmp/skills") {
 		t.Fatalf("skill dirs = %#v", loaded.SkillDirs)
 	}
 	if loaded.Pool.ColdWorkersPerTenantMax != 8 {
@@ -369,6 +408,9 @@ func TestSaveRoundTripsRuntimeConfig(t *testing.T) {
 	}
 	if !reflect.DeepEqual(loaded.PluginKinds, cfg.PluginKinds) {
 		t.Fatalf("plugin kind policies = %#v, want %#v", loaded.PluginKinds, cfg.PluginKinds)
+	}
+	if !reflect.DeepEqual(loaded.Runtimes, cfg.Runtimes) {
+		t.Fatalf("runtimes = %#v, want %#v", loaded.Runtimes, cfg.Runtimes)
 	}
 }
 

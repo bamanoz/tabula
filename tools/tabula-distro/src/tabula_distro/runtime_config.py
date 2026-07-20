@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from tabula_distro import toml_io
@@ -43,7 +44,8 @@ def write(home: Path, plugin_dirs: list[str], *, distro: dict[str, str] | None =
 
     Re-runs of this function preserve any user comments and unknown keys the
     user added to the file. Only the keys we own (``plugin_dirs``,
-    ``skill_dirs``, the ``[[kernel]]`` entry, ``[pool]``, and ``[distro]``)
+    ``skill_dirs``, the ``[[kernel]]`` entry, ``[runtimes.python]``,
+    ``[pool]``, and ``[distro]``)
     are authoritative — they are overwritten to match the install state.
     """
     path = home / "config" / "runtime.toml"
@@ -63,6 +65,8 @@ def write(home: Path, plugin_dirs: list[str], *, distro: dict[str, str] | None =
     kernels.append(kernel)
     doc["kernel"] = kernels
 
+    write_python_runtime(doc)
+
     toml_io.merge_defaults(doc, {"pool": {"cold_workers_per_tenant_max": 16}})
 
     if distro is not None:
@@ -77,6 +81,19 @@ def write(home: Path, plugin_dirs: list[str], *, distro: dict[str, str] | None =
 
     toml_io.dump(path, doc)
     return path
+
+
+def write_python_runtime(doc, *, executable: str | Path | None = None) -> None:
+    """Record the concrete interpreter behind the platform-neutral `python` runtime."""
+    tomlkit = toml_io.require_tomlkit()
+    runtimes = doc.get("runtimes")
+    if not hasattr(runtimes, "__setitem__"):
+        runtimes = tomlkit.table()
+    python = tomlkit.table()
+    interpreter = Path(executable or sys.executable).expanduser().resolve()
+    python["command"] = _string_array([str(interpreter)])
+    runtimes["python"] = python
+    doc["runtimes"] = runtimes
 
 
 def distro_metadata(home: Path, distro_dir: Path) -> dict[str, str]:

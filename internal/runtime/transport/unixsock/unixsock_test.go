@@ -25,13 +25,14 @@ func TestUnixSocketTransportPermissions(t *testing.T) {
 	}
 	defer listener.Close()
 
+	if runtime.GOOS == "windows" {
+		return
+	}
 	if got := fileMode(t, filepath.Dir(sock)); got != 0o700 {
 		t.Fatalf("socket dir mode = %#o, want 0700", got)
 	}
-	if runtime.GOOS != "windows" {
-		if got := fileMode(t, sock); got != 0o600 {
-			t.Fatalf("socket mode = %#o, want 0600", got)
-		}
+	if got := fileMode(t, sock); got != 0o600 {
+		t.Fatalf("socket mode = %#o, want 0600", got)
 	}
 }
 
@@ -175,6 +176,46 @@ func TestUnixSocketConcurrentInvokes(t *testing.T) {
 	wg.Wait()
 }
 
+func TestSocketPathParsesUnixURL(t *testing.T) {
+	got, err := socketPath("unix:///tmp/tabula.sock")
+	if err != nil {
+		t.Fatalf("socketPath unix url: %v", err)
+	}
+	want := "/tmp/tabula.sock"
+	if got != want {
+		t.Fatalf("socketPath = %q, want %q", got, want)
+	}
+}
+
+func TestSocketPathPreservesWindowsDrivePath(t *testing.T) {
+	const drivePath = "C:\\Users\\Valera\\tabula\\runtime.sock"
+	got, err := socketPath("unix://" + drivePath)
+	if err != nil {
+		t.Fatalf("socketPath windows drive path: %v", err)
+	}
+	want := drivePath
+	if runtime.GOOS != "windows" {
+		want = "/" + drivePath
+	}
+	if got != want {
+		t.Fatalf("socketPath = %q, want %q", got, want)
+	}
+}
+
+func TestSocketPathStripsWindowsURLLeadingSlash(t *testing.T) {
+	got, err := socketPath("unix:///C:/Users/Valera/tabula/runtime.sock")
+	if err != nil {
+		t.Fatalf("socketPath windows slash path: %v", err)
+	}
+	want := "/C:/Users/Valera/tabula/runtime.sock"
+	if runtime.GOOS == "windows" {
+		want = "C:/Users/Valera/tabula/runtime.sock"
+	}
+	if got != want {
+		t.Fatalf("socketPath = %q, want %q", got, want)
+	}
+}
+
 type socketHandler struct{}
 
 func (socketHandler) Hello(context.Context, wire.Hello) (wire.HelloAck, error) {
@@ -228,7 +269,7 @@ func fileMode(t *testing.T, path string) os.FileMode {
 
 func shortSocketPath(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "tabula-rt-*")
+	dir, err := os.MkdirTemp("", "tabula-rt-*")
 	if err != nil {
 		t.Fatalf("temp dir: %v", err)
 	}

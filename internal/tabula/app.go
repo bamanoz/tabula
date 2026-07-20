@@ -69,6 +69,7 @@ type localRuntimeMode string
 
 const (
 	localRuntimeModeExternal localRuntimeMode = "external"
+	localRuntimeModeManaged  localRuntimeMode = "managed"
 	localRuntimeModeDisabled localRuntimeMode = "disabled"
 )
 
@@ -216,7 +217,7 @@ func Run(args []string, build BuildInfo) int {
 	case "tenant":
 		return tenantCmd(args[1:])
 	case "runtime":
-		return runtimeCmd(args[1:])
+		return runtimeCmd(args[1:], build)
 	case "config":
 		return configCmd(args[1:])
 	case "health":
@@ -242,7 +243,7 @@ func Run(args []string, build BuildInfo) int {
 			return 0
 		}
 		// No subcommand — print usage.
-		fmt.Fprintf(os.Stderr, "Usage: tabula <command>\n\nCommands:\n  serve    Start the kernel WebSocket server (default)\n  run      One-shot prompt → response\n  status   Show kernel/runtime/tenant status\n  config   Inspect runtime configuration\n  health   Check installed plugin health\n  tenant   Manage tenants\n  runtime  Manage runtimes\n\nServe flags:\n  --runtime-mode external|disabled\n\nFlags:\n  --version    Show version\n  --protocol   Show kernel plugin protocol range (JSON)\n")
+		fmt.Fprintf(os.Stderr, "Usage: tabula <command>\n\nCommands:\n  serve    Start the kernel WebSocket server (default)\n  run      One-shot prompt → response\n  status   Show kernel/runtime/tenant status\n  config   Inspect runtime configuration\n  health   Check installed plugin health\n  tenant   Manage tenants\n  runtime  Manage runtimes\n\nServe flags:\n  --runtime-mode external|managed|disabled\n\nFlags:\n  --version    Show version\n  --protocol   Show kernel plugin protocol range (JSON)\n")
 		return 1
 	}
 
@@ -265,7 +266,7 @@ func parseServeFlags(args []string) (serveOptions, int) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	_ = fs.Bool("foreground", true, "run in foreground")
-	runtimeModeFlag := fs.String("runtime-mode", "", "local runtime mode: external or disabled")
+	runtimeModeFlag := fs.String("runtime-mode", "", "local runtime mode: external, managed, or disabled")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return opts, 1
@@ -289,10 +290,12 @@ func parseLocalRuntimeMode(value string) (localRuntimeMode, error) {
 	switch localRuntimeMode(strings.ToLower(strings.TrimSpace(value))) {
 	case localRuntimeModeExternal:
 		return localRuntimeModeExternal, nil
+	case localRuntimeModeManaged:
+		return localRuntimeModeManaged, nil
 	case localRuntimeModeDisabled:
 		return localRuntimeModeDisabled, nil
 	default:
-		return "", fmt.Errorf("invalid runtime mode %q (want external or disabled)", value)
+		return "", fmt.Errorf("invalid runtime mode %q (want external, managed, or disabled)", value)
 	}
 }
 
@@ -498,6 +501,7 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 	}
 	slog.Info("runtime listener ready", "path", runtimeListener.Path())
 	runtimeStop := make(chan struct{})
+	var managedRuntimePID atomic.Int64
 	go func() {
 		serveErr := runtimeListener.Serve(runtimeHandler)
 		select {
@@ -520,9 +524,29 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 			slog.Error("server error", "error", err)
 		}
 	}()
+	var runtimeProc *managedLocalRuntime
 	switch opts.runtimeMode {
 	case localRuntimeModeExternal:
 		slog.Info("local runtime external mode enabled", "config", filepath.Join(tabulaHome, "config", "runtime.toml"))
+	case localRuntimeModeManaged:
+		runtimeProc, err = startAttachedLocalRuntime(hub, tabulaHome, os.Stderr, nil, func(pid int) {
+			managedRuntimePID.Store(int64(pid))
+		})
+		if err != nil {
+			close(runtimeStop)
+			runtimeListener.Close()
+			listener.Close()
+			if runtimeWSSServer != nil {
+				_ = runtimeWSSServer.Close()
+			}
+			if runtimeWSSListener != nil {
+				_ = runtimeWSSListener.Close()
+			}
+			server.Close()
+			fmt.Fprintf(os.Stderr, "error: local runtime startup failed: %v\n", err)
+			return 1
+		}
+		slog.Info("local runtime managed mode enabled", "pid", runtimeProc.PID())
 	default:
 		slog.Info("local runtime disabled")
 	}
@@ -537,8 +561,21 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 
 	slog.Info("ready")
 
-	// Wait for signal
-	waitForShutdownSignal()
+	exitCode := 0
+	if runtimeProc != nil {
+		select {
+		case <-shutdownSignalChan():
+		case <-runtimeProc.Done():
+			if err := runtimeProc.Wait(); err != nil {
+				slog.Error("managed local runtime exited", "error", err)
+			} else {
+				slog.Error("managed local runtime exited")
+			}
+			exitCode = 1
+		}
+	} else {
+		waitForShutdownSignal()
+	}
 
 	slog.Info("shutting down")
 	close(stopReload)
@@ -557,7 +594,12 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 		<-ch
 	}
 	server.Close()
-	return 0
+	if runtimeProc != nil {
+		if err := runtimeProc.Shutdown(5 * time.Second); err != nil {
+			slog.Warn("local runtime shutdown failed", "error", err)
+		}
+	}
+	return exitCode
 }
 
 // watchReloadTrigger polls TABULA_HOME/run/reload.touch and triggers a runtime
@@ -653,6 +695,11 @@ func reloadTenants(tabulaHome string) []string {
 	cfg, err := runtimehostconfig.Load(filepath.Join(tabulaHome, "config", "runtime.toml"))
 	if err != nil || len(cfg.Kernels) != 1 {
 		return nil
+	}
+	for _, tenantID := range cfg.Kernels[0].Tenants {
+		if tenantID == "*" {
+			return nil
+		}
 	}
 	return append([]string(nil), cfg.Kernels[0].Tenants...)
 }

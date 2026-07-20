@@ -51,7 +51,8 @@ class DeferredToolsSmoke(unittest.TestCase):
                 status = client.call_tool("deferred_tool_discovery_status", {}, timeout=10).json()
                 self.assertEqual(status.get("discovered"), ["exec_run"])
 
-                executed = client.call_tool("exec_run", {"cmd": "printf deferred-ok"}, timeout=10).json()
+                command = "[Console]::Out.Write('deferred-ok')" if os.name == "nt" else "printf deferred-ok"
+                executed = client.call_tool("exec_run", {"cmd": command}, timeout=10).json()
                 self.assertEqual(executed.get("stdout"), "deferred-ok")
                 self.assertEqual(executed.get("exit_code"), 0)
         finally:

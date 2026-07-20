@@ -16,7 +16,7 @@ class WorkspaceFSTenantDivergence(unittest.TestCase):
 
     @classmethod
     def tabula_bin(cls) -> str:
-        candidate = Path(cls.tabula_home) / "bin" / "tabula"
+        candidate = Path(cls.tabula_home) / "bin" / ("tabula.exe" if os.name == "nt" else "tabula")
         return str(candidate) if candidate.is_file() else "tabula"
 
     @classmethod

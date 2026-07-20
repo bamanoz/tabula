@@ -8,6 +8,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tomllib
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -294,6 +295,7 @@ def run_materializer(manifest: AppManifest, home: Path, *, lock_path: Path | Non
     cmd = shlex.split(raw)
     if not cmd:
         return False
+    cmd = _normalize_materializer_command(cmd)
     env = os.environ.copy()
     env.update({
         "TABULA_HOME": str(home),
@@ -313,6 +315,20 @@ def run_materializer(manifest: AppManifest, home: Path, *, lock_path: Path | Non
         detail = (proc.stderr or proc.stdout or "").strip()
         raise AppManifestError(f"app materializer failed ({raw!r})" + (f": {detail}" if detail else ""))
     return True
+
+
+def _normalize_materializer_command(cmd: list[str]) -> list[str]:
+    if os.name != "nt" or not cmd:
+        return cmd
+    launcher = Path(cmd[0]).name.lower()
+    if launcher in {"python", "python.exe", "python3", "python3.exe"}:
+        return [sys.executable, *cmd[1:]]
+    if launcher in {"py", "py.exe"}:
+        rest = list(cmd[1:])
+        if rest and re.fullmatch(r"-\d+(\.\d+)?", rest[0]):
+            rest = rest[1:]
+        return [sys.executable, *rest]
+    return cmd
 
 
 def _materializer_python_roots(home: Path) -> list[Path]:

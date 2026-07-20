@@ -387,12 +387,15 @@ for a in data.get('assets', []):
   local skills_payload="$tmp/skills-payload"
   mkdir -p "$skills_payload"
   tar -xzf "$tmp/$skills_archive" -C "$skills_payload"
-  if [ -f "$skills_payload/config/global.toml" ]; then
-    mkdir -p "$skills_payload/config"
-    mv "$skills_payload/config/global.toml" "$skills_payload/config/global.toml.example"
+  local had_config_dir=0
+  if [ -e "$TABULA_HOME/config" ]; then
+    had_config_dir=1
   fi
-  (cd "$skills_payload" && tar -cf - .) | tar -xf - -C "$TABULA_HOME"
-  if [ ! -f "$TABULA_HOME/config/global.toml" ] && [ -f "$TABULA_HOME/config/global.toml.example" ]; then
+  check_python
+  [ -f "$skills_payload/libexec/install_payload.py" ] || \
+    die "release payload is missing libexec/install_payload.py"
+  "$PYTHON_BIN" "$skills_payload/libexec/install_payload.py" "$skills_payload" "$TABULA_HOME"
+  if [ "$had_config_dir" -eq 0 ] && [ ! -f "$TABULA_HOME/config/global.toml" ] && [ -f "$TABULA_HOME/config/global.toml.example" ]; then
     cp "$TABULA_HOME/config/global.toml.example" "$TABULA_HOME/config/global.toml"
   fi
   # Record installed Tabula version for tabula-distro compatibility checks.
@@ -403,9 +406,6 @@ for a in data.get('assets', []):
     printf '{"plugin_protocol_min": 1, "plugin_protocol_max": 1}\n' > "$TABULA_HOME/PROTOCOL"
   verify_launchers
   ok "Skills and config installed"
-
-  # Python
-  check_python
 
   if [ ! -d "$VENV" ]; then
     info "Creating Python venv..."

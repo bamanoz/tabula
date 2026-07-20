@@ -32,7 +32,7 @@ const (
 // stronger sandbox policies plug in behind the same policy.PluginExecPolicy
 // interface in later milestones.
 type Policy struct {
-	RuntimeCommands map[string]string
+	RuntimeCommands map[string][]string
 	InitTimeout     time.Duration
 }
 
@@ -142,15 +142,16 @@ func (p *Policy) buildCommand(_ context.Context, req policy.SpawnReq) (*exec.Cmd
 		cmd.Env = workerEnv(req)
 		return cmd, nil
 	}
-	bin := p.runtimeCommand(req.Runtime)
-	if bin == "" {
+	argv := p.runtimeCommand(req.Runtime)
+	if len(argv) == 0 {
 		return nil, fmt.Errorf("bare policy: no command configured for runtime %q", req.Runtime)
 	}
 	entry := req.Entry
 	if !filepath.IsAbs(entry) {
 		entry = filepath.Join(req.WorkingDir, entry)
 	}
-	cmd := exec.Command(bin, entry)
+	argv = append(argv, entry)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = req.WorkingDir
 	cmd.Env = workerEnv(req)
 	return cmd, nil
@@ -167,17 +168,17 @@ func resolveCommand(command []string, workingDir string) []string {
 	return argv
 }
 
-func (p *Policy) runtimeCommand(runtime string) string {
-	if p != nil && p.RuntimeCommands != nil && p.RuntimeCommands[runtime] != "" {
-		return p.RuntimeCommands[runtime]
+func (p *Policy) runtimeCommand(runtime string) []string {
+	if p != nil && len(p.RuntimeCommands[runtime]) > 0 {
+		return append([]string(nil), p.RuntimeCommands[runtime]...)
 	}
 	switch runtime {
 	case "bash":
-		return "bash"
+		return []string{"bash"}
 	case "node":
-		return "node"
+		return []string{"node"}
 	default:
-		return ""
+		return nil
 	}
 }
 
@@ -189,7 +190,10 @@ func (p *Policy) initTimeout() time.Duration {
 }
 
 func workerEnv(req policy.SpawnReq) []string {
-	env := passthroughEnv(os.Environ())
+	// Bare workers are trusted local processes, so they inherit the host
+	// environment just like os/exec normally does. Sandboxed policies own any
+	// environment filtering; a partial allowlist is inherently non-portable.
+	env := append([]string(nil), os.Environ()...)
 	for key, value := range req.Env {
 		if strings.TrimSpace(key) == "" {
 			continue
@@ -225,30 +229,6 @@ func envValue(env []string, key string) string {
 		}
 	}
 	return ""
-}
-
-func passthroughEnv(current []string) []string {
-	allowed := map[string]struct{}{
-		"TABULA_HOME": {},
-		"TABULA_URL":  {},
-		"PATH":        {},
-		"PYTHONPATH":  {},
-		"HOME":        {},
-		"LANG":        {},
-		"LC_ALL":      {},
-		"TMPDIR":      {},
-	}
-	out := make([]string, 0, len(allowed))
-	for _, item := range current {
-		key, _, ok := strings.Cut(item, "=")
-		if !ok {
-			continue
-		}
-		if _, keep := allowed[key]; keep {
-			out = append(out, item)
-		}
-	}
-	return out
 }
 
 func setEnv(env []string, key, value string) []string {

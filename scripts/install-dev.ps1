@@ -8,6 +8,18 @@
 
 $ErrorActionPreference = "Stop"
 
+function Join-Paths {
+    param(
+        [string]$Base,
+        [string[]]$Children
+    )
+    $Path = $Base
+    foreach ($Child in $Children) {
+        $Path = Join-Path $Path $Child
+    }
+    return $Path
+}
+
 foreach ($arg in $args) {
     switch ($arg) {
         { $_ -in @("-h", "--help") } {
@@ -28,9 +40,29 @@ $Venv = if ($env:TABULA_VENV) { $env:TABULA_VENV } else { Join-Path $TabulaHome 
 function Stop-ExistingTabula {
     Write-Host "==> Stopping any running tabula kernel/runtime"
     try {
-        Get-CimInstance Win32_Process |
-            Where-Object { $_.CommandLine -like "*$TabulaHome*tabula*serve*" -or $_.CommandLine -like "*$TabulaHome*tabula-runtime*start*" } |
-            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        $matches = @(
+            Get-CimInstance Win32_Process |
+                Where-Object {
+                    if (-not $_.CommandLine -or $_.ProcessId -eq $PID) {
+                        return $false
+                    }
+                    $cmd = $_.CommandLine
+                    $name = $_.Name.ToLowerInvariant()
+                    $belongsToHome = $cmd -like "*$TabulaHome*"
+                    $isTabulaBinary = $cmd -like "*$BinDir*tabula.exe*" -or $cmd -like "*$BinDir*tabula-runtime.exe*"
+                    $isRunnerShell = $cmd -like "*tabula-runner.ps1*"
+                    $isRuntimeWorker = $cmd -like "*daemon.py*" -or $cmd -like "*scripts/run.py*" -or $cmd -like "* run.py*"
+                    $isAppRunWrapper = $cmd -like "*tabula_distro.cli*app run*"
+                    $isManagedWorkerShell = $name -in @("python.exe", "powershell.exe", "pwsh.exe", "cmd.exe")
+                    return $isTabulaBinary -or ($belongsToHome -and $isManagedWorkerShell -and ($isRunnerShell -or $isRuntimeWorker -or $isAppRunWrapper))
+                }
+        )
+        $matches |
+            Sort-Object ProcessId -Descending |
+            ForEach-Object {
+                Write-Host ("    stopping PID {0} ({1})" -f $_.ProcessId, $_.Name)
+                Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            }
     } catch {
         Write-Host "warning: could not inspect running tabula processes: $_"
     }
@@ -82,11 +114,13 @@ site_packages.mkdir(parents=True, exist_ok=True)
 Stop-ExistingTabula
 
 Write-Host "==> Installing Tabula kernel/runtime to $TabulaHome"
-New-Item -ItemType Directory -Force -Path $TabulaHome, $BinDir, (Join-Path $TabulaHome "config") | Out-Null
+New-Item -ItemType Directory -Force -Path $TabulaHome, $BinDir | Out-Null
 
-$GlobalConfig = Join-Path $TabulaHome "config" "global.toml"
-if (-not (Test-Path $GlobalConfig)) {
-    Copy-Item (Join-Path $RepoRoot "config" "global.toml") -Destination $GlobalConfig -Force
+$ConfigDir = Join-Path $TabulaHome "config"
+if (-not (Test-Path $ConfigDir)) {
+    New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
+    $GlobalConfig = Join-Path $ConfigDir "global.toml"
+    Copy-Item (Join-Paths $RepoRoot @("config", "global.toml")) -Destination $GlobalConfig -Force
 }
 
 $ServiceSource = Join-Path $RepoRoot "service"
@@ -96,7 +130,7 @@ if (Test-Path $ServiceSource) {
     Copy-Item $ServiceSource -Destination $ServiceDest -Recurse -Force
 }
 
-if ((Test-Path $Venv) -and -not (Test-Path (Join-Path $Venv "Scripts" "pip.exe"))) {
+if ((Test-Path $Venv) -and -not (Test-Path (Join-Paths $Venv @("Scripts", "pip.exe")))) {
     Write-Host "==> Recreating invalid Python venv"
     Remove-Item -Recurse -Force $Venv
 }
@@ -104,13 +138,13 @@ if (-not (Test-Path $Venv)) {
     Write-Host "==> Creating Python venv"
     python -m venv $Venv
 }
-$Python = Join-Path $Venv "Scripts" "python.exe"
-$Pip = Join-Path $Venv "Scripts" "pip.exe"
-& $Pip install -q --upgrade pip
-& $Pip install -q -r (Join-Path $ScriptDir "requirements-dev.txt")
+$Python = Join-Paths $Venv @("Scripts", "python.exe")
+$Pip = Join-Paths $Venv @("Scripts", "pip.exe")
+& $Python -m pip install -q --upgrade pip
+& $Python -m pip install -q -r (Join-Path $ScriptDir "requirements-dev.txt")
 $BundlesRoot = if ($env:TABULA_BUNDLES_ROOT) { $env:TABULA_BUNDLES_ROOT } else { Join-Path (Split-Path -Parent $RepoRoot) "tabula-bundles" }
 Write-BundlesPth -Python $Python -BundlesRoot $BundlesRoot
-& $Pip install -q -e (Join-Path $RepoRoot "tools" "tabula-distro")
+& $Python -m pip install -q -e (Join-Paths $RepoRoot @("tools", "tabula-distro"))
 Write-Host "    Python dependencies installed"
 
 $EnvFile = Join-Path $TabulaHome ".env"
@@ -130,13 +164,18 @@ try {
 }
 
 Set-Content -Path (Join-Path $TabulaHome "VERSION") -Value $VersionStr -NoNewline
-& (Join-Path $BinDir "tabula.exe") --protocol | Set-Content -Path (Join-Path $TabulaHome "PROTOCOL")
+$ProtocolPath = Join-Path $TabulaHome "PROTOCOL"
+try {
+    & (Join-Path $BinDir "tabula.exe") --protocol | Set-Content -Path $ProtocolPath
+} catch {
+    Set-Content -Path $ProtocolPath -Value '{"plugin_protocol_min":1,"plugin_protocol_max":1}'
+}
 
 foreach ($script in @("tabula-runner.ps1", "tabula-cli.ps1")) {
-    Copy-Item (Join-Path $RepoRoot "bin" $script) -Destination (Join-Path $BinDir $script) -Force
+    Copy-Item (Join-Paths $RepoRoot @("bin", $script)) -Destination (Join-Path $BinDir $script) -Force
 }
 foreach ($exe in @("tabula-install.exe", "tabula-distro.exe")) {
-    $src = Join-Path $Venv "Scripts" $exe
+    $src = Join-Paths $Venv @("Scripts", $exe)
     if (Test-Path $src) {
         Copy-Item $src -Destination (Join-Path $BinDir $exe) -Force
     }

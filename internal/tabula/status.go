@@ -15,7 +15,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/bamanoz/tabula/internal/runtime/paths"
@@ -481,14 +480,7 @@ func processRunning(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	if err := process.Signal(syscall.Signal(0)); err != nil {
-		return false
-	}
-	return true
+	return platformProcessRunning(pid)
 }
 
 func uptimeSeconds(startedAt string, now time.Time) int64 {

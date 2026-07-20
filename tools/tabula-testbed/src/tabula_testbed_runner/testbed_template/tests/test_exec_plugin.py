@@ -18,7 +18,7 @@ class ExecPluginSmoke(unittest.TestCase):
 
     @classmethod
     def tabula_bin(cls) -> str:
-        candidate = Path(cls.tabula_home) / "bin" / "tabula"
+        candidate = Path(cls.tabula_home) / "bin" / ("tabula.exe" if os.name == "nt" else "tabula")
         return str(candidate) if candidate.is_file() else "tabula"
 
     @classmethod
@@ -62,32 +62,37 @@ class ExecPluginSmoke(unittest.TestCase):
             if self.require_fs_absent:
                 self.assertFalse("fs_read" in advertised)
 
-            result = self.call_json(client, "exec_run", {"cmd": "pwd; printf :$TABULA_TENANT_ID; printf err >&2; exit 3"})
+            command = "[Console]::Out.WriteLine((Get-Location).Path); [Console]::Out.Write(':'); [Console]::Out.Write($env:TABULA_TENANT_ID); [Console]::Error.Write('err'); exit 3" if os.name == "nt" else "pwd; printf :$TABULA_TENANT_ID; printf err >&2; exit 3"
+            result = self.call_json(client, "exec_run", {"cmd": command})
             self.assertEqual(Path(result["stdout"].splitlines()[0]).resolve(), self.workspace_root.resolve())
             self.assertTrue(result["stdout"].endswith(":default"))
             self.assertEqual(result["stderr"], "err")
             self.assertEqual(result["exit_code"], 3)
             self.assertFalse(result["timed_out"])
 
-            timed = self.call_json(client, "exec_run", {"cmd": "sleep 2", "timeout_seconds": 1}, timeout=10)
+            sleep_two = "Start-Sleep -Seconds 2" if os.name == "nt" else "sleep 2"
+            timed = self.call_json(client, "exec_run", {"cmd": sleep_two, "timeout_seconds": 1}, timeout=10)
             self.assertTrue(timed["timed_out"])
 
-            too_long = client.call_tool("exec_run", {"cmd": "printf never", "timeout_seconds": 901}, timeout=10).output
+            never = "[Console]::Out.Write('never')" if os.name == "nt" else "printf never"
+            too_long = client.call_tool("exec_run", {"cmd": never, "timeout_seconds": 901}, timeout=10).output
             self.assertIn("timeout_seconds must be 120s or less", too_long)
             self.assertIn("exec_run_background", too_long)
 
-            tmp = self.call_json(client, "exec_run", {"cmd": "ls /tmp >/dev/null && printf ok"})
+            tmp_command = "$null = Get-ChildItem $env:TEMP; [Console]::Out.Write('ok')" if os.name == "nt" else "ls /tmp >/dev/null && printf ok"
+            tmp = self.call_json(client, "exec_run", {"cmd": tmp_command})
             self.assertEqual(tmp["stdout"], "ok")
             self.assertEqual(tmp["exit_code"], 0)
 
-            denied = client.call_tool("exec_run", {"cmd": "echo forbidden"}, timeout=10)
+            denied = client.call_tool("exec_run", {"cmd": "Write-Output forbidden" if os.name == "nt" else "echo forbidden"}, timeout=10)
             self.assertIn("command denied by pattern", denied.output)
             self.assertIn("forbidden", denied.output)
 
     def test_exec_run_silent_command_can_outlive_default_runtime_deadline(self) -> None:
         with self.make_client() as client:
             client.wait_tools({"exec_run"}, session="testbed-exec", tenant_id="default")
-            result = self.call_json(client, "exec_run", {"cmd": "sleep 40; printf done", "timeout_seconds": 60}, timeout=90)
+            command = "Start-Sleep -Seconds 40; [Console]::Out.Write('done')" if os.name == "nt" else "sleep 40; printf done"
+            result = self.call_json(client, "exec_run", {"cmd": command, "timeout_seconds": 60}, timeout=90)
             self.assertEqual(result["stdout"], "done")
             self.assertEqual(result["exit_code"], 0)
             self.assertFalse(result["timed_out"])
@@ -95,7 +100,8 @@ class ExecPluginSmoke(unittest.TestCase):
     def test_background_spawn_list_and_kill(self) -> None:
         with self.make_client() as client:
             client.wait_tools({"exec_run_background", "exec_list_background", "exec_kill_background"}, session="testbed-exec", tenant_id="default")
-            started = self.call_json(client, "exec_run_background", {"cmd": "sleep 30"})
+            command = "Start-Sleep -Seconds 30" if os.name == "nt" else "sleep 30"
+            started = self.call_json(client, "exec_run_background", {"cmd": command})
             bg_id = started["bg_id"]
             listed = self.call_json(client, "exec_list_background", {})
             self.assertEqual([item["bg_id"] for item in listed["processes"]], [bg_id])

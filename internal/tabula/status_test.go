@@ -43,6 +43,15 @@ func TestBuildStatusKernelDownStillListsTenants(t *testing.T) {
 	}
 }
 
+func TestProcessRunningRecognizesCurrentProcess(t *testing.T) {
+	if !processRunning(os.Getpid()) {
+		t.Fatalf("current process %d should be running", os.Getpid())
+	}
+	if processRunning(0) {
+		t.Fatal("zero PID must not be running")
+	}
+}
+
 func TestTabulaHomeFromExecutableDetectsInstalledLayout(t *testing.T) {
 	tabulaHome := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(tabulaHome, "bin"), 0o755); err != nil {

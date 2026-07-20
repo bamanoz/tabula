@@ -13,6 +13,18 @@
 
 $ErrorActionPreference = "Stop"
 
+function Join-Paths {
+    param(
+        [string]$Base,
+        [string[]]$Children
+    )
+    $Path = $Base
+    foreach ($Child in $Children) {
+        $Path = Join-Path $Path $Child
+    }
+    return $Path
+}
+
 $Repo = "bamanoz/tabula"
 $TabulaHome = if ($env:TABULA_HOME) { $env:TABULA_HOME } else { Join-Path $HOME ".tabula" }
 $BinDir = Join-Path $TabulaHome "bin"
@@ -112,19 +124,19 @@ function Ensure-EnvTemplate {
 function Install-PythonDeps {
     $RequirementsUrl = "https://raw.githubusercontent.com/$Repo/$Version/scripts/requirements-runtime.txt"
     $RequirementsPath = Join-Path $TmpDir "requirements-runtime.txt"
+    $VenvPython = Join-Paths $Venv @("Scripts", "python.exe")
 
     Info "Installing Python dependencies..."
-    $Pip = Join-Path $Venv "Scripts" "pip.exe"
-    & $Pip install -q --upgrade pip
+    & $VenvPython -m pip install -q --upgrade pip
     try {
         $headers = @{}
         if ($env:GITHUB_TOKEN) {
             $headers["Authorization"] = "Bearer $env:GITHUB_TOKEN"
         }
         Invoke-WithRetry { Invoke-WebRequest $RequirementsUrl -OutFile $RequirementsPath -Headers $headers }
-        & $Pip install -q -r $RequirementsPath
+        & $VenvPython -m pip install -q -r $RequirementsPath
     } catch {
-        & $Pip install -q websocket-client prompt_toolkit rich
+        & $VenvPython -m pip install -q websocket-client prompt_toolkit rich
     }
     Ok "Python dependencies installed"
 }
@@ -250,12 +262,24 @@ try {
         Copy-Item $UserConfig $ConfigBackup
     }
 
-    # Extract skills tarball
-    tar -xzf (Join-Path $TmpDir $SkillsArchive) -C $TabulaHome
+    # Stage the payload, then overlay everything except an existing config tree.
+    $SkillsPayload = Join-Path $TmpDir "skills-payload"
+    New-Item -ItemType Directory -Force -Path $SkillsPayload | Out-Null
+    tar -xzf (Join-Path $TmpDir $SkillsArchive) -C $SkillsPayload
     $ConfigDir = Join-Path $TabulaHome "config"
+    $HadConfigDir = Test-Path $ConfigDir
+    $Python = Check-Python
+    $PayloadInstaller = Join-Paths $SkillsPayload @("libexec", "install_payload.py")
+    if (-not (Test-Path $PayloadInstaller)) {
+        Die "release payload is missing libexec/install_payload.py"
+    }
+    & $Python $PayloadInstaller $SkillsPayload $TabulaHome
+    if ($LASTEXITCODE -ne 0) {
+        Die "could not install release payload"
+    }
     $GlobalConfig = Join-Path $ConfigDir "global.toml"
     $GlobalExample = Join-Path $ConfigDir "global.toml.example"
-    if (-not (Test-Path $GlobalConfig) -and (Test-Path $GlobalExample)) {
+    if (-not $HadConfigDir -and -not (Test-Path $GlobalConfig) -and (Test-Path $GlobalExample)) {
         Copy-Item $GlobalExample $GlobalConfig
     }
     # Record installed kernel version for tabula-distro compatibility checks.
@@ -275,9 +299,6 @@ try {
         Copy-Item $ConfigBackup $UserConfig
     }
 
-    # Python
-    $Python = Check-Python
-
     if (-not (Test-Path $Venv)) {
         Info "Creating Python venv..."
         & $Python -m venv $Venv
@@ -286,24 +307,24 @@ try {
     Install-PythonDeps
 
     # Install tabula-distro from the bundled tools/ directory if available.
-    $DistroToolDir = Join-Path $TabulaHome "tools" "tabula-distro"
+    $DistroToolDir = Join-Paths $TabulaHome @("tools", "tabula-distro")
     if (Test-Path $DistroToolDir) {
-        $Pip = Join-Path $Venv "Scripts" "pip.exe"
-        & $Pip install -q -e $DistroToolDir
+        $VenvPython = Join-Paths $Venv @("Scripts", "python.exe")
+        & $VenvPython -m pip install -q -e $DistroToolDir
     }
     # Expose installer entrypoints on PATH alongside the rest of the launchers.
-    $TabulaInstallSrc = Join-Path $Venv "Scripts" "tabula-install.exe"
+    $TabulaInstallSrc = Join-Paths $Venv @("Scripts", "tabula-install.exe")
     if (Test-Path $TabulaInstallSrc) {
         Copy-Item $TabulaInstallSrc -Destination (Join-Path $BinDir "tabula-install.exe") -Force
     }
-    $TabulaDistroSrc = Join-Path $Venv "Scripts" "tabula-distro.exe"
+    $TabulaDistroSrc = Join-Paths $Venv @("Scripts", "tabula-distro.exe")
     if (Test-Path $TabulaDistroSrc) {
         Copy-Item $TabulaDistroSrc -Destination (Join-Path $BinDir "tabula-distro.exe") -Force
     }
 
     # Copy PowerShell launch scripts
     foreach ($script in @("tabula-runner.ps1", "tabula-cli.ps1")) {
-        $src = Join-Path $TabulaHome "bin" $script
+        $src = Join-Paths $TabulaHome @("bin", $script)
         if (Test-Path $src) {
             Copy-Item $src -Destination (Join-Path $BinDir $script) -Force
         }

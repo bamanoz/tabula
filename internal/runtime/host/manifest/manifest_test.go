@@ -14,9 +14,10 @@ func TestLoadDirsDiscoversPluginManifestsAndCapabilities(t *testing.T) {
 	writePlugin(t, filepath.Join(dir, "fs", "plugin.toml"), `id = "fs"
 name = "Filesystem"
 version = "0.1.0"
+runtime = "python"
+entry = "run.py"
 
 [worker]
-command = ["python3", "run.py"]
 mode = "warm"
 
 [[tools]]
@@ -44,7 +45,7 @@ sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 	if !ok {
 		t.Fatal("expected fs plugin")
 	}
-	if plugin.RootDir != filepath.Join(dir, "fs") || plugin.Worker == nil || len(plugin.Worker.Command) != 2 || plugin.Worker.Command[0] != "python3" || plugin.Worker.Command[1] != "run.py" {
+	if plugin.RootDir != filepath.Join(dir, "fs") || plugin.Worker == nil || len(plugin.Worker.Command) != 0 || plugin.Runtime != "python" || plugin.Entry != "run.py" {
 		t.Fatalf("unexpected plugin: %#v", plugin)
 	}
 	if len(plugin.Hooks) != 1 || plugin.Hooks[0].Event != "before_tool_call" || plugin.Requires == nil || plugin.Requires.SDK == "" {
@@ -318,7 +319,7 @@ protocol_version = 1
 	}
 }
 
-func TestLoadRejectsEmptyWorkerCommand(t *testing.T) {
+func TestLoadRejectsWorkerWithoutCommandOrRuntime(t *testing.T) {
 	dir := t.TempDir()
 	body := `id = "demo"
 name = "Demo"
@@ -333,8 +334,8 @@ protocol_version = 1
 `
 	path := filepath.Join(dir, "demo", "plugin.toml")
 	writePlugin(t, path, body)
-	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "worker.command must be a non-empty argv list") {
-		t.Fatalf("expected worker.command validation error, got %v", err)
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "unsupported runtime") {
+		t.Fatalf("expected missing runtime validation error, got %v", err)
 	}
 }
 

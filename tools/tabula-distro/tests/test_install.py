@@ -1213,6 +1213,29 @@ class InstallTests(unittest.TestCase):
             self.assertFalse((skills / "_drivers").exists())
             self.assertFalse((skills / "driver-openai").exists())
 
+    def test_plugin_install_ignores_node_modules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            plugin = root / "ext" / "plugins" / "gateway-web"
+            _make_plugin(plugin.parent, "gateway-web", "gateway-web-v1")
+            _touch(plugin / "web" / "dist" / "index.html", "<html></html>\n")
+            _touch(plugin / "web" / "node_modules" / "left-pad" / "index.js", "module.exports = 0;\n")
+
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n\n'
+                '[[plugins]]\nname="gateway-web"\nsource="local:../ext/plugins/gateway-web"\n',
+                encoding="utf-8",
+            )
+
+            installmod.install(distro, home)
+
+            staged_plugin = home / "plugins" / "gateway-web"
+            self.assertTrue((staged_plugin / "web" / "dist" / "index.html").exists())
+            self.assertFalse((staged_plugin / "web" / "node_modules").exists())
+
     def test_conflict_without_override_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

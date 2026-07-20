@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import sys
 from pathlib import Path
 
 import tomllib
@@ -21,6 +22,7 @@ class RuntimeConfigWriteTests(unittest.TestCase):
             self.assertEqual(data["kernel"][0]["id"], "main")
             self.assertEqual(data["kernel"][0]["tenants"], ["*"])
             self.assertEqual(data["pool"]["cold_workers_per_tenant_max"], 16)
+            self.assertEqual(data["runtimes"]["python"]["command"], [str(Path(sys.executable).resolve())])
 
     def test_rewrite_preserves_user_comments_and_unknown_sections(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -48,6 +50,18 @@ class RuntimeConfigWriteTests(unittest.TestCase):
             data = tomllib.loads(result)
             self.assertEqual(data["plugin_dirs"], ["/p/a", "/p/b"])
             self.assertTrue(data["my_custom"]["flag"])
+
+    def test_rewrite_preserves_other_runtime_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            path = runtime_config.write(home, ["/p/a"])
+            path.write_text(path.read_text(encoding="utf-8") + '\n[runtimes.node]\ncommand = ["node", "--no-warnings"]\n', encoding="utf-8")
+
+            runtime_config.write(home, ["/p/a"])
+
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(data["runtimes"]["node"]["command"], ["node", "--no-warnings"])
+            self.assertEqual(data["runtimes"]["python"]["command"], [str(Path(sys.executable).resolve())])
 
     def test_rewrite_updates_owned_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

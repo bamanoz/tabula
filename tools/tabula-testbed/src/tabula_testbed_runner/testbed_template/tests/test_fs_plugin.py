@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -16,7 +17,7 @@ class FSPluginSmoke(unittest.TestCase):
 
     @classmethod
     def tabula_bin(cls) -> str:
-        candidate = Path(cls.tabula_home) / "bin" / "tabula"
+        candidate = Path(cls.tabula_home) / "bin" / ("tabula.exe" if os.name == "nt" else "tabula")
         return str(candidate) if candidate.is_file() else "tabula"
 
     @classmethod
@@ -46,7 +47,10 @@ class FSPluginSmoke(unittest.TestCase):
         (tenant_config_dir / "config.toml").write_text('roots = ["${project_root}"]\n', encoding="utf-8")
         global_config = Path(cls.tabula_home) / "config" / "global.toml"
         existing = global_config.read_text(encoding="utf-8") if global_config.is_file() else ""
-        global_config.write_text(existing + f'\n[plugins.fs]\nroots = ["{cls.shared_root}"]\n', encoding="utf-8")
+        global_config.write_text(
+            existing + f"\n[plugins.fs]\nroots = [{json.dumps(str(cls.shared_root))}]\n",
+            encoding="utf-8",
+        )
 
     def make_client(self) -> TestbedClient:
         client = TestbedClient(self.url, name="testbed-fs")
@@ -68,8 +72,12 @@ class FSPluginSmoke(unittest.TestCase):
             if hasattr(os, "symlink"):
                 outside_target = Path(self.tabula_home).parent / "outside-symlink-target.txt"
                 outside_target.write_text("needle escape", encoding="utf-8")
-                symlink = nested / "escape-link.txt"
-                symlink.symlink_to(outside_target)
+                candidate = nested / "escape-link.txt"
+                try:
+                    candidate.symlink_to(outside_target)
+                    symlink = candidate
+                except OSError:
+                    pass
 
             written = self.call_json(client, "fs_write", {"path": str(note), "content": "alpha\nbeta\nalpha\n"})
             self.assertEqual(written["bytes_written"], len("alpha\nbeta\nalpha\n".encode("utf-8")))
@@ -178,7 +186,7 @@ class FSPluginSmoke(unittest.TestCase):
             self.assertEqual(relative.read_text(encoding="utf-8"), "workspace default")
 
             shared = self.call_json(client, "fs_read", {"path": str(self.shared_root / "guide.txt")})
-            self.assertEqual(shared, {"content": "shared skill root\n", "truncated": False})
+            self.assertEqual(shared, {"content": f"shared skill root{os.linesep}", "truncated": False})
 
 
 def main() -> int:

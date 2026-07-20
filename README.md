@@ -217,6 +217,12 @@ running kernel reads them directly and reloads plugins through
 `run/reload.touch`. See
 [`docs/DISTRO_CONFIG.md`](docs/DISTRO_CONFIG.md) for the contract.
 
+Kernel bootstrap and release upgrades seed `config/` only when that directory
+does not exist. Once present, the complete tree is preserved during payload
+installation, including kernel, runtime, and plugin config files. A subsequent
+`tabula-install distro/app` operation may still reconcile the installer-owned
+keys in `kernel.toml` and `runtime.toml` with the selected installed layout.
+
 Inspect the installed runtime surface:
 
 ```bash

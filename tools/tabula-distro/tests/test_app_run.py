@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
+import tomllib
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
@@ -276,13 +278,25 @@ dir = "{stale}"
 
             execvpe.assert_called_once()
             _file, argv, env = execvpe.call_args.args
-            self.assertEqual(argv, [str(root / "bin" / "tabula-runner")])
+            self.assertEqual(argv, [str(root / "bin" / "tabula-runner"), "--runtime-mode", "managed"])
             self.assertEqual(env["TABULA_HOME"], str(home))
             self.assertEqual(env["TABULA_APP_ID"], "claw-tabula")
             self.assertEqual(env["TABULA_TENANT_ID"], "claw-tabula")
             self.assertEqual(env["TABULA_TENANT_DIR"], str(home / "tenants" / "claw-tabula"))
             self.assertEqual(env["TABULA_BOOT"], str(boot_path))
             self.assertNotIn("TABULA_BOOT_PATH", env)
+
+    def test_kernel_launch_argv_passes_managed_runtime_mode_to_runner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir(parents=True)
+            runner = bin_dir / "tabula-runner"
+            _write(runner, "#!/bin/sh\n")
+
+            argv = runmod._kernel_launch_argv(str(bin_dir / "tabula"), "managed", home=root, env={})
+
+            self.assertEqual(argv, [str(runner), "--runtime-mode", "managed"])
 
     def test_runtime_config_merges_existing_app_tenants(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -317,6 +331,8 @@ tenants = ["first-app"]
             self.assertIn('tenants = ["first-app", "claw-tabula"]', runtime_cfg)
             self.assertIn('[plugin_kinds.gateway]', runtime_cfg)
             self.assertIn('depends_on = ["driver"]', runtime_cfg)
+            runtime_data = tomllib.loads(runtime_cfg)
+            self.assertEqual(runtime_data["runtimes"]["python"]["command"], [str(Path(sys.executable).resolve())])
 
     def test_runtime_config_uses_short_socket_for_long_home(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,5 +1,15 @@
 .PHONY: build build-windows build-linux build-all build-harness-bench-image test test-unit test-smoke test-e2e test-contract test-go test-go-unit test-go-smoke test-python test-python-unit test-python-smoke test-python-e2e test-python-contract testbed lint vet release-local release-local-dry-run push install install-agent agent agent-prepare agent-write-gateway-config agent-run agent-connect clean
 
+ifeq ($(OS),Windows_NT)
+PATH := C:/Program Files/Git/usr/bin;C:/Program Files/Git/bin;$(PATH)
+SHELL := C:/PROGRA~1/Git/usr/bin/bash.exe
+ifeq ($(PROCESSOR_ARCHITECTURE),ARM64)
+AGENT_WINDOWS_ARCH := ARM64
+else
+AGENT_WINDOWS_ARCH := AMD64
+endif
+endif
+
 TABULA_HOME ?= .
 VENV_PYTHON = .venv/bin/python3
 HARNESS_BENCH_IMAGE ?= tabula-harness-bench:latest
@@ -168,7 +178,11 @@ PROD_VERSION ?=
 
 AGENT_DEV_HOME ?= $(CURDIR)/.tabula-dev
 AGENT_PROD_HOME ?= $(CURDIR)/.tabula-prod
+ifeq ($(OS),Windows_NT)
+AGENT_DEV_VENV ?= $(AGENT_DEV_HOME)/.venv-Windows-$(AGENT_WINDOWS_ARCH)
+else
 AGENT_DEV_VENV ?= $(AGENT_DEV_HOME)/.venv-$(shell uname -s)-$(shell uname -m)
+endif
 AGENT_PROD_VENV ?= $(AGENT_PROD_HOME)/.venv
 AGENT_DEV_MANIFEST ?= $(CURDIR)/agent-profiles/dev/tabula.app.toml
 AGENT_PROD_MANIFEST ?= $(CURDIR)/agent-profiles/prod/tabula.app.toml
@@ -193,7 +207,15 @@ endif
 
 agent-prepare:
 	@set -e; \
-	if [ "$(AGENT_PROFILE)" = "prod" ]; then \
+	if [ "$(OS)" = "Windows_NT" ] && [ "$(AGENT_PROFILE)" != "prod" ]; then \
+		TABULA_HOME="$(AGENT_HOME)" powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install-dev.ps1; \
+		$(MAKE) agent-write-gateway-config AGENT_PROFILE="$(AGENT_PROFILE)" AGENT_HOME="$(AGENT_HOME)" AGENT_KERNEL_URL="$(AGENT_KERNEL_URL)" AGENT_GATEWAY_WEB_PORT="$(AGENT_GATEWAY_WEB_PORT)"; \
+		TABULA_HOME="$(AGENT_HOME)" \
+		TABULA_URL="$(AGENT_KERNEL_URL)" \
+		TABULA_SOURCE_ALIAS_TABULA_DISTRIB="local:$(LOCAL_TABULA_DISTRIB)" \
+		TABULA_SOURCE_ALIAS_TABULA_BUNDLES="local:$(LOCAL_TABULA_BUNDLES)" \
+		"$(AGENT_VENV)/Scripts/python.exe" -m tabula_distro.cli --home "$(AGENT_HOME)" app install "$(AGENT_MANIFEST)" --workspace "$(CURDIR)" --update; \
+	elif [ "$(AGENT_PROFILE)" = "prod" ]; then \
 		TABULA_HOME="$(AGENT_HOME)" VERSION="$(PROD_VERSION)" bash scripts/install.sh app install "$(AGENT_MANIFEST)" --workspace "$(CURDIR)" --update; \
 		$(MAKE) agent-write-gateway-config AGENT_PROFILE="$(AGENT_PROFILE)" AGENT_HOME="$(AGENT_HOME)" AGENT_KERNEL_URL="$(AGENT_KERNEL_URL)" AGENT_GATEWAY_WEB_PORT="$(AGENT_GATEWAY_WEB_PORT)"; \
 		TABULA_HOME="$(AGENT_HOME)" TABULA_URL="$(AGENT_KERNEL_URL)" "$(AGENT_HOME)/bin/tabula-install" app install "$(AGENT_MANIFEST)" --workspace "$(CURDIR)" --update; \
@@ -209,14 +231,23 @@ agent-prepare:
 
 agent-write-gateway-config:
 	@mkdir -p "$(AGENT_HOME)/config/plugins/gateway-web"
-	@{ \
+	@if [ ! -e "$(AGENT_HOME)/config/plugins/gateway-web/config.toml" ]; then { \
 		printf 'host = "127.0.0.1"\n'; \
 		printf 'port = %s\n' "$(AGENT_GATEWAY_WEB_PORT)"; \
 		printf 'kernel_url = "$(AGENT_KERNEL_URL)"\n'; \
-	} > "$(AGENT_HOME)/config/plugins/gateway-web/config.toml"
+	} > "$(AGENT_HOME)/config/plugins/gateway-web/config.toml"; fi
 
 agent-run:
-	@if [ "$(AGENT_PROFILE)" = "prod" ]; then \
+	@if [ "$(OS)" = "Windows_NT" ] && [ "$(AGENT_PROFILE)" != "prod" ]; then \
+		TABULA_HOME="$(AGENT_HOME)" \
+		TABULA_VENV="$(AGENT_VENV)" \
+		TABULA_PATH="$(AGENT_VENV)/Scripts;$(AGENT_HOME)/bin;$(PATH)" \
+		TABULA_URL="$(AGENT_KERNEL_URL)" \
+		TABULA_LOG_LEVEL="$${TABULA_LOG_LEVEL:-info}" \
+		TABULA_SOURCE_ALIAS_TABULA_DISTRIB="local:$(LOCAL_TABULA_DISTRIB)" \
+		TABULA_SOURCE_ALIAS_TABULA_BUNDLES="local:$(LOCAL_TABULA_BUNDLES)" \
+		"$(AGENT_VENV)/Scripts/python.exe" -m tabula_distro.cli --home "$(AGENT_HOME)" app run "$(AGENT_MANIFEST)" --update --foreground --tabula-bin "$(AGENT_HOME)/bin/tabula.exe"; \
+	elif [ "$(AGENT_PROFILE)" = "prod" ]; then \
 		TABULA_HOME="$(AGENT_HOME)" TABULA_VENV="$(AGENT_VENV)" TABULA_PATH="$(AGENT_VENV)/bin:$(AGENT_HOME)/bin:$$PATH" TABULA_URL="$(AGENT_KERNEL_URL)" TABULA_LOG_LEVEL="$${TABULA_LOG_LEVEL:-info}" "$(AGENT_HOME)/bin/tabula-install" app run "$(AGENT_MANIFEST)" --update --foreground --tabula-bin "$(AGENT_HOME)/bin/tabula"; \
 	else \
 		TABULA_HOME="$(AGENT_HOME)" \
@@ -230,7 +261,11 @@ agent-run:
 	fi
 
 agent-connect:
-	TABULA_HOME="$(AGENT_HOME)" TABULA_VENV="$(AGENT_VENV)" TABULA_PATH="$(AGENT_VENV)/bin:$(AGENT_HOME)/bin:$$PATH" TABULA_URL="$(AGENT_KERNEL_URL)" "$(AGENT_HOME)/bin/tabula-cli" $(if $(SESSION),--session $(SESSION),)
+	@if [ "$(OS)" = "Windows_NT" ] && [ "$(AGENT_PROFILE)" != "prod" ]; then \
+		TABULA_HOME="$(AGENT_HOME)" TABULA_VENV="$(AGENT_VENV)" TABULA_URL="$(AGENT_KERNEL_URL)" powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(AGENT_HOME)/bin/tabula-cli.ps1" $(if $(SESSION),--resume $(SESSION),); \
+	else \
+		TABULA_HOME="$(AGENT_HOME)" TABULA_VENV="$(AGENT_VENV)" TABULA_PATH="$(AGENT_VENV)/bin:$(AGENT_HOME)/bin:$$PATH" TABULA_URL="$(AGENT_KERNEL_URL)" "$(AGENT_HOME)/bin/tabula-cli" $(if $(SESSION),--session $(SESSION),); \
+	fi
 
 # Clean
 

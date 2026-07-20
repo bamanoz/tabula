@@ -11,6 +11,7 @@ import (
 	"time"
 
 	runtimeauth "github.com/bamanoz/tabula/internal/runtime/auth"
+	"github.com/bamanoz/tabula/internal/runtime/hostcmd"
 )
 
 type runtimeTokenIssueRecord struct {
@@ -28,7 +29,7 @@ type runtimeTokenListRecord struct {
 	RevokedAt  string `json:"revoked_at,omitempty"`
 }
 
-func runtimeCmd(args []string) int {
+func runtimeCmd(args []string, build BuildInfo) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: tabula runtime <token>")
 		return 1
@@ -36,6 +37,13 @@ func runtimeCmd(args []string) int {
 	switch args[0] {
 	case "token":
 		return runtimeTokenCmd(args[1:], os.Stdout)
+	case "host":
+		return hostcmd.Run(args[1:], os.Stderr, hostcmd.BuildInfo{
+			BinaryName: "tabula runtime host",
+			Version:    build.Version,
+			Commit:     build.Commit,
+			Date:       build.Date,
+		})
 	default:
 		fmt.Fprintf(os.Stderr, "unknown runtime command %q\n", args[0])
 		return 1

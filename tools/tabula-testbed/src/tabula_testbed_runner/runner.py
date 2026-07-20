@@ -2,18 +2,19 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import re
 import shutil
 import signal
 import socket
-import stat
 import subprocess
 import sys
 import tempfile
 import time
 import tomllib
+import venv as venv_module
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -84,6 +85,11 @@ def run_with_retries(cmd: list[str], *, attempts: int = 3, env: dict[str, str] |
 
 def output(cmd: list[str], *, cwd: Path | None = None) -> str:
     return subprocess.check_output(cmd, cwd=str(cwd) if cwd else None, text=True).strip()
+
+
+def virtualenv_layout(root: Path) -> tuple[Path, Path]:
+    context = venv_module.EnvBuilder(with_pip=False).ensure_directories(str(root))
+    return Path(context.env_exe), Path(context.bin_path)
 
 
 def write_diagnostic(path: Path, content: str) -> None:
@@ -161,7 +167,7 @@ def _plugin_owned_path(root: Path, value: str) -> Path | None:
 def manifest_launch_details(manifest_path: Path, manifest: dict[str, Any], python_lib_dir: Path | None = None) -> dict[str, Any]:
     root = manifest_path.parent
     worker = manifest.get("worker") if isinstance(manifest.get("worker"), dict) else None
-    if worker is not None:
+    if worker is not None and "command" in worker:
         command = worker.get("command")
         if not isinstance(command, list) or not command:
             raise SystemExit(f"plugin manifest worker.command must be a non-empty argv list: {manifest_path}")
@@ -595,6 +601,19 @@ def wait_for_supervised_runtime(bin_dir: Path, home: Path, logs_dir: Path) -> in
 def process_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    if os.name == "nt":
+        process_query_limited_information = 0x1000
+        still_active = 259
+        handle = ctypes.windll.kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            return ctypes.get_last_error() == 5
+        try:
+            exit_code = ctypes.c_ulong()
+            if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == still_active
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -766,15 +785,11 @@ def main(argv: list[str] | None = None) -> int:
 
         log("==> Installing isolated Python environment")
         run([sys.executable, "-m", "venv", "--without-pip", str(venv)])
-        python = venv / "bin" / "python3"
+        python, venv_bin = virtualenv_layout(venv)
         run_with_retries([str(python), "-m", "ensurepip", "--upgrade"])
         run_with_retries([str(python), "-m", "pip", "install", "-q", "--upgrade", "pip"])
         run_with_retries([str(python), "-m", "pip", "install", "-q", "-r", str(repo_root / "scripts" / "requirements-dev.txt")])
         run_with_retries([str(python), "-m", "pip", "install", "-q", "-e", str(repo_root / "tools" / "tabula-distro")])
-        for script_name, module in (("tabula-distro", "tabula_distro.cli"), ("tabula-install", "tabula_distro.install_cli")):
-            target = bin_dir / script_name
-            target.write_text(f"#!{python}\nimport sys\nfrom {module} import main\nsys.exit(main())\n", encoding="utf-8")
-            target.chmod(target.stat().st_mode | stat.S_IXUSR)
 
         log("==> Building isolated kernel/runtime binaries")
         version = (repo_root / "VERSION").read_text(encoding="utf-8").strip()
@@ -784,16 +799,28 @@ def main(argv: list[str] | None = None) -> int:
             commit = "unknown"
         date = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         ldflags = f"-X main.version={version} -X main.commit={commit} -X main.date={date}"
-        run(["go", "build", "-ldflags", ldflags, "-o", str(bin_dir / "tabula"), "./cmd/tabula/"], cwd=repo_root)
-        run(["go", "build", "-ldflags", ldflags, "-o", str(bin_dir / "tabula-runtime"), "./cmd/tabula-runtime/"], cwd=repo_root)
-        shutil.copy2(repo_root / "bin" / "tabula-runner", bin_dir / "tabula-runner")
-        runner_path = bin_dir / "tabula-runner"
-        runner_path.chmod(runner_path.stat().st_mode | stat.S_IXUSR)
+        go_exe = output(["go", "env", "GOEXE"], cwd=repo_root)
+        tabula_bin = bin_dir / f"tabula{go_exe}"
+        runtime_bin = bin_dir / f"tabula-runtime{go_exe}"
+        prebuilt_dir_raw = os.environ.get("TABULA_TESTBED_BIN_DIR", "").strip()
+        if prebuilt_dir_raw:
+            prebuilt_dir = Path(prebuilt_dir_raw).expanduser().resolve()
+            prebuilt_tabula = prebuilt_dir / tabula_bin.name
+            prebuilt_runtime = prebuilt_dir / runtime_bin.name
+            missing = [str(path) for path in (prebuilt_tabula, prebuilt_runtime) if not path.is_file()]
+            if missing:
+                raise SystemExit("TABULA_TESTBED_BIN_DIR is missing required binaries: " + ", ".join(missing))
+            log(f"==> Using prebuilt core binaries from {prebuilt_dir}")
+            shutil.copy2(prebuilt_tabula, tabula_bin)
+            shutil.copy2(prebuilt_runtime, runtime_bin)
+        else:
+            run(["go", "build", "-ldflags", ldflags, "-o", str(tabula_bin), "./cmd/tabula/"], cwd=repo_root)
+            run(["go", "build", "-ldflags", ldflags, "-o", str(runtime_bin), "./cmd/tabula-runtime/"], cwd=repo_root)
         (home / "VERSION").write_text(version + "\n", encoding="utf-8")
 
         # Snapshot the runtime plugin compatibility range so the distro
         # installer's compat check has the same source of truth as install-dev.sh.
-        protocol_blob = output([str(bin_dir / "tabula"), "--protocol"])
+        protocol_blob = output([str(tabula_bin), "--protocol"])
         (home / "PROTOCOL").write_text(protocol_blob + "\n", encoding="utf-8")
 
         generated = home / "generated-testbed"
@@ -820,6 +847,10 @@ def main(argv: list[str] | None = None) -> int:
         run(generate_args)
 
         env = os.environ.copy()
+        python_package_root = home / "packages" / "python" / "src"
+        python_path = [str(python_package_root)]
+        if env.get("PYTHONPATH"):
+            python_path.append(env["PYTHONPATH"])
         env.update({
             "TABULA_HOME": str(home),
             "TABULA_URL": kernel_url,
@@ -827,10 +858,12 @@ def main(argv: list[str] | None = None) -> int:
             "TABULA_CRON_DISABLE_OS_CRONTAB": "1",
             "TABULA_CRON_POLL_INTERVAL": "1",
             "TABULA_PROVIDER": "anthropic",
-            "TABULA_PATH": f"{venv / 'bin'}:{bin_dir}:{env.get('PATH', '')}",
+            "TABULA_PATH": os.pathsep.join((str(venv_bin), str(bin_dir), env.get("PATH", ""))),
+            "PYTHONPATH": os.pathsep.join(python_path),
         })
+        env.setdefault("TABULA_GATEWAY_WEB_PORT", str(free_port()))
         log(f"==> Installing generated testbed distro from {generated}")
-        run([str(venv / "bin" / "tabula-distro"), "--home", str(home), "install", str(generated)], env=env)
+        run([str(python), "-m", "tabula_distro.cli", "--home", str(home), "install", str(generated)], env=env)
         if args.bootstrap_check:
             log("==> Running bootstrap readiness check")
             run([str(repo_root / "scripts" / "bootstrap.sh"), "--tabula-home", str(home), "--timeout", "20"], env=env, cwd=repo_root)
@@ -839,7 +872,14 @@ def main(argv: list[str] | None = None) -> int:
         log("==> Starting isolated kernel")
         out = (logs_dir / "kernel.out.log").open("w", encoding="utf-8")
         err = (logs_dir / "kernel.err.log").open("w", encoding="utf-8")
-        kernel = subprocess.Popen([str(bin_dir / "tabula-runner")], env=env, stdout=out, stderr=err)
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        kernel = subprocess.Popen(
+            [str(tabula_bin), "serve", "--runtime-mode", "managed"],
+            env=env,
+            stdout=out,
+            stderr=err,
+            creationflags=creationflags,
+        )
 
         log("==> Waiting for isolated kernel")
         wait_for_kernel(python, kernel_url, env)
@@ -855,7 +895,9 @@ def main(argv: list[str] | None = None) -> int:
         smoke_env = env.copy()
         smoke_env["TABULA_TESTBED_LIVE"] = "1"
         smoke_env["TABULA_ROOT"] = str(repo_root)
-        smoke_env["PYTHONPATH"] = f"{runner_lib}:{home / 'packages' / 'python' / 'src'}:{testbed_dir / 'tests'}"
+        smoke_env["PYTHONPATH"] = os.pathsep.join(
+            (str(runner_lib), str(home / "packages" / "python" / "src"), str(testbed_dir / "tests"))
+        )
         for test in tests:
             run([
                 str(python), str(test),
@@ -879,7 +921,8 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         teardown_error: str | None = None
         if kernel is not None and kernel.poll() is None:
-            kernel.send_signal(signal.SIGTERM)
+            shutdown_signal = signal.CTRL_BREAK_EVENT if os.name == "nt" else signal.SIGTERM
+            kernel.send_signal(shutdown_signal)
             try:
                 kernel.wait(timeout=5)
             except subprocess.TimeoutExpired:

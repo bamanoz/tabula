@@ -30,7 +30,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV="$TABULA_HOME/.venv"
 if [ -z "${TABULA_VENV:-}" ]; then
-  VENV="$TABULA_HOME/.venv-$(uname -s)-$(uname -m)"
+  platform="$(uname -s)"
+  arch="$(uname -m)"
+  case "$platform" in
+    MSYS_NT*|MINGW*|CYGWIN*)
+      platform="Windows"
+      ;;
+  esac
+  case "$arch" in
+    x86_64) arch="AMD64" ;;
+    aarch64|arm64) arch="ARM64" ;;
+  esac
+  VENV="$TABULA_HOME/.venv-$platform-$arch"
 else
   VENV="$TABULA_VENV"
 fi
@@ -43,9 +54,9 @@ sleep 0.3
 echo "==> Installing Tabula kernel/runtime to $TABULA_HOME"
 mkdir -p "$TABULA_HOME" "$BIN_DIR"
 
-# Global config (don't overwrite user edits)
-mkdir -p "$TABULA_HOME/config"
-if [ ! -f "$TABULA_HOME/config/global.toml" ]; then
+# Seed config only on a fresh install; an existing tree is entirely user-owned.
+if [ ! -e "$TABULA_HOME/config" ]; then
+  mkdir -p "$TABULA_HOME/config"
   cp "$REPO_ROOT/config/global.toml" "$TABULA_HOME/config/global.toml"
 fi
 

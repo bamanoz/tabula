@@ -431,6 +431,16 @@ func TestRunRetriesWithBackoff(t *testing.T) {
 	}
 }
 
+func TestKernelURLSchemeAcceptsWindowsStyleUnixURL(t *testing.T) {
+	scheme, err := kernelURLScheme(`unix://C:\Users\Valera\src\tabula\.tabula-dev\run\runtime.sock`)
+	if err != nil {
+		t.Fatalf("kernelURLScheme returned error: %v", err)
+	}
+	if scheme != "unix" {
+		t.Fatalf("scheme = %q, want unix", scheme)
+	}
+}
+
 func TestRunReconnectsAfterKernelDisconnect(t *testing.T) {
 	dir := t.TempDir()
 	tokenPath := filepath.Join(dir, "runtime-token")

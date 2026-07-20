@@ -176,19 +176,32 @@ func (o Options) dial() DialFunc {
 
 func defaultDialFunc(kernel runtimeconfig.Kernel) DialFunc {
 	return func(ctx context.Context, rawURL string) (*codec.Conn, error) {
-		u, err := url.Parse(strings.TrimSpace(rawURL))
+		rawURL = strings.TrimSpace(rawURL)
+		scheme, err := kernelURLScheme(rawURL)
 		if err != nil {
-			return nil, fmt.Errorf("parse kernel url %q: %w", rawURL, err)
+			return nil, err
 		}
-		switch strings.ToLower(u.Scheme) {
+		switch scheme {
 		case "ws", "wss":
 			return wss.Dial(ctx, rawURL, wss.DialOptions{TLSInsecureSkipVerify: kernel.TLSInsecureSkipVerify, CAFile: kernel.CAFile, CertFile: kernel.CertFile, KeyFile: kernel.KeyFile})
 		case "unix", "":
 			return unixsock.Dial(ctx, rawURL)
 		default:
-			return nil, fmt.Errorf("unsupported kernel url scheme %q", u.Scheme)
+			return nil, fmt.Errorf("unsupported kernel url scheme %q", scheme)
 		}
 	}
+}
+
+func kernelURLScheme(rawURL string) (string, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if strings.HasPrefix(strings.ToLower(rawURL), "unix://") {
+		return "unix", nil
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("parse kernel url %q: %w", rawURL, err)
+	}
+	return strings.ToLower(u.Scheme), nil
 }
 
 func (o Options) logger() *slog.Logger {

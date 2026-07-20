@@ -129,15 +129,28 @@ func socketPath(url string) (string, error) {
 		if path == "" {
 			return "", fmt.Errorf("unix socket path is required")
 		}
+		if runtime.GOOS == "windows" {
+			if len(path) >= 3 && path[0] == '/' && path[2] == ':' {
+				path = path[1:]
+			}
+			return path, nil
+		}
 		if !strings.HasPrefix(path, "/") {
 			path = "/" + path
 		}
 		return path, nil
 	}
+	if runtime.GOOS == "windows" && isWindowsAbsolutePath(url) {
+		return url, nil
+	}
 	if strings.HasPrefix(url, "/") {
 		return url, nil
 	}
 	return "", fmt.Errorf("unsupported unix socket url %q", url)
+}
+
+func isWindowsAbsolutePath(path string) bool {
+	return len(path) >= 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/')
 }
 
 func chmodSocket(path string) error {

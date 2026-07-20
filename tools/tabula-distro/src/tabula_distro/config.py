@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .semver import Constraint, Version, VersionError
+from .sources import split_fragment
 
 
 @dataclass(frozen=True)
@@ -228,11 +229,24 @@ def _apply_env_source_overrides(data: dict) -> dict:
         override = os.environ.get(_source_alias_env_name(name), "").strip()
         if not override:
             continue
-        merged_sources[name] = {**raw, "source": override}
+        merged_sources[name] = {**raw, "source": _normalize_source_override(override)}
         changed = True
     if changed:
         result["sources"] = merged_sources
     return result
+
+
+def _normalize_source_override(value: str) -> str:
+    if value.startswith(("git+", "local:", "source:")):
+        return value
+    body, subpath = split_fragment(value)
+    path = Path(body).expanduser()
+    if not path.exists():
+        return value
+    resolved = f"local:{path.resolve()}"
+    if subpath:
+        return f"{resolved}#path={subpath}"
+    return resolved
 
 
 def _source_alias_env_name(name: str) -> str:

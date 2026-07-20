@@ -428,7 +428,7 @@ func (p Plugin) Validate() error {
 		return fmt.Errorf("kind.name is required")
 	}
 	hasWorkerCommand := p.hasWorkerCommand()
-	if p.Worker != nil {
+	if p.Worker != nil && hasWorkerCommand {
 		if err := validateWorkerCommand(p.Worker.Command); err != nil {
 			return err
 		}

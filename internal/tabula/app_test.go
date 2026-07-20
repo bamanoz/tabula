@@ -221,6 +221,19 @@ func TestReloadTriggerTenantsUsesRuntimeConfigTenants(t *testing.T) {
 	}
 }
 
+func TestReloadTriggerTenantsTreatsWildcardAsFullReload(t *testing.T) {
+	tabulaHome := t.TempDir()
+	if err := runtimeconfig.Save(filepath.Join(tabulaHome, "config", "runtime.toml"), runtimeconfig.Config{
+		Kernels: []runtimeconfig.Kernel{{ID: "main", URL: "unix:///tmp/runtime.sock", TokenFile: "/tmp/runtime-token", Tenants: []string{"*"}}},
+	}); err != nil {
+		t.Fatalf("save runtime config: %v", err)
+	}
+
+	if got := reloadTriggerTenants("", tabulaHome); len(got) != 0 {
+		t.Fatalf("tenants = %#v, want unscoped reload", got)
+	}
+}
+
 func TestReloadLocalRuntimeFailsWhenNotAttached(t *testing.T) {
 	if err := reloadLocalRuntime(t.Context(), &fakeRuntimeReloader{}); err == nil || err.Error() != "local runtime is not attached" {
 		t.Fatalf("unexpected error: %v", err)

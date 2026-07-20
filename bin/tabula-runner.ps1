@@ -1,5 +1,57 @@
 # Launch the Tabula kernel and local runtime as separate processes.
-$env:TABULA_HOME = if ($env:TABULA_HOME) { $env:TABULA_HOME } else { Join-Path $HOME ".tabula" }
+param(
+    [string]$TabulaHome = "",
+    [string]$TabulaVenv = "",
+    [string]$TabulaAppId = "",
+    [string]$TabulaTenantId = "",
+    [string]$TabulaTenantDir = "",
+    [string]$TabulaUrl = "",
+    [string]$TabulaPath = "",
+    [string]$TabulaBoot = "",
+    [switch]$PreserveRuntimeConfig
+)
+
+if ($TabulaHome) {
+    $env:TABULA_HOME = $TabulaHome
+} elseif (-not $env:TABULA_HOME) {
+    $env:TABULA_HOME = Join-Path $HOME ".tabula"
+}
+if ($TabulaVenv) {
+    $env:TABULA_VENV = $TabulaVenv
+}
+if ($TabulaAppId) {
+    $env:TABULA_APP_ID = $TabulaAppId
+}
+if ($TabulaTenantId) {
+    $env:TABULA_TENANT_ID = $TabulaTenantId
+}
+if ($TabulaTenantDir) {
+    $env:TABULA_TENANT_DIR = $TabulaTenantDir
+}
+if ($TabulaUrl) {
+    $env:TABULA_URL = $TabulaUrl
+}
+if ($TabulaPath) {
+    $env:TABULA_PATH = $TabulaPath
+}
+if ($TabulaBoot) {
+    $env:TABULA_BOOT = $TabulaBoot
+}
+if ($PreserveRuntimeConfig) {
+    $env:TABULA_PRESERVE_RUNTIME_CONFIG = "1"
+}
+
+function Join-Paths {
+    param(
+        [string]$Base,
+        [string[]]$Children
+    )
+    $Path = $Base
+    foreach ($Child in $Children) {
+        $Path = Join-Path $Path $Child
+    }
+    return $Path
+}
 
 function Load-TabulaEnv {
     $envFile = Join-Path $env:TABULA_HOME ".env"
@@ -59,7 +111,7 @@ function Load-AppEnv {
     if ($env:TABULA_APP_ID) {
         return
     }
-    $runtimeConfig = Join-Path $env:TABULA_HOME "config" "runtime.toml"
+    $runtimeConfig = Join-Paths $env:TABULA_HOME @("config", "runtime.toml")
     if (-not (Test-Path $runtimeConfig)) {
         return
     }
@@ -85,7 +137,7 @@ function Load-AppEnv {
             $env:TABULA_TENANT_ID = $tenantIDs[0]
         }
         if (-not $env:TABULA_TENANT_DIR) {
-            $env:TABULA_TENANT_DIR = Join-Path (Join-Path $env:TABULA_HOME "tenants") $tenantIDs[0]
+            $env:TABULA_TENANT_DIR = Join-Paths $env:TABULA_HOME @("tenants", $tenantIDs[0])
         }
     }
 }
@@ -101,10 +153,11 @@ if (-not $env:TABULA_PATH) {
     $env:TABULA_PATH = "$(Join-Path $venv 'Scripts');$binDir;$env:Path"
 }
 $env:Path = $env:TABULA_PATH
+$PackagesPythonSrc = Join-Paths $env:TABULA_HOME @("packages", "python", "src")
 if ($env:PYTHONPATH) {
-    $env:PYTHONPATH = "$(Join-Path $env:TABULA_HOME 'packages' 'python' 'src');$env:PYTHONPATH"
+    $env:PYTHONPATH = "$PackagesPythonSrc;$env:PYTHONPATH"
 } else {
-    $env:PYTHONPATH = "$(Join-Path $env:TABULA_HOME 'packages' 'python' 'src')"
+    $env:PYTHONPATH = $PackagesPythonSrc
 }
 
 $runtimeMode = "external"
@@ -126,8 +179,8 @@ for ($i = 0; $i -lt $args.Count; $i++) {
     $forwardArgs.Add($arg)
 }
 
-if ($runtimeMode -notin @("external", "disabled")) {
-    throw "tabula-runner supports only --runtime-mode external|disabled"
+if ($runtimeMode -notin @("external", "managed", "disabled")) {
+    throw "tabula-runner supports only --runtime-mode external|managed|disabled"
 }
 
 if ($runtimeMode -eq "disabled") {
@@ -135,9 +188,14 @@ if ($runtimeMode -eq "disabled") {
     exit $LASTEXITCODE
 }
 
+if ($runtimeMode -eq "managed") {
+    & $tabulaBin serve --runtime-mode managed @forwardArgs
+    exit $LASTEXITCODE
+}
+
 $startupTimeout = if ($env:TABULA_RUNNER_STARTUP_TIMEOUT) { [int]$env:TABULA_RUNNER_STARTUP_TIMEOUT } else { 30 }
-$runtimeConfig = Join-Path $env:TABULA_HOME "config" "runtime.toml"
-$runtimeToken = Join-Path $env:TABULA_HOME "run" "runtime-token"
+$runtimeConfig = Join-Paths $env:TABULA_HOME @("config", "runtime.toml")
+$runtimeToken = Join-Paths $env:TABULA_HOME @("run", "runtime-token")
 
 $kernelArgs = @("serve", "--runtime-mode", "external") + $forwardArgs
 $kernel = Start-Process -FilePath $tabulaBin -ArgumentList $kernelArgs -PassThru
