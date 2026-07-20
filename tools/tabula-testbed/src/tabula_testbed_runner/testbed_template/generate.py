@@ -137,7 +137,7 @@ def copy_local_sources(output: Path, sources: dict[str, dict]) -> None:
         dst = target_root / alias
         if dst.exists():
             shutil.rmtree(dst)
-        shutil.copytree(src, dst, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        shutil.copytree(src, dst, ignore=shutil.ignore_patterns(".git", "node_modules", "__pycache__", "*.pyc"))
     rewrite_copied_source_aliases(output)
 
 

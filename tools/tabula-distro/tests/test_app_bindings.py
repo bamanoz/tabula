@@ -22,13 +22,17 @@ def _make_distro(root: Path) -> None:
     (distro / "templates").mkdir(parents=True, exist_ok=True)
 
 
+def _toml_string(value: object) -> str:
+    return json.dumps(str(value))
+
+
 def _manifest(root: Path) -> str:
     return f'''
 [application]
 id = "claw-tabula"
 
 [distro]
-source = "local:{root / 'claw'}"
+source = {_toml_string('local:' + str(root / 'claw'))}
 
 [kernel]
 mode = "managed"

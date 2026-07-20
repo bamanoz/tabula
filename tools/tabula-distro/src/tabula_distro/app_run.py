@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import hashlib
 import json
 import shutil
 import subprocess
@@ -10,7 +9,6 @@ import time
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import gettempdir
 from urllib.error import URLError
 from urllib.parse import urlparse, urlunparse
 from urllib.request import Request, urlopen
@@ -279,9 +277,11 @@ def _tabula_server_argv(
 ) -> list[str]:
     if any(sep in tabula_bin for sep in ("/", "\\")):
         runner = Path(tabula_bin).with_name("tabula-runner")
+        runner_ps1 = runner.with_suffix(".ps1")
+        if os.name == "nt" and runner_ps1.is_file():
+            return _powershell_runner_argv(runner_ps1, runtime_mode=runtime_mode, env=env, home=home)
         if runner.is_file():
             return [str(runner), "--runtime-mode", runtime_mode]
-        runner_ps1 = runner.with_suffix(".ps1")
         if runner_ps1.is_file():
             return _powershell_runner_argv(runner_ps1, runtime_mode=runtime_mode, env=env, home=home)
         return [str(runner), "--runtime-mode", runtime_mode]
@@ -385,7 +385,7 @@ def write_runtime_config(manifest: AppManifest, home: Path, *, distro_dir: Path 
     tenant_dir = home / "tenants" / tenant
     tenants = _merged_runtime_tenants(path, tenant, tenant_dir)
     tenant_ids = list(tenants)
-    runtime_sock = _runtime_socket_path(home)
+    runtime_sock = runtime_config.runtime_socket_path(home)
 
     doc = toml_io.load(path)
     tomlkit = toml_io.require_tomlkit()
@@ -445,14 +445,6 @@ def _string_array(values: list[str]):
     for value in values:
         array.append(value)
     return array
-
-
-def _runtime_socket_path(home: Path) -> Path:
-    default = home / "run" / "runtime.sock"
-    if len(str(default)) <= 100:
-        return default
-    safe = "tabula-rt-" + hashlib.sha256(str(home).encode("utf-8")).hexdigest()[:16]
-    return Path(gettempdir()) / safe / "runtime.sock"
 
 
 def _merged_runtime_tenants(path: Path, tenant: str, tenant_dir: Path) -> dict[str, dict[str, list[str]]]:

@@ -49,7 +49,7 @@ def write(home: Path, plugin_dirs: list[str], *, distro: dict[str, str] | None =
     are authoritative — they are overwritten to match the install state.
     """
     path = home / "config" / "runtime.toml"
-    runtime_sock = _runtime_socket_path(home)
+    runtime_sock = runtime_socket_path(home)
     doc = toml_io.load(path)
     tomlkit = toml_io.require_tomlkit()
 
@@ -90,7 +90,9 @@ def write_python_runtime(doc, *, executable: str | Path | None = None) -> None:
     if not hasattr(runtimes, "__setitem__"):
         runtimes = tomlkit.table()
     python = tomlkit.table()
-    interpreter = Path(executable or sys.executable).expanduser().resolve()
+    # A POSIX virtualenv's python executable is commonly a symlink to the base
+    # interpreter. Resolving it drops the virtualenv and its site-packages.
+    interpreter = Path(os.path.abspath(Path(executable or sys.executable).expanduser()))
     python["command"] = _string_array([str(interpreter)])
     runtimes["python"] = python
     doc["runtimes"] = runtimes
@@ -124,7 +126,10 @@ def _distro_dir(path: Path) -> Path:
     return path.expanduser().resolve()
 
 
-def _runtime_socket_path(home: Path) -> Path:
+def runtime_socket_path(home: Path) -> Path:
+    override = os.environ.get("TABULA_RUNTIME_SOCKET_PATH", "").strip()
+    if override:
+        return Path(override).expanduser()
     default = home / "run" / "runtime.sock"
     if len(str(default)) <= 100:
         return default

@@ -121,27 +121,40 @@ allowed_origins = ["*"]
 EOF
 }
 
-write_docker_runtime_config() {
+configure_docker_runtime_socket() {
   local app_id runtime_dir
   app_id="$(app_id_from_manifest)"
   runtime_dir="/tmp/tabula-runtime-$app_id"
-  mkdir -p "$runtime_dir" "$TABULA_HOME/config"
+  mkdir -p "$runtime_dir"
   export TABULA_RUNTIME_SOCKET_PATH="$runtime_dir/runtime.sock"
-  cat > "$TABULA_HOME/config/runtime.toml" <<EOF
-plugin_dirs = []
-skill_dirs = []
+}
 
-[[tenant]]
-id = "$app_id"
-plugin_dirs = ["$TABULA_HOME/tenants/$app_id/plugins"]
-skill_dirs = ["$TABULA_HOME/tenants/$app_id/skills"]
+write_docker_runtime_config() {
+  local runtime_config
+  mkdir -p "$TABULA_HOME/config"
+  runtime_config="$TABULA_HOME/config/runtime.toml"
+  "$TABULA_VENV/bin/python3" - "$runtime_config" "$TABULA_RUNTIME_SOCKET_PATH" <<'PY'
+import sys
+from pathlib import Path
 
-[[kernel]]
-id = "main"
-url = "unix://$runtime_dir/runtime.sock"
-token_file = "$TABULA_HOME/run/runtime-token"
-tenants = ["$app_id"]
-EOF
+from tabula_distro import toml_io
+
+path = Path(sys.argv[1])
+socket_path = sys.argv[2]
+doc = toml_io.load(path)
+kernels = doc.get("kernel")
+if not kernels:
+    raise SystemExit(f"runtime config has no [[kernel]] entry: {path}")
+
+for kernel in kernels:
+    if str(kernel.get("id", "")).strip() == "main":
+        kernel["url"] = "unix://" + socket_path
+        break
+else:
+    raise SystemExit(f"runtime config has no main kernel entry: {path}")
+
+toml_io.dump(path, doc)
+PY
   export TABULA_PRESERVE_RUNTIME_CONFIG=1
 }
 
@@ -165,6 +178,7 @@ prepare_runtime() {
     install_tabula
   fi
   ensure_user_files
+  configure_docker_runtime_socket
   "$TABULA_HOME/bin/tabula-install" app install "$TABULA_APP_MANIFEST" --workspace "$TABULA_WORKSPACE" --update
   write_docker_runtime_config
   write_docker_gateway_config

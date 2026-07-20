@@ -9,7 +9,7 @@ services:
       - "18089:8089"
       - "18765:8765"
     environment:
-      TABULA_HOME: /workspace/.tabula
+      TABULA_HOME: /workspace/.tabula-docker
       TABULA_WORKSPACE: /workspace
       TABULA_APP_MANIFEST: /workspace/tabula.app.toml
       TABULA_UID: ${UID:-1000}

@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
+import shlex
+import shutil
 import subprocess
+import sys
 import time
 import unittest
 
@@ -83,6 +87,22 @@ class ExecPluginSmoke(unittest.TestCase):
             tmp = self.call_json(client, "exec_run", {"cmd": tmp_command})
             self.assertEqual(tmp["stdout"], "ok")
             self.assertEqual(tmp["exit_code"], 0)
+
+            child_code = "import sys; print(len(sys.stdin.read()))"
+            if os.name == "nt":
+                stdin_command = f"& {json.dumps(sys.executable)} -c {json.dumps(child_code)}"
+            else:
+                stdin_command = f"{shlex.quote(sys.executable)} -c {shlex.quote(child_code)}"
+            isolated = self.call_json(client, "exec_run", {"cmd": stdin_command, "timeout_seconds": 2})
+            self.assertEqual(isolated["stdout"].strip(), "0", isolated)
+            self.assertEqual(isolated["exit_code"], 0, isolated)
+            self.assertFalse(isolated["timed_out"], isolated)
+
+            if shutil.which("git"):
+                git = self.call_json(client, "exec_run", {"cmd": "git --version", "timeout_seconds": 5})
+                self.assertIn("git version", git["stdout"].lower(), git)
+                self.assertEqual(git["exit_code"], 0, git)
+                self.assertFalse(git["timed_out"], git)
 
             denied = client.call_tool("exec_run", {"cmd": "Write-Output forbidden" if os.name == "nt" else "echo forbidden"}, timeout=10)
             self.assertIn("command denied by pattern", denied.output)

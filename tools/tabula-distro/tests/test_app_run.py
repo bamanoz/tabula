@@ -28,13 +28,17 @@ def _make_distro(root: Path) -> None:
     (distro / "templates").mkdir(parents=True, exist_ok=True)
 
 
+def _toml_string(value: object) -> str:
+    return json.dumps(str(value))
+
+
 def _manifest(root: Path, *, kernel_mode: str = "managed", runtime_mode: str = "managed", backend: str = "bare") -> str:
     return f'''
 [application]
 id = "claw-tabula"
 
 [distro]
-source = "local:{root / 'claw'}"
+source = {_toml_string('local:' + str(root / 'claw'))}
 
 [kernel]
 mode = "{kernel_mode}"
@@ -86,11 +90,11 @@ class AppRunTests(unittest.TestCase):
             runtime_cfg = (home / "config" / "runtime.toml").read_text(encoding="utf-8")
             self.assertIn('[[tenant]]', runtime_cfg)
             self.assertIn('id = "claw-tabula"', runtime_cfg)
-            self.assertIn(str(home / "tenants" / "claw-tabula" / "plugins"), runtime_cfg)
-            self.assertIn(str(home / "run" / "runtime-token"), runtime_cfg)
-            self.assertIn('tenants = ["claw-tabula"]', runtime_cfg)
-            self.assertIn('[distro]', runtime_cfg)
-            self.assertIn('active = "claw"', runtime_cfg)
+            runtime_data = tomllib.loads(runtime_cfg)
+            self.assertEqual(runtime_data["tenant"][0]["plugin_dirs"], [str(home / "tenants" / "claw-tabula" / "plugins")])
+            self.assertEqual(runtime_data["kernel"][0]["token_file"], str(home / "run" / "runtime-token"))
+            self.assertEqual(runtime_data["kernel"][0]["tenants"], ["claw-tabula"])
+            self.assertEqual(runtime_data["distro"]["active"], "claw")
 
     def test_dry_run_refreshes_stale_distro_generation_in_runtime_config(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -104,7 +108,7 @@ skill_dirs = []
 
 [distro]
 active = "claw"
-dir = "{stale}"
+dir = {_toml_string(stale)}
 ''')
             manifest_path = root / "tabula.app.toml"
             _write(manifest_path, _manifest(root))
@@ -113,10 +117,10 @@ dir = "{stale}"
 
             self.assertEqual(code, 0, err)
             runtime_cfg = (home / "config" / "runtime.toml").read_text(encoding="utf-8")
-            self.assertIn('[distro]', runtime_cfg)
-            self.assertIn('active = "claw"', runtime_cfg)
-            self.assertNotIn("0001-stale", runtime_cfg)
-            self.assertIn(str(home / "distrib" / "claw" / "generations"), runtime_cfg)
+            runtime_data = tomllib.loads(runtime_cfg)
+            self.assertEqual(runtime_data["distro"]["active"], "claw")
+            self.assertNotIn("0001-stale", runtime_data["distro"]["dir"])
+            self.assertIn(str(home / "distrib" / "claw" / "generations"), runtime_data["distro"]["dir"])
 
     def test_run_uses_installed_tabula_bin_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -172,9 +176,9 @@ dir = "{stale}"
             self.assertIn("prepared app claw-tabula", out)
             self.assertIn("run plan: app=claw-tabula", out)
             self.assertTrue((home / "tenants" / "claw-tabula" / "app.lock.json").is_file())
-            runtime_cfg = (home / "config" / "runtime.toml").read_text(encoding="utf-8")
-            self.assertIn('id = "claw-tabula"', runtime_cfg)
-            self.assertIn(str(home / "tenants" / "claw-tabula" / "plugins"), runtime_cfg)
+            runtime_data = tomllib.loads((home / "config" / "runtime.toml").read_text(encoding="utf-8"))
+            self.assertEqual(runtime_data["tenant"][0]["id"], "claw-tabula")
+            self.assertEqual(runtime_data["tenant"][0]["plugin_dirs"], [str(home / "tenants" / "claw-tabula" / "plugins")])
 
     def test_install_global_sets_default_binding_without_launching(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -214,8 +218,9 @@ dir = "{stale}"
             self.assertEqual(code, 0, err)
             bindings = (home / "app-bindings.toml").read_text(encoding="utf-8")
             self.assertIn("[[directory]]", bindings)
-            self.assertIn(f'root = "{workspace.resolve()}"', bindings)
-            self.assertNotIn("[default]", bindings)
+            binding_data = tomllib.loads(bindings)
+            self.assertEqual(binding_data["directory"][0]["root"], str(workspace.resolve()))
+            self.assertNotIn("default", binding_data)
 
     def test_install_no_bind_materializes_without_binding(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -273,11 +278,20 @@ dir = "{stale}"
             _write(tabula_bin, "#!/bin/sh\n")
             _write(root / "bin" / "tabula-runner", "#!/bin/sh\n")
             runmod.write_runtime_config(manifest, home)
-            with mock.patch.object(runmod, "kernel_healthy", return_value=False), mock.patch.object(runmod.os, "execvpe") as execvpe:
-                runmod.execute(manifest, home, tabula_bin=str(tabula_bin), foreground=True, boot_path=boot_path)
+            with mock.patch.object(runmod, "kernel_healthy", return_value=False):
+                if os.name == "nt":
+                    with mock.patch.object(runmod.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run_proc:
+                        with self.assertRaises(SystemExit) as ctx:
+                            runmod.execute(manifest, home, tabula_bin=str(tabula_bin), foreground=True, boot_path=boot_path)
+                    self.assertEqual(ctx.exception.code, 0)
+                    argv = run_proc.call_args.args[0]
+                    env = run_proc.call_args.kwargs["env"]
+                else:
+                    with mock.patch.object(runmod.os, "execvpe") as execvpe:
+                        runmod.execute(manifest, home, tabula_bin=str(tabula_bin), foreground=True, boot_path=boot_path)
+                    execvpe.assert_called_once()
+                    _file, argv, env = execvpe.call_args.args
 
-            execvpe.assert_called_once()
-            _file, argv, env = execvpe.call_args.args
             self.assertEqual(argv, [str(root / "bin" / "tabula-runner"), "--runtime-mode", "managed"])
             self.assertEqual(env["TABULA_HOME"], str(home))
             self.assertEqual(env["TABULA_APP_ID"], "claw-tabula")
@@ -310,13 +324,13 @@ skill_dirs = []
 
 [[tenant]]
 id = "first-app"
-plugin_dirs = ["{home / 'tenants' / 'first-app' / 'plugins'}"]
-skill_dirs = ["{home / 'tenants' / 'first-app' / 'skills'}"]
+plugin_dirs = [{_toml_string(home / 'tenants' / 'first-app' / 'plugins')}]
+skill_dirs = [{_toml_string(home / 'tenants' / 'first-app' / 'skills')}]
 
 [[kernel]]
 id = "main"
-url = "unix://{home / 'run' / 'runtime.sock'}"
-token_file = "{home / 'run' / 'runtime-token'}"
+url = {_toml_string('unix://' + str(home / 'run' / 'runtime.sock'))}
+token_file = {_toml_string(home / 'run' / 'runtime-token')}
 tenants = ["first-app"]
 ''')
             manifest_path = root / "tabula.app.toml"
@@ -332,7 +346,7 @@ tenants = ["first-app"]
             self.assertIn('[plugin_kinds.gateway]', runtime_cfg)
             self.assertIn('depends_on = ["driver"]', runtime_cfg)
             runtime_data = tomllib.loads(runtime_cfg)
-            self.assertEqual(runtime_data["runtimes"]["python"]["command"], [str(Path(sys.executable).resolve())])
+            self.assertEqual(runtime_data["runtimes"]["python"]["command"], [str(Path(sys.executable).absolute())])
 
     def test_runtime_config_uses_short_socket_for_long_home(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -346,9 +360,27 @@ tenants = ["first-app"]
             runmod.write_runtime_config(manifest, home)
 
             runtime_cfg = (home / "config" / "runtime.toml").read_text(encoding="utf-8")
-            self.assertIn('/tabula-rt-', runtime_cfg)
-            self.assertIn('/runtime.sock', runtime_cfg)
+            runtime_data = tomllib.loads(runtime_cfg)
+            self.assertIn('tabula-rt-', runtime_data["kernel"][0]["url"])
+            self.assertTrue(runtime_data["kernel"][0]["url"].endswith(str(Path("runtime.sock"))))
 
+    def test_runtime_config_uses_socket_environment_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            socket_path = root / "runtime" / "runtime.sock"
+            _make_distro(root)
+            manifest_path = root / "tabula.app.toml"
+            _write(manifest_path, _manifest(root))
+            manifest = appmod.load(manifest_path, tabula_home=home)
+
+            with mock.patch.dict(os.environ, {"TABULA_RUNTIME_SOCKET_PATH": str(socket_path)}):
+                runmod.write_runtime_config(manifest, home)
+
+            runtime_data = tomllib.loads((home / "config" / "runtime.toml").read_text(encoding="utf-8"))
+            self.assertEqual(runtime_data["kernel"][0]["url"], "unix://" + str(socket_path))
+
+    @unittest.skipIf(os.name == "nt", "POSIX runner script is not directly executable on Windows")
     def test_runner_sets_app_env_from_single_tenant_runtime_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -368,13 +400,13 @@ skill_dirs = []
 
 [[tenant]]
 id = "claw-tabula"
-plugin_dirs = ["{home / 'tenants' / 'claw-tabula' / 'plugins'}"]
-skill_dirs = ["{home / 'tenants' / 'claw-tabula' / 'skills'}"]
+plugin_dirs = [{_toml_string(home / 'tenants' / 'claw-tabula' / 'plugins')}]
+skill_dirs = [{_toml_string(home / 'tenants' / 'claw-tabula' / 'skills')}]
 
 [[kernel]]
 id = "main"
-url = "unix://{run_dir / 'runtime.sock'}"
-token_file = "{run_dir / 'runtime-token'}"
+url = {_toml_string('unix://' + str(run_dir / 'runtime.sock'))}
+token_file = {_toml_string(run_dir / 'runtime-token')}
 tenants = ["claw-tabula"]
 ''')
             _write(venv_dir / "python3", "#!/bin/sh\nexec python3 \"$@\"\n")

@@ -25,6 +25,7 @@ opencode.json
 
 # Tabula files
 .tabula
+.tabula-docker
 .tabula-dev
 .tabula-prod
 tabula.app.lock

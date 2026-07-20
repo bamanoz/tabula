@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 import sys
 from pathlib import Path
+from unittest import mock
 
 import tomllib
 
@@ -22,7 +24,22 @@ class RuntimeConfigWriteTests(unittest.TestCase):
             self.assertEqual(data["kernel"][0]["id"], "main")
             self.assertEqual(data["kernel"][0]["tenants"], ["*"])
             self.assertEqual(data["pool"]["cold_workers_per_tenant_max"], 16)
-            self.assertEqual(data["runtimes"]["python"]["command"], [str(Path(sys.executable).resolve())])
+            self.assertEqual(data["runtimes"]["python"]["command"], [str(Path(sys.executable).absolute())])
+
+    @unittest.skipIf(os.name == "nt", "creating symlinks requires elevated privileges on Windows")
+    def test_python_runtime_preserves_virtualenv_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base_python = root / "base-python"
+            base_python.touch()
+            venv_python = root / "venv" / "bin" / "python"
+            venv_python.parent.mkdir(parents=True)
+            venv_python.symlink_to(base_python)
+            doc: dict = {}
+
+            runtime_config.write_python_runtime(doc, executable=venv_python)
+
+            self.assertEqual(doc["runtimes"]["python"]["command"], [str(venv_python.absolute())])
 
     def test_rewrite_preserves_user_comments_and_unknown_sections(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -61,7 +78,7 @@ class RuntimeConfigWriteTests(unittest.TestCase):
 
             data = tomllib.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(data["runtimes"]["node"]["command"], ["node", "--no-warnings"])
-            self.assertEqual(data["runtimes"]["python"]["command"], [str(Path(sys.executable).resolve())])
+            self.assertEqual(data["runtimes"]["python"]["command"], [str(Path(sys.executable).absolute())])
 
     def test_rewrite_updates_owned_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -79,6 +96,16 @@ class RuntimeConfigWriteTests(unittest.TestCase):
             path = runtime_config.write(home, [str(home / "plugins")])
             data = tomllib.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(data["plugin_dirs"], [str(home / "plugins")])
+
+    def test_runtime_socket_environment_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            socket_path = Path(tmp) / "runtime" / "runtime.sock"
+            with mock.patch.dict(os.environ, {"TABULA_RUNTIME_SOCKET_PATH": str(socket_path)}):
+                path = runtime_config.write(home, [str(home / "plugins")])
+
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(data["kernel"][0]["url"], "unix://" + str(socket_path))
 
     def test_kernel_config_write_contains_only_kernel_transport(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
