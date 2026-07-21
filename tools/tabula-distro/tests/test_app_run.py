@@ -91,8 +91,9 @@ class AppRunTests(unittest.TestCase):
             self.assertIn('[[tenant]]', runtime_cfg)
             self.assertIn('id = "claw-tabula"', runtime_cfg)
             runtime_data = tomllib.loads(runtime_cfg)
-            self.assertEqual(runtime_data["tenant"][0]["plugin_dirs"], [str(home / "tenants" / "claw-tabula" / "plugins")])
-            self.assertEqual(runtime_data["kernel"][0]["token_file"], str(home / "run" / "runtime-token"))
+            resolved_home = home.resolve()
+            self.assertEqual(runtime_data["tenant"][0]["plugin_dirs"], [str(resolved_home / "tenants" / "claw-tabula" / "plugins")])
+            self.assertEqual(runtime_data["kernel"][0]["token_file"], str(resolved_home / "run" / "runtime-token"))
             self.assertEqual(runtime_data["kernel"][0]["tenants"], ["claw-tabula"])
             self.assertEqual(runtime_data["distro"]["active"], "claw")
 
@@ -178,7 +179,7 @@ dir = {_toml_string(stale)}
             self.assertTrue((home / "tenants" / "claw-tabula" / "app.lock.json").is_file())
             runtime_data = tomllib.loads((home / "config" / "runtime.toml").read_text(encoding="utf-8"))
             self.assertEqual(runtime_data["tenant"][0]["id"], "claw-tabula")
-            self.assertEqual(runtime_data["tenant"][0]["plugin_dirs"], [str(home / "tenants" / "claw-tabula" / "plugins")])
+            self.assertEqual(runtime_data["tenant"][0]["plugin_dirs"], [str(home.resolve() / "tenants" / "claw-tabula" / "plugins")])
 
     def test_install_global_sets_default_binding_without_launching(self):
         with tempfile.TemporaryDirectory() as tmp:
