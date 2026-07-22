@@ -316,19 +316,6 @@ func isToolResult(msg any) bool {
 	}
 }
 
-func isToolCall(msg any) bool {
-	switch m := msg.(type) {
-	case Message:
-		return m.Type == string(MsgRequest) && m.Topic == TopicToolCall
-	case *Message:
-		return m != nil && m.Type == string(MsgRequest) && m.Topic == TopicToolCall
-	case **Message:
-		return m != nil && *m != nil && (*m).Type == string(MsgRequest) && (*m).Topic == TopicToolCall
-	default:
-		return false
-	}
-}
-
 // --- Tests ---
 
 func TestConnectJoinHandshake(t *testing.T) {

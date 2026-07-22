@@ -656,18 +656,6 @@ func (p *Pool) workerKey(tenantID string, plugin manifest.Plugin) key {
 	return key{kernelID: p.kernelID, tenantID: tenantID, targetID: plugin.ID}
 }
 
-func (p *Pool) primeTenantID() string {
-	if len(p.opts.AllowedTenants) == 0 {
-		return "default"
-	}
-	for _, tenantID := range p.opts.AllowedTenants {
-		if tenantID != "*" {
-			return tenantID
-		}
-	}
-	return "default"
-}
-
 func (p *Pool) logTenantForbidden(in wire.Invoke) {
 	logger := p.logger
 	if logger == nil {
@@ -690,10 +678,6 @@ func (p *Pool) logInvokeOutcome(in wire.Invoke, result wire.InvokeResult, err er
 		outcome = "failed"
 	}
 	logger.Info("runtime invoke handled", "kernel_id", p.kernelID, "tenant_id", in.TenantID, "target", in.Target.ID, "tool", in.Tool, "call_id", in.CallID, "turn_correlation_id", in.TurnCorrelationID, "outcome", outcome, "duration_ms", elapsed.Milliseconds())
-}
-
-func (p *Pool) coldTenantCounts(tenantID string) (active, queued int) {
-	return p.cold.countsFor(tenantID)
 }
 
 func (p *Pool) coldCounts() (active, queued int) {

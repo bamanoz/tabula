@@ -21,7 +21,7 @@ const (
 	strategyClaiming  hookStrategy = "claiming"
 )
 
-const hookTimeout = 5 * time.Second
+const defaultHookTimeout = 5 * time.Second
 
 type hookEntry struct {
 	sub      HookSubscriber
@@ -97,6 +97,7 @@ type HookEngine struct {
 	index          map[string][]hookEntry
 	pending        map[string]pendingHook
 	logger         *slog.Logger
+	defaultTimeout time.Duration
 	sessionTenants func(string, string) string
 	audit          func(HookDispatchAudit)
 }
@@ -106,9 +107,10 @@ func NewHookEngine(logger *slog.Logger) *HookEngine {
 		logger = slog.Default()
 	}
 	return &HookEngine{
-		index:   make(map[string][]hookEntry),
-		pending: make(map[string]pendingHook),
-		logger:  logger,
+		index:          make(map[string][]hookEntry),
+		pending:        make(map[string]pendingHook),
+		logger:         logger,
+		defaultTimeout: defaultHookTimeout,
 	}
 }
 
@@ -266,9 +268,11 @@ func (e *HookEngine) waitRuntimeHookEntry(entry hookEntry, runtimeSub *runtimeHo
 		entry.release = release
 		return entry, true, ""
 	}
-	d := hookTimeout
-	if hookBusyPolicy(event) == HookBusyWait && entry.subscrip.TimeoutMs != nil && *entry.subscrip.TimeoutMs > 0 {
-		d = time.Duration(*entry.subscrip.TimeoutMs) * time.Millisecond
+	d := e.defaultTimeout
+	if entry.subscrip.TimeoutMs != nil && *entry.subscrip.TimeoutMs > 0 {
+		// Queueing and execution have separate budgets. A busy target may still
+		// consume its full execution timeout before this hook can start.
+		d += time.Duration(*entry.subscrip.TimeoutMs) * time.Millisecond
 	}
 	timer := time.NewTimer(d)
 	defer timer.Stop()
@@ -606,7 +610,7 @@ func (e *HookEngine) sendAndWait(entry *hookEntry, event string, payload json.Ra
 			e.logger.Info("hook subscriber disconnected", attrs...)
 		}
 	} else {
-		d := hookTimeout
+		d := e.defaultTimeout
 		if entry.subscrip.TimeoutMs != nil && *entry.subscrip.TimeoutMs > 0 {
 			d = time.Duration(*entry.subscrip.TimeoutMs) * time.Millisecond
 		}
@@ -759,14 +763,6 @@ func (e *HookEngine) removePendingHook(id string) {
 	if ok && pending.release != nil {
 		pending.release()
 	}
-}
-
-func (e *HookEngine) takePendingHook(id string) (pendingHook, bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	pending, ok := e.pending[id]
-	delete(e.pending, id)
-	return pending, ok
 }
 
 func (e *HookEngine) pendingHook(id string) (pendingHook, bool) {

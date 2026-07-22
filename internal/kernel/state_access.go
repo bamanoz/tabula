@@ -21,10 +21,6 @@ func (h *Hub) configureClient(c *Client, name string, sends, receives, receivesG
 	return h.clients.Configure(c, name, sends, receives, receivesGlobal, hooks, meta, depth)
 }
 
-func (h *Hub) forEachProcess(fn func(pid int, proc *SpawnedProcess)) {
-	h.processes.ForEach(fn)
-}
-
 func (h *Hub) registerSpawnedCommand(cmd *exec.Cmd, command, session string) *SpawnedProcess {
 	return h.processes.Register(cmd, command, session)
 }

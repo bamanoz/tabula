@@ -7,8 +7,6 @@ import (
 	"github.com/bamanoz/tabula/internal/runtime/wire"
 )
 
-const clientMetaRuntimeIDKey = "tabula.runtime_id"
-
 type clientMeta struct {
 	Role      string `json:"tabula.client_role"`
 	Managed   bool   `json:"tabula.managed"`

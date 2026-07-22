@@ -752,7 +752,9 @@ func (c *suspendingExchangeRuntimeConn) FirstSuspended() <-chan struct{} {
 }
 
 func (c *suspendingExchangeRuntimeConn) SendHookEvent(ctx context.Context, req runtimeapi.HookEventReq) error {
-	c.openHookRuntimeConn.SendHookEvent(ctx, req)
+	if err := c.openHookRuntimeConn.SendHookEvent(ctx, req); err != nil {
+		return err
+	}
 	if len(c.HookEvents()) == 1 {
 		go func() {
 			c.hub.hooks.HandleRuntimeResult("local", &Message{
@@ -805,9 +807,10 @@ func (c *openHookRuntimeConn) HookEvents() []runtimeapi.HookEventReq {
 
 func TestBusyRuntimeTargetWaitsForSecurityHooks(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.hooks.defaultTimeout = 20 * time.Millisecond
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
 	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
-	timeout := int64(20)
+	timeout := int64(100)
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-permissions"}
 	capability := wire.Capability{
 		Target: target,
@@ -824,7 +827,7 @@ func TestBusyRuntimeTargetWaitsForSecurityHooks(t *testing.T) {
 
 	release := hub.markRuntimeTargetBusy("local", target)
 	go func() {
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 		release()
 	}()
 	started := time.Now()
@@ -833,7 +836,7 @@ func TestBusyRuntimeTargetWaitsForSecurityHooks(t *testing.T) {
 	if ok || blocked == nil || blocked.Status != "timeout" {
 		t.Fatalf("security hook should run after busy target is released and then time out, ok=%v blocked=%+v", ok, blocked)
 	}
-	if elapsed < 20*time.Millisecond {
+	if elapsed < 50*time.Millisecond {
 		t.Fatalf("security hook did not wait for busy target release, elapsed=%s", elapsed)
 	}
 	if got := len(rc.HookEvents()); got != 1 {
@@ -875,6 +878,7 @@ func TestUnavailableRuntimeSecurityHookFailsClosed(t *testing.T) {
 
 func TestBusyRuntimeSecurityHookFailsClosedEvenWhenAnotherHookIsAvailable(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub.hooks.defaultTimeout = 20 * time.Millisecond
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
 	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
 	short := int64(20)
@@ -902,7 +906,11 @@ func TestBusyRuntimeSecurityHookFailsClosedEvenWhenAnotherHookIsAvailable(t *tes
 
 	releaseBusy := hub.markRuntimeTargetBusy("local", busyTarget)
 	defer releaseBusy()
+	started := time.Now()
 	_, ok, blocked := hub.hooks.DispatchDetailedExcept("before_tool_call", json.RawMessage(`{"tool":"fs_read","input":{}}`), tenant.DefaultID, "s1", nil)
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("busy security hook ignored its queue budget: %s", elapsed)
+	}
 	if ok || blocked == nil || blocked.Target != "runtime:local:plugin:hook-approvals" || blocked.Status != "busy" {
 		t.Fatalf("busy security hook should fail closed before executing remaining hooks, ok=%v blocked=%+v", ok, blocked)
 	}

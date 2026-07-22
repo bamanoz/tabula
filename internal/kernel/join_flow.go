@@ -228,13 +228,6 @@ func (h *Hub) initToolsJSON(tenantID ...string) json.RawMessage {
 	return raw
 }
 
-func (h *Hub) runtimeAllowedForTenant(tenantID, runtimeID string) bool {
-	if h == nil || h.runtimes == nil {
-		return true
-	}
-	return h.runtimes.RuntimeAllowedForTenant(tenantID, runtimeID)
-}
-
 func runtimeServesTenant(tenants []string, tenantID string) bool {
 	if len(tenants) == 0 {
 		return true

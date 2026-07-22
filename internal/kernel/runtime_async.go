@@ -318,13 +318,6 @@ func (h *Hub) hasRuntimeHook(event string) bool {
 	return false
 }
 
-func capabilityVisibleToTenant(capability runtimeapi.Capability, tenantID string) bool {
-	if tenantID == "" || len(capability.Tenants) == 0 {
-		return true
-	}
-	return runtimeServesTenant(capability.Tenants, tenantID)
-}
-
 func (h *Hub) removeRuntimeTools(runtimeID string) int {
 	h.toolExecMu.Lock()
 	defer h.toolExecMu.Unlock()

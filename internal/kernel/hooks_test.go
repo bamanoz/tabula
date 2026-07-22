@@ -60,10 +60,6 @@ func (e *testEnv) connectHook(name string, hooks []HookSubscription) *websocket.
 	return conn
 }
 
-func (e *testEnv) connectManagedUIAndJoin(name, session string, sends, receives []string) *websocket.Conn {
-	return e.connectManagedUserInputAndJoin(name, "user", session, sends, receives)
-}
-
 func (e *testEnv) connectManagedUserInputAndJoin(name, role, session string, sends, receives []string) *websocket.Conn {
 	e.t.Helper()
 	conn := e.dial()

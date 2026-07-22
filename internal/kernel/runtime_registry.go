@@ -594,29 +594,6 @@ func sameTenantSet(left, right []string) bool {
 	return true
 }
 
-func mergeRuntimeTenants(existing, added []string) []string {
-	if len(added) == 0 || servesAllTenants(existing) {
-		return append([]string(nil), existing...)
-	}
-	if servesAllTenants(added) {
-		return []string{"*"}
-	}
-	merged := append([]string(nil), existing...)
-	seen := make(map[string]bool, len(merged)+len(added))
-	for _, tenantID := range merged {
-		seen[tenantID] = true
-	}
-	for _, tenantID := range added {
-		tenantID = strings.TrimSpace(tenantID)
-		if tenantID == "" || seen[tenantID] {
-			continue
-		}
-		merged = append(merged, tenantID)
-		seen[tenantID] = true
-	}
-	return merged
-}
-
 func servesAllTenants(tenants []string) bool {
 	for _, tenantID := range tenants {
 		if tenantID == "*" {

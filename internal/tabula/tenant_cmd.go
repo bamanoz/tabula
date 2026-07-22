@@ -274,22 +274,6 @@ func mirrorRuntimeSurface(srcDir, dstDir string) error {
 	return nil
 }
 
-func linkSharedTree(src, dst string) error {
-	if err := os.RemoveAll(dst); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if _, err := os.Stat(src); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-		return err
-	}
-	return platformCreateReference(src, dst, true)
-}
-
 func seedTenantConfigTemplates(tabulaHome, tenantID string) error {
 	configRoot := filepath.Join(tabulaHome, "config")
 	entries := []struct {
