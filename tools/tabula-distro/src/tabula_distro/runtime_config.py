@@ -21,7 +21,7 @@ def sync_for_distro(home: Path, distro_path: Path) -> Path:
     return write(home, plugin_dirs, distro=distro)
 
 
-def sync_tenant(home: Path, tenant_id: str, tenant_dir: Path) -> Path:
+def sync_tenant(home: Path, tenant_id: str, tenant_dir: Path, *, distro_dir: Path | None = None) -> Path:
     """Add or replace one tenant runtime surface without changing other tenants."""
     path = home / "config" / "runtime.toml"
     doc = toml_io.load(path)
@@ -62,6 +62,12 @@ def sync_tenant(home: Path, tenant_id: str, tenant_dir: Path) -> Path:
     doc["kernel"] = kernels
     write_python_runtime(doc)
     toml_io.merge_defaults(doc, {"pool": {"cold_workers_per_tenant_max": 16}})
+    if distro_dir is not None:
+        distro = distro_metadata(home, distro_dir)
+        distro_table = tomlkit.table()
+        distro_table["active"] = distro["active"]
+        distro_table["dir"] = distro["dir"]
+        doc["distro"] = distro_table
     toml_io.dump(path, doc)
     write_kernel_config(home, url=os.environ.get("TABULA_URL", "ws://localhost:8089/ws"))
     return path

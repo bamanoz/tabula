@@ -117,6 +117,8 @@ class TenantMaterializerTests(unittest.TestCase):
             self.assertEqual(runtime["plugin_dirs"], [])
             self.assertEqual(runtime["tenant"][0]["id"], "project-demo")
             self.assertEqual([Path(path).resolve() for path in runtime["tenant"][0]["plugin_dirs"]], [(tenant / "plugins").resolve()])
+            self.assertEqual(runtime["distro"]["active"], "demo")
+            self.assertEqual(Path(runtime["distro"]["dir"]).resolve(), generation.resolve())
             bindings = tomllib.loads((home / "bindings.toml").read_text(encoding="utf-8"))
             self.assertEqual(bindings["directory"], [{"root": str(project.resolve()), "tenant": "project-demo"}])
 
@@ -141,6 +143,8 @@ class TenantMaterializerTests(unittest.TestCase):
             self.assertEqual([Path(path).resolve() for path in tenants["project-a"]["plugin_dirs"]], [(home / "tenants" / "project-a" / "plugins").resolve()])
             self.assertEqual([Path(path).resolve() for path in tenants["project-b"]["plugin_dirs"]], [(home / "tenants" / "project-b" / "plugins").resolve()])
             self.assertEqual(set(runtime["kernel"][0]["tenants"]), {"project-a", "project-b"})
+            self.assertEqual(runtime["distro"]["active"], "demo")
+            self.assertTrue(Path(runtime["distro"]["dir"]).resolve().is_dir())
 
     def test_tenant_materialize_updates_values_without_project_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:

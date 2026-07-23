@@ -86,7 +86,7 @@ def install(
             project_root,
         )
         compiled = plugin_config.compile_plugin_configs(home, tenant_dir)
-        runtime_config.sync_tenant(home, tenant_id, tenant_dir)
+        runtime_config.sync_tenant(home, tenant_id, tenant_dir, distro_dir=result.generation.path)
         tenant_bindings.save(home, registry)
     except Exception:
         shutil.rmtree(tenant_dir, ignore_errors=True)
@@ -133,7 +133,7 @@ def refresh(
         project_root.expanduser().resolve(),
     )
     compiled = plugin_config.compile_plugin_configs(home, tenant_dir)
-    runtime_config.sync_tenant(home, tenant_id, tenant_dir)
+    runtime_config.sync_tenant(home, tenant_id, tenant_dir, distro_dir=result.generation.path)
     installmod.touch_reload_trigger(home, tenant=tenant_id)
     return TenantInstallResult(
         tenant_dir=tenant_dir,
@@ -172,7 +172,7 @@ def rematerialize(
         generation_root, distro_name, home, tenant_id, project_root.expanduser().resolve()
     )
     plugin_config.compile_plugin_configs(home, tenant_dir)
-    runtime_config.sync_tenant(home, tenant_id, tenant_dir)
+    runtime_config.sync_tenant(home, tenant_id, tenant_dir, distro_dir=generation_root)
     installmod.touch_reload_trigger(home, tenant=tenant_id)
 
 
