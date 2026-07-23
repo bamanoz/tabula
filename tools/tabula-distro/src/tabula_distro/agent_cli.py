@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import secrets
+import signal
 import subprocess
 import sys
 import time
@@ -186,6 +187,121 @@ def _start_installed_tenant(home: Path, tenant_id: str, timeout_seconds: float) 
     print(f"tenant {tenant_id} ready")
 
 
+def _agent_pid_file(home: Path) -> Path:
+    return home / "run" / "agent-kernel.pid"
+
+
+def _write_agent_pid(home: Path, pid: int) -> None:
+    path = _agent_pid_file(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{pid}\n", encoding="utf-8")
+
+
+def _read_agent_pid(home: Path) -> int | None:
+    try:
+        raw = _agent_pid_file(home).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    try:
+        pid = int(raw)
+    except ValueError:
+        _agent_pid_file(home).unlink(missing_ok=True)
+        return None
+    return pid if pid > 0 else None
+
+
+def _process_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _process_command(pid: int) -> str:
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=2.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def _agent_pid_matches(home: Path, pid: int) -> bool:
+    command = _process_command(pid)
+    if not command:
+        return False
+    tabula_bin = home / "bin" / "tabula"
+    candidates = {str(tabula_bin), str(tabula_bin.resolve())}
+    return any(candidate in command for candidate in candidates) and " serve" in f" {command}" and "--runtime-mode" in command and "managed" in command
+
+
+def _status_kernel_pid(home: Path) -> int | None:
+    tabula = home / "bin" / "tabula"
+    if not tabula.is_file():
+        return None
+    env = os.environ.copy()
+    env["TABULA_HOME"] = str(home)
+    try:
+        result = subprocess.run(
+            [str(tabula), "status", "--json"],
+            env=env,
+            timeout=3.0,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    kernel = data.get("kernel") if isinstance(data, dict) else None
+    if not isinstance(kernel, dict) or kernel.get("running") is not True:
+        return None
+    pid = kernel.get("pid")
+    return pid if isinstance(pid, int) and pid > 0 else None
+
+
+def _agent_pid(home: Path) -> int | None:
+    pid = _read_agent_pid(home)
+    if pid is not None:
+        if _process_exists(pid) and _agent_pid_matches(home, pid):
+            return pid
+        _agent_pid_file(home).unlink(missing_ok=True)
+    pid = _status_kernel_pid(home)
+    if pid is not None and _process_exists(pid) and _agent_pid_matches(home, pid):
+        _write_agent_pid(home, pid)
+        return pid
+    return None
+
+
+def _stop_agent(home: Path, timeout_seconds: float) -> bool:
+    pid = _agent_pid(home)
+    if pid is None:
+        return False
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if not _process_exists(pid):
+            _agent_pid_file(home).unlink(missing_ok=True)
+            return True
+        time.sleep(0.2)
+    raise AgentError(f"managed service did not stop within {timeout_seconds:g}s (pid {pid})")
+
+
 def _cmd_init(args: argparse.Namespace, _home: Path) -> int:
     root = Path(args.root or Path.cwd()).expanduser().resolve()
     if not root.is_dir():
@@ -284,6 +400,7 @@ def _ensure_ready(home: Path, tenant_id: str, kernel_url: str, timeout_seconds: 
     err = (logs / "agent-kernel.err.log").open("ab")
     try:
         proc = subprocess.Popen(argv, env=env, stdout=out, stderr=err, start_new_session=True)
+        _write_agent_pid(home, proc.pid)
     finally:
         out.close()
         err.close()
@@ -291,6 +408,7 @@ def _ensure_ready(home: Path, tenant_id: str, kernel_url: str, timeout_seconds: 
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         if proc.poll() is not None:
+            _agent_pid_file(home).unlink(missing_ok=True)
             raise AgentError(
                 f"managed service exited during startup with code {proc.returncode}; "
                 f"see {logs / 'agent-kernel.err.log'}"
@@ -312,6 +430,33 @@ def _ensure_ready(home: Path, tenant_id: str, kernel_url: str, timeout_seconds: 
 def _start(args: argparse.Namespace, home: Path) -> int:
     if args.timeout <= 0:
         raise AgentError("--timeout must be greater than zero")
+    tenant_id = _select_tenant(home, args.tenant, Path.cwd())
+    _ensure_ready(home, tenant_id, _kernel_url(home), args.timeout)
+    print(f"tenant {tenant_id} ready")
+    return 0
+
+
+def _cmd_start(args: argparse.Namespace, home: Path) -> int:
+    return _start(args, home)
+
+
+def _cmd_stop(args: argparse.Namespace, home: Path) -> int:
+    if args.timeout <= 0:
+        raise AgentError("--timeout must be greater than zero")
+    stopped = _stop_agent(home, args.timeout)
+    if stopped:
+        print("managed service stopped")
+    else:
+        print("managed service is not running")
+    return 0
+
+
+def _cmd_restart(args: argparse.Namespace, home: Path) -> int:
+    if args.timeout <= 0:
+        raise AgentError("--timeout must be greater than zero")
+    stopped = _stop_agent(home, args.timeout)
+    if stopped:
+        print("managed service stopped")
     tenant_id = _select_tenant(home, args.tenant, Path.cwd())
     _ensure_ready(home, tenant_id, _kernel_url(home), args.timeout)
     print(f"tenant {tenant_id} ready")
@@ -355,6 +500,20 @@ def _parser() -> argparse.ArgumentParser:
     apply.add_argument("--no-start", action="store_true")
     apply.add_argument("--timeout", type=float, default=30.0)
     apply.set_defaults(func=_cmd_apply)
+
+    start = sub.add_parser("start", help="start the managed local agent service")
+    start.add_argument("--tenant", default=None, help="explicit installed tenant")
+    start.add_argument("--timeout", type=float, default=30.0, help="service readiness timeout in seconds")
+    start.set_defaults(func=_cmd_start)
+
+    stop = sub.add_parser("stop", help="stop the managed local agent service")
+    stop.add_argument("--timeout", type=float, default=10.0, help="graceful stop timeout in seconds")
+    stop.set_defaults(func=_cmd_stop)
+
+    restart = sub.add_parser("restart", help="restart the managed local agent service")
+    restart.add_argument("--tenant", default=None, help="explicit installed tenant")
+    restart.add_argument("--timeout", type=float, default=30.0, help="stop and readiness timeout in seconds")
+    restart.set_defaults(func=_cmd_restart)
     return parser
 
 
@@ -365,7 +524,7 @@ def main(argv: list[str] | None = None) -> int:
     home = Path(args.home).expanduser().resolve() if args.home else paths.tabula_home()
     home.mkdir(parents=True, exist_ok=True)
     try:
-        if args.command in {"install", "init", "apply"}:
+        if args.command in {"install", "init", "apply", "start", "stop", "restart"}:
             return args.func(args, home)
         return _start(args, home)
     except (

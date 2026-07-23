@@ -249,37 +249,7 @@ agent-run:
 		"$(AGENT_HOME)/bin/tabula-agent" --home "$(AGENT_HOME)" --tenant "$(AGENT_TENANT)"
 
 agent-stop:
-	@set -e; \
-	pid_file="$(AGENT_HOME)/run/kernel.pid"; \
-	if [ ! -f "$$pid_file" ]; then \
-		printf 'agent not running: no %s\n' "$$pid_file"; \
-		exit 0; \
-	fi; \
-	pid=$$(tr -d '[:space:]' < "$$pid_file"); \
-	case "$$pid" in ''|*[!0-9]*) printf 'invalid agent pid file %s: %s\n' "$$pid_file" "$$pid" >&2; exit 1 ;; esac; \
-	if ! kill -0 "$$pid" 2>/dev/null; then \
-		printf 'agent not running: stale pid %s\n' "$$pid"; \
-		rm -f "$$pid_file"; \
-		exit 0; \
-	fi; \
-	cmd=$$(ps -p "$$pid" -ww -o command= 2>/dev/null || true); \
-	case "$$cmd" in \
-		*"$(AGENT_HOME)/bin/tabula serve"*|*"$(AGENT_HOME)/bin/tabula"*" serve "*) ;; \
-		*) printf 'refusing to stop pid %s; not tabula serve for %s\n%s\n' "$$pid" "$(AGENT_HOME)" "$$cmd" >&2; exit 1 ;; \
-	esac; \
-	printf 'stopping agent %s (pid %s)\n' "$(AGENT_PROFILE)" "$$pid"; \
-	kill -TERM "$$pid"; \
-	i=0; \
-	while kill -0 "$$pid" 2>/dev/null; do \
-		if [ "$$i" -ge 50 ]; then \
-			printf 'agent did not stop after TERM; killing pid %s\n' "$$pid" >&2; \
-			kill -KILL "$$pid" 2>/dev/null || true; \
-			break; \
-		fi; \
-		i=$$((i + 1)); \
-		sleep 0.2; \
-	done; \
-	printf 'agent %s stopped\n' "$(AGENT_PROFILE)"
+	@TABULA_HOME="$(AGENT_HOME)" "$(AGENT_HOME)/bin/tabula-agent" --home "$(AGENT_HOME)" stop
 
 # Clean
 

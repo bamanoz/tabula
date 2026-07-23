@@ -35,6 +35,7 @@ type Options struct {
 	AllowedTenants          []string
 	TabulaHome              string
 	KernelURL               string
+	PythonPath              []string
 	PluginKindDependsOn     map[string][]string
 }
 
@@ -68,6 +69,7 @@ func New(kernelID string, store *manifest.Store, pol policy.PluginExecPolicy, op
 		resolved.AllowedTenants = append([]string(nil), opts[0].AllowedTenants...)
 		resolved.TabulaHome = strings.TrimSpace(opts[0].TabulaHome)
 		resolved.KernelURL = strings.TrimSpace(opts[0].KernelURL)
+		resolved.PythonPath = cleanPathList(opts[0].PythonPath)
 		resolved.PluginKindDependsOn = cloneKindDependencies(opts[0].PluginKindDependsOn)
 	}
 	p := &Pool{kernelID: kernelID, store: store, policy: pol, opts: resolved, registry: newWorkerRegistry(), cold: newColdWorkerLimiter(resolved.ColdWorkersPerTenantMax, resolved.ColdAcquireTimeout, resolved.ColdWorkersByTenant), capabilities: newCapabilityState(store), publisher: newAsyncPublisher(), logger: slog.Default()}
@@ -646,7 +648,50 @@ func (p *Pool) spawnEnv(tenantID string) map[string]string {
 	if venv := strings.TrimSpace(os.Getenv("VIRTUAL_ENV")); venv != "" {
 		env["VIRTUAL_ENV"] = venv
 	}
+	if len(p.opts.PythonPath) > 0 {
+		env["PYTHONPATH"] = prependPathList(p.opts.PythonPath, os.Getenv("PYTHONPATH"))
+	}
 	return env
+}
+
+func prependPathList(prefix []string, existing string) string {
+	parts := cleanPathList(prefix)
+	if strings.TrimSpace(existing) != "" {
+		for _, item := range filepath.SplitList(existing) {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				parts = append(parts, item)
+			}
+		}
+	}
+	return strings.Join(dedupeStrings(parts), string(os.PathListSeparator))
+}
+
+func cleanPathList(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, item := range in {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return dedupeStrings(out)
+}
+
+func dedupeStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, item := range in {
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
 }
 
 func (p *Pool) workerKey(tenantID string, plugin manifest.Plugin) key {

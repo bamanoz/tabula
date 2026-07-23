@@ -29,6 +29,10 @@ def _make_distro(root: Path, name: str = "demo") -> Path:
     return distro
 
 
+def _make_tenant(home: Path, tenant: str) -> None:
+    _write(home / "tenants" / tenant / "install.lock.json", json.dumps({"version": 1}) + "\n")
+
+
 class AgentCliTests(unittest.TestCase):
     def _run(self, argv: list[str]) -> tuple[int, str, str]:
         stdout = StringIO()
@@ -330,6 +334,94 @@ class AgentCliTests(unittest.TestCase):
             self.assertEqual(out, "tenant agent-666666666666 ready\n")
             ready.assert_called_once_with(
                 home.resolve(), "agent-666666666666", "ws://127.0.0.1:8089/ws", 30.0
+            )
+
+    def test_explicit_start_command_accepts_tenant_after_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            _make_tenant(home, "agent-explicit")
+            _write(home / "config" / "kernel.toml", '[kernel]\nurl = "ws://127.0.0.1:8089/ws"\n')
+
+            with mock.patch.object(agent_cli, "_ensure_ready") as ready:
+                code, out, err = self._run([
+                    "--home", str(home), "start", "--tenant", "agent-explicit", "--timeout", "7",
+                ])
+
+            self.assertEqual(code, 0, err)
+            self.assertEqual(out, "tenant agent-explicit ready\n")
+            ready.assert_called_once_with(
+                home.resolve(), "agent-explicit", "ws://127.0.0.1:8089/ws", 7.0
+            )
+
+    def test_ensure_ready_writes_managed_kernel_pid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            _write(home / "bin" / "tabula", "#!/bin/sh\n")
+            proc = mock.Mock()
+            proc.pid = 12345
+            proc.poll.return_value = None
+            with (
+                mock.patch.object(agent_cli.service_runtime, "kernel_healthy", side_effect=[False, True]),
+                mock.patch.object(agent_cli.service_runtime, "wait_for_runtime_ready", return_value=True),
+                mock.patch.object(agent_cli.subprocess, "Popen", return_value=proc),
+            ):
+                agent_cli._ensure_ready(home, "tenant-a", "ws://127.0.0.1:8089/ws", 3.0)
+
+            self.assertEqual((home / "run" / "agent-kernel.pid").read_text(encoding="utf-8"), "12345\n")
+
+    def test_stop_command_terminates_recorded_managed_kernel(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            pidfile = home / "run" / "agent-kernel.pid"
+            _write(pidfile, "12345\n")
+            with (
+                mock.patch.object(agent_cli, "_agent_pid", return_value=12345),
+                mock.patch.object(agent_cli, "_process_exists", side_effect=[True, False]),
+                mock.patch.object(agent_cli.os, "kill") as kill,
+                mock.patch.object(agent_cli.time, "sleep"),
+            ):
+                code, out, err = self._run(["--home", str(home), "stop", "--timeout", "2"])
+
+            self.assertEqual(code, 0, err)
+            self.assertEqual(out, "managed service stopped\n")
+            kill.assert_called_once_with(12345, agent_cli.signal.SIGTERM)
+            self.assertFalse(pidfile.exists())
+
+    def test_stop_command_cleans_stale_pid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            pidfile = home / "run" / "agent-kernel.pid"
+            _write(pidfile, "12345\n")
+            with (
+                mock.patch.object(agent_cli, "_process_exists", return_value=False),
+                mock.patch.object(agent_cli, "_status_kernel_pid", return_value=None),
+            ):
+                code, out, err = self._run(["--home", str(home), "stop"])
+
+            self.assertEqual(code, 0, err)
+            self.assertEqual(out, "managed service is not running\n")
+            self.assertFalse(pidfile.exists())
+
+    def test_restart_stops_then_starts_selected_tenant(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            _make_tenant(home, "agent-explicit")
+            _write(home / "config" / "kernel.toml", '[kernel]\nurl = "ws://127.0.0.1:8089/ws"\n')
+            with (
+                mock.patch.object(agent_cli, "_stop_agent", return_value=True) as stop,
+                mock.patch.object(agent_cli, "_ensure_ready") as ready,
+            ):
+                code, out, err = self._run([
+                    "--home", str(home), "restart", "--tenant", "agent-explicit", "--timeout", "9",
+                ])
+
+            self.assertEqual(code, 0, err)
+            self.assertEqual(out, "managed service stopped\ntenant agent-explicit ready\n")
+            stop.assert_called_once_with(home.resolve(), 9.0)
+            ready.assert_called_once_with(
+                home.resolve(), "agent-explicit", "ws://127.0.0.1:8089/ws", 9.0
             )
 
     def test_launch_without_binding_has_one_actionable_error(self):

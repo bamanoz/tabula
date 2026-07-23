@@ -132,6 +132,7 @@ func stdioCmd(args []string, stderr io.Writer) int {
 		AllowedTenants:          kernelCfg.Tenants,
 		TabulaHome:              paths.Home(),
 		KernelURL:               workerKernelURL(kernelCfg.URL),
+		PythonPath:              runtimePythonPath(cfg, paths.Home()),
 		PluginKindDependsOn:     pluginKindDependencies(cfg.PluginKinds),
 	})
 	workerPool.SetLogger(logger)
@@ -214,6 +215,7 @@ func startCmd(args []string, stderr io.Writer) int {
 		AllowedTenants:          kernelCfg.Tenants,
 		TabulaHome:              paths.Home(),
 		KernelURL:               workerKernelURL(kernelCfg.URL),
+		PythonPath:              runtimePythonPath(cfg, paths.Home()),
 		PluginKindDependsOn:     pluginKindDependencies(cfg.PluginKinds),
 	})
 	workerPool.SetLogger(logger)
@@ -249,6 +251,16 @@ func workerKernelURL(configured string) string {
 		return envURL
 	}
 	return strings.TrimSpace(configured)
+}
+
+func runtimePythonPath(cfg runtimeconfig.Config, tabulaHome string) []string {
+	paths := []string{
+		filepath.Join(tabulaHome, "distrib", "active", "packages", "python", "src"),
+	}
+	if cfg.Distro.Dir != "" {
+		paths = append(paths, filepath.Join(cfg.Distro.Dir, "packages", "python", "src"))
+	}
+	return paths
 }
 
 func prepareRuntimeEnvironment(tabulaHome string) {

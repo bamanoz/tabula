@@ -1573,6 +1573,26 @@ func TestPoolPassesVirtualEnvToWarmWorkers(t *testing.T) {
 	}
 }
 
+func TestPoolPrependsConfiguredPythonPathToWarmWorkers(t *testing.T) {
+	home := t.TempDir()
+	distroPackages := filepath.Join(home, "distrib", "active", "packages", "python", "src")
+	activePackages := filepath.Join(home, "distrib", "code-immune", "generations", "0001", "packages", "python", "src")
+	existingPath := filepath.Join(home, "existing")
+	t.Setenv("PYTHONPATH", existingPath)
+	p, fake := testPoolWithOptions(t, Options{TabulaHome: home, PythonPath: []string{distroPackages, activePackages, distroPackages}})
+	if resp, err := p.Invoke(context.Background(), invoke("warm-pythonpath", "alpha", "echo")); err != nil || !resp.OK {
+		t.Fatalf("warm invoke = %#v, %v", resp, err)
+	}
+	reqs := fake.spawnRequests()
+	if len(reqs) != 1 {
+		t.Fatalf("spawn requests = %#v", reqs)
+	}
+	want := strings.Join([]string{distroPackages, activePackages, existingPath}, string(os.PathListSeparator))
+	if got := reqs[0].Env["PYTHONPATH"]; got != want {
+		t.Fatalf("PYTHONPATH = %q, want %q", got, want)
+	}
+}
+
 func TestPoolReturnsRawLargeToolResults(t *testing.T) {
 	home := t.TempDir()
 	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), workerFactory: func(req policy.SpawnReq) *fakeWorker {
