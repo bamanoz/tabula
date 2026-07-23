@@ -21,6 +21,52 @@ def sync_for_distro(home: Path, distro_path: Path) -> Path:
     return write(home, plugin_dirs, distro=distro)
 
 
+def sync_tenant(home: Path, tenant_id: str, tenant_dir: Path) -> Path:
+    """Add or replace one tenant runtime surface without changing other tenants."""
+    path = home / "config" / "runtime.toml"
+    doc = toml_io.load(path)
+    tomlkit = toml_io.require_tomlkit()
+    doc["plugin_dirs"] = _string_array([])
+    doc["skill_dirs"] = _string_array([])
+
+    tenants: dict[str, tuple[list[str], list[str]]] = {}
+    for item in doc.get("tenant") or []:
+        if not hasattr(item, "get"):
+            continue
+        item_id = str(item.get("id") or "").strip()
+        if not item_id:
+            continue
+        tenants[item_id] = (
+            [str(value) for value in item.get("plugin_dirs") or []],
+            [str(value) for value in item.get("skill_dirs") or []],
+        )
+    tenants[tenant_id] = ([str(tenant_dir / "plugins")], [str(tenant_dir / "skills")])
+
+    tenant_aot = tomlkit.aot()
+    for item_id in sorted(tenants):
+        plugin_dirs, skill_dirs = tenants[item_id]
+        item = tomlkit.table()
+        item["id"] = item_id
+        item["plugin_dirs"] = _string_array(plugin_dirs)
+        item["skill_dirs"] = _string_array(skill_dirs)
+        tenant_aot.append(item)
+    doc["tenant"] = tenant_aot
+
+    kernels = tomlkit.aot()
+    kernel = tomlkit.table()
+    kernel["id"] = "main"
+    kernel["url"] = "unix://" + str(runtime_socket_path(home))
+    kernel["token_file"] = str(home / "run" / "runtime-token")
+    kernel["tenants"] = _string_array(sorted(tenants))
+    kernels.append(kernel)
+    doc["kernel"] = kernels
+    write_python_runtime(doc)
+    toml_io.merge_defaults(doc, {"pool": {"cold_workers_per_tenant_max": 16}})
+    toml_io.dump(path, doc)
+    write_kernel_config(home, url=os.environ.get("TABULA_URL", "ws://localhost:8089/ws"))
+    return path
+
+
 def write_kernel_config(home: Path, *, url: str = "ws://localhost:8089/ws") -> Path:
     path = home / "config" / "kernel.toml"
     doc = toml_io.load(path)

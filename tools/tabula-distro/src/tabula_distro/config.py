@@ -97,6 +97,9 @@ class DistroConfig:
     plugins: tuple[SkillEntry, ...] = ()
     exports_python_packages: tuple[PythonPackageExport, ...] = ()
     executable_requirements: tuple[ExecutableRequirement, ...] = ()
+    tenant_materializer: str | None = None
+    tenant_values_schema: str | None = None
+    tenant_values_defaults: str | None = None
 
 
 def load(distro_dir: Path, *, override_name: str | None = None) -> DistroConfig:
@@ -141,7 +144,19 @@ def load(distro_dir: Path, *, override_name: str | None = None) -> DistroConfig:
         plugins=tuple(_parse_skill(entry) for entry in merged.get("plugins", [])),
         exports_python_packages=_parse_python_package_exports(distro_dir / "distro.toml", _section(merged, "exports").get("python_packages")),
         executable_requirements=_parse_executable_requirements(merged),
+        tenant_materializer=_tenant_contract_value(merged, "materializer"),
+        tenant_values_schema=_tenant_contract_value(merged, "values_schema"),
+        tenant_values_defaults=_tenant_contract_value(merged, "values_defaults"),
     )
+
+
+def _tenant_contract_value(data: dict, key: str) -> str | None:
+    raw = _section(data, "tenant_contract").get(key)
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        raise ConfigError(f"tenant_contract.{key} must be a non-empty string")
+    return raw.strip()
 
 
 def _read_toml(path: Path) -> dict:

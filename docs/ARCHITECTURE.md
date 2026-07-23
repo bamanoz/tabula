@@ -52,9 +52,9 @@ delivered by plugins from the active distro.
 This is intentional: distros decide their tool surface, and the kernel does not
 impose command execution or process-management tools as a baseline.
 
-Tool execution happens through attached `tabula-runtime` processes. The local
-product wrapper `tabula-runner` starts the kernel and runtime as sibling
-processes.
+Tool execution happens through attached `tabula-runtime` processes. For the
+standard local topology, `tabula serve --runtime-mode managed` starts and owns
+the local runtime child.
 
 ### Sessions
 
@@ -156,10 +156,11 @@ url = "ws://127.0.0.1:8089/ws"
 enabled = false
 ```
 
-`tabula serve` itself is kernel-only: it reads `kernel.toml`, serves the kernel
-endpoints, and accepts runtime attachments. The local product wrapper
-`tabula-runner` is what launches `tabula serve` plus a sibling `tabula-runtime`
-process for the default local stack.
+`tabula serve --runtime-mode managed` is the standard local stack entrypoint: it
+reads `kernel.toml`, serves the kernel endpoints, starts `tabula-runtime` as a
+managed child, and shuts that child down with the kernel. Foreground and user
+service launches use this same process topology. Use `--runtime-mode external`
+when a separately managed runtime attaches to the kernel.
 
 ### `.env` loading
 
@@ -241,19 +242,23 @@ $TABULA_HOME/distrib/active             -> claw
 $TABULA_HOME/templates/*                -> distrib/active/current/templates/*
 $TABULA_HOME/skills/*                   -> distrib/active/current/skills/* + bundle skills
 $TABULA_HOME/plugins/*                  -> distrib/active/current/plugins/* + bundle plugins
-$TABULA_HOME/tenants/<id>/templates/*   -> distrib/active/current/templates/*
-$TABULA_HOME/tenants/<id>/skills/*      -> distrib/active/current/skills/* + bundle skills
-$TABULA_HOME/tenants/<id>/plugins/*     -> distrib/active/current/plugins/* + bundle plugins
-$TABULA_HOME/tenants/<id>/_lib/*        -> distrib/active/current/_lib/*
+$TABULA_HOME/tenants/<id>/templates/*   -> distrib/<distro>/generations/<generation>/templates/*
+$TABULA_HOME/tenants/<id>/skills/*      -> distrib/<distro>/generations/<generation>/skills/*
+$TABULA_HOME/tenants/<id>/plugins/*     -> distrib/<distro>/generations/<generation>/plugins/*
+$TABULA_HOME/tenants/<id>/apps/*        -> distrib/<distro>/generations/<generation>/apps/*
+$TABULA_HOME/tenants/<id>/packages/*    -> distrib/<distro>/generations/<generation>/packages/*
 ```
 
 Shared SDK packages such as `tabula_plugin_sdk` are installed into
 `$TABULA_HOME/.venv` by the installer from bundled package artifacts. They are not
 materialized as special legacy support directories in the runtime surface.
 
-The root runtime surface remains flat for the active kernel/runtime, while each
-tenant gets its own fan-out of the same active generation surface. Bundle code
-is shared through symlinks; only tenant config/state/cache diverge.
+The root runtime surface remains a flat compatibility view of the active distro.
+Each materialized tenant instead pins one exact distro generation in its install
+lock and links its component surfaces directly to that immutable tree. Installing
+or selecting another distro does not rewrite existing tenant surfaces. Bundle
+code is shared through links; tenant config, sessions, state, cache, logs, and
+workers remain isolated.
 
 ## Skills and plugins
 
@@ -482,11 +487,11 @@ After the kernel installer finishes, install a distro yourself:
 tabula-install distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw'
 ```
 
-The release installers can also forward directly into the app-manifest flow for
-projects that already carry `tabula.app.toml`:
+The release installers can also install and bind one project-scoped agent:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- app run
+curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | \
+  bash -s -- --distro 'git+https://github.com/owner/distros.git@main#path=my-distro'
 ```
 
 If GitHub Actions is unavailable, publish the same release artifacts locally
@@ -512,10 +517,10 @@ on `HEAD`, for example `v0.9.3` when `VERSION` is `0.9.3`.
 
 Same follow-up: install a distro with `tabula-install distro install <path-or-uri>`.
 
-Both paths intentionally stop at the local runtime layer. Distro composition is
-always done by `tabula-install distro install` or `tabula-install app install/run/apply`,
-which resolves a distro plus its declared bundles into the active runtime
-surface.
+Both paths intentionally keep distro composition outside the kernel.
+`tabula-install distro install` builds a global distro surface; `tabula-agent
+install/apply` creates a project-scoped tenant pinned to one immutable distro
+generation.
 
 ## Runtime surfaces
 

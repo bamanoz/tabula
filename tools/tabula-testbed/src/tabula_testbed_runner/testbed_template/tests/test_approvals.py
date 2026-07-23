@@ -269,7 +269,6 @@ class ApprovalFlowInstalled(unittest.TestCase):
             "TABULA_HOME": self.tabula_home,
             "TABULA_URL": self.url,
             "TABULA_VERBOSE": "1",
-            "TABULA_APP_ID": "default",
             "TABULA_TENANT_ID": "default",
             "TABULA_PLUGIN_DRIVER_OPENAI_API_KEY": "test-key",
             "TABULA_PLUGIN_DRIVER_OPENAI_MODEL": "o3",
@@ -277,7 +276,7 @@ class ApprovalFlowInstalled(unittest.TestCase):
         })
         log_handle = log_path.open("wb")
         proc = subprocess.Popen(
-            [str(python), str(driver), "--session", session, "--provider", "openai", "--app", "default"],
+            [str(python), str(driver), "--session", session, "--provider", "openai", "--tenant", "default"],
             env=env,
             stdout=log_handle,
             stderr=subprocess.STDOUT,

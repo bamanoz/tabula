@@ -76,6 +76,7 @@ class Lock:
     apps: dict[str, LockEntry] = field(default_factory=dict)
     generated_at: str | None = None
     distro_source: str | None = None  # original URI passed to install (for `update`)
+    distro_resolved_sha: str | None = None  # exact git revision used for this generation
     distro_version: str | None = None  # [distro].version, if declared
     kernel_version: str | None = None  # installed kernel version at install time
     plugin_protocol_version: int | None = None  # max plugin protocol version kernel can speak
@@ -93,6 +94,8 @@ class Lock:
         }
         if self.distro_source is not None:
             out["distro_source"] = self.distro_source
+        if self.distro_resolved_sha is not None:
+            out["distro_resolved_sha"] = self.distro_resolved_sha
         if self.distro_version is not None:
             out["distro_version"] = self.distro_version
         if self.kernel_version is not None:
@@ -125,6 +128,7 @@ class Lock:
             apps={k: LockEntry.from_json(v) for k, v in data.get("apps", data.get("apps", data.get("drivers", {}))).items()},
             generated_at=data.get("generated_at"),
             distro_source=data.get("distro_source"),
+            distro_resolved_sha=data.get("distro_resolved_sha"),
             distro_version=data.get("distro_version"),
             kernel_version=data.get("kernel_version"),
             plugin_protocol_version=data.get("plugin_protocol_version"),

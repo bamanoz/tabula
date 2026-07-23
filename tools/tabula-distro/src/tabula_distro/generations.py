@@ -113,17 +113,24 @@ def set_current(home: Path, distro_name: str, gen: Generation) -> None:
     links.replace_directory_reference(link, target)
 
 
-def prune(home: Path, distro_name: str, *, keep: int) -> list[Generation]:
-    """Remove old generations, keeping the ``keep`` most recent + the current one."""
+def prune(
+    home: Path,
+    distro_name: str,
+    *,
+    keep: int,
+    referenced_names: set[str] | None = None,
+) -> list[Generation]:
+    """Remove old generations except recent, current, and tenant-referenced ones."""
     gens = list_generations(home, distro_name)
     if len(gens) <= keep:
         return []
     cur = current_generation(home, distro_name)
     cur_num = cur.number if cur else -1
     to_keep_nums = {g.number for g in gens[-keep:]} | {cur_num}
+    references = referenced_names or set()
     removed: list[Generation] = []
     for g in gens:
-        if g.number in to_keep_nums:
+        if g.number in to_keep_nums or g.name in references:
             continue
         shutil.rmtree(g.path, ignore_errors=True)
         removed.append(g)

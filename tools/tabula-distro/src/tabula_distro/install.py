@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import time
@@ -331,35 +332,41 @@ def _check_plugin_compat(plugin_name: str, plugin_dir: Path, *,
     return requires
 
 
-def _resolve_distro_source(value: str | Path, home: Path, *, offline: bool, base_dir: Path | None = None) -> tuple[Path, str | None]:
+def _resolve_distro_source(
+    value: str | Path,
+    home: Path,
+    *,
+    offline: bool,
+    base_dir: Path | None = None,
+) -> tuple[Path, str | None, str | None]:
     """Resolve a distro source (path / local: / git+) to a local directory.
 
-    Returns ``(directory, source_string)``. The source string is what should be
-    persisted in the lockfile so later commands like ``update`` and
-    ``reinstall`` can resolve the same distro again. For direct local paths we
-    normalize to an absolute path.
+    Returns ``(directory, source_string, resolved_sha)``. The source string is
+    persisted so later commands can resolve the same distro again. Git sources
+    also return the exact fetched revision. Direct local paths are normalized to
+    absolute paths and have no resolved SHA.
     """
     if isinstance(value, Path):
         resolved = value.resolve()
-        return resolved, str(resolved)
+        return resolved, str(resolved), None
 
     text = str(value)
     if text.startswith("local:") or text.startswith("git+"):
         src = srcmod.parse(text, base_dir=base_dir or Path.cwd())
         if isinstance(src, srcmod.LocalSource):
-            return src.path, text
+            return src.path, text, None
         cache = GitCache(home / "cache")
         checkout = cache.fetch(src, offline=offline)
         root = checkout.worktree if not src.subpath else checkout.worktree / src.subpath
         if not root.is_dir():
             raise InstallError(f"git source subpath not found: {src.subpath} in {src.url}")
-        return root, text
+        return root, text, checkout.sha
 
     candidate = Path(text).expanduser()
     if not candidate.is_absolute():
         candidate = (base_dir or Path.cwd()) / candidate
     resolved = candidate.resolve()
-    return resolved, str(resolved)
+    return resolved, str(resolved), None
 
 
 @dataclass
@@ -419,10 +426,12 @@ def install(distro_dir: str | Path, home: Path, *,
     for compatibility; use ``result.changed`` to tell whether a new generation
     was promoted.
     """
-    distro_path, distro_source_uri = _resolve_distro_source(
+    distro_path, distro_source_uri, distro_resolved_sha = _resolve_distro_source(
         distro_dir, home, offline=offline, base_dir=base_dir,
     )
     distro = cfg.load(distro_path, override_name=override_name)
+    if tenant is not None and not _safe_path_name(tenant):
+        raise InstallError(f"invalid tenant id: {tenant!r}")
 
     # Hard-fail before doing any work if the distro is incompatible with the
     # installed kernel.
@@ -453,6 +462,8 @@ def install(distro_dir: str | Path, home: Path, *,
 
     if distro_source_uri is not None:
         new_lock.distro_source = distro_source_uri
+    if distro_resolved_sha is not None:
+        new_lock.distro_resolved_sha = distro_resolved_sha
     if distro.version is not None:
         new_lock.distro_version = str(distro.version)
     if kernel_version is not None:
@@ -481,7 +492,9 @@ def install(distro_dir: str | Path, home: Path, *,
         lockmod.save(gens.distro_root(home, distro.name) / "distro.lock.json", new_lock)
         _expose_current(home, distro.name)
         _set_active(home, distro.name, expose_global_boot=expose_global_boot)
-        _refresh_runtime_surface(home, tenant=tenant)
+        if tenant is not None:
+            _write_tenant_install_lock(home, tenant, current, new_lock)
+        _refresh_runtime_surface(home, tenant=tenant, generation=current)
         _write_kernel_config(home)
         return InstallResult(current, new_lock, False)
 
@@ -494,9 +507,11 @@ def install(distro_dir: str | Path, home: Path, *,
     gens.set_current(home, distro.name, new_gen)
     _expose_current(home, distro.name)
     _set_active(home, distro.name, expose_global_boot=expose_global_boot)
-    _refresh_runtime_surface(home, tenant=tenant)
+    if tenant is not None:
+        _write_tenant_install_lock(home, tenant, new_gen, new_lock)
+    _refresh_runtime_surface(home, tenant=tenant, generation=new_gen)
     _write_kernel_config(home)
-    gens.prune(home, distro.name, keep=keep_generations)
+    gens.prune(home, distro.name, keep=keep_generations, referenced_names=_tenant_generation_refs(home, distro.name))
     return InstallResult(new_gen, new_lock, True)
 
 
@@ -505,8 +520,9 @@ def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lock
     distro = plan.distro
     _copytree(distro.path, staging)
 
-    # Drop our own config artifacts from the staged tree (they live at distro root, not generation).
-    for noise in ("distro.toml", "distro.override.toml", "distro.lock.json"):
+    # Keep distro.toml in the immutable generation: runtime-neutral metadata such
+    # as the tenant materializer contract must resolve from the pinned tree.
+    for noise in ("distro.override.toml", "distro.lock.json"):
         p = staging / noise
         if p.exists():
             p.unlink()
@@ -997,7 +1013,12 @@ def _set_active(home: Path, distro_name: str, *, expose_global_boot: bool = True
 
 
 
-def _refresh_runtime_surface(home: Path, *, tenant: str | None = None) -> None:
+def _refresh_runtime_surface(
+    home: Path,
+    *,
+    tenant: str | None = None,
+    generation: gens.Generation | None = None,
+) -> None:
     for obsolete in (home / "drivers", home / "gateways", home / "_lib"):
         links.remove_path(obsolete)
     _link_runtime(home / "distrib" / "active" / "packages", home / "packages")
@@ -1005,8 +1026,14 @@ def _refresh_runtime_surface(home: Path, *, tenant: str | None = None) -> None:
     _link_runtime(home / "distrib" / "active" / "templates", home / "templates")
     _link_runtime(home / "distrib" / "active" / "plugins", home / "plugins")
     _link_runtime(home / "distrib" / "active" / "skills", home / "skills")
-    for tenant_dir in _tenant_roots(home, tenant=tenant):
-        _refresh_tenant_runtime_surface(home, tenant_dir)
+    if tenant is not None and generation is not None:
+        for tenant_dir in _tenant_roots(home, tenant=tenant):
+            _refresh_tenant_runtime_surface(tenant_dir, generation.path)
+    elif tenant is None:
+        for tenant_dir in _tenant_roots(home):
+            source = _tenant_generation_path(home, tenant_dir)
+            if source is not None:
+                _refresh_tenant_runtime_surface(tenant_dir, source)
     _touch_reload_trigger(home, tenant=tenant)
 
 
@@ -1020,14 +1047,81 @@ def _tenant_roots(home: Path, *, tenant: str | None = None) -> list[Path]:
     return [entry for entry in roots if entry.name == tenant]
 
 
-def _refresh_tenant_runtime_surface(home: Path, tenant_dir: Path) -> None:
+def _refresh_tenant_runtime_surface(tenant_dir: Path, generation_path: Path) -> None:
     obsolete = tenant_dir / "_lib"
     links.remove_path(obsolete)
-    _link_runtime(home / "distrib" / "active" / "packages", tenant_dir / "packages")
-    _link_runtime(home / "distrib" / "active" / "apps", tenant_dir / "apps")
-    _link_runtime(home / "distrib" / "active" / "templates", tenant_dir / "templates")
-    _link_runtime(home / "distrib" / "active" / "plugins", tenant_dir / "plugins")
-    _link_runtime(home / "distrib" / "active" / "skills", tenant_dir / "skills")
+    _link_runtime(generation_path / "packages", tenant_dir / "packages")
+    _link_runtime(generation_path / "apps", tenant_dir / "apps")
+    _link_runtime(generation_path / "templates", tenant_dir / "templates")
+    _link_runtime(generation_path / "plugins", tenant_dir / "plugins")
+    _link_runtime(generation_path / "skills", tenant_dir / "skills")
+
+
+def _write_tenant_install_lock(
+    home: Path,
+    tenant: str,
+    generation: gens.Generation,
+    distro_lock: lockmod.Lock,
+) -> None:
+    tenant_dir = home / "tenants" / tenant
+    tenant_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 1,
+        "distro": distro_lock.to_json(),
+        "generation": {
+            "distro": distro_lock.distro,
+            "name": generation.name,
+            "path": str(Path("distrib") / distro_lock.distro / "generations" / generation.name),
+        },
+    }
+    path = tenant_dir / "install.lock.json"
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _read_tenant_install_lock(tenant_dir: Path) -> dict[str, object] | None:
+    try:
+        payload = json.loads((tenant_dir / "install.lock.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        return None
+    return payload
+
+
+def _tenant_generation_path(home: Path, tenant_dir: Path) -> Path | None:
+    payload = _read_tenant_install_lock(tenant_dir)
+    if payload is None:
+        return None
+    generation = payload.get("generation")
+    if not isinstance(generation, dict):
+        return None
+    distro_name = generation.get("distro")
+    generation_name = generation.get("name")
+    if not _safe_path_name(distro_name) or not _safe_path_name(generation_name):
+        return None
+    path = gens.generations_dir(home, distro_name) / generation_name
+    return path.resolve() if path.is_dir() else None
+
+
+def _safe_path_name(value: object) -> bool:
+    return isinstance(value, str) and bool(value) and value not in {".", ".."} and Path(value).name == value
+
+
+def _tenant_generation_refs(home: Path, distro_name: str) -> set[str]:
+    refs: set[str] = set()
+    for tenant_dir in _tenant_roots(home):
+        payload = _read_tenant_install_lock(tenant_dir)
+        if payload is None:
+            continue
+        generation = payload.get("generation")
+        if not isinstance(generation, dict) or generation.get("distro") != distro_name:
+            continue
+        name = generation.get("name")
+        if _safe_path_name(name):
+            refs.add(name)
+    return refs
 
 
 def touch_reload_trigger(home: Path, *, tenant: str | None = None) -> None:

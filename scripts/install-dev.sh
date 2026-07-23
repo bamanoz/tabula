@@ -3,18 +3,17 @@
 #
 # Installs the local runtime layer:
 #   * Go binaries (`tabula` + `tabula-runtime`, built from this repo)
-#   * launch scripts (tabula-runner, tabula-cli)
+#   * agent launcher (tabula-agent)
 #   * Python venv with runtime + dev dependencies
 #   * tabula-distro installer (editable, from tools/tabula-distro)
 #
-# After this script finishes, install a distro separately:
+# Normal dev-agent entrypoint:
 #
-#   tabula-distro install <path-or-uri>
+#   make agent dev
 #
-# Examples:
-#   tabula-distro install ../tabula-distrib/claw
-#   tabula-distro install local:/abs/path/to/distro
-#   tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=guardian'
+# That target installs this runtime, installs the local code-immune distro with
+# local ../tabula-bundles source overrides, binds the current checkout, and runs
+# tabula-agent on the dev port.
 set -euo pipefail
 
 while [ "$#" -gt 0 ]; do
@@ -103,7 +102,7 @@ site_packages.mkdir(parents=True, exist_ok=True)
 PY
 else
   echo "warning: tabula-bundles checkout not found at $TABULA_BUNDLES_ROOT" >&2
-  echo "         tabula-install app materializers may require tabula_plugin_sdk; set TABULA_BUNDLES_ROOT to your checkout" >&2
+  echo "         distro materializers may require tabula_plugin_sdk; set TABULA_BUNDLES_ROOT to your checkout" >&2
 fi
 "$VENV/bin/pip" install -q -e "$REPO_ROOT/tools/tabula-distro"
 echo "    Python dependencies installed"
@@ -132,13 +131,9 @@ if [ "$(uname)" = "Darwin" ]; then
   codesign --force --sign - "$BIN_DIR/tabula-runtime" 2>/dev/null || true
 fi
 
-# Launch scripts
-for script in tabula-runner tabula-cli; do
-  cp "$REPO_ROOT/bin/$script" "$BIN_DIR/$script"
-  chmod +x "$BIN_DIR/$script"
-done
 
 # Symlink installer entrypoints from venv into bin/ so they're on PATH alongside the rest.
+ln -sf "$VENV/bin/tabula-agent" "$BIN_DIR/tabula-agent"
 ln -sf "$VENV/bin/tabula-install" "$BIN_DIR/tabula-install"
 ln -sf "$VENV/bin/tabula-distro" "$BIN_DIR/tabula-distro"
 
@@ -183,13 +178,10 @@ cat <<EOF
 
 Tabula kernel/runtime installed at $TABULA_HOME.
 
-Next: install a distro with tabula-install. Examples:
+Next for this checkout:
 
-  tabula-install distro install ../tabula-distrib/claw
-  tabula-install distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=guardian'
+  make agent dev
 
-Then start the kernel:
-
-  tabula-runner
+That installs/updates local code-immune with local ../tabula-bundles, binds this checkout, and runs tabula-agent.
 
 EOF

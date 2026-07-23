@@ -13,7 +13,7 @@ func TestLoadTenantInitMetaReadsPromptBuilderAndWorkspace(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir tenant config: %v", err)
 	}
-	if err := os.WriteFile(path, []byte(`[application]
+	if err := os.WriteFile(path, []byte(`[agent]
 prompt_builder = "claw_prompt.builder"
 
 [workspace]
@@ -45,7 +45,7 @@ func TestConfigureTenantInitMetaLoadsNewTenantWorkspace(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir tenant config: %v", err)
 	}
-	if err := os.WriteFile(path, []byte(`[application]
+	if err := os.WriteFile(path, []byte(`[agent]
 prompt_builder = "code_immune_prompt.builder"
 
 [workspace]

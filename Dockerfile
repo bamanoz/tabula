@@ -11,7 +11,8 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 ENV TABULA_HOME=/var/lib/tabula \
     TABULA_WORKSPACE=/workspace \
-    TABULA_APP_MANIFEST=/workspace/tabula.app.toml \
+    TABULA_DISTRO_SOURCE= \
+    TABULA_TENANT_ID=docker \
     TABULA_DOCKER_REINSTALL=0 \
     TABULA_RUNNER_STARTUP_TIMEOUT=60 \
     PATH=/var/lib/tabula/bin:/var/lib/tabula/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

@@ -97,8 +97,8 @@ tabula-install distro install <local-path-or-github-tree-url>
 ```powershell
 irm https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.ps1 | iex
 
-# one-shot install + run from a project with tabula.app.toml
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.ps1))) app run
+# one-shot core + project-scoped agent install
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.ps1))) --distro 'git+https://github.com/owner/distros.git@main#path=my-distro'
 ```
 
 Windows support exists, but the main development and test flow is
@@ -112,16 +112,16 @@ git clone https://github.com/bamanoz/tabula.git
 cd tabula
 bash scripts/install-dev.sh                                        # installs tabula + tabula-runtime
 
-# then install a distro or run an app manifest:
-tabula-install distro install ../tabula-distrib/claw                       # local checkout
-tabula-install distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=guardian'
-tabula-install app install --workspace .
-tabula-install app run
+# then install a distro globally or bind one agent tenant to current project:
+tabula-install distro install ../tabula-distrib/claw
+tabula-agent install --distro ../tabula-distrib/claw --bind .
+tabula-agent
 
 # local dev flow
+make agent dev
+# or separately:
 make agent-prepare
 make agent-run
-make agent-connect
 
 # installed CLI shortcuts
 tabula-install use code
@@ -134,11 +134,23 @@ Requires Go 1.26+ and Python 3.11+.
 
 ## Quick start
 
+Install core plus one project-scoped agent from a full distro source:
+
 ```bash
-echo 'ANTHROPIC_API_KEY=sk-ant-...' >> "$TABULA_HOME/.env"
-tabula-runner
-tabula-cli
+curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | \
+  bash -s -- --distro 'git+https://github.com/owner/distros.git@main#path=my-distro' \
+  --non-interactive
+
+tabula-agent
 ```
+
+Run installer from project directory to bind current directory. Local distro
+paths also work. Use `--default` for fallback binding, `--tenant <id>` for an
+explicit local tenant id, `--replace-binding` to replace an existing selection,
+or `--no-start` to install without user service startup. Repeating same command
+reuses existing tenant.
+
+Add provider credentials required by selected distro to `$TABULA_HOME/.env`.
 
 Use OpenAI instead:
 
@@ -147,12 +159,12 @@ cat >> "$TABULA_HOME/.env" <<'EOF'
 TABULA_PROVIDER=openai
 OPENAI_API_KEY=sk-...
 EOF
-tabula-runner
-tabula-cli
+tabula-agent
 ```
 
-If you installed from a release and the user service is already running,
-`tabula-cli` alone may be enough.
+If user service is already running, `tabula-agent` reuses it and verifies the
+selected tenant runtime. Gateways and other clients are started by installed
+components, not by `tabula-agent`.
 
 ## The mental model
 
@@ -285,14 +297,17 @@ More about what each distro contains lives in the
 
 | Command                                             | What it does                                 |
 | --------------------------------------------------- | -------------------------------------------- |
-| `tabula-runner`                                     | Start the kernel plus local runtime wrapper  |
-| `tabula-cli`                                        | Connect to a running kernel                  |
-| `tabula-install distro install <path-or-uri>`       | Install or switch the active distro          |
-| `tabula serve`                                      | Low-level kernel entrypoint                  |
-| `tabula run --prompt "..."`                         | One-shot prompt → response                   |
+| `tabula-agent`                                      | Start/check selected project tenant stack    |
+| `tabula-agent install --distro <source> --bind .`   | Install and bind one project tenant          |
+| `tabula serve --runtime-mode managed`               | Start kernel plus local runtime stack         |
+| `tabula-install distro install <path-or-uri>`       | Install or switch global distro surface      |
+| `tabula serve --runtime-mode external`              | Start kernel without local runtime child     |
+| `tabula run --prompt "..."`                        | One-shot prompt → response                   |
 
-`tabula-runner` is the product wrapper. `tabula serve` is the low-level kernel
-entrypoint and does not supervise a local runtime process.
+`tabula serve --runtime-mode managed` is the local stack entrypoint used by
+foreground runs and user services. Kernel owns the `tabula-runtime` child and
+stops it during shutdown. Use `--runtime-mode external` only when runtime
+lifecycle is managed separately.
 
 ## Configuration
 
@@ -388,29 +403,22 @@ Useful environment variables:
 | `TABULA_MAX_CHILDREN_PER_SESSION`          | Max child subagents per session            |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`     | Provider API keys                          |
 
-## Agent Applications
+## Project-Scoped Agents
 
-A runnable agent application manifest can live in a project as
-`tabula.app.toml`. It applies a distro, creates a tenant whose id is
-`application.id`, starts or reuses the configured kernel/runtime, and binds the
-project directory to that app.
-
-On a machine without Tabula installed yet, install Tabula and run the app in one
-command from the project directory:
+`tabula-agent install` creates a tenant pinned to an immutable distro generation
+and binds it directly to a project directory:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- app run
+tabula-agent install \
+  --distro 'git+https://github.com/owner/distros.git@main#path=my-distro' \
+  --bind .
+tabula-agent
 ```
 
-If Tabula is already installed:
-
-```bash
-tabula-install app install --workspace .
-tabula-install app run
-```
-
-See `docs/AGENT_APPLICATIONS.md` for examples, local overrides, bindings, and
-Claw memory modes.
+Optional `tabula.agent.toml` stores only distro source and distro-owned values.
+Create it with `tabula-agent init`, then install or refresh with
+`tabula-agent apply`. Tenant IDs, bindings, secrets, and runtime topology remain
+host-local.
 
 ## Writing skills
 

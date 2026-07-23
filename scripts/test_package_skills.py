@@ -25,6 +25,18 @@ def _bash() -> str:
 
 
 class PackageSkillsTests(unittest.TestCase):
+    def test_install_script_forwards_agent_install_and_service_flags(self) -> None:
+        script = (ROOT / "scripts" / "install.sh").read_text(encoding="utf-8")
+
+        self.assertIn('"$BIN_DIR/tabula-agent" --home "$TABULA_HOME" install', script)
+        self.assertIn('"${POST_INSTALL_ARGS[@]}" --no-start', script)
+        self.assertIn('if [ "$AGENT_NO_START" -eq 1 ]', script)
+        self.assertIn('if [ "$AGENT_INSTALL" -eq 0 ]', script)
+        self.assertNotIn('POST_INSTALL_ARGS[0]}" != "app"', script)
+        self.assertIn("install_service", script)
+        self.assertIn("Next command:", script)
+        self.assertIn("tabula-agent", script)
+
     def test_global_config_is_packaged_as_example(self) -> None:
         version = "test-global-config"
         archive = ROOT / "extra" / f"tabula-skills-{version}.tar.gz"
@@ -37,6 +49,8 @@ class PackageSkillsTests(unittest.TestCase):
 
         self.assertIn("config/global.toml.example", names)
         self.assertIn("libexec/install_payload.py", names)
+        self.assertIn("scripts/install-service.sh", names)
+        self.assertIn("scripts/uninstall-service.sh", names)
         self.assertNotIn("config/global.toml", names)
         self.assertFalse(any(".egg-info" in name for name in names))
 

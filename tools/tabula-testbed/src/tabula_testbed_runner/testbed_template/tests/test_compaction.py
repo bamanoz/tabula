@@ -146,7 +146,7 @@ api = "chat_completions"
         })
         log_handle = log_path.open("wb")
         proc = subprocess.Popen(
-            [str(python), str(driver), "--session", session, "--provider", "openai", "--no-app-binding"],
+            [str(python), str(driver), "--session", session, "--provider", "openai", "--no-tenant-binding"],
             env=env,
             stdout=log_handle,
             stderr=subprocess.STDOUT,

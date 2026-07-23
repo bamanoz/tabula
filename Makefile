@@ -1,4 +1,4 @@
-.PHONY: build build-windows build-linux build-all build-harness-bench-image test test-unit test-smoke test-e2e test-contract test-go test-go-unit test-go-smoke test-python test-python-unit test-python-smoke test-python-e2e test-python-contract testbed lint vet release-local release-local-dry-run push install install-agent agent agent-prepare agent-write-gateway-config agent-run agent-connect clean
+.PHONY: build build-windows build-linux build-all build-harness-bench-image test test-unit test-smoke test-e2e test-contract test-go test-go-unit test-go-smoke test-python test-python-unit test-python-smoke test-python-e2e test-python-contract testbed lint vet release-local release-local-dry-run push install install-agent agent agent-prepare agent-write-gateway-config agent-run agent-stop clean
 
 ifeq ($(OS),Windows_NT)
 PATH := C:/Program Files/Git/usr/bin;C:/Program Files/Git/bin;$(PATH)
@@ -24,7 +24,7 @@ TESTBED_EXTRA_ARGS ?=
 PRIMARY_GOAL := $(firstword $(MAKECMDGOALS))
 SECOND_GOAL := $(word 2,$(MAKECMDGOALS))
 THIRD_GOAL := $(word 3,$(MAKECMDGOALS))
-KNOWN_AGENT_ACTIONS := prepare run connect
+KNOWN_AGENT_ACTIONS := prepare run stop
 KNOWN_AGENT_PROFILES := dev prod
 AGENT_PROFILE := dev
 AGENT_ACTION :=
@@ -157,17 +157,21 @@ push:
 
 agent:
 	@ACTION="$(AGENT_ACTION)"; \
-	if [ -z "$$ACTION" ]; then ACTION=connect; fi; \
+	if [ -z "$$ACTION" ]; then ACTION=start; fi; \
 	case "$$ACTION" in \
 	  prepare) $(MAKE) agent-prepare AGENT_PROFILE="$(AGENT_PROFILE)" ;; \
 	  run) $(MAKE) agent-run AGENT_PROFILE="$(AGENT_PROFILE)" ;; \
-	  connect) $(MAKE) agent-connect AGENT_PROFILE="$(AGENT_PROFILE)" SESSION="$(SESSION)" ;; \
+	  stop) $(MAKE) agent-stop AGENT_PROFILE="$(AGENT_PROFILE)" ;; \
+	  start) $(MAKE) agent-prepare AGENT_PROFILE="$(AGENT_PROFILE)" && $(MAKE) agent-run AGENT_PROFILE="$(AGENT_PROFILE)" ;; \
 	  *) \
-	    printf 'usage: make agent [dev|prod] {prepare|run|connect} [SESSION=id]\n'; \
-	    printf '       make agent {prepare|run|connect} [SESSION=id]  # dev alias\n'; \
+	    printf 'usage: make agent [dev|prod] [prepare|run|stop]\n'; \
+	    printf '       make agent dev       # install/update dev agent, then run\n'; \
+	    printf '       make agent dev stop  # stop dev agent\n'; \
+	    printf '       make agent prod      # install/update prod agent, then run\n'; \
+	    printf '       make agent prod stop # stop prod agent\n'; \
 	    printf '       make agent-prepare\n'; \
 	    printf '       make agent-run\n'; \
-	    printf '       make agent-connect [SESSION=id]\n' >&2; \
+	    printf '       make agent-stop\n' >&2; \
 	    exit 2; \
 	    ;; \
 	esac
@@ -184,8 +188,12 @@ else
 AGENT_DEV_VENV ?= $(AGENT_DEV_HOME)/.venv-$(shell uname -s)-$(shell uname -m)
 endif
 AGENT_PROD_VENV ?= $(AGENT_PROD_HOME)/.venv
-AGENT_DEV_MANIFEST ?= $(CURDIR)/agent-profiles/dev/tabula.app.toml
-AGENT_PROD_MANIFEST ?= $(CURDIR)/agent-profiles/prod/tabula.app.toml
+AGENT_DEV_DISTRO ?= $(LOCAL_TABULA_DISTRIB)/code-immune
+AGENT_PROD_DISTRO ?= git+https://github.com/bamanoz/tabula-distrib.git@main#path=code-immune
+AGENT_DEV_VALUES ?= $(CURDIR)/agent-profiles/dev/values.toml
+AGENT_PROD_VALUES ?= $(CURDIR)/agent-profiles/prod/values.toml
+AGENT_DEV_TENANT ?= code-immune-tabula-dev
+AGENT_PROD_TENANT ?= code-immune-tabula-prod
 AGENT_DEV_KERNEL_URL ?= ws://127.0.0.1:8189/ws
 AGENT_PROD_KERNEL_URL ?= ws://127.0.0.1:8089/ws
 AGENT_DEV_GATEWAY_WEB_PORT ?= 8865
@@ -194,13 +202,17 @@ AGENT_PROD_GATEWAY_WEB_PORT ?= 8765
 ifeq ($(AGENT_PROFILE),prod)
 AGENT_HOME ?= $(AGENT_PROD_HOME)
 AGENT_VENV ?= $(AGENT_PROD_VENV)
-AGENT_MANIFEST ?= $(AGENT_PROD_MANIFEST)
+AGENT_DISTRO ?= $(AGENT_PROD_DISTRO)
+AGENT_VALUES ?= $(AGENT_PROD_VALUES)
+AGENT_TENANT ?= $(AGENT_PROD_TENANT)
 AGENT_KERNEL_URL ?= $(AGENT_PROD_KERNEL_URL)
 AGENT_GATEWAY_WEB_PORT ?= $(AGENT_PROD_GATEWAY_WEB_PORT)
 else
 AGENT_HOME ?= $(AGENT_DEV_HOME)
 AGENT_VENV ?= $(AGENT_DEV_VENV)
-AGENT_MANIFEST ?= $(AGENT_DEV_MANIFEST)
+AGENT_DISTRO ?= $(AGENT_DEV_DISTRO)
+AGENT_VALUES ?= $(AGENT_DEV_VALUES)
+AGENT_TENANT ?= $(AGENT_DEV_TENANT)
 AGENT_KERNEL_URL ?= $(AGENT_DEV_KERNEL_URL)
 AGENT_GATEWAY_WEB_PORT ?= $(AGENT_DEV_GATEWAY_WEB_PORT)
 endif
@@ -210,23 +222,18 @@ agent-prepare:
 	if [ "$(OS)" = "Windows_NT" ] && [ "$(AGENT_PROFILE)" != "prod" ]; then \
 		TABULA_HOME="$(AGENT_HOME)" powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install-dev.ps1; \
 		$(MAKE) agent-write-gateway-config AGENT_PROFILE="$(AGENT_PROFILE)" AGENT_HOME="$(AGENT_HOME)" AGENT_KERNEL_URL="$(AGENT_KERNEL_URL)" AGENT_GATEWAY_WEB_PORT="$(AGENT_GATEWAY_WEB_PORT)"; \
-		TABULA_HOME="$(AGENT_HOME)" \
-		TABULA_URL="$(AGENT_KERNEL_URL)" \
-		TABULA_SOURCE_ALIAS_TABULA_DISTRIB="local:$(LOCAL_TABULA_DISTRIB)" \
-		TABULA_SOURCE_ALIAS_TABULA_BUNDLES="local:$(LOCAL_TABULA_BUNDLES)" \
-		"$(AGENT_VENV)/Scripts/python.exe" -m tabula_distro.cli --home "$(AGENT_HOME)" app install "$(AGENT_MANIFEST)" --workspace "$(CURDIR)" --update; \
+		if [ -d "$(AGENT_HOME)/tenants/$(AGENT_TENANT)" ] && [ ! -e "$(AGENT_HOME)/tenants/$(AGENT_TENANT)/install.lock.json" ]; then rm -rf "$(AGENT_HOME)/tenants/$(AGENT_TENANT)"; fi; \
+		TABULA_HOME="$(AGENT_HOME)" TABULA_URL="$(AGENT_KERNEL_URL)" TABULA_SOURCE_ALIAS_TABULA_DISTRIB="local:$(LOCAL_TABULA_DISTRIB)" TABULA_SOURCE_ALIAS_TABULA_BUNDLES="local:$(LOCAL_TABULA_BUNDLES)" \
+		"$(AGENT_VENV)/Scripts/python.exe" -m tabula_distro.agent_cli --home "$(AGENT_HOME)" install --distro "$(AGENT_DISTRO)" --tenant "$(AGENT_TENANT)" --bind "$(CURDIR)" --values "$(AGENT_VALUES)" --update --replace-binding --no-start --non-interactive; \
 	elif [ "$(AGENT_PROFILE)" = "prod" ]; then \
-		TABULA_HOME="$(AGENT_HOME)" VERSION="$(PROD_VERSION)" bash scripts/install.sh app install "$(AGENT_MANIFEST)" --workspace "$(CURDIR)" --update; \
+		TABULA_HOME="$(AGENT_HOME)" VERSION="$(PROD_VERSION)" bash scripts/install.sh --distro "$(AGENT_DISTRO)" --tenant "$(AGENT_TENANT)" --bind "$(CURDIR)" --values "$(AGENT_VALUES)" --update --no-start --non-interactive; \
 		$(MAKE) agent-write-gateway-config AGENT_PROFILE="$(AGENT_PROFILE)" AGENT_HOME="$(AGENT_HOME)" AGENT_KERNEL_URL="$(AGENT_KERNEL_URL)" AGENT_GATEWAY_WEB_PORT="$(AGENT_GATEWAY_WEB_PORT)"; \
-		TABULA_HOME="$(AGENT_HOME)" TABULA_URL="$(AGENT_KERNEL_URL)" "$(AGENT_HOME)/bin/tabula-install" app install "$(AGENT_MANIFEST)" --workspace "$(CURDIR)" --update; \
 	else \
 		TABULA_HOME="$(AGENT_HOME)" bash scripts/install-dev.sh; \
 		$(MAKE) agent-write-gateway-config AGENT_PROFILE="$(AGENT_PROFILE)" AGENT_HOME="$(AGENT_HOME)" AGENT_KERNEL_URL="$(AGENT_KERNEL_URL)" AGENT_GATEWAY_WEB_PORT="$(AGENT_GATEWAY_WEB_PORT)"; \
-		TABULA_HOME="$(AGENT_HOME)" \
-		TABULA_URL="$(AGENT_KERNEL_URL)" \
-		TABULA_SOURCE_ALIAS_TABULA_DISTRIB="local:$(LOCAL_TABULA_DISTRIB)" \
-		TABULA_SOURCE_ALIAS_TABULA_BUNDLES="local:$(LOCAL_TABULA_BUNDLES)" \
-		"$(AGENT_HOME)/bin/tabula-install" app install "$(AGENT_MANIFEST)" --workspace "$(CURDIR)" --update; \
+		if [ -d "$(AGENT_HOME)/tenants/$(AGENT_TENANT)" ] && [ ! -e "$(AGENT_HOME)/tenants/$(AGENT_TENANT)/install.lock.json" ]; then rm -rf "$(AGENT_HOME)/tenants/$(AGENT_TENANT)"; fi; \
+		TABULA_HOME="$(AGENT_HOME)" TABULA_URL="$(AGENT_KERNEL_URL)" TABULA_SOURCE_ALIAS_TABULA_DISTRIB="local:$(LOCAL_TABULA_DISTRIB)" TABULA_SOURCE_ALIAS_TABULA_BUNDLES="local:$(LOCAL_TABULA_BUNDLES)" \
+		"$(AGENT_HOME)/bin/tabula-agent" --home "$(AGENT_HOME)" install --distro "$(AGENT_DISTRO)" --tenant "$(AGENT_TENANT)" --bind "$(CURDIR)" --values "$(AGENT_VALUES)" --update --replace-binding --no-start --non-interactive; \
 	fi
 
 agent-write-gateway-config:
@@ -238,34 +245,41 @@ agent-write-gateway-config:
 	} > "$(AGENT_HOME)/config/plugins/gateway-web/config.toml"; fi
 
 agent-run:
-	@if [ "$(OS)" = "Windows_NT" ] && [ "$(AGENT_PROFILE)" != "prod" ]; then \
-		TABULA_HOME="$(AGENT_HOME)" \
-		TABULA_VENV="$(AGENT_VENV)" \
-		TABULA_PATH="$(AGENT_VENV)/Scripts;$(AGENT_HOME)/bin;$(PATH)" \
-		TABULA_URL="$(AGENT_KERNEL_URL)" \
-		TABULA_LOG_LEVEL="$${TABULA_LOG_LEVEL:-info}" \
-		TABULA_SOURCE_ALIAS_TABULA_DISTRIB="local:$(LOCAL_TABULA_DISTRIB)" \
-		TABULA_SOURCE_ALIAS_TABULA_BUNDLES="local:$(LOCAL_TABULA_BUNDLES)" \
-		"$(AGENT_VENV)/Scripts/python.exe" -m tabula_distro.cli --home "$(AGENT_HOME)" app run "$(AGENT_MANIFEST)" --update --foreground --tabula-bin "$(AGENT_HOME)/bin/tabula.exe"; \
-	elif [ "$(AGENT_PROFILE)" = "prod" ]; then \
-		TABULA_HOME="$(AGENT_HOME)" TABULA_VENV="$(AGENT_VENV)" TABULA_PATH="$(AGENT_VENV)/bin:$(AGENT_HOME)/bin:$$PATH" TABULA_URL="$(AGENT_KERNEL_URL)" TABULA_LOG_LEVEL="$${TABULA_LOG_LEVEL:-info}" "$(AGENT_HOME)/bin/tabula-install" app run "$(AGENT_MANIFEST)" --update --foreground --tabula-bin "$(AGENT_HOME)/bin/tabula"; \
-	else \
-		TABULA_HOME="$(AGENT_HOME)" \
-		TABULA_VENV="$(AGENT_VENV)" \
-		TABULA_PATH="$(AGENT_VENV)/bin:$(AGENT_HOME)/bin:$$PATH" \
-		TABULA_URL="$(AGENT_KERNEL_URL)" \
-		TABULA_LOG_LEVEL="$${TABULA_LOG_LEVEL:-info}" \
-		TABULA_SOURCE_ALIAS_TABULA_DISTRIB="local:$(LOCAL_TABULA_DISTRIB)" \
-		TABULA_SOURCE_ALIAS_TABULA_BUNDLES="local:$(LOCAL_TABULA_BUNDLES)" \
-		"$(AGENT_HOME)/bin/tabula-install" app run "$(AGENT_MANIFEST)" --update --foreground --tabula-bin "$(AGENT_HOME)/bin/tabula"; \
-	fi
+	@TABULA_HOME="$(AGENT_HOME)" TABULA_VENV="$(AGENT_VENV)" TABULA_URL="$(AGENT_KERNEL_URL)" TABULA_LOG_LEVEL="$${TABULA_LOG_LEVEL:-info}" \
+		"$(AGENT_HOME)/bin/tabula-agent" --home "$(AGENT_HOME)" --tenant "$(AGENT_TENANT)"
 
-agent-connect:
-	@if [ "$(OS)" = "Windows_NT" ] && [ "$(AGENT_PROFILE)" != "prod" ]; then \
-		TABULA_HOME="$(AGENT_HOME)" TABULA_VENV="$(AGENT_VENV)" TABULA_URL="$(AGENT_KERNEL_URL)" powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(AGENT_HOME)/bin/tabula-cli.ps1" $(if $(SESSION),--resume $(SESSION),); \
-	else \
-		TABULA_HOME="$(AGENT_HOME)" TABULA_VENV="$(AGENT_VENV)" TABULA_PATH="$(AGENT_VENV)/bin:$(AGENT_HOME)/bin:$$PATH" TABULA_URL="$(AGENT_KERNEL_URL)" "$(AGENT_HOME)/bin/tabula-cli" $(if $(SESSION),--session $(SESSION),); \
-	fi
+agent-stop:
+	@set -e; \
+	pid_file="$(AGENT_HOME)/run/kernel.pid"; \
+	if [ ! -f "$$pid_file" ]; then \
+		printf 'agent not running: no %s\n' "$$pid_file"; \
+		exit 0; \
+	fi; \
+	pid=$$(tr -d '[:space:]' < "$$pid_file"); \
+	case "$$pid" in ''|*[!0-9]*) printf 'invalid agent pid file %s: %s\n' "$$pid_file" "$$pid" >&2; exit 1 ;; esac; \
+	if ! kill -0 "$$pid" 2>/dev/null; then \
+		printf 'agent not running: stale pid %s\n' "$$pid"; \
+		rm -f "$$pid_file"; \
+		exit 0; \
+	fi; \
+	cmd=$$(ps -p "$$pid" -ww -o command= 2>/dev/null || true); \
+	case "$$cmd" in \
+		*"$(AGENT_HOME)/bin/tabula serve"*|*"$(AGENT_HOME)/bin/tabula"*" serve "*) ;; \
+		*) printf 'refusing to stop pid %s; not tabula serve for %s\n%s\n' "$$pid" "$(AGENT_HOME)" "$$cmd" >&2; exit 1 ;; \
+	esac; \
+	printf 'stopping agent %s (pid %s)\n' "$(AGENT_PROFILE)" "$$pid"; \
+	kill -TERM "$$pid"; \
+	i=0; \
+	while kill -0 "$$pid" 2>/dev/null; do \
+		if [ "$$i" -ge 50 ]; then \
+			printf 'agent did not stop after TERM; killing pid %s\n' "$$pid" >&2; \
+			kill -KILL "$$pid" 2>/dev/null || true; \
+			break; \
+		fi; \
+		i=$$((i + 1)); \
+		sleep 0.2; \
+	done; \
+	printf 'agent %s stopped\n' "$(AGENT_PROFILE)"
 
 # Clean
 

@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+import tomllib
+import unittest
+
+from tabula_testbed import TestbedClient
+
+
+class MultiDistroTenantsInstalled(unittest.TestCase):
+    url = "ws://localhost:8089/ws"
+    tabula_home = ""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.home = Path(cls.tabula_home)
+        cls.generated = cls.home / "generated-testbed"
+        with (cls.generated / "distro.toml").open("rb") as handle:
+            manifest = tomllib.load(handle)
+        cls.sources = {
+            name: str(entry["source"])
+            for name, entry in manifest.get("sources", {}).items()
+        }
+        cls.code_source = cls._distro_source("code")
+        cls.claw_source = cls._distro_source("claw")
+        cls.code_workspace = cls.home / "workspaces" / "code"
+        cls.claw_workspace = cls.home / "workspaces" / "claw"
+        cls.code_workspace.mkdir(parents=True)
+        cls.claw_workspace.mkdir(parents=True)
+        (cls.code_workspace / "code-only.txt").write_text("code\n", encoding="utf-8")
+        (cls.claw_workspace / "claw-only.txt").write_text("claw\n", encoding="utf-8")
+
+        cls._install_tenant("code-project", cls.code_source, cls.code_workspace)
+        cls._install_tenant("claw-project", cls.claw_source, cls.claw_workspace)
+        cls._wait_for_tenant_tools("code-project", {"fs_list", "todoread", "codegraph_search"})
+        cls._wait_for_tenant_tools("claw-project", {"fs_list", "todoread", "subagent_list"})
+
+    @classmethod
+    def _distro_source(cls, distro: str) -> str:
+        source = cls.sources.get("tabula-distrib", "").strip()
+        if not source:
+            raise AssertionError("testbed source tabula-distrib is required")
+        base, marker, fragment = source.partition("#")
+        if marker and fragment:
+            raise AssertionError(f"tabula-distrib source must address repository root: {source}")
+        return f"{base}#path={distro}"
+
+    @classmethod
+    def _python(cls) -> str:
+        candidates = (
+            cls.home / ".venv" / "bin" / "python3",
+            cls.home / ".venv" / "Scripts" / "python.exe",
+        )
+        return str(next((path for path in candidates if path.is_file()), Path(sys.executable)))
+
+    @classmethod
+    def _agent(cls) -> list[str]:
+        candidates = (
+            cls.home / ".venv" / "bin" / "tabula-agent",
+            cls.home / ".venv" / "Scripts" / "tabula-agent.exe",
+        )
+        executable = next((path for path in candidates if path.is_file()), None)
+        if executable is not None:
+            return [str(executable)]
+        return [cls._python(), "-m", "tabula_distro.agent_cli"]
+
+    @classmethod
+    def _env(cls) -> dict[str, str]:
+        env = os.environ.copy()
+        env["TABULA_HOME"] = str(cls.home)
+        bundles = cls.sources.get("tabula-bundles", "").strip()
+        if bundles.startswith("local:"):
+            env["TABULA_SOURCE_ALIAS_TABULA_BUNDLES"] = bundles
+        return env
+
+    @classmethod
+    def _install_tenant(cls, tenant: str, source: str, workspace: Path) -> None:
+        subprocess.run(
+            [
+                *cls._agent(),
+                "--home", str(cls.home),
+                "install",
+                "--distro", source,
+                "--bind", str(workspace),
+                "--tenant", tenant,
+                "--no-start",
+                "--non-interactive",
+            ],
+            env=cls._env(),
+            check=True,
+            timeout=180,
+        )
+
+    @classmethod
+    def _wait_for_tenant_tools(cls, tenant: str, tools: set[str]) -> None:
+        deadline = time.monotonic() + 45
+        last_error: Exception | None = None
+        while time.monotonic() < deadline:
+            try:
+                with TestbedClient(cls.url, name=f"testbed-ready-{tenant}") as client:
+                    client.connect_join(f"testbed-ready-{tenant}", tenant_id=tenant)
+                    client.wait_tools(
+                        tools,
+                        timeout=5,
+                        session=f"testbed-ready-{tenant}",
+                        tenant_id=tenant,
+                    )
+                    return
+            except Exception as exc:
+                last_error = exc
+                time.sleep(0.5)
+        raise AssertionError(f"tenant {tenant} tools did not become ready: {last_error}")
+
+    def _client(self, tenant: str, session: str = "shared-session") -> TestbedClient:
+        client = TestbedClient(self.url, name=f"testbed-{tenant}")
+        client.connect_join(session, tenant_id=tenant)
+        return client
+
+    def _catalog(self, tenant: str) -> set[str]:
+        with self._client(tenant, session=f"catalog-{tenant}") as client:
+            return {str(tool.get("name")) for tool in client.tools() if tool.get("name")}
+
+    def _resolved_tenant(self, workspace: Path) -> str:
+        script = (
+            "from pathlib import Path; "
+            "from tabula_distro.agent_cli import _select_tenant; "
+            f"home=Path({str(self.home)!r}); "
+            "print(_select_tenant(home, None, Path.cwd()))"
+        )
+        return subprocess.check_output(
+            [self._python(), "-c", script],
+            cwd=workspace,
+            env=self._env(),
+            text=True,
+            timeout=30,
+        ).strip()
+
+    def test_real_tools_catalogs_workspaces_sessions_and_state_are_isolated(self) -> None:
+        code_catalog = self._catalog("code-project")
+        claw_catalog = self._catalog("claw-project")
+        self.assertIn("codegraph_search", code_catalog)
+        self.assertNotIn("subagent_list", code_catalog)
+        self.assertIn("subagent_list", claw_catalog)
+        self.assertNotIn("codegraph_search", claw_catalog)
+
+        for tenant, marker in (
+            ("code-project", "code-only.txt"),
+            ("claw-project", "claw-only.txt"),
+        ):
+            with self._client(tenant) as client:
+                client.wait_tools(
+                    {"fs_list", "todoread", "todowrite"},
+                    session="shared-session",
+                    tenant_id=tenant,
+                )
+                listing = client.call_tool("fs_list", {}, timeout=15).json()
+                names = {entry["name"] for entry in listing["entries"]}
+                self.assertIn(marker, names)
+                self.assertNotIn("claw-only.txt" if tenant == "code-project" else "code-only.txt", names)
+                written = client.call_tool(
+                    "todowrite",
+                    {"items": [{"content": tenant, "status": "in_progress"}]},
+                    timeout=15,
+                ).json()
+                self.assertEqual(written["items"][0]["content"], tenant)
+
+        for tenant in ("code-project", "claw-project"):
+            state = self.home / "tenants" / tenant / "state" / "plugins" / "todo" / "_default.json"
+            self.assertTrue(state.is_file(), state)
+            self.assertEqual(json.loads(state.read_text(encoding="utf-8"))["items"][0]["content"], tenant)
+
+        status = json.loads(subprocess.check_output(
+            [str(self.home / "bin" / ("tabula.exe" if os.name == "nt" else "tabula")), "status", "--json"],
+            env=self._env(),
+            text=True,
+            timeout=30,
+        ))
+        attached = [runtime for runtime in status.get("runtimes", []) if runtime.get("attached")]
+        self.assertEqual(len(attached), 1, status)
+        self.assertTrue({"code-project", "claw-project"}.issubset(set(attached[0].get("tenants_served") or [])), status)
+
+        with self._client("code-project") as code_client, self._client("claw-project") as claw_client:
+            code_items = code_client.call_tool("todoread", {}, timeout=15).json()["items"]
+            claw_items = claw_client.call_tool("todoread", {}, timeout=15).json()["items"]
+            self.assertEqual(code_items[0]["content"], "code-project")
+            self.assertEqual(claw_items[0]["content"], "claw-project")
+
+    def test_reinstalling_code_distro_does_not_change_claw_tenant(self) -> None:
+        claw_root = self.home / "tenants" / "claw-project"
+        claw_lock = (claw_root / "install.lock.json").read_bytes()
+        claw_plugins = (claw_root / "plugins").resolve()
+        claw_state_path = claw_root / "state" / "plugins" / "todo" / "_default.json"
+        if not claw_state_path.is_file():
+            with self._client("claw-project") as client:
+                client.call_tool(
+                    "todowrite",
+                    {"items": [{"content": "claw-project", "status": "in_progress"}]},
+                    timeout=15,
+                )
+        claw_state = claw_state_path.read_bytes()
+        before_catalog = self._catalog("claw-project")
+
+        script = (
+            "from pathlib import Path; "
+            "from tabula_distro import install; "
+            "from tabula_distro.cli import _temporary_local_alias_overrides; "
+            f"source={self.code_source!r}; home=Path({str(self.home)!r}); "
+            "ctx=_temporary_local_alias_overrides(source); ctx.__enter__(); "
+            "install.install(source, home, update=True, tenant='code-project', expose_global_boot=False); "
+            "ctx.__exit__(None, None, None)"
+        )
+        subprocess.run(
+            [self._python(), "-c", script],
+            env=self._env(),
+            check=True,
+            timeout=180,
+        )
+        self._wait_for_tenant_tools("code-project", {"fs_list", "todoread", "codegraph_search"})
+
+        self.assertEqual((claw_root / "install.lock.json").read_bytes(), claw_lock)
+        self.assertEqual((claw_root / "plugins").resolve(), claw_plugins)
+        self.assertEqual(claw_state_path.read_bytes(), claw_state)
+        self.assertEqual(self._catalog("claw-project"), before_catalog)
+
+    def test_tenant_selection_follows_cwd_binding(self) -> None:
+        self.assertEqual(self._resolved_tenant(self.code_workspace), "code-project")
+        self.assertEqual(self._resolved_tenant(self.claw_workspace), "claw-project")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run installed multi-distro tenant checks")
+    parser.add_argument("--url", default="ws://localhost:8089/ws")
+    parser.add_argument("--observer-url", default="http://127.0.0.1:8091/metrics")
+    parser.add_argument("--home", default=os.environ.get("TABULA_HOME", ""))
+    args = parser.parse_args()
+    MultiDistroTenantsInstalled.url = args.url
+    MultiDistroTenantsInstalled.tabula_home = args.home
+    result = unittest.TextTestRunner(verbosity=2).run(
+        unittest.defaultTestLoader.loadTestsFromTestCase(MultiDistroTenantsInstalled)
+    )
+    return 0 if result.wasSuccessful() else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

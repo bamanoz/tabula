@@ -11,9 +11,9 @@ import (
 )
 
 type tenantInitMetaConfig struct {
-	Application struct {
+	Agent struct {
 		PromptBuilder string `toml:"prompt_builder"`
-	} `toml:"application"`
+	} `toml:"agent"`
 	Workspace struct {
 		ProjectRoot string `toml:"project_root"`
 	} `toml:"workspace"`
@@ -63,7 +63,7 @@ func LoadTenantInitMeta(tabulaHome, tenantID string) (json.RawMessage, error) {
 		return nil, fmt.Errorf("load tenant init meta %s: %w", path, err)
 	}
 	meta := map[string]any{}
-	if promptBuilder := strings.TrimSpace(cfg.Application.PromptBuilder); promptBuilder != "" {
+	if promptBuilder := strings.TrimSpace(cfg.Agent.PromptBuilder); promptBuilder != "" {
 		meta["prompt_builder"] = promptBuilder
 	}
 	workspacePath := strings.TrimSpace(cfg.Workspace.ProjectRoot)
@@ -71,7 +71,7 @@ func LoadTenantInitMeta(tabulaHome, tenantID string) (json.RawMessage, error) {
 		workspacePath = strings.TrimSpace(cfg.Claw.Workspace.Path)
 	}
 	if workspacePath != "" {
-		meta["workspace"] = map[string]any{"path": workspacePath, "source": "app", "kind": "assistant"}
+		meta["workspace"] = map[string]any{"path": workspacePath, "source": "tenant", "kind": "assistant"}
 	}
 	if len(meta) == 0 {
 		return nil, nil

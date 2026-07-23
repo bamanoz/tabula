@@ -19,5 +19,4 @@ dist
 build
 *.egg-info
 node_modules
-tabula.app.lock
 .env

@@ -44,13 +44,13 @@ class InstallPayloadTests(unittest.TestCase):
                 _write(payload / "config" / relative, f"payload:{relative}\n")
                 _write(home / "config" / relative, f"user:{relative}\n")
             _write(home / "config" / "plugins" / "custom" / "config.toml", "keep = true\n")
-            _write(payload / "bin" / "tabula-runner", "new launcher\n")
+            _write(payload / "bin" / "tabula-agent", "new launcher\n")
             before = _snapshot(home / "config")
 
             INSTALL_PAYLOAD.overlay_payload(payload, home)
 
             self.assertEqual(_snapshot(home / "config"), before)
-            self.assertEqual((home / "bin" / "tabula-runner").read_text(encoding="utf-8"), "new launcher\n")
+            self.assertEqual((home / "bin" / "tabula-agent").read_text(encoding="utf-8"), "new launcher\n")
 
     def test_missing_config_tree_is_seeded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

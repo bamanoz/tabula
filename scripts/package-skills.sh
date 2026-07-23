@@ -11,13 +11,11 @@ mkdir -p extra
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 payload="$tmp/payload"
-mkdir -p "$payload/bin" "$payload/config" "$payload/libexec" "$payload/tools"
+mkdir -p "$payload/bin" "$payload/config" "$payload/libexec" "$payload/tools" "$payload/scripts"
 cp config/global.toml "$payload/config/global.toml.example"
 cp scripts/install_payload.py "$payload/libexec/install_payload.py"
-cp bin/tabula-runner "$payload/bin/tabula-runner"
-cp bin/tabula-runner.ps1 "$payload/bin/tabula-runner.ps1"
-cp bin/tabula-cli "$payload/bin/tabula-cli"
-cp bin/tabula-cli.ps1 "$payload/bin/tabula-cli.ps1"
+cp scripts/install-service.sh "$payload/scripts/install-service.sh"
+cp scripts/uninstall-service.sh "$payload/scripts/uninstall-service.sh"
 cp -R tools/tabula-distro "$payload/tools/tabula-distro"
 
 tar -czf "extra/tabula-skills-${VERSION}.tar.gz" \
@@ -30,10 +28,8 @@ tar -czf "extra/tabula-skills-${VERSION}.tar.gz" \
   --exclude='tools/tabula-distro/.pytest_cache' \
   config/global.toml.example \
   libexec/install_payload.py \
-  bin/tabula-runner \
-  bin/tabula-runner.ps1 \
-  bin/tabula-cli \
-  bin/tabula-cli.ps1 \
+  scripts/install-service.sh \
+  scripts/uninstall-service.sh \
   tools/tabula-distro/
 
 echo "Created extra/tabula-skills-${VERSION}.tar.gz"

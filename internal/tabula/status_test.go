@@ -60,7 +60,7 @@ func TestTabulaHomeFromExecutableDetectsInstalledLayout(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(tabulaHome, "PROTOCOL"), []byte("1\n"), 0o644); err != nil {
 		t.Fatalf("write protocol: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(tabulaHome, "bin", "tabula-runner"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(tabulaHome, "bin", "tabula"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write runner: %v", err)
 	}
 

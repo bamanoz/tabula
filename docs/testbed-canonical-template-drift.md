@@ -21,8 +21,6 @@ has diverged in non-trivial ways.
 
 Template-only suites (not present in `tabula-distrib/testbed/testbed.toml`):
 
-- `app-manifest`
-- `claw-app-manifest`
 - `plugin-concurrency`
 - `plugin-failure-modes`
 - `plugin-fixture-execution`
@@ -45,7 +43,6 @@ workspace-no-project-root).
 
 Files only in template (under `tests/`):
 
-- `test_app_manifest.py`
 - `test_plugin_fixture_execution.py`
 - `test_runtime_remote_backends.py`
 - `test_skill_concurrency.py`
@@ -77,13 +74,13 @@ Files that exist in both but **differ**:
 
 - Canonical writes `$TABULA_HOME/config/global.toml` with
   `[clients.driver.providers.openai] api_key = "test-key"` etc. and runs
-  driver with `--no-app-binding`.
+  driver with `--no-tenant-binding`.
 - Template sets `TABULA_PLUGIN_DRIVER_OPENAI_API_KEY=test-key` and
   `TABULA_PLUGIN_DRIVER_OPENAI_MODEL=o3` via env, and runs driver without
-  `--no-app-binding`.
+  `--no-tenant-binding`.
 
 Both surfaces exist in current code: `tabula-bundles/drivers/driver/run.py`
-defines `--no-app-binding`, and
+defines `--no-tenant-binding`, and
 `tabula-bundles/drivers/driver/app.schema.toml` declares
 `TABULA_PLUGIN_DRIVER_OPENAI_API_KEY`. The two test variants test *different*
 provisioning paths.
@@ -129,7 +126,6 @@ Minimum:
 go test ./internal/kernel/... -count=1
 tabula-testbed run --suite baseline    --testbed-dir <chosen-canonical>
 tabula-testbed run --suite exec-plugin --testbed-dir <chosen-canonical>
-tabula-testbed run --suite code-immune-app --testbed-dir tabula-distrib/code-immune/tests
 diff -rq --exclude=__pycache__ \
   tabula-distrib/testbed \
   tabula/tools/tabula-testbed/src/tabula_testbed_runner/testbed_template

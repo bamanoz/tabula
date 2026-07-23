@@ -23,7 +23,8 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 ENV TABULA_HOME=/var/lib/tabula \
     TABULA_WORKSPACE=/workspace \
-    TABULA_APP_MANIFEST=/workspace/tabula.app.toml \
+    TABULA_DISTRO_SOURCE= \
+    TABULA_TENANT_ID=harness-bench \
     TABULA_ASSETS_DIR=/opt/tabula-assets \
     TABULA_DOCKER_REINSTALL=0 \
     TABULA_RUNNER_STARTUP_TIMEOUT=60 \
@@ -38,11 +39,9 @@ COPY --from=go-builder /tmp/tabula-runtime /usr/local/bin/tabula-runtime
 COPY --from=python-deps /opt/tabula-venv /opt/tabula-venv
 COPY config/global.toml /opt/tabula-assets/global.toml
 COPY VERSION /opt/tabula-assets/VERSION
-COPY bin/tabula-runner /opt/tabula-assets/tabula-runner
-COPY bin/tabula-cli /opt/tabula-assets/tabula-cli
 COPY docker/entrypoint-harness-bench.sh /opt/tabula-assets/entrypoint.sh
 
-RUN chmod +x /opt/tabula-assets/entrypoint.sh /opt/tabula-assets/tabula-runner /opt/tabula-assets/tabula-cli \
+RUN chmod +x /opt/tabula-assets/entrypoint.sh \
   && mkdir -p /var/lib/tabula /workspace \
   && groupadd --gid 1000 tabula \
   && useradd --create-home --shell /bin/bash --uid 1000 --gid 1000 tabula

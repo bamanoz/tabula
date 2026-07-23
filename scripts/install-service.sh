@@ -42,7 +42,8 @@ render_launchd() {
   <array>
     <string>$(escape_xml "$TABULA_BIN")</string>
     <string>serve</string>
-    <string>--foreground</string>
+    <string>--runtime-mode</string>
+    <string>managed</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -78,7 +79,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=$TABULA_HOME
 Environment=TABULA_HOME=$TABULA_HOME
-ExecStart=$TABULA_BIN serve --foreground
+ExecStart=$TABULA_BIN serve --runtime-mode managed
 Restart=on-failure
 RestartSec=5s
 

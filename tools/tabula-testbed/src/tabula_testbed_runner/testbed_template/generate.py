@@ -8,7 +8,7 @@ import tomllib
 from pathlib import Path
 
 
-ASSET_NAMES = ["materialize_app.py", "templates", "apps", "tests"]
+ASSET_NAMES = ["templates", "apps", "tests"]
 
 
 def parse_component(value: str) -> tuple[str, str]:
@@ -102,7 +102,7 @@ def write_distro(output: Path, manifest: dict, selected: list[str], components: 
         "[requires]",
         'kernel = ">=0.9.0,<1.0.0"',
         "",
-        "[application_contract]",
+        "[tenant_contract]",
         'materializer = "python3 materialize_app.py"',
         "",
     ]

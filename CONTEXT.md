@@ -40,21 +40,15 @@ When implementation contradicts an ADR, say so explicitly instead of silently re
 - `internal/runtime/paths/` centralizes `TABULA_HOME` path conventions for Go code.
 - `internal/config/` loads tenant-aware config overlays.
 - `internal/tenant/` defines tenant metadata and filesystem layout.
-- `tools/tabula-distro/` owns distro/app install and materialization.
+- `tools/tabula-distro/` owns distro and tenant install/materialization.
 - `tools/tabula-testbed/` owns installed-layout testbed orchestration and the Python test client.
 - `docs/adr/` records architecture decisions. Add new ADRs rather than rewriting old ones.
 
 ## Glossary
 
-### Agent Application
+### Agent Profile
 
-A runnable application of a distro to a user or workspace. It is described by an app manifest and materialized by the distro tooling into installed config and launch surfaces.
-
-Use `agent application` or `app` when discussing install-time user/workspace bindings. Do not call this a plugin or bundle.
-
-### App Binding
-
-An install-time selection that connects an app to a target such as a user-wide fallback or workspace-specific agent. Binding semantics are distro-owned; the kernel must not know concrete app products or workspace policy.
+A logical agent configuration shared conceptually across projects: distro plus distro-owned values. A profile is not a kernel object. One profile can serve many projects through separate project-scoped tenants.
 
 ### Bundle
 
@@ -156,11 +150,15 @@ Use `tool` for callable operations, not for CLI commands or helper scripts unles
 
 Persistent event stream for tool runs, approvals, cancellation, resumed state, and status transitions. It supports recovery and diagnostics for pending or interrupted tool work.
 
+### Project
+
+A user-facing workspace context. Workspace-backed agents use one project-scoped tenant per project; project identity and workspace policy stay outside kernel semantics.
+
 ### Tenant
 
-An isolation namespace for config, runtime state, cache, logs, and installed bundle surfaces. Tenant IDs must match the grammar in `internal/tenant` and cannot use reserved IDs such as `admin`, `kernel`, `runtime`, or `system`.
+A project-scoped runtime instance of an agent profile and the isolation namespace for config, sessions, runtime state, cache, logs, workers, filesystem policy, and installed component surfaces. Tenant IDs must match the grammar in `internal/tenant` and cannot use reserved IDs such as `admin`, `kernel`, `runtime`, or `system`.
 
-A tenant is not an authorization, billing, or quota object.
+A tenant is not a globally unique agent identity, authorization, billing, or quota object. Tenant component surfaces pin one exact distro generation and do not follow `distrib/active`.
 
 ### `TABULA_HOME`
 
@@ -211,17 +209,18 @@ Prefer these terms:
 - `worker protocol`, not `Runtime API`, for runtime-to-worker communication.
 - `generation`, not `release`, for installed distro snapshots.
 - `tenant`, not `user`, for filesystem/config isolation.
-- `agent application` or `app`, not `distro`, when talking about a concrete installed binding.
+- `tenant`, not `app`, when talking about a concrete installed project binding.
 - `skill`, not `plugin`, for prompt/instruction artifacts.
 - `plugin`, not `skill`, for executable tool providers.
 - `TABULA_HOME`, not `workspace`, for runtime state root.
 
 ## ADR Map
 
-- ADR 0001: runtime daemon and execution backends. Accepted, but partly superseded by current `tabula-runner` orchestration and external local runtime startup.
-- ADR 0002: agent application manifests and distro-owned app semantics.
+- ADR 0001: runtime daemon and execution backends. Accepted, partly superseded by ADR 0010 for local managed runtime ownership.
+- ADR 0002: historical agent application manifests, superseded by ADR 0009.
 - ADR 0003: kernel WebSocket protocol v3 envelopes and topics.
-- ADR 0004: app install binding targets.
+- ADR 0004: historical app binding targets, superseded by ADR 0009.
 - ADR 0005: stuck session liveness.
+- ADR 0010: managed local stack entrypoint; `tabula serve` owns local runtime lifecycle.
 
 When changing architecture-level contracts, add a new ADR and update this context if vocabulary changes.

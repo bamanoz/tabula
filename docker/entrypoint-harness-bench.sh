@@ -3,7 +3,8 @@ set -euo pipefail
 
 TABULA_WORKSPACE="${TABULA_WORKSPACE:-/workspace}"
 TABULA_HOME="${TABULA_HOME:-$TABULA_WORKSPACE/.tabula}"
-TABULA_APP_MANIFEST="${TABULA_APP_MANIFEST:-$TABULA_WORKSPACE/tabula.app.toml}"
+TABULA_DISTRO_SOURCE="${TABULA_DISTRO_SOURCE:-}"
+TABULA_TENANT_ID="${TABULA_TENANT_ID:-docker}"
 TABULA_UID="${TABULA_UID:-1000}"
 TABULA_GID="${TABULA_GID:-1000}"
 TABULA_ASSETS_DIR="${TABULA_ASSETS_DIR:-/opt/tabula-assets}"
@@ -22,7 +23,7 @@ if [ "$(id -u)" = "0" ]; then
   exec gosu tabula "$0" "$@"
 fi
 
-export TABULA_HOME TABULA_WORKSPACE TABULA_APP_MANIFEST TABULA_ASSETS_DIR
+export TABULA_HOME TABULA_WORKSPACE TABULA_DISTRO_SOURCE TABULA_TENANT_ID TABULA_ASSETS_DIR
 export TABULA_VENV="${TABULA_VENV:-$TABULA_HOME/.venv}"
 if [ ! -x "$TABULA_VENV/bin/python3" ]; then
   TABULA_VENV="$TABULA_HOME/.venv"
@@ -50,16 +51,6 @@ configure_git_auth() {
   git config --global url."ssh://git@github.com/".insteadOf "https://github.com/" || true
 }
 
-app_id_from_manifest() {
-  "$TABULA_VENV/bin/python3" - "$TABULA_APP_MANIFEST" <<'PY'
-import sys, tomllib
-from pathlib import Path
-with Path(sys.argv[1]).open('rb') as f:
-    data = tomllib.load(f)
-print((data.get('application') or {}).get('id') or 'default')
-PY
-}
-
 install_tabula() {
   echo "==> Installing Tabula Docker runtime to $TABULA_HOME"
   mkdir -p "$TABULA_HOME/bin" "$TABULA_HOME/config"
@@ -74,9 +65,7 @@ install_tabula() {
   fi
   cp /usr/local/bin/tabula "$TABULA_HOME/bin/tabula"
   cp /usr/local/bin/tabula-runtime "$TABULA_HOME/bin/tabula-runtime"
-  cp "$TABULA_ASSETS_DIR/tabula-runner" "$TABULA_HOME/bin/tabula-runner"
-  cp "$TABULA_ASSETS_DIR/tabula-cli" "$TABULA_HOME/bin/tabula-cli"
-  chmod +x "$TABULA_HOME/bin/tabula" "$TABULA_HOME/bin/tabula-runtime" "$TABULA_HOME/bin/tabula-runner" "$TABULA_HOME/bin/tabula-cli"
+  chmod +x "$TABULA_HOME/bin/tabula" "$TABULA_HOME/bin/tabula-runtime"
   ln -sf "$TABULA_VENV/bin/tabula-install" "$TABULA_HOME/bin/tabula-install"
   ln -sf "$TABULA_VENV/bin/tabula-distro" "$TABULA_HOME/bin/tabula-distro"
   cat "$TABULA_ASSETS_DIR/VERSION" > "$TABULA_HOME/VERSION"
@@ -87,12 +76,11 @@ needs_install() {
   if [ "${TABULA_DOCKER_REINSTALL:-0}" = "1" ]; then
     return 0
   fi
-  if [ ! -x "$TABULA_HOME/bin/tabula-install" ] || [ ! -x "$TABULA_HOME/bin/tabula-runner" ]; then
+  if [ ! -x "$TABULA_HOME/bin/tabula-install" ] || [ ! -x "$TABULA_HOME/bin/tabula" ]; then
     return 0
   fi
   "$TABULA_HOME/bin/tabula" --version >/dev/null 2>&1 || return 0
   "$TABULA_HOME/bin/tabula-runtime" --version >/dev/null 2>&1 || return 0
-  "$TABULA_HOME/bin/tabula-runner" --version >/dev/null 2>&1 || return 0
   return 1
 }
 
@@ -108,9 +96,7 @@ ensure_user_files() {
 }
 
 write_docker_gateway_config() {
-  local app_id
-  app_id="$(app_id_from_manifest)"
-  local cfg_dir="$TABULA_HOME/tenants/$app_id/config/plugins/gateway-web"
+  local cfg_dir="$TABULA_HOME/tenants/$TABULA_TENANT_ID/config/plugins/gateway-web"
   mkdir -p "$cfg_dir"
   cat > "$cfg_dir/config.toml" <<'EOF'
 host = "0.0.0.0"
@@ -122,9 +108,8 @@ EOF
 }
 
 configure_docker_runtime_socket() {
-  local app_id runtime_dir
-  app_id="$(app_id_from_manifest)"
-  runtime_dir="/tmp/tabula-runtime-$app_id"
+  local runtime_dir
+  runtime_dir="/tmp/tabula-runtime-$TABULA_TENANT_ID"
   mkdir -p "$runtime_dir"
   export TABULA_RUNTIME_SOCKET_PATH="$runtime_dir/runtime.sock"
 }
@@ -158,19 +143,10 @@ PY
   export TABULA_PRESERVE_RUNTIME_CONFIG=1
 }
 
-export_app_env() {
-  local app_id
-  app_id="$(app_id_from_manifest)"
-  export TABULA_APP_ID="$app_id"
-  export TABULA_TENANT_ID="$app_id"
-  export TABULA_TENANT_DIR="$TABULA_HOME/tenants/$app_id"
-}
-
 prepare_runtime() {
   configure_git_auth
-  if [ ! -f "$TABULA_APP_MANIFEST" ]; then
-    echo "error: app manifest not found: $TABULA_APP_MANIFEST" >&2
-    echo "mount a repository with tabula.app.toml at $TABULA_WORKSPACE or set TABULA_APP_MANIFEST" >&2
+  if [ -z "$TABULA_DISTRO_SOURCE" ]; then
+    echo "error: TABULA_DISTRO_SOURCE is required" >&2
     exit 2
   fi
   mkdir -p "$TABULA_HOME" "$TABULA_WORKSPACE"
@@ -179,17 +155,16 @@ prepare_runtime() {
   fi
   ensure_user_files
   configure_docker_runtime_socket
-  "$TABULA_HOME/bin/tabula-install" app install "$TABULA_APP_MANIFEST" --workspace "$TABULA_WORKSPACE" --update
+  "$TABULA_HOME/bin/tabula-agent" --home "$TABULA_HOME" install --distro "$TABULA_DISTRO_SOURCE" --tenant "$TABULA_TENANT_ID" --bind "$TABULA_WORKSPACE" --update --no-start --non-interactive
   write_docker_runtime_config
   write_docker_gateway_config
-  export_app_env
   git config --global --add safe.directory "$TABULA_WORKSPACE" || true
 }
 
 case "${1:-run}" in
   run)
     prepare_runtime
-    exec "$TABULA_HOME/bin/tabula-runner"
+    exec "$TABULA_HOME/bin/tabula" serve --runtime-mode managed
     ;;
   prepare)
     prepare_runtime

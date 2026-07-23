@@ -242,7 +242,6 @@ fi
 export TABULA_HOME
 export TABULA_PATH="${TABULA_PATH:-$TABULA_HOME/.venv/bin:$BIN_DIR:$PATH}"
 export PATH="$BIN_DIR:$PATH"
-TABULA_RUNNER_BIN="${TABULA_RUNNER_BIN:-$BIN_DIR/tabula-runner}"
 
 mkdir -p "$LOG_DIR"
 rm -f "$STATUS_SNAPSHOT"
@@ -251,8 +250,8 @@ info "Ensuring tenant: $PROJECT_NAME"
 "$TABULA_BIN" tenant create "$PROJECT_NAME" --display-name "$PROJECT_DISPLAY_NAME" --exists-ok >/dev/null
 "$TABULA_BIN" tenant set "$PROJECT_NAME" --workspace-root "$PROJECT_ROOT" >/dev/null
 ok "tenant ready: $PROJECT_NAME"
-info "Launching tabula-runner"
-"$TABULA_RUNNER_BIN" >"$KERNEL_STDOUT" 2>"$KERNEL_STDERR" &
+info "Launching tabula serve --runtime-mode managed"
+"$TABULA_BIN" serve --runtime-mode managed >"$KERNEL_STDOUT" 2>"$KERNEL_STDERR" &
 KERNEL_PID=$!
 
 info "Waiting up to ${TIMEOUT_SECONDS}s for local runtime tenant readiness"

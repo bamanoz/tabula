@@ -4,5 +4,3 @@
 # when the checkout is created by Git for Windows with core.autocrlf=true.
 *.sh text eol=lf
 Makefile text eol=lf
-bin/tabula-cli text eol=lf
-bin/tabula-runner text eol=lf

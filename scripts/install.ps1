@@ -1,14 +1,13 @@
 # Tabula installer — downloads pre-built kernel/runtime binaries from GitHub Releases.
 #
-# Installs the kernel layer only. After this script finishes, install a
-# distro separately:
+# Installs the kernel/runtime layer. After this script finishes, install and
+# bind a project-scoped agent:
 #
-#   tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw'
-#   tabula-distro install C:\path\to\local\distro
+#   tabula-agent install --distro 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw'
+#   tabula-agent install --distro C:\path\to\local\distro
 #
 # Usage:
 #   irm https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.ps1 | iex
-#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.ps1))) app run
 #   $env:VERSION = "v1.0.0"; irm ... | iex
 
 $ErrorActionPreference = "Stop"
@@ -30,6 +29,8 @@ $TabulaHome = if ($env:TABULA_HOME) { $env:TABULA_HOME } else { Join-Path $HOME 
 $BinDir = Join-Path $TabulaHome "bin"
 $Venv = Join-Path $TabulaHome ".venv"
 $PostInstallArgs = $args
+$AgentInstall = $PostInstallArgs -contains "--distro"
+$AgentNoStart = $PostInstallArgs -contains "--no-start"
 
 # ── Helpers ──────────────────────────────────────────────────────
 
@@ -154,16 +155,6 @@ function New-FlatRuntimeSurface {
     New-Item -ItemType Directory -Force -Path $DestDir | Out-Null
 }
 
-function Verify-Launchers {
-    foreach ($launcher in @("tabula-runner.ps1", "tabula-cli.ps1")) {
-        $path = Join-Path $BinDir $launcher
-        if (-not (Test-Path $path)) {
-            Die "release payload is missing required launcher: bin/$launcher"
-        }
-    }
-    Ok "Launchers installed"
-}
-
 # ── Service install ─────────────────────────────────────────────
 
 function Install-Service {
@@ -178,13 +169,11 @@ function Install-Service {
         Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
     }
 
-    $HeadlessScript = Join-Path $BinDir "tabula-runner.ps1"
-    $OutLog = Join-Path $LogDir "kernel.out.log"
-    $ErrLog = Join-Path $LogDir "kernel.err.log"
+    $TabulaExe = Join-Path $BinDir "tabula.exe"
 
     $Action = New-ScheduledTaskAction `
-        -Execute "powershell.exe" `
-        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$HeadlessScript`" > `"$OutLog`" 2> `"$ErrLog`"" `
+        -Execute $TabulaExe `
+        -Argument "serve --runtime-mode managed" `
         -WorkingDirectory $TabulaHome
 
     $Trigger = New-ScheduledTaskTrigger -AtLogOn
@@ -313,6 +302,10 @@ try {
         & $VenvPython -m pip install -q -e $DistroToolDir
     }
     # Expose installer entrypoints on PATH alongside the rest of the launchers.
+    $TabulaAgentSrc = Join-Paths $Venv @("Scripts", "tabula-agent.exe")
+    if (Test-Path $TabulaAgentSrc) {
+        Copy-Item $TabulaAgentSrc -Destination (Join-Path $BinDir "tabula-agent.exe") -Force
+    }
     $TabulaInstallSrc = Join-Paths $Venv @("Scripts", "tabula-install.exe")
     if (Test-Path $TabulaInstallSrc) {
         Copy-Item $TabulaInstallSrc -Destination (Join-Path $BinDir "tabula-install.exe") -Force
@@ -321,15 +314,6 @@ try {
     if (Test-Path $TabulaDistroSrc) {
         Copy-Item $TabulaDistroSrc -Destination (Join-Path $BinDir "tabula-distro.exe") -Force
     }
-
-    # Copy PowerShell launch scripts
-    foreach ($script in @("tabula-runner.ps1", "tabula-cli.ps1")) {
-        $src = Join-Paths $TabulaHome @("bin", $script)
-        if (Test-Path $src) {
-            Copy-Item $src -Destination (Join-Path $BinDir $script) -Force
-        }
-    }
-    Verify-Launchers
 
     # Add to PATH
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -350,9 +334,7 @@ try {
     $env:TABULA_HOME = $TabulaHome
     $env:Path = "$BinDir;$env:Path"
 
-    if ($PostInstallArgs.Count -ge 1 -and $PostInstallArgs[0] -eq "app") {
-        Info "Skipping default kernel service; app command will start/reuse its configured kernel when needed"
-    } else {
+    if (-not $AgentInstall) {
         Install-Service
     }
 
@@ -366,24 +348,32 @@ try {
     Write-Host ""
 
     if ($PostInstallArgs.Count -gt 0) {
+        if ($AgentInstall) {
+            $TabulaAgent = Join-Path $BinDir "tabula-agent.exe"
+            Info "Running: tabula-agent install $($PostInstallArgs -join ' ')"
+            if ($AgentNoStart) {
+                & $TabulaAgent --home $TabulaHome install @PostInstallArgs
+            } else {
+                & $TabulaAgent --home $TabulaHome install @PostInstallArgs --no-start
+            }
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            if (-not $AgentNoStart) { Install-Service }
+            Write-Host ""
+            Write-Host "Next command:"
+            Write-Host "  tabula-agent"
+            exit 0
+        }
         $TabulaInstall = Join-Path $BinDir "tabula-install.exe"
         Info "Running: tabula-install --home $TabulaHome $($PostInstallArgs -join ' ')"
         & $TabulaInstall --home $TabulaHome @PostInstallArgs
         exit $LASTEXITCODE
     }
 
-    Write-Host "Add your API key to $EnvFile :"
-    Write-Host "  echo ANTHROPIC_API_KEY=sk-... >> $EnvFile"
+    Write-Host "Install an agent for the current directory:"
+    Write-Host "  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.ps1))) --distro 'git+https://github.com/owner/distros.git@main#path=my-distro' --non-interactive"
     Write-Host ""
-    Write-Host "Install a distro (required before the kernel can do anything useful):"
-    Write-Host "  tabula-install distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw'"
-    Write-Host "  tabula-install distro install C:\path\to\local\distro"
-    Write-Host ""
-    Write-Host "Or install and run an app manifest in one command:"
-    Write-Host "  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.ps1))) app run"
-    Write-Host ""
-    Write-Host "Then connect:"
-    Write-Host "  tabula-cli"
+    Write-Host "Then run:"
+    Write-Host "  tabula-agent"
     Write-Host ""
 
 } finally {

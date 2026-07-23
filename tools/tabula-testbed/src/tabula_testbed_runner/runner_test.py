@@ -38,7 +38,7 @@ class RunnerProtocolMarkerTests(unittest.TestCase):
 
             self.assertEqual(python.parent, bin_dir)
             self.assertEqual(bin_dir.name, "Scripts" if os.name == "nt" else "bin")
-            self.assertEqual(python.suffix, ".exe" if os.name == "nt" else "")
+            self.assertEqual(python.name.endswith(".exe"), os.name == "nt")
 
     def test_prune_old_testbed_homes_removes_siblings_but_not_current(self) -> None:
         with TemporaryDirectory() as raw:

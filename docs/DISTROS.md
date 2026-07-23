@@ -112,7 +112,7 @@ What it is for:
 - terminal-first coding agent
 - workspace fs/exec tools with approvals
 - Context7, Playwright, and DuckDuckGo MCP defaults
-- project-local app manifests
+- project-scoped tenant bindings
 
 What it includes:
 
@@ -265,18 +265,21 @@ For development, clone `tabula-distrib` next to this repo and run
 `bash scripts/install-dev.sh` (installs `tabula` + `tabula-runtime`), then
 `tabula-install distro install ../tabula-distrib/<name>`.
 
-For app-manifest development, keep `tabula.app.toml` in the workspace root and
-use `tabula-install app install --workspace .` to install/materialize the agent
-without launching it. Then use `tabula-install app run` to start or reuse the
-configured kernel/runtime. If the manifest uses a `git+` distro source, this
-flow works in a fresh workspace without local distro or bundle checkouts. Pass
-an explicit manifest path only when it is not at `./tabula.app.toml` or
-`./.tabula/app.toml`.
+For project-scoped development, install and bind a tenant directly:
 
-The repository Makefile keeps thin development aliases for the same commands:
-`make agent-prepare`, `make agent-run`, and `make agent-connect`. The
-`agent-connect` alias only invokes the installed CLI gateway and is not part of
-the generic app installer contract.
+```bash
+tabula-agent install --distro ./path/to/my-distro --bind . --no-start
+tabula-agent
+```
+
+Optional `tabula.agent.toml` holds distro source plus distro-owned values. Use
+`tabula-agent init` to create it and `tabula-agent apply` to install or
+rematerialize the bound tenant. Git distro sources work without local distro or
+bundle checkouts.
+
+Repository Makefile keeps thin development aliases: `make agent-prepare` and
+`make agent-run`. They invoke `tabula-agent`; no separate public client launcher
+exists.
 
 Once a distro has been installed at least once, the installed CLI can reuse its
 saved source directly: `tabula-install distro reinstall <name>`.

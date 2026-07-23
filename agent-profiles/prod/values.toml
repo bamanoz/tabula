@@ -1,0 +1,6 @@
+[workspace]
+path = "../../.."
+
+[prompt]
+project_files = ["AGENTS.md"]
+create_missing_project_files = false

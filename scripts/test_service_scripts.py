@@ -46,7 +46,7 @@ class ServiceScriptTests(unittest.TestCase):
 
     def test_systemd_user_unit_fidelity(self) -> None:
         unit = self.render(uname="Linux")
-        self.assertIn("ExecStart=" + str(Path(self.tempdir) / "bin" / "tabula") + " serve --foreground", unit)
+        self.assertIn("ExecStart=" + str(Path(self.tempdir) / "bin" / "tabula") + " serve --runtime-mode managed", unit)
         self.assertIn("Restart=on-failure", unit)
         self.assertIn("RestartSec=5s", unit)
         self.assertIn("Environment=TABULA_HOME=" + str(Path(self.tempdir) / "home"), unit)
@@ -56,7 +56,8 @@ class ServiceScriptTests(unittest.TestCase):
         plist = self.render(uname="Darwin")
         self.assertIn("<string>ai.tabula.kernel</string>", plist)
         self.assertIn("<string>serve</string>", plist)
-        self.assertIn("<string>--foreground</string>", plist)
+        self.assertIn("<string>--runtime-mode</string>", plist)
+        self.assertIn("<string>managed</string>", plist)
         self.assertIn("<key>RunAtLoad</key>", plist)
         self.assertIn("<key>KeepAlive</key>", plist)
         self.assertIn("<key>SuccessfulExit</key>", plist)

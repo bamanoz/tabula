@@ -28,7 +28,6 @@ opencode.json
 .tabula-docker
 .tabula-dev
 .tabula-prod
-tabula.app.lock
 global.toml
 secrets.json
 

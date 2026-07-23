@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -187,7 +188,11 @@ func installedHomeLayout(home string) bool {
 	if _, err := os.Stat(filepath.Join(home, "PROTOCOL")); err != nil {
 		return false
 	}
-	if _, err := os.Stat(filepath.Join(home, "bin", "tabula-runner")); err != nil {
+	tabulaBinary := "tabula"
+	if runtime.GOOS == "windows" {
+		tabulaBinary += ".exe"
+	}
+	if _, err := os.Stat(filepath.Join(home, "bin", tabulaBinary)); err != nil {
 		return false
 	}
 	return true

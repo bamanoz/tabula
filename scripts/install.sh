@@ -2,14 +2,13 @@
 # Tabula installer — downloads pre-built kernel/runtime binaries from GitHub Releases.
 #
 # This installs the local runtime layer (tabula, tabula-runtime, launchers, venv, tabula-distro).
-# After it finishes, install a distro separately:
+# After it finishes, install and bind a project-scoped agent:
 #
-#   tabula-distro install 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw'
-#   tabula-distro install /path/to/local/distro
+#   tabula-agent install --distro 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw'
+#   tabula-agent install --distro /path/to/local/distro
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- app run
 #   VERSION=v1.0.0 curl -fsSL ... | bash
 set -euo pipefail
 
@@ -18,6 +17,14 @@ TABULA_HOME="${TABULA_HOME:-$HOME/.tabula}"
 BIN_DIR="$TABULA_HOME/bin"
 VENV="$TABULA_HOME/.venv"
 POST_INSTALL_ARGS=("$@")
+AGENT_INSTALL=0
+AGENT_NO_START=0
+for arg in "${POST_INSTALL_ARGS[@]}"; do
+  case "$arg" in
+    --distro) AGENT_INSTALL=1 ;;
+    --no-start) AGENT_NO_START=1 ;;
+  esac
+done
 
 # Auth header for private repos (optional)
 AUTH_HEADER=()
@@ -187,78 +194,10 @@ save_path_to_env() {
 
 # ── service install ──────────────────────────────────────────────
 
-verify_launchers() {
-  for launcher in tabula-runner tabula-cli; do
-    local path="$BIN_DIR/$launcher"
-    [ -f "$path" ] || die "release payload is missing required launcher: bin/$launcher"
-    chmod +x "$path" || die "could not mark launcher executable: $path"
-  done
-  ok "Launchers installed"
-}
-
 install_service() {
-  mkdir -p "$TABULA_HOME/logs"
-
-  if [ "$PLATFORM_OS" = "darwin" ]; then
-    install_launchd
-  else
-    install_systemd
-  fi
-}
-
-install_launchd() {
-  local plist_src="$TABULA_HOME/service/com.tabula.kernel.plist"
-  local plist_dest="$HOME/Library/LaunchAgents/com.tabula.kernel.plist"
-
-  if [ ! -f "$plist_src" ]; then
-    info "Skipping service install (plist template not found)"
-    return
-  fi
-
-  # Replace placeholders and install plist
-  sed "s|__TABULA_HOME__|${TABULA_HOME}|g" "$plist_src" > "$plist_dest"
-
-  local domain="gui/$(id -u)"
-  local label="com.tabula.kernel"
-
-  if launchctl print "$domain/$label" &>/dev/null; then
-    # Already loaded — unload, reload with new plist, then force-start
-    launchctl bootout "$domain/$label" 2>/dev/null || true
-    for _ in 1 2 3 4 5; do
-      launchctl print "$domain/$label" &>/dev/null || break
-      sleep 1
-    done
-  fi
-
-  launchctl bootstrap "$domain" "$plist_dest"
-  launchctl kickstart -k "$domain/$label" 2>/dev/null || true
-  ok "Kernel service installed (launchd)"
-}
-
-install_systemd() {
-  local unit_src="$TABULA_HOME/service/tabula.service"
-  local unit_dir="$HOME/.config/systemd/user"
-  local unit_dest="$unit_dir/tabula.service"
-
-  if [ ! -f "$unit_src" ]; then
-    info "Skipping service install (systemd unit not found)"
-    return
-  fi
-
-  mkdir -p "$unit_dir"
-
-  # Replace placeholders and install
-  sed "s|__TABULA_HOME__|${TABULA_HOME}|g" "$unit_src" > "$unit_dest"
-
-  systemctl --user daemon-reload
-  systemctl --user enable --now tabula.service
-  systemctl --user restart tabula.service
-  ok "Kernel service installed (systemd)"
-
-  # Enable lingering so service runs without active login session
-  if command -v loginctl &>/dev/null; then
-    loginctl enable-linger "$(whoami)" 2>/dev/null || true
-  fi
+  local installer="$TABULA_HOME/scripts/install-service.sh"
+  [ -x "$installer" ] || die "release payload is missing scripts/install-service.sh"
+  TABULA_HOME="$TABULA_HOME" TABULA_BIN="$BIN_DIR/tabula" "$installer" --user
 }
 
 # ── shell config ─────────────────────────────────────────────────
@@ -404,7 +343,6 @@ for a in data.get('assets', []):
   # can enforce `requires.protocol_version` offline.
   "$BIN_DIR/tabula" --protocol > "$TABULA_HOME/PROTOCOL" 2>/dev/null || \
     printf '{"plugin_protocol_min": 1, "plugin_protocol_max": 1}\n' > "$TABULA_HOME/PROTOCOL"
-  verify_launchers
   ok "Skills and config installed"
 
   if [ ! -d "$VENV" ]; then
@@ -417,16 +355,14 @@ for a in data.get('assets', []):
     "$VENV/bin/pip" install -q -e "$TABULA_HOME/tools/tabula-distro"
   fi
   # Expose installer entrypoints on PATH alongside the rest of the launchers.
+  ln -sf "$VENV/bin/tabula-agent" "$BIN_DIR/tabula-agent" 2>/dev/null || true
   ln -sf "$VENV/bin/tabula-install" "$BIN_DIR/tabula-install" 2>/dev/null || true
   ln -sf "$VENV/bin/tabula-distro" "$BIN_DIR/tabula-distro" 2>/dev/null || true
 
   # Shell
   configure_shell
 
-  if [ ${#POST_INSTALL_ARGS[@]} -ge 1 ] && [ "${POST_INSTALL_ARGS[0]}" = "app" ]; then
-    info "Skipping default kernel service; app command will start/reuse its configured kernel when needed"
-  else
-    # Service
+  if [ "$AGENT_INSTALL" -eq 0 ]; then
     install_service
   fi
 
@@ -444,19 +380,24 @@ for a in data.get('assets', []):
   printf '\n\033[1;32mTabula %s kernel/runtime installed!\033[0m\n\n' "$VERSION"
 
   if [ ${#POST_INSTALL_ARGS[@]} -gt 0 ]; then
+    if [ "$AGENT_INSTALL" -eq 1 ]; then
+      info "Running: tabula-agent install ${POST_INSTALL_ARGS[*]}"
+      if [ "$AGENT_NO_START" -eq 1 ]; then
+        "$BIN_DIR/tabula-agent" --home "$TABULA_HOME" install "${POST_INSTALL_ARGS[@]}"
+      else
+        "$BIN_DIR/tabula-agent" --home "$TABULA_HOME" install "${POST_INSTALL_ARGS[@]}" --no-start
+        install_service
+      fi
+      printf '\nNext command:\n  tabula-agent\n\n'
+      return
+    fi
     info "Running: tabula-install ${POST_INSTALL_ARGS[*]}"
     exec "$BIN_DIR/tabula-install" --home "$TABULA_HOME" "${POST_INSTALL_ARGS[@]}"
   fi
 
-  printf 'Add your API key:\n'
-  printf '  echo "ANTHROPIC_API_KEY=sk-..." >> %s\n\n' "$env_file"
-  printf 'Install a distro (this is required before the kernel can do anything useful):\n'
-  printf '  tabula-install distro install '\''git+https://github.com/bamanoz/tabula-distrib.git@main#path=claw'\''\n'
-  printf '  tabula-install distro install /path/to/local/distro\n\n'
-  printf 'Or install and run an app manifest in one command:\n'
-  printf '  curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- app run\n\n'
-  printf 'Then connect:\n'
-  printf '  tabula-cli\n\n'
+  printf 'Install an agent for the current directory:\n'
+  printf '  curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- --distro '\''git+https://github.com/owner/distros.git@main#path=my-distro'\'' --non-interactive\n\n'
+  printf 'Then run:\n  tabula-agent\n\n'
 }
 
 main "$@"

@@ -37,7 +37,7 @@ In source, components may live in three places:
   `tabula-bundles/_lib`.
 
 The active distro plus its bundles are fanned out into `$TABULA_HOME/skills/`
-by `tabula-install distro install` or `tabula-install app install/run/apply`.
+by `tabula-install distro install` or project-scoped `tabula-agent install/apply`.
 
 External Agent Skills installed by ecosystem tools such as `npx skills` should
 use `$TABULA_WORKSPACE/skills/`, `$TABULA_WORKSPACE/.agents/skills/`, or

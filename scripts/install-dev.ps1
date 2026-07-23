@@ -2,7 +2,7 @@
 #
 # Installs the local runtime layer:
 #   * Go binaries (tabula.exe + tabula-runtime.exe, built from this repo)
-#   * launch scripts (tabula-runner.ps1, tabula-cli.ps1)
+#   * agent launcher (tabula-agent.exe)
 #   * Python venv with runtime + dev dependencies
 #   * tabula-distro installer (editable, from tools/tabula-distro)
 
@@ -50,11 +50,9 @@ function Stop-ExistingTabula {
                     $name = $_.Name.ToLowerInvariant()
                     $belongsToHome = $cmd -like "*$TabulaHome*"
                     $isTabulaBinary = $cmd -like "*$BinDir*tabula.exe*" -or $cmd -like "*$BinDir*tabula-runtime.exe*"
-                    $isRunnerShell = $cmd -like "*tabula-runner.ps1*"
                     $isRuntimeWorker = $cmd -like "*daemon.py*" -or $cmd -like "*scripts/run.py*" -or $cmd -like "* run.py*"
-                    $isAppRunWrapper = $cmd -like "*tabula_distro.cli*app run*"
                     $isManagedWorkerShell = $name -in @("python.exe", "powershell.exe", "pwsh.exe", "cmd.exe")
-                    return $isTabulaBinary -or ($belongsToHome -and $isManagedWorkerShell -and ($isRunnerShell -or $isRuntimeWorker -or $isAppRunWrapper))
+                    return $isTabulaBinary -or ($belongsToHome -and $isManagedWorkerShell -and $isRuntimeWorker)
                 }
         )
         $matches |
@@ -83,7 +81,7 @@ function Write-BundlesPth {
     param([string]$Python, [string]$BundlesRoot)
     if (-not (Test-Path $BundlesRoot)) {
         Write-Host "warning: tabula-bundles checkout not found at $BundlesRoot"
-        Write-Host "         tabula-install app materializers may require tabula_plugin_sdk; set TABULA_BUNDLES_ROOT to your checkout"
+        Write-Host "         distro materializers may require tabula_plugin_sdk; set TABULA_BUNDLES_ROOT to your checkout"
         return
     }
     $code = @'
@@ -171,10 +169,7 @@ try {
     Set-Content -Path $ProtocolPath -Value '{"plugin_protocol_min":1,"plugin_protocol_max":1}'
 }
 
-foreach ($script in @("tabula-runner.ps1", "tabula-cli.ps1")) {
-    Copy-Item (Join-Paths $RepoRoot @("bin", $script)) -Destination (Join-Path $BinDir $script) -Force
-}
-foreach ($exe in @("tabula-install.exe", "tabula-distro.exe")) {
+foreach ($exe in @("tabula-agent.exe", "tabula-install.exe", "tabula-distro.exe")) {
     $src = Join-Paths $Venv @("Scripts", $exe)
     if (Test-Path $src) {
         Copy-Item $src -Destination (Join-Path $BinDir $exe) -Force
@@ -209,4 +204,4 @@ Write-Host "  tabula-install distro install 'git+https://github.com/bamanoz/tabu
 Write-Host ""
 Write-Host "Then start the kernel:"
 Write-Host ""
-Write-Host "  tabula-runner.ps1"
+Write-Host "  tabula serve --runtime-mode managed"

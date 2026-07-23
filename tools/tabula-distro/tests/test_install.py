@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import json
 import os
 import tempfile
 import tomllib
@@ -247,6 +248,26 @@ class InstallTests(unittest.TestCase):
         finally:
             installmod.GitCache = original
 
+    def test_git_distro_lock_records_resolved_revision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            def run(fake_cache):
+                fake_cache.current_sha = "a" * 40
+                result = installmod.install(
+                    "git+https://example.invalid/demo.git@main",
+                    home,
+                )
+                self.assertEqual(result.lock.distro_source, "git+https://example.invalid/demo.git@main")
+                self.assertEqual(result.lock.distro_resolved_sha, "a" * 40)
+                persisted = lockmod.load(home / "distrib" / "demo" / "distro.lock.json")
+                self.assertIsNotNone(persisted)
+                self.assertEqual(persisted.distro_resolved_sha, "a" * 40)
+
+            self._with_fake_git_cache({"a" * 40: distro}, run)
+
     def test_install_with_local_bundle_and_skill(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -295,7 +316,7 @@ class InstallTests(unittest.TestCase):
             self.assertIn("mempalace", lock.bundles)
             self.assertIn("weather", lock.skills)
 
-    def test_install_refreshes_runtime_surface_for_existing_tenants(self):
+    def test_install_refreshes_only_requested_tenant_runtime_surface(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
@@ -318,16 +339,15 @@ class InstallTests(unittest.TestCase):
             for tenant_name in ("alpha", "beta"):
                 (home / "tenants" / tenant_name).mkdir(parents=True, exist_ok=True)
 
-            installmod.install(distro, home)
+            installmod.install(distro, home, tenant="alpha")
 
-            for tenant_name in ("alpha", "beta"):
-                tenant_root = home / "tenants" / tenant_name
-                self.assertTrue((tenant_root / "skills" / "mempalace" / "marker.txt").exists())
-                self.assertTrue((tenant_root / "plugins" / "sessions" / "marker.txt").exists())
-                self.assertTrue((tenant_root / "apps" / "client-probe" / "run.py").exists())
-                self.assertTrue((tenant_root / "packages").exists())
-                self.assertFalse((tenant_root / "_lib").exists())
-            self.assertTrue(os.path.samefile(home / "tenants" / "alpha" / "skills" / "mempalace" / "marker.txt", home / "tenants" / "beta" / "skills" / "mempalace" / "marker.txt"))
+            tenant_root = home / "tenants" / "alpha"
+            self.assertTrue((tenant_root / "skills" / "mempalace" / "marker.txt").exists())
+            self.assertTrue((tenant_root / "plugins" / "sessions" / "marker.txt").exists())
+            self.assertTrue((tenant_root / "apps" / "client-probe" / "run.py").exists())
+            self.assertTrue((tenant_root / "packages").exists())
+            self.assertFalse((tenant_root / "_lib").exists())
+            self.assertFalse((home / "tenants" / "beta" / "skills").exists())
 
     def test_install_tenant_filter_refreshes_only_requested_tenant(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -371,13 +391,13 @@ class InstallTests(unittest.TestCase):
             tenant_root.mkdir(parents=True)
             (tenant_root / "_lib").symlink_to(Path("../../_lib"))
 
-            installmod.install(distro, home, update=True)
+            installmod.install(distro, home, update=True, tenant="gamma")
 
             self.assertFalse((home / "_lib").exists())
             self.assertFalse((tenant_root / "_lib").exists())
             self.assertTrue((tenant_root / "packages").exists())
 
-    def test_install_update_keeps_existing_tenants_on_active_surface(self):
+    def test_install_update_does_not_mutate_unpinned_tenants(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
@@ -400,10 +420,7 @@ class InstallTests(unittest.TestCase):
             installmod.install(distro, home, update=True)
 
             for tenant_name in ("alpha", "beta"):
-                self.assertEqual(
-                    (home / "tenants" / tenant_name / "skills" / "mempalace" / "marker.txt").read_text(encoding="utf-8"),
-                    "save-v2\n",
-                )
+                self.assertFalse((home / "tenants" / tenant_name / "skills").exists())
 
     def test_parallel_tenant_runtime_refresh_does_not_corrupt_surfaces(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -428,8 +445,10 @@ class InstallTests(unittest.TestCase):
                 tenant_root.mkdir(parents=True, exist_ok=True)
                 tenant_roots.append(tenant_root)
 
+            generation = gens.current_generation(home, "demo")
+            self.assertIsNotNone(generation)
             with ThreadPoolExecutor(max_workers=2) as pool:
-                futures = [pool.submit(installmod._refresh_tenant_runtime_surface, home, tenant_root) for tenant_root in tenant_roots]
+                futures = [pool.submit(installmod._refresh_tenant_runtime_surface, tenant_root, generation.path) for tenant_root in tenant_roots]
                 for future in futures:
                     future.result()
 
@@ -1287,6 +1306,59 @@ class InstallTests(unittest.TestCase):
             gs = gens.list_generations(home, "demo")
             self.assertEqual([g.number for g in gs], [1, 2])
             self.assertEqual(gens.current_generation(home, "demo").number, 2)
+
+    def test_prune_preserves_tenant_referenced_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root)
+            first = installmod.install(distro, home, keep_generations=1)
+            tenant = home / "tenants" / "project-a"
+            tenant.mkdir(parents=True)
+            (tenant / "install.lock.json").write_text(
+                json.dumps({
+                    "version": 1,
+                    "generation": {
+                        "distro": "demo",
+                        "name": first.generation.name,
+                        "path": f"distrib/demo/generations/{first.generation.name}",
+                    }
+                }),
+                encoding="utf-8",
+            )
+
+            for version in ("v2", "v3"):
+                _touch(distro / "skills" / "version" / "SKILL.md", f"# {version}\n")
+                installmod.install(distro, home, keep_generations=1)
+
+            generations = gens.list_generations(home, "demo")
+            self.assertEqual([g.number for g in generations], [1, 3])
+            self.assertTrue(first.generation.path.is_dir())
+
+    def test_two_distros_pin_separate_tenant_surfaces(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            alpha = _make_minimal_distro(root, "alpha")
+            beta = _make_minimal_distro(root, "beta")
+            _touch(alpha / "skills" / "identity" / "SKILL.md", "alpha\n")
+            _touch(beta / "skills" / "identity" / "SKILL.md", "beta\n")
+            for tenant_name in ("project-alpha", "project-beta"):
+                (home / "tenants" / tenant_name).mkdir(parents=True)
+
+            alpha_result = installmod.install(alpha, home, tenant="project-alpha")
+            beta_result = installmod.install(beta, home, tenant="project-beta")
+
+            alpha_lock = json.loads((home / "tenants" / "project-alpha" / "install.lock.json").read_text(encoding="utf-8"))
+            beta_lock = json.loads((home / "tenants" / "project-beta" / "install.lock.json").read_text(encoding="utf-8"))
+            self.assertEqual(alpha_lock["generation"]["name"], alpha_result.generation.name)
+            self.assertEqual(beta_lock["generation"]["name"], beta_result.generation.name)
+            alpha_marker = home / "tenants" / "project-alpha" / "skills" / "identity" / "SKILL.md"
+            beta_marker = home / "tenants" / "project-beta" / "skills" / "identity" / "SKILL.md"
+            self.assertEqual(alpha_marker.read_text(encoding="utf-8"), "alpha\n")
+            self.assertEqual(beta_marker.read_text(encoding="utf-8"), "beta\n")
+            self.assertTrue(os.path.samefile(alpha_marker, alpha_result.generation.path / "skills" / "identity" / "SKILL.md"))
+            self.assertTrue(os.path.samefile(beta_marker, beta_result.generation.path / "skills" / "identity" / "SKILL.md"))
 
     def test_identical_reinstall_reuses_generation(self):
         with tempfile.TemporaryDirectory() as tmp:

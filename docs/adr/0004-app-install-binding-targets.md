@@ -3,7 +3,7 @@
 Date: 2026-06-23
 Status: Accepted
 Supersedes: nothing
-Superseded by: nothing
+Superseded by: ADR 0009
 
 ## Context
 

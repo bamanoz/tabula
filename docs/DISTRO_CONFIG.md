@@ -42,6 +42,11 @@ source = "git+https://github.com/foo/weather-skill.git@main#path=skill"
 name   = "mcp"
 source = "git+https://github.com/foo/mcp-plugin.git@main#path=plugin"
 
+[tenant_contract]
+materializer = "python3 tenant/apply.py"
+values_schema = "values.schema.json"
+values_defaults = "values.defaults.toml"
+
 [[runtime_requirements.executables]]
 name = "npx"
 required = true
@@ -76,6 +81,12 @@ for one compatibility cycle; new configs should use `components`.
   - `components` — bundles only. Optional allowlist of skill/plugin/app component
     subdirectories to include. `skills` is a deprecated alias.
   - `override` — required to replace a pre-existing target with the same name.
+- `[tenant_contract]` — optional tenant materialization metadata.
+  - `materializer` — shell-split command executed from the tenant's exact
+    immutable generation. It receives only `TABULA_TENANT_*` context.
+  - `values_schema` — generation-local distro-owned values schema.
+  - `values_defaults` — generation-local distro-owned default values TOML.
+  See [Tenant Materializer Contract](TENANT_MATERIALIZER_CONTRACT.md).
 - `[[runtime_requirements.executables]]` — external commands the distro expects
   on `PATH`. The installer checks these before staging a generation.
   - `name` — executable name to resolve with `PATH`.
@@ -252,6 +263,39 @@ Semantics:
 
 Local sources (`local:…`) are not hashable by design; their lock entry only
 records the resolved absolute path.
+
+## Tenant Installation
+
+Install one project-scoped tenant directly from a local path or full Git URI:
+
+```sh
+tabula-install tenant install \
+  'git+https://github.com/example/distros.git@main#path=code' \
+  --id code-my-project \
+  --root /path/to/my-project \
+  --values /path/to/values.toml
+```
+
+This writes `$TABULA_HOME/tenants/<id>/install.lock.json`, pins all tenant
+component links to one exact generation, runs the distro's optional
+`[tenant_contract]` materializer, compiles tenant plugin config, registers
+tenant-specific runtime directories, and binds `--root` to the installed tenant.
+Use `--replace-binding` to replace a conflicting directory binding.
+
+For normal project-local installation, let `tabula-agent` generate the
+host-local tenant identity:
+
+```sh
+tabula-agent install \
+  --distro 'git+https://github.com/example/distros.git@main#path=code' \
+  --bind /path/to/my-project \
+  --values /path/to/values.toml
+```
+
+`tabula-agent install` reuses an exact directory binding only when its tenant
+install lock records the same distro source. A different source or invalid lock
+requires `--replace-binding`. Generated tenant IDs and bindings remain under
+`$TABULA_HOME`; no identity file is written into the project repository.
 
 ## Generations and atomic switch
 

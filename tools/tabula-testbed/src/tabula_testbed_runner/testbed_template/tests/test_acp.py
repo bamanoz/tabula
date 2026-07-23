@@ -346,7 +346,6 @@ class ACPGatewayInstalled(unittest.TestCase):
         env.update({
             "TABULA_HOME": self.tabula_home,
             "TABULA_URL": self.url,
-            "TABULA_APP_ID": "default",
             "TABULA_TENANT_ID": "default",
             "TABULA_PLUGIN_DRIVER_OPENAI_API_KEY": "test-key",
             "TABULA_PLUGIN_DRIVER_OPENAI_MODEL": "o3",
@@ -354,7 +353,7 @@ class ACPGatewayInstalled(unittest.TestCase):
         })
         stderr_handle = log_path.open("w", encoding="utf-8")
         proc = subprocess.Popen(
-            [str(python), str(gateway), "--app", "default", "--provider", "openai", "--cwd", str(self.workspace), "--timeout", "20"],
+            [str(python), str(gateway), "--tenant", "default", "--provider", "openai", "--cwd", str(self.workspace), "--timeout", "20"],
             env=env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -385,7 +384,6 @@ class ACPGatewayInstalled(unittest.TestCase):
             "TABULA_HOME": self.tabula_home,
             "TABULA_URL": self.url,
             "TABULA_VERBOSE": "1",
-            "TABULA_APP_ID": "default",
             "TABULA_TENANT_ID": "default",
             "TABULA_PLUGIN_DRIVER_OPENAI_API_KEY": "test-key",
             "TABULA_PLUGIN_DRIVER_OPENAI_MODEL": "o3",
@@ -393,7 +391,7 @@ class ACPGatewayInstalled(unittest.TestCase):
         })
         log_handle = log_path.open("wb")
         proc = subprocess.Popen(
-            [str(python), str(driver), "--session", session_id, "--provider", "openai", "--app", "default"],
+            [str(python), str(driver), "--session", session_id, "--provider", "openai", "--tenant", "default"],
             env=env,
             stdout=log_handle,
             stderr=subprocess.STDOUT,

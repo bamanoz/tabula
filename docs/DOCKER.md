@@ -1,9 +1,9 @@
 # Docker Single-Container Runtime
 
-This mode runs the Tabula kernel, local runtime, installed app distro, drivers,
-plugins, and gateway-web inside one container. A host repository is mounted as a
-workspace at `/workspace`; that repository's `tabula.app.toml` decides which
-distro to install and how to materialize the app.
+This mode runs Tabula kernel, local runtime, one project-scoped tenant, drivers,
+plugins, and gateway-web inside one container. Host repository mounts at
+`/workspace`; `TABULA_DISTRO_SOURCE` selects distro and `TABULA_TENANT_ID`
+selects container-local tenant.
 
 This is a development/runtime convenience, not a security sandbox. Do not mount
 the Docker socket or your full home directory unless you explicitly want the
@@ -16,8 +16,8 @@ Inside the container:
 ```text
 /opt/src/tabula   # core source copied into the image
 /workspace/.tabula # TABULA_HOME runtime/config/state by default
-/workspace        # mounted host repository with tabula.app.toml
-/tmp/tabula-runtime-<app-id>/runtime.sock  # local runtime socket
+/workspace        # mounted host repository
+/tmp/tabula-runtime-<tenant-id>/runtime.sock  # local runtime socket
 ```
 
 `TABULA_HOME` is runtime state. It is not a workspace.
@@ -47,32 +47,30 @@ docker compose exec tabula bash -lc 'cat "$TABULA_HOME/run/plugins/gateway-web/r
 
 ## Run Another Repository
 
-Any repository with a root `tabula.app.toml` can be mounted at `/workspace`:
+Any repository can mount at `/workspace`; pass distro source and stable local
+tenant ID explicitly:
 
 ```bash
 UID=$(id -u) GID=$(id -g) \
 docker compose run --rm \
   -e TABULA_WORKSPACE=/workspace \
-  -e TABULA_APP_MANIFEST=/workspace/tabula.app.toml \
+  -e TABULA_DISTRO_SOURCE='git+https://github.com/owner/distros.git@main#path=my-distro' \
+  -e TABULA_TENANT_ID=my-project \
   -v /absolute/path/to/my-project:/workspace \
   --service-ports tabula
 ```
 
-The entrypoint runs the normal source installer if `$TABULA_HOME/bin/tabula-install`
-is missing, then runs:
+Entrypoint installs core when needed, then runs:
 
 ```bash
-tabula-install app install /workspace/tabula.app.toml --workspace /workspace --update
-tabula-runner
+tabula-agent install --distro "$TABULA_DISTRO_SOURCE" --tenant "$TABULA_TENANT_ID" \
+  --bind /workspace --update --no-start --non-interactive
+tabula serve --runtime-mode managed
 ```
 
-The app manifest controls whether distro sources are local paths or git URLs.
-The image includes Python 3.13 and `git`, so git-based distro sources work in a
-clean repository without local source overrides.
-
-The `tabula` repo's own compose file also mounts sibling `../tabula-distrib` and
-`../tabula-bundles` because its local development manifest uses
-`source = "local:../tabula-distrib/code-immune"`.
+Image includes Python 3.13 and `git`, so git distro sources work in clean
+repositories. Core compose file also mounts sibling `../tabula-distrib` and
+`../tabula-bundles` for local `code-immune` development.
 
 The default compose mapping uses non-standard host ports to avoid collisions
 with a locally running Tabula instance.

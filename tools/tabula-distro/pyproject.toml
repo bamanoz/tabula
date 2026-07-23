@@ -15,6 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
+tabula-agent = "tabula_distro.agent_cli:main"
 tabula-distro = "tabula_distro.cli:main"
 tabula-install = "tabula_distro.install_cli:main"
 
