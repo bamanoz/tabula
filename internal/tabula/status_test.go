@@ -3,6 +3,7 @@ package tabula
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -220,6 +221,49 @@ func TestBuildStatusFallsBackToManagedAgentPID(t *testing.T) {
 	}
 	if len(doc.Runtimes) != 1 || doc.Runtimes[0].ID != "local" {
 		t.Fatalf("expected managed runtime from fallback status, got %+v", doc.Runtimes)
+	}
+}
+
+func TestRemoveKernelStatusFilesOnlyRemovesCurrentPID(t *testing.T) {
+	tabulaHome := t.TempDir()
+	runDir := filepath.Join(tabulaHome, "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatalf("mkdir run: %v", err)
+	}
+	otherPID := os.Getpid() + 100000
+	writeKernelStatusFixture(t, tabulaHome, kernelStatusFile{PID: otherPID, WSEndpoint: "ws://127.0.0.1:8089/ws"})
+	if err := os.WriteFile(filepath.Join(runDir, pidFilename), []byte(strconv.Itoa(otherPID)+"\n"), 0o644); err != nil {
+		t.Fatalf("write pid fixture: %v", err)
+	}
+
+	removeKernelStatusFiles(tabulaHome)
+
+	if _, err := os.Stat(filepath.Join(runDir, statusFilename)); err != nil {
+		t.Fatalf("status file should remain for different pid: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(runDir, pidFilename)); err != nil {
+		t.Fatalf("pid file should remain for different pid: %v", err)
+	}
+}
+
+func TestRemoveKernelStatusFilesRemovesCurrentPID(t *testing.T) {
+	tabulaHome := t.TempDir()
+	runDir := filepath.Join(tabulaHome, "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatalf("mkdir run: %v", err)
+	}
+	writeKernelStatusFixture(t, tabulaHome, kernelStatusFile{PID: os.Getpid(), WSEndpoint: "ws://127.0.0.1:8089/ws"})
+	if err := os.WriteFile(filepath.Join(runDir, pidFilename), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644); err != nil {
+		t.Fatalf("write pid fixture: %v", err)
+	}
+
+	removeKernelStatusFiles(tabulaHome)
+
+	if _, err := os.Stat(filepath.Join(runDir, statusFilename)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("status file should be removed for current pid, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(runDir, pidFilename)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pid file should be removed for current pid, err=%v", err)
 	}
 }
 

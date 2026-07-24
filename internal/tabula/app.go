@@ -417,12 +417,6 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 	} else {
 		slog.Info("local runtime setup disabled")
 	}
-	if err := writeKernelStatusFiles(tabulaHome, wsEndpoint, time.Now().UTC()); err != nil {
-		fmt.Fprintf(os.Stderr, "error: kernel status setup failed: %v\n", err)
-		return 1
-	}
-	defer removeKernelStatusFiles(tabulaHome)
-
 	// Start HTTP/WebSocket server
 	mux := http.NewServeMux()
 	registerKernelHTTPHandlers(mux, hub, listenAddr, build)
@@ -550,6 +544,26 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 	default:
 		slog.Info("local runtime disabled")
 	}
+	if err := writeKernelStatusFiles(tabulaHome, wsEndpoint, time.Now().UTC()); err != nil {
+		close(runtimeStop)
+		runtimeListener.Close()
+		listener.Close()
+		if runtimeWSSServer != nil {
+			_ = runtimeWSSServer.Close()
+		}
+		if runtimeWSSListener != nil {
+			_ = runtimeWSSListener.Close()
+		}
+		server.Close()
+		if runtimeProc != nil {
+			if err := runtimeProc.Shutdown(5 * time.Second); err != nil {
+				slog.Warn("local runtime shutdown failed", "error", err)
+			}
+		}
+		fmt.Fprintf(os.Stderr, "error: kernel status setup failed: %v\n", err)
+		return 1
+	}
+	defer removeKernelStatusFiles(tabulaHome)
 
 	// Watch for distro reinstall reload triggers.
 	stopReload := make(chan struct{})

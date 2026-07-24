@@ -489,8 +489,32 @@ func writeKernelStatusFiles(tabulaHome, wsEndpoint string, startedAt time.Time) 
 
 func removeKernelStatusFiles(tabulaHome string) {
 	runDir := filepath.Join(tabulaHome, "run")
-	_ = os.Remove(filepath.Join(runDir, statusFilename))
-	_ = os.Remove(filepath.Join(runDir, pidFilename))
+	pid := os.Getpid()
+	removeStatusFileIfOwned(filepath.Join(runDir, statusFilename), pid)
+	removePIDFileIfOwned(filepath.Join(runDir, pidFilename), pid)
+}
+
+func removeStatusFileIfOwned(path string, pid int) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		return
+	}
+	var state kernelStatusFile
+	if err := json.Unmarshal(data, &state); err != nil || state.PID != pid {
+		return
+	}
+	_ = os.Remove(path)
+}
+
+func removePIDFileIfOwned(path string, pid int) {
+	current, err := readPIDFile(path)
+	if err != nil || current != pid {
+		return
+	}
+	_ = os.Remove(path)
 }
 
 func processRunning(pid int) bool {
