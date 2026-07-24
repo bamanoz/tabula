@@ -473,6 +473,13 @@ def _wait_for_ready_runtime(home: Path, tenant_id: str, kernel_url: str, timeout
         if not service_runtime.kernel_healthy(kernel_url, timeout_seconds=min(0.5, remaining)):
             time.sleep(0.2)
             continue
+        if service_runtime.wait_for_runtime_ready(
+            kernel_url,
+            tenant_id,
+            home=home,
+            timeout_seconds=min(1.0, remaining),
+        ):
+            return True, reload_error
         now = time.monotonic()
         if now >= next_reload:
             current = service_runtime.request_runtime_reload(
@@ -483,13 +490,6 @@ def _wait_for_ready_runtime(home: Path, tenant_id: str, kernel_url: str, timeout
             if current:
                 reload_error = current
             next_reload = now + 1.0
-        if service_runtime.wait_for_runtime_ready(
-            kernel_url,
-            tenant_id,
-            home=home,
-            timeout_seconds=min(1.0, remaining),
-        ):
-            return True, reload_error
         time.sleep(0.2)
     return False, reload_error
 

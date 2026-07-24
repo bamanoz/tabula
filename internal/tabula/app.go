@@ -486,7 +486,12 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 	}
 	slog.Info("listening", "addr", listenAddr)
 
-	runtimeSock := localRuntimeSocketPath(tabulaHome)
+	runtimeSock, err := managedLocalRuntimeSocketPath(tabulaHome)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: runtime listener config failed: %v\n", err)
+		listener.Close()
+		return 1
+	}
 	runtimeListener, err := unixsock.Listen(runtimeSock)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot listen for runtime connections: %v\n", err)
@@ -563,7 +568,7 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 		fmt.Fprintf(os.Stderr, "error: kernel client token setup failed: %v\n", err)
 		return 1
 	}
-	if err := writeKernelStatusFiles(tabulaHome, wsEndpoint, time.Now().UTC()); err != nil {
+	if err := writeKernelStatusFiles(tabulaHome, wsEndpoint, runtimeSock, time.Now().UTC()); err != nil {
 		close(runtimeStop)
 		runtimeListener.Close()
 		listener.Close()
@@ -909,7 +914,12 @@ func runCmd(args []string, build BuildInfo) int {
 		return 1
 	}
 
-	runtimeListener, err := unixsock.Listen(localRuntimeSocketPath(tabulaHome))
+	runtimeSock, err := managedLocalRuntimeSocketPath(tabulaHome)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: runtime listener config failed: %v\n", err)
+		return 1
+	}
+	runtimeListener, err := unixsock.Listen(runtimeSock)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot listen for runtime connections: %v\n", err)
 		return 1

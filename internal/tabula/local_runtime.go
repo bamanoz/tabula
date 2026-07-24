@@ -15,6 +15,7 @@ import (
 
 	"github.com/bamanoz/tabula/internal/kernel"
 	runtimeauth "github.com/bamanoz/tabula/internal/runtime/auth"
+	runtimehostconfig "github.com/bamanoz/tabula/internal/runtime/host/config"
 )
 
 const localRuntimeAttachTimeout = 10 * time.Second
@@ -54,6 +55,52 @@ func localRuntimeSocketPath(tabulaHome string) string {
 	}
 	sum := sha256.Sum256([]byte(tabulaHome))
 	return filepath.Join(os.TempDir(), "tabula-rt-"+hex.EncodeToString(sum[:8]), "runtime.sock")
+}
+
+func managedLocalRuntimeSocketPath(tabulaHome string) (string, error) {
+	cfg, err := runtimehostconfig.Load(filepath.Join(tabulaHome, "config", "runtime.toml"))
+	if err != nil {
+		return "", err
+	}
+	kernelConfig, err := cfg.SingleKernel()
+	if err != nil {
+		return "", err
+	}
+	path, err := unixRuntimeSocketPath(kernelConfig.URL)
+	if err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func statusRuntimeSocketPath(tabulaHome string) string {
+	path, err := managedLocalRuntimeSocketPath(tabulaHome)
+	if err == nil {
+		return path
+	}
+	return localRuntimeSocketPath(tabulaHome)
+}
+
+func unixRuntimeSocketPath(rawURL string) (string, error) {
+	const prefix = "unix://"
+	rawURL = strings.TrimSpace(rawURL)
+	if !strings.HasPrefix(strings.ToLower(rawURL), prefix) {
+		return "", fmt.Errorf("managed local runtime requires a unix kernel url, got %q", rawURL)
+	}
+	path := strings.TrimSpace(rawURL[len(prefix):])
+	if path == "" {
+		return "", fmt.Errorf("unix socket path is required")
+	}
+	if runtime.GOOS == "windows" {
+		if len(path) >= 3 && path[0] == '/' && path[2] == ':' {
+			path = path[1:]
+		}
+		return path, nil
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return filepath.Clean(path), nil
 }
 
 func resolveLocalRuntimeBinary(tabulaPath string, lookPath func(string) (string, error)) (string, error) {

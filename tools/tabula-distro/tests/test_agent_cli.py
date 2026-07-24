@@ -466,9 +466,26 @@ class AgentCliTests(unittest.TestCase):
             ):
                 agent_cli._ensure_ready(home, "tenant-a", "ws://127.0.0.1:8089/ws", 3.0)
 
-            reload_runtime.assert_called_once()
+            reload_runtime.assert_not_called()
             wait_ready.assert_called_once()
             popen.assert_not_called()
+
+    def test_wait_for_ready_runtime_checks_snapshot_before_reload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            with (
+                mock.patch.object(agent_cli.service_runtime, "kernel_healthy", return_value=True),
+                mock.patch.object(agent_cli.service_runtime, "wait_for_runtime_ready", return_value=True) as wait_ready,
+                mock.patch.object(agent_cli.service_runtime, "request_runtime_reload") as reload_runtime,
+            ):
+                ready, reload_error = agent_cli._wait_for_ready_runtime(
+                    home, "tenant-a", "ws://127.0.0.1:8089/ws", 3.0
+                )
+
+            self.assertTrue(ready)
+            self.assertEqual(reload_error, "")
+            wait_ready.assert_called_once()
+            reload_runtime.assert_not_called()
 
     def test_ensure_ready_reports_unready_tenant(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -258,7 +258,7 @@ func readKernelStatusFile(tabulaHome string) (kernelStatusFile, error) {
 			if cfg, cfgErr := loadKernelConfigFile(tabulaHome); cfgErr == nil {
 				wsEndpoint = cfg.URL
 			}
-			return kernelStatusFile{PID: pid, RuntimeSocket: localRuntimeSocketPath(tabulaHome), WSEndpoint: wsEndpoint}, nil
+			return kernelStatusFile{PID: pid, RuntimeSocket: statusRuntimeSocketPath(tabulaHome), WSEndpoint: wsEndpoint}, nil
 		}
 		return kernelStatusFile{}, err
 	}
@@ -460,7 +460,7 @@ func readTenants(tabulaHome string, activeSessions map[string]int) ([]statusTena
 	return tenants, nil
 }
 
-func writeKernelStatusFiles(tabulaHome, wsEndpoint string, startedAt time.Time) error {
+func writeKernelStatusFiles(tabulaHome, wsEndpoint, runtimeSocket string, startedAt time.Time) error {
 	runDir := filepath.Join(tabulaHome, "run")
 	if err := os.MkdirAll(runDir, 0o700); err != nil {
 		return fmt.Errorf("create run dir: %w", err)
@@ -470,7 +470,7 @@ func writeKernelStatusFiles(tabulaHome, wsEndpoint string, startedAt time.Time) 
 	}
 	state := kernelStatusFile{
 		PID:           os.Getpid(),
-		RuntimeSocket: localRuntimeSocketPath(tabulaHome),
+		RuntimeSocket: runtimeSocket,
 		WSEndpoint:    wsEndpoint,
 		StartedAt:     formatStatusTime(startedAt),
 	}

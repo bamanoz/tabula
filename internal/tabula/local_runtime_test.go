@@ -83,6 +83,43 @@ func TestLocalRuntimeSocketPathUsesEnvOverride(t *testing.T) {
 	}
 }
 
+func TestManagedLocalRuntimeSocketPathUsesRuntimeConfig(t *testing.T) {
+	tabulaHome := t.TempDir()
+	socketPath := filepath.Join(t.TempDir(), "runtime", "configured.sock")
+	configDir := filepath.Join(tabulaHome, "config")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	runtimeConfig := strings.Join([]string{
+		`plugin_dirs = ["/plugins"]`,
+		`skill_dirs = ["/skills"]`,
+		`[[kernel]]`,
+		`id = "main"`,
+		`url = "unix://` + socketPath + `"`,
+		`token_file = "` + filepath.Join(tabulaHome, "run", "runtime-token") + `"`,
+		`tenants = ["*"]`,
+		``,
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(configDir, "runtime.toml"), []byte(runtimeConfig), 0o644); err != nil {
+		t.Fatalf("write runtime.toml: %v", err)
+	}
+
+	got, err := managedLocalRuntimeSocketPath(tabulaHome)
+	if err != nil {
+		t.Fatalf("managedLocalRuntimeSocketPath: %v", err)
+	}
+	if got != socketPath {
+		t.Fatalf("socket path = %q, want %q", got, socketPath)
+	}
+}
+
+func TestUnixRuntimeSocketPathRejectsNonUnixURL(t *testing.T) {
+	_, err := unixRuntimeSocketPath("ws://127.0.0.1:8089/ws")
+	if err == nil {
+		t.Fatal("expected non-unix URL to fail")
+	}
+}
+
 func TestResolveLocalRuntimeBinary_PrefersSibling(t *testing.T) {
 	dir := t.TempDir()
 	tabulaPath := filepath.Join(dir, "tabula")
