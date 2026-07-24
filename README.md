@@ -71,6 +71,64 @@ stay that way.
 
 ## Install
 
+### Global Code Immune Agent
+
+Use this flow for the globally installed production agent in the default
+`TABULA_HOME` (`$HOME/.tabula`). The repository is private, so fetch the
+installer through authenticated `gh api` instead of raw GitHub URLs.
+
+```bash
+tmp="$(mktemp)" && printf '[workspace]\npath = "%s"\n' "$HOME" > "$tmp" && \
+gh api -H 'Accept: application/vnd.github.raw' \
+  'repos/bamanoz/tabula/contents/scripts/install.sh?ref=v0.17.8' \
+  | TABULA_HOME="$HOME/.tabula" VERSION=v0.17.8 bash -s -- \
+      --distro 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=code-immune' \
+      --tenant code-immune \
+      --values "$tmp" \
+      --update \
+      --non-interactive; \
+rm -f "$tmp"
+```
+
+`--update` is intentional: it refreshes an existing tenant to the latest distro
+and bundle revisions instead of only reusing its current lock.
+
+Start, stop, and restart the managed local agent service. Use `restart` after a
+reinstall to force the active launchd service onto the freshly installed
+binaries and runtime payload:
+
+```bash
+TABULA_HOME="$HOME/.tabula" "$HOME/.tabula/bin/tabula-agent" start --tenant code-immune --timeout 120
+TABULA_HOME="$HOME/.tabula" "$HOME/.tabula/bin/tabula-agent" stop --timeout 120
+TABULA_HOME="$HOME/.tabula" "$HOME/.tabula/bin/tabula-agent" restart --tenant code-immune --timeout 120
+```
+
+Check status and the active runtime surface:
+
+```bash
+TABULA_HOME="$HOME/.tabula" "$HOME/.tabula/bin/tabula" --version
+TABULA_HOME="$HOME/.tabula" "$HOME/.tabula/bin/tabula" status --json
+TABULA_HOME="$HOME/.tabula" "$HOME/.tabula/bin/tabula" health
+TABULA_HOME="$HOME/.tabula" "$HOME/.tabula/bin/tabula" config inspect
+lsof -nP -iTCP:8089 -sTCP:LISTEN
+lsof -nP -iTCP:8765 -sTCP:LISTEN
+```
+
+Quick smoke checks for the production tool surface:
+
+```bash
+TABULA_HOME="$HOME/.tabula" tabula status --json | jq '.runtimes[0].capabilities_by_tenant["code-immune"]'
+```
+
+If `raw.githubusercontent.com/.../scripts/install.sh` returns `404`, use the
+`gh api` command above. GitHub returns `404` for unauthenticated private raw
+content even when the tag exists.
+
+If `gh api` itself returns `404` while `gh auth status` shows an active
+`GITHUB_TOKEN`, that environment token may be shadowing the keychain login. Run
+the same command as `env -u GITHUB_TOKEN -u GH_TOKEN gh api ...` or unset the
+bad token in the shell.
+
 ### Release install
 
 ```bash
@@ -165,6 +223,14 @@ tabula-agent
 If user service is already running, `tabula-agent` reuses it and verifies the
 selected tenant runtime. Gateways and other clients are started by installed
 components, not by `tabula-agent`.
+
+Explicit lifecycle commands are also available:
+
+```bash
+tabula-agent start
+tabula-agent stop
+tabula-agent restart
+```
 
 ## The mental model
 
