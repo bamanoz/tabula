@@ -152,12 +152,41 @@ def _runtime_ready_from_snapshot(data: object, tenant_id: str) -> bool:
         served = runtime.get("tenants_served") or []
         if served and "*" not in served and tenant_id not in served:
             continue
+        targets = runtime.get("targets")
+        if isinstance(targets, list) and not _runtime_targets_ready_for_tenant(targets, tenant_id):
+            continue
         capabilities_by_tenant = runtime.get("capabilities_by_tenant")
         if isinstance(capabilities_by_tenant, dict):
             tenant_capabilities = capabilities_by_tenant.get(tenant_id)
             if isinstance(tenant_capabilities, list) and tenant_capabilities:
                 return True
     return False
+
+
+def _runtime_targets_ready_for_tenant(targets: list[object], tenant_id: str) -> bool:
+    for target in targets:
+        if not isinstance(target, dict) or not _target_serves_tenant(target, tenant_id):
+            continue
+        source = str(target.get("source") or "")
+        state = str(target.get("state") or "")
+        lifecycle = str(target.get("lifecycle_state") or "")
+        if source == "worker" and state != "ready":
+            return False
+        if source == "worker" and lifecycle and lifecycle != "ready":
+            return False
+        if state in {"failed", "stale", "initializing"}:
+            return False
+        if lifecycle in {"crashed", "exited", "stopping", "starting"}:
+            return False
+    return True
+
+
+def _target_serves_tenant(target: dict[str, object], tenant_id: str) -> bool:
+    tenants = target.get("tenants")
+    if not isinstance(tenants, list) or not tenants:
+        return True
+    values = {str(value) for value in tenants}
+    return "*" in values or tenant_id in values
 
 
 def _kernel_websocket_ready(kernel_url: str, *, timeout_seconds: float) -> bool:

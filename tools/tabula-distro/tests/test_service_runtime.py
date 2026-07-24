@@ -76,6 +76,49 @@ class ServiceRuntimeTests(unittest.TestCase):
         with mock.patch.object(service_runtime, "_urlopen", return_value=FakeResponse()):
             self.assertTrue(service_runtime._runtime_ready("ws://127.0.0.1:65530/ws", "claw-tenant", timeout_seconds=0.1))
 
+    def test_runtime_ready_rejects_failed_worker_target_for_tenant(self):
+        data = {
+            "runtimes": [
+                {
+                    "attached": True,
+                    "tenants_served": ["claw-tenant"],
+                    "capabilities_by_tenant": {"claw-tenant": ["gateway_web_status"]},
+                    "targets": [
+                        {
+                            "id": "any-plugin",
+                            "source": "worker",
+                            "state": "ready",
+                            "lifecycle_state": "crashed",
+                            "tenants": ["claw-tenant"],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        self.assertFalse(service_runtime._runtime_ready_from_snapshot(data, "claw-tenant"))
+
+    def test_runtime_ready_ignores_failed_worker_target_for_other_tenant(self):
+        data = {
+            "runtimes": [
+                {
+                    "attached": True,
+                    "tenants_served": ["claw-tenant", "other-tenant"],
+                    "capabilities_by_tenant": {"claw-tenant": ["fs_read"]},
+                    "targets": [
+                        {
+                            "id": "other-plugin",
+                            "source": "worker",
+                            "state": "failed",
+                            "tenants": ["other-tenant"],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        self.assertTrue(service_runtime._runtime_ready_from_snapshot(data, "claw-tenant"))
+
     def test_runtime_ready_falls_back_to_local_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
