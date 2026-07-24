@@ -362,7 +362,8 @@ class AgentCliTests(unittest.TestCase):
             proc.pid = 12345
             proc.poll.return_value = None
             with (
-                mock.patch.object(agent_cli.service_runtime, "kernel_healthy", side_effect=[False, True]),
+                mock.patch.object(agent_cli.service_runtime, "kernel_healthy", side_effect=[False, True, True]),
+                mock.patch.object(agent_cli.service_runtime, "request_runtime_reload", return_value=""),
                 mock.patch.object(agent_cli.service_runtime, "wait_for_runtime_ready", return_value=True),
                 mock.patch.object(agent_cli.subprocess, "Popen", return_value=proc),
             ):
@@ -402,6 +403,26 @@ class AgentCliTests(unittest.TestCase):
             self.assertEqual(code, 0, err)
             self.assertEqual(out, "managed service is not running\n")
             self.assertFalse(pidfile.exists())
+
+    def test_stop_command_discovers_orphan_managed_kernel(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            tabula = home / "bin" / "tabula"
+            _write(tabula, "#!/bin/sh\n")
+            ps_output = f"  12345 {tabula} serve --runtime-mode managed\n"
+            ps_result = mock.Mock(returncode=0, stdout=ps_output)
+            with (
+                mock.patch.object(agent_cli.subprocess, "run", return_value=ps_result),
+                mock.patch.object(agent_cli, "_process_exists", side_effect=[True, False]),
+                mock.patch.object(agent_cli.os, "kill") as kill,
+                mock.patch.object(agent_cli.time, "sleep"),
+            ):
+                code, out, err = self._run(["--home", str(home), "stop", "--timeout", "2"])
+
+            self.assertEqual(code, 0, err)
+            self.assertEqual(out, "managed service stopped\n")
+            kill.assert_called_once_with(12345, agent_cli.signal.SIGTERM)
+            self.assertFalse((home / "run" / "agent-kernel.pid").exists())
 
     def test_restart_stops_then_starts_selected_tenant(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -456,9 +477,23 @@ class AgentCliTests(unittest.TestCase):
                 mock.patch.object(agent_cli.service_runtime, "kernel_healthy", return_value=True),
                 mock.patch.object(agent_cli.service_runtime, "request_runtime_reload", return_value="reload denied"),
                 mock.patch.object(agent_cli.service_runtime, "wait_for_runtime_ready", return_value=False),
+                mock.patch.object(agent_cli.time, "sleep"),
             ):
                 with self.assertRaisesRegex(agent_cli.AgentError, "runtime is not ready.*reload denied"):
-                    agent_cli._ensure_ready(home, "tenant-a", "ws://127.0.0.1:8089/ws", 3.0)
+                    agent_cli._ensure_ready(home, "tenant-a", "ws://127.0.0.1:8089/ws", 0.2)
+
+    def test_ensure_ready_retries_after_refused_reload_until_runtime_ready(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            with (
+                mock.patch.object(agent_cli.service_runtime, "kernel_healthy", return_value=True),
+                mock.patch.object(agent_cli.service_runtime, "request_runtime_reload", side_effect=["connection refused", ""]),
+                mock.patch.object(agent_cli.service_runtime, "wait_for_runtime_ready", side_effect=[False, True]) as wait_ready,
+                mock.patch.object(agent_cli.time, "sleep"),
+            ):
+                agent_cli._ensure_ready(home, "tenant-a", "ws://127.0.0.1:8089/ws", 3.0)
+
+            self.assertGreaterEqual(wait_ready.call_count, 2)
 
     def test_install_treats_missing_tenant_lock_as_conflict(self):
         with tempfile.TemporaryDirectory() as tmp:

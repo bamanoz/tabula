@@ -23,7 +23,7 @@ class ServiceRuntimeTests(unittest.TestCase):
             def close(self) -> None:
                 pass
 
-        with mock.patch.object(service_runtime, "urlopen", side_effect=OSError("http unavailable")):
+        with mock.patch.object(service_runtime, "_urlopen", side_effect=OSError("http unavailable")):
             with mock.patch.dict("sys.modules", {"websocket": mock.Mock(create_connection=mock.Mock(return_value=FakeWS()))}):
                 self.assertTrue(service_runtime.kernel_healthy("ws://127.0.0.1:65530/ws", timeout_seconds=0.1))
 
@@ -40,7 +40,7 @@ class ServiceRuntimeTests(unittest.TestCase):
             def read(self) -> bytes:
                 return b'{"runtimes":[{"attached":true,"tenants_served":["first-tenant","claw-tenant"],"capabilities_by_tenant":{"claw-tenant":["fs_read"]}}]}'
 
-        with mock.patch.object(service_runtime, "urlopen", return_value=FakeResponse()):
+        with mock.patch.object(service_runtime, "_urlopen", return_value=FakeResponse()):
             self.assertTrue(service_runtime._runtime_ready("ws://127.0.0.1:65530/ws", "claw-tenant", timeout_seconds=0.1))
             self.assertFalse(service_runtime._runtime_ready("ws://127.0.0.1:65530/ws", "first-tenant", timeout_seconds=0.1))
 
@@ -57,7 +57,7 @@ class ServiceRuntimeTests(unittest.TestCase):
             def read(self) -> bytes:
                 return b'{"runtimes":[{"attached":true,"tenants_served":["claw-tenant"],"targets":[]}]}'
 
-        with mock.patch.object(service_runtime, "urlopen", return_value=FakeResponse()):
+        with mock.patch.object(service_runtime, "_urlopen", return_value=FakeResponse()):
             self.assertFalse(service_runtime._runtime_ready("ws://127.0.0.1:65530/ws", "claw-tenant", timeout_seconds=0.1))
 
     def test_runtime_ready_accepts_tenant_capability_summary(self):
@@ -73,7 +73,7 @@ class ServiceRuntimeTests(unittest.TestCase):
             def read(self) -> bytes:
                 return b'{"runtimes":[{"attached":true,"tenants_served":["claw-tenant"],"capabilities_by_tenant":{"claw-tenant":["fs_read"]}}]}'
 
-        with mock.patch.object(service_runtime, "urlopen", return_value=FakeResponse()):
+        with mock.patch.object(service_runtime, "_urlopen", return_value=FakeResponse()):
             self.assertTrue(service_runtime._runtime_ready("ws://127.0.0.1:65530/ws", "claw-tenant", timeout_seconds=0.1))
 
     def test_runtime_ready_falls_back_to_local_status(self):
@@ -84,9 +84,18 @@ class ServiceRuntimeTests(unittest.TestCase):
             tabula.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
             status = json.dumps({"runtimes": [{"attached": True, "tenants_served": ["claw-tenant"], "capabilities_by_tenant": {"claw-tenant": ["fs_read"]}}]})
             result = mock.Mock(returncode=0, stdout=status)
-            with mock.patch.object(service_runtime, "urlopen", side_effect=OSError("http unavailable")), mock.patch.object(service_runtime.subprocess, "run", return_value=result) as run:
+            with mock.patch.object(service_runtime, "_urlopen", side_effect=OSError("http unavailable")), mock.patch.object(service_runtime.subprocess, "run", return_value=result) as run:
                 self.assertTrue(service_runtime.wait_for_runtime_ready("ws://127.0.0.1:65530/ws", "claw-tenant", home=home, tabula_bin=str(tabula), timeout_seconds=0.1))
             run.assert_called()
+
+    def test_local_internal_http_bypasses_proxy_handlers(self):
+        opener = mock.Mock()
+        with mock.patch.object(service_runtime, "build_opener", return_value=opener) as build:
+            service_runtime._urlopen("http://localhost:8089/internal/snapshot/runtimes", timeout=0.1)
+
+        build.assert_called_once()
+        self.assertIsInstance(build.call_args.args[0], service_runtime.ProxyHandler)
+        opener.open.assert_called_once_with("http://localhost:8089/internal/snapshot/runtimes", timeout=0.1)
 
     def test_internal_urls_prefer_kernel_status_endpoint(self):
         with tempfile.TemporaryDirectory() as tmp:

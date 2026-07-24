@@ -238,11 +238,50 @@ def _process_command(pid: int) -> str:
 
 def _agent_pid_matches(home: Path, pid: int) -> bool:
     command = _process_command(pid)
+    return _agent_command_matches(home, command)
+
+
+def _agent_command_matches(home: Path, command: str) -> bool:
     if not command:
         return False
     tabula_bin = home / "bin" / "tabula"
+    parts = command.split()
+    executable = parts[0] if parts else ""
+    executable_candidates = {executable}
+    if executable:
+        executable_candidates.add(str(Path(executable).expanduser().resolve()))
     candidates = {str(tabula_bin), str(tabula_bin.resolve())}
-    return any(candidate in command for candidate in candidates) and " serve" in f" {command}" and "--runtime-mode" in command and "managed" in command
+    return bool(candidates & executable_candidates) and " serve" in f" {command}" and "--runtime-mode" in command and "managed" in command
+
+
+def _scan_agent_pid(home: Path) -> int | None:
+    try:
+        result = subprocess.run(
+            ["ps", "ax", "-o", "pid=", "-o", "command="],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=2.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    matches: list[int] = []
+    for line in result.stdout.splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        pid_text, _, command = raw.partition(" ")
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        if pid > 0 and _agent_command_matches(home, command):
+            matches.append(pid)
+    if not matches:
+        return None
+    return max(matches)
 
 
 def _status_kernel_pid(home: Path) -> int | None:
@@ -283,6 +322,10 @@ def _agent_pid(home: Path) -> int | None:
         _agent_pid_file(home).unlink(missing_ok=True)
     pid = _status_kernel_pid(home)
     if pid is not None and _process_exists(pid) and _agent_pid_matches(home, pid):
+        _write_agent_pid(home, pid)
+        return pid
+    pid = _scan_agent_pid(home)
+    if pid is not None and _process_exists(pid):
         _write_agent_pid(home, pid)
         return pid
     return None
@@ -378,12 +421,8 @@ def _ensure_ready(home: Path, tenant_id: str, kernel_url: str, timeout_seconds: 
     if timeout_seconds <= 0:
         raise AgentError("service readiness timeout must be greater than zero")
     if service_runtime.kernel_healthy(kernel_url, timeout_seconds=0.5):
-        reload_error = service_runtime.request_runtime_reload(
-            kernel_url, home=home, timeout_seconds=min(5.0, timeout_seconds)
-        )
-        if service_runtime.wait_for_runtime_ready(
-            kernel_url, tenant_id, home=home, timeout_seconds=timeout_seconds
-        ):
+        ready, reload_error = _wait_for_ready_runtime(home, tenant_id, kernel_url, timeout_seconds)
+        if ready:
             return
         detail = f"; runtime reload failed: {reload_error}" if reload_error else ""
         raise AgentError(f"kernel is reachable, but runtime is not ready for tenant {tenant_id!r}{detail}")
@@ -415,16 +454,44 @@ def _ensure_ready(home: Path, tenant_id: str, kernel_url: str, timeout_seconds: 
             )
         remaining = max(0.1, deadline - time.monotonic())
         if service_runtime.kernel_healthy(kernel_url, timeout_seconds=min(0.5, remaining)):
-            if service_runtime.wait_for_runtime_ready(
-                kernel_url, tenant_id, home=home, timeout_seconds=remaining
-            ):
+            ready, _reload_error = _wait_for_ready_runtime(home, tenant_id, kernel_url, min(1.0, remaining))
+            if ready:
                 return
-            break
         time.sleep(0.2)
     raise AgentError(
         f"managed service did not become ready for tenant {tenant_id!r}; "
         f"see {logs / 'agent-kernel.err.log'}"
     )
+
+
+def _wait_for_ready_runtime(home: Path, tenant_id: str, kernel_url: str, timeout_seconds: float) -> tuple[bool, str]:
+    deadline = time.monotonic() + timeout_seconds
+    reload_error = ""
+    next_reload = 0.0
+    while time.monotonic() < deadline:
+        remaining = max(0.1, deadline - time.monotonic())
+        if not service_runtime.kernel_healthy(kernel_url, timeout_seconds=min(0.5, remaining)):
+            time.sleep(0.2)
+            continue
+        now = time.monotonic()
+        if now >= next_reload:
+            current = service_runtime.request_runtime_reload(
+                kernel_url,
+                home=home,
+                timeout_seconds=min(1.0, remaining),
+            )
+            if current:
+                reload_error = current
+            next_reload = now + 1.0
+        if service_runtime.wait_for_runtime_ready(
+            kernel_url,
+            tenant_id,
+            home=home,
+            timeout_seconds=min(1.0, remaining),
+        ):
+            return True, reload_error
+        time.sleep(0.2)
+    return False, reload_error
 
 
 def _start(args: argparse.Namespace, home: Path) -> int:

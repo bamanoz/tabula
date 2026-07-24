@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from urllib.error import URLError
 from urllib.parse import urlparse, urlunparse
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener, urlopen
 
 
 class ServiceRuntimeError(RuntimeError):
@@ -24,7 +24,7 @@ def kernel_healthy(kernel_url: str, *, timeout_seconds: float = 1.0) -> bool:
     except ValueError:
         return False
     try:
-        with urlopen(health_url, timeout=max(timeout_seconds, 0.1)) as resp:
+        with _urlopen(health_url, timeout=max(timeout_seconds, 0.1)) as resp:
             return 200 <= resp.status < 300
     except (OSError, URLError, ValueError):
         return False
@@ -65,7 +65,7 @@ def request_runtime_reload(
         method="POST",
     )
     try:
-        with urlopen(request, timeout=max(timeout_seconds, 0.1)) as resp:
+        with _urlopen(request, timeout=max(timeout_seconds, 0.1)) as resp:
             if 200 <= resp.status < 300:
                 return ""
             return f"POST {reload_url} returned HTTP {resp.status}"
@@ -99,7 +99,7 @@ def _runtime_ready(
     except ValueError:
         return False
     try:
-        with urlopen(snapshot_url, timeout=max(timeout_seconds, 0.1)) as resp:
+        with _urlopen(snapshot_url, timeout=max(timeout_seconds, 0.1)) as resp:
             if resp.status < 200 or resp.status >= 300:
                 return False
             data = json.loads(resp.read().decode("utf-8"))
@@ -194,6 +194,19 @@ def _kernel_websocket_ready(kernel_url: str, *, timeout_seconds: float) -> bool:
             ws.close()
     except Exception:
         return False
+
+
+def _urlopen(request: Request | str, *, timeout: float):
+    url = request.full_url if isinstance(request, Request) else str(request)
+    if _is_loopback_url(url):
+        return build_opener(ProxyHandler({})).open(request, timeout=timeout)
+    return urlopen(request, timeout=timeout)
+
+
+def _is_loopback_url(url: str) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    return host == "localhost" or host == "::1" or host.startswith("127.")
 
 
 def _internal_url(kernel_url: str, path: str, *, home: Path | None = None) -> str:
