@@ -30,6 +30,11 @@ def _snapshot(root: Path) -> dict[str, bytes]:
 
 
 class InstallPayloadTests(unittest.TestCase):
+    def test_release_installer_preserves_installed_generations(self) -> None:
+        installer = (ROOT / "scripts" / "install.sh").read_text(encoding="utf-8")
+
+        self.assertNotIn('"$TABULA_HOME/distrib"', installer)
+
     def test_existing_config_tree_is_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
