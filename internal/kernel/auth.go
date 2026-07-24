@@ -17,18 +17,6 @@ func KernelClientTokenPath(tabulaHome string) string {
 	return filepath.Join(tabulaHome, "run", KernelClientTokenFileName)
 }
 
-// IssueKernelClientTokenFile generates and writes a fresh kernel client token.
-func IssueKernelClientTokenFile(path string) (string, error) {
-	token, err := GenerateKernelClientToken()
-	if err != nil {
-		return "", err
-	}
-	if err := WriteKernelClientTokenFile(path, token); err != nil {
-		return "", err
-	}
-	return token, nil
-}
-
 // GenerateKernelClientToken returns a local bearer token for kernel WebSocket clients.
 func GenerateKernelClientToken() (string, error) {
 	var raw [32]byte

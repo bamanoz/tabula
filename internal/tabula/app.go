@@ -371,9 +371,9 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 	// Set environment for all child processes
 	os.Setenv("TABULA_URL", kernelConfig.URL)
 	os.Setenv("TABULA_HOME", tabulaHome)
-	clientAuthToken, err := kernel.IssueKernelClientTokenFile(kernel.KernelClientTokenPath(tabulaHome))
+	clientAuthToken, err := kernel.GenerateKernelClientToken()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: kernel client token setup failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: kernel client token generation failed: %v\n", err)
 		return 1
 	}
 	os.Setenv("TABULA_KERNEL_TOKEN", clientAuthToken)
@@ -543,6 +543,25 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 		slog.Info("local runtime managed mode enabled", "pid", runtimeProc.PID())
 	default:
 		slog.Info("local runtime disabled")
+	}
+	if err := kernel.WriteKernelClientTokenFile(kernel.KernelClientTokenPath(tabulaHome), clientAuthToken); err != nil {
+		close(runtimeStop)
+		runtimeListener.Close()
+		listener.Close()
+		if runtimeWSSServer != nil {
+			_ = runtimeWSSServer.Close()
+		}
+		if runtimeWSSListener != nil {
+			_ = runtimeWSSListener.Close()
+		}
+		server.Close()
+		if runtimeProc != nil {
+			if err := runtimeProc.Shutdown(5 * time.Second); err != nil {
+				slog.Warn("local runtime shutdown failed", "error", err)
+			}
+		}
+		fmt.Fprintf(os.Stderr, "error: kernel client token setup failed: %v\n", err)
+		return 1
 	}
 	if err := writeKernelStatusFiles(tabulaHome, wsEndpoint, time.Now().UTC()); err != nil {
 		close(runtimeStop)
@@ -854,9 +873,9 @@ func runCmd(args []string, build BuildInfo) int {
 	os.Setenv("TABULA_URL", kernelConfig.URL)
 	os.Setenv("TABULA_HOME", tabulaHome)
 	os.Setenv("TABULA_SKIP_MCP", "1")
-	clientAuthToken, err := kernel.IssueKernelClientTokenFile(kernel.KernelClientTokenPath(tabulaHome))
+	clientAuthToken, err := kernel.GenerateKernelClientToken()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: kernel client token setup failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: kernel client token generation failed: %v\n", err)
 		return 1
 	}
 	os.Setenv("TABULA_KERNEL_TOKEN", clientAuthToken)
@@ -957,6 +976,16 @@ func runCmd(args []string, build BuildInfo) int {
 		runtimeListener.Close()
 		listener.Close()
 		fmt.Fprintf(os.Stderr, "error: local runtime startup failed: %v\n", err)
+		return 1
+	}
+	if err := kernel.WriteKernelClientTokenFile(kernel.KernelClientTokenPath(tabulaHome), clientAuthToken); err != nil {
+		if shutdownErr := runtimeProc.Shutdown(5 * time.Second); shutdownErr != nil {
+			slog.Warn("local runtime shutdown failed", "error", shutdownErr)
+		}
+		close(runtimeStop)
+		runtimeListener.Close()
+		listener.Close()
+		fmt.Fprintf(os.Stderr, "error: kernel client token setup failed: %v\n", err)
 		return 1
 	}
 	defer func() {

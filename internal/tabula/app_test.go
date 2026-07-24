@@ -3,6 +3,7 @@ package tabula
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -87,6 +88,55 @@ func TestLoadEnvFileDoesNotOverrideExistingValues(t *testing.T) {
 
 	if got := os.Getenv("TABULA_PROVIDER"); got != "openai" {
 		t.Fatalf("expected existing TABULA_PROVIDER to win, got %q", got)
+	}
+}
+
+func TestServeBindFailureDoesNotOverwriteKernelClientToken(t *testing.T) {
+	home := t.TempDir()
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get wd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+	t.Setenv("TABULA_HOME", home)
+	t.Setenv("TABULA_LOG_FILE", filepath.Join(home, "kernel.log"))
+	t.Setenv("TABULA_URL", "")
+	t.Setenv("TABULA_KERNEL_TOKEN", "")
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen fixture: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	configDir := filepath.Join(home, "config")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "kernel.toml"), []byte("[kernel]\nurl = \"ws://"+listener.Addr().String()+"/ws\"\n"), 0o644); err != nil {
+		t.Fatalf("write kernel config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "runtime.toml"), []byte("plugin_dirs = []\nskill_dirs = []\n"), 0o644); err != nil {
+		t.Fatalf("write runtime config: %v", err)
+	}
+	runDir := filepath.Join(home, "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatalf("mkdir run: %v", err)
+	}
+	tokenPath := kernel.KernelClientTokenPath(home)
+	if err := os.WriteFile(tokenPath, []byte("old-token\n"), 0o600); err != nil {
+		t.Fatalf("write old token: %v", err)
+	}
+
+	if code := serveCmd(BuildInfo{Version: "test", Commit: "test", Date: "test"}, serveOptions{runtimeMode: localRuntimeModeDisabled}); code == 0 {
+		t.Fatal("serve unexpectedly succeeded on occupied listen address")
+	}
+	data, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatalf("read token: %v", err)
+	}
+	if string(data) != "old-token\n" {
+		t.Fatalf("token was overwritten on failed bind: %q", string(data))
 	}
 }
 
