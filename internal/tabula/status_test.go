@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -174,6 +175,51 @@ func TestBuildStatusKernelRunningFetchesRuntimeSnapshot(t *testing.T) {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("json status missing %q in %s", want, string(data))
 		}
+	}
+}
+
+func TestBuildStatusFallsBackToManagedAgentPID(t *testing.T) {
+	tabulaHome := t.TempDir()
+	writeTenantDir(t, tabulaHome, "default")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sessions":
+			_, _ = w.Write([]byte(`{}`))
+		case "/internal/snapshot/runtimes":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"runtimes":[{"id":"local","attached":true,"pid":12346,"capabilities":["read"],"tenants_served":["default"]}]}`))
+		default:
+			t.Fatalf("unexpected status path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	runDir := filepath.Join(tabulaHome, "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatalf("mkdir run: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, agentPIDFilename), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644); err != nil {
+		t.Fatalf("write agent pid: %v", err)
+	}
+	configDir := filepath.Join(tabulaHome, "config")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	wsEndpoint := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+	if err := os.WriteFile(filepath.Join(configDir, "kernel.toml"), []byte("[kernel]\nurl = \""+wsEndpoint+"\"\n"), 0o644); err != nil {
+		t.Fatalf("write kernel config: %v", err)
+	}
+
+	doc, err := buildStatus(t.Context(), tabulaHome, srv.Client())
+	if err != nil {
+		t.Fatalf("buildStatus: %v", err)
+	}
+	if !doc.Kernel.Running || doc.Kernel.PID != os.Getpid() || doc.Kernel.WSEndpoint != wsEndpoint {
+		t.Fatalf("unexpected kernel status: %+v", doc.Kernel)
+	}
+	if len(doc.Runtimes) != 1 || doc.Runtimes[0].ID != "local" {
+		t.Fatalf("expected managed runtime from fallback status, got %+v", doc.Runtimes)
 	}
 }
 

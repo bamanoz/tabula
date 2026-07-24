@@ -27,6 +27,7 @@ const (
 	statusExitCannotRead = 2
 	statusFilename       = "kernel-status.json"
 	pidFilename          = "kernel.pid"
+	agentPIDFilename     = "agent-kernel.pid"
 )
 
 type statusKernel struct {
@@ -249,11 +250,15 @@ func readKernelStatusFile(tabulaHome string) (kernelStatusFile, error) {
 		// M2-06 also writes a pidfile; tolerate status files created by older test
 		// fixtures by falling back to the pidfile when the richer state is absent.
 		if errors.Is(err, os.ErrNotExist) {
-			pid, pidErr := readPIDFile(filepath.Join(tabulaHome, "run", pidFilename))
+			pid, pidErr := readKernelPIDFallback(tabulaHome)
 			if pidErr != nil {
 				return kernelStatusFile{}, err
 			}
-			return kernelStatusFile{PID: pid, RuntimeSocket: localRuntimeSocketPath(tabulaHome)}, nil
+			wsEndpoint := ""
+			if cfg, cfgErr := loadKernelConfigFile(tabulaHome); cfgErr == nil {
+				wsEndpoint = cfg.URL
+			}
+			return kernelStatusFile{PID: pid, RuntimeSocket: localRuntimeSocketPath(tabulaHome), WSEndpoint: wsEndpoint}, nil
 		}
 		return kernelStatusFile{}, err
 	}
@@ -262,6 +267,13 @@ func readKernelStatusFile(tabulaHome string) (kernelStatusFile, error) {
 		return kernelStatusFile{}, fmt.Errorf("read kernel status: %w", err)
 	}
 	return state, nil
+}
+
+func readKernelPIDFallback(tabulaHome string) (int, error) {
+	if pid, err := readPIDFile(filepath.Join(tabulaHome, "run", pidFilename)); err == nil {
+		return pid, nil
+	}
+	return readPIDFile(filepath.Join(tabulaHome, "run", agentPIDFilename))
 }
 
 func readPIDFile(path string) (int, error) {
