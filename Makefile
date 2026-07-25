@@ -149,7 +149,7 @@ release-local-dry-run:
 	DRY_RUN=1 scripts/release-local.sh
 
 push:
-	git push
+	git push --follow-tags
 	git -C "$(LOCAL_TABULA_BUNDLES)" push
 	git -C "$(LOCAL_TABULA_DISTRIB)" push
 

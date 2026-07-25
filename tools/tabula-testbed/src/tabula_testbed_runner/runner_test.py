@@ -93,6 +93,58 @@ class RunnerProtocolMarkerTests(unittest.TestCase):
         self.assertEqual(selected, ["test-fixtures"])
         self.assertEqual(component_map, {"test-fixtures": ["testbed-cold-python"]})
 
+    def test_lint_selection_rejects_unselected_bundle_dependency(self) -> None:
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            extensions = root / "extensions"
+            security = root / "security"
+            extensions.mkdir()
+            security.mkdir()
+            (extensions / "bundle.toml").write_text('[bundle]\nname = "extensions"\n', encoding="utf-8")
+            (security / "bundle.toml").write_text(
+                '[bundle]\nname = "security"\ncomponents = ["hook-approvals"]\n\n'
+                '[[dependencies]]\nbundle = "extensions"\n',
+                encoding="utf-8",
+            )
+            (security / "hook-approvals").mkdir()
+            test_path = root / "test_smoke.py"
+            test_path.write_text("pass\n", encoding="utf-8")
+            manifest = {
+                "sets": {"empty": []},
+                "bundles": {
+                    "extensions": {"source": "source:bundles#path=extensions"},
+                    "security": {"source": "source:bundles#path=security"},
+                },
+            }
+
+            with self.assertRaises(SystemExit) as ctx:
+                lint_selection(
+                    manifest,
+                    {"bundles": f"local:{root}"},
+                    "empty",
+                    False,
+                    [],
+                    [],
+                    ["security:hook-approvals"],
+                    [test_path],
+                )
+
+            self.assertIn("bundle 'security' depends on unselected bundle 'extensions'", str(ctx.exception))
+
+            selected, component_map, roots = lint_selection(
+                manifest,
+                {"bundles": f"local:{root}"},
+                "empty",
+                False,
+                ["extensions"],
+                [],
+                ["security:hook-approvals"],
+                [test_path],
+            )
+            self.assertEqual(selected, ["extensions", "security"])
+            self.assertEqual(component_map, {"security": ["hook-approvals"]})
+            self.assertEqual(set(roots), {"extensions", "security"})
+
     def test_mixed_baseline_and_component_suites_generate_full_baseline_bundle(self) -> None:
         manifest = {
             "sets": {"baseline": ["base", "test-fixtures"], "empty": []},

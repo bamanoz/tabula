@@ -39,8 +39,8 @@ class MultiDistroTenantsInstalled(unittest.TestCase):
 
         cls._install_tenant("code-project", cls.code_source, cls.code_workspace)
         cls._install_tenant("claw-project", cls.claw_source, cls.claw_workspace)
-        cls._wait_for_tenant_tools("code-project", {"fs_list", "todoread", "codegraph_search"})
-        cls._wait_for_tenant_tools("claw-project", {"fs_list", "todoread", "subagent_list"})
+        cls._wait_for_tenant_tools("code-project", {"fs_list", "todo_read", "codegraph_search"})
+        cls._wait_for_tenant_tools("claw-project", {"fs_list", "todo_read", "subagent_list"})
 
     @classmethod
     def _distro_source(cls, distro: str) -> str:
@@ -156,7 +156,7 @@ class MultiDistroTenantsInstalled(unittest.TestCase):
         ):
             with self._client(tenant) as client:
                 client.wait_tools(
-                    {"fs_list", "todoread", "todowrite"},
+                    {"fs_list", "todo_read", "todo_write"},
                     session="shared-session",
                     tenant_id=tenant,
                 )
@@ -165,7 +165,7 @@ class MultiDistroTenantsInstalled(unittest.TestCase):
                 self.assertIn(marker, names)
                 self.assertNotIn("claw-only.txt" if tenant == "code-project" else "code-only.txt", names)
                 written = client.call_tool(
-                    "todowrite",
+                    "todo_write",
                     {"items": [{"content": tenant, "status": "in_progress"}]},
                     timeout=15,
                 ).json()
@@ -187,8 +187,8 @@ class MultiDistroTenantsInstalled(unittest.TestCase):
         self.assertTrue({"code-project", "claw-project"}.issubset(set(attached[0].get("tenants_served") or [])), status)
 
         with self._client("code-project") as code_client, self._client("claw-project") as claw_client:
-            code_items = code_client.call_tool("todoread", {}, timeout=15).json()["items"]
-            claw_items = claw_client.call_tool("todoread", {}, timeout=15).json()["items"]
+            code_items = code_client.call_tool("todo_read", {}, timeout=15).json()["items"]
+            claw_items = claw_client.call_tool("todo_read", {}, timeout=15).json()["items"]
             self.assertEqual(code_items[0]["content"], "code-project")
             self.assertEqual(claw_items[0]["content"], "claw-project")
 
@@ -200,7 +200,7 @@ class MultiDistroTenantsInstalled(unittest.TestCase):
         if not claw_state_path.is_file():
             with self._client("claw-project") as client:
                 client.call_tool(
-                    "todowrite",
+                    "todo_write",
                     {"items": [{"content": "claw-project", "status": "in_progress"}]},
                     timeout=15,
                 )
@@ -222,7 +222,7 @@ class MultiDistroTenantsInstalled(unittest.TestCase):
             check=True,
             timeout=180,
         )
-        self._wait_for_tenant_tools("code-project", {"fs_list", "todoread", "codegraph_search"})
+        self._wait_for_tenant_tools("code-project", {"fs_list", "todo_read", "codegraph_search"})
 
         self.assertEqual((claw_root / "install.lock.json").read_bytes(), claw_lock)
         self.assertEqual((claw_root / "plugins").resolve(), claw_plugins)

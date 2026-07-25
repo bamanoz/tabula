@@ -452,10 +452,28 @@ def lint_selection(manifest: dict[str, Any], source_roots: dict[str, str], set_n
         for component in component_map.get(bundle, []):
             if not (root / component).is_dir():
                 raise SystemExit(f"bundle {bundle!r} missing component {component!r}: {root / component}")
+    validate_bundle_dependencies(selected, roots)
     missing_tests = [str(path) for path in tests if not path.is_file()]
     if missing_tests:
         raise SystemExit("missing test files:\n" + "\n".join(missing_tests))
     return selected, component_map, roots
+
+
+def validate_bundle_dependencies(selected: list[str], roots: dict[str, Path]) -> None:
+    selected_set = set(selected)
+    for bundle, root in sorted(roots.items()):
+        data = load_toml(root / "bundle.toml")
+        dependencies = data.get("dependencies") or []
+        if not isinstance(dependencies, list):
+            raise SystemExit(f"bundle {bundle!r} dependencies must be an array of tables")
+        for entry in dependencies:
+            if not isinstance(entry, dict):
+                raise SystemExit(f"bundle {bundle!r} dependencies entries must be tables")
+            dep = str(entry.get("bundle") or "").strip()
+            if not dep:
+                raise SystemExit(f"bundle {bundle!r} dependency entry missing bundle")
+            if dep not in selected_set:
+                raise SystemExit(f"bundle {bundle!r} depends on unselected bundle {dep!r}")
 
 
 def direct_checks(roots: dict[str, Path], component_map: dict[str, list[str]], tests: list[Path]) -> None:

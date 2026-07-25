@@ -113,6 +113,17 @@ and shared development tooling. Distro-specific product policy belongs in
   behavior, runtime layout, config, installation, or testing expectations,
   update the relevant docs in the same change.
 
+## Agent Tooling Notes
+
+- For append-only notes, do not overwrite a file from a partial preview. Use
+  `fs_edit` against known content or append with a shell command when safe.
+- On macOS, do not assume GNU `timeout`; use background process tooling or
+  `gtimeout` when coreutils is installed.
+- Under RTK hooks, use `rtk proxy` for raw `find`/`rg` behavior when commands
+  need compound predicates, actions, or advanced flags.
+- Release tags must reach GitHub with the release commits; use `make push`,
+  which pushes the core repo with `--follow-tags`.
+
 # Go code rules
 
 ## Toolchain

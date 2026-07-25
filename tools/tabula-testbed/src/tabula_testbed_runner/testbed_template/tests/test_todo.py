@@ -18,11 +18,11 @@ class TodoInstalled(unittest.TestCase):
         self.assertTrue((home / "plugins" / "todo" / "plugin.toml").is_file(), "todo plugin missing")
         with TestbedClient(self.url, name="testbed-todo") as client:
             client.connect_join("testbed-todo")
-            client.wait_tools({"todoread", "todowrite"}, session="testbed-todo")
-            initial = client.call_tool("todoread", {}, timeout=10).json()
+            client.wait_tools({"todo_read", "todo_write"}, session="testbed-todo")
+            initial = client.call_tool("todo_read", {}, timeout=10).json()
             self.assertEqual(initial.get("items"), [])
             written = client.call_tool(
-                "todowrite",
+                "todo_write",
                 {
                     "items": [
                         {"content": "inspect", "status": "completed", "priority": "high"},
@@ -31,23 +31,30 @@ class TodoInstalled(unittest.TestCase):
                 },
                 timeout=10,
             ).json()
-            self.assertIn(written.get("session"), {"testbed-todo", "_default"})
+            self.assertEqual(written.get("session"), "testbed-todo")
             self.assertEqual(len(written.get("items", [])), 2)
             self.assertEqual(written["items"][0]["id"], "1")
             self.assertEqual(written["items"][0]["priority"], "high")
             self.assertEqual(written["items"][1]["priority"], "medium")
             self.assertEqual(written["items"][1]["position"], 1)
-            again = client.call_tool("todoread", {}, timeout=10).json()
+            again = client.call_tool("todo_read", {}, timeout=10).json()
             self.assertEqual(again.get("items"), written.get("items"))
             rewritten = client.call_tool(
-                "todowrite",
+                "todo_write",
                 {"items": [{"content": "verify", "status": "completed"}]},
                 timeout=10,
             ).json()
             self.assertEqual(len(rewritten["items"]), 1)
             self.assertEqual(rewritten["items"][0]["id"], written["items"][1]["id"])
-            cleared = client.call_tool("todowrite", {"items": []}, timeout=10).json()
+            cleared = client.call_tool("todo_write", {"items": []}, timeout=10).json()
             self.assertEqual(cleared["items"], [])
+
+            spaced_session = "tabula developer"
+            client.refresh_init(spaced_session)
+            client.wait_tools({"todo_read", "todo_write"}, session=spaced_session)
+            spaced = client.call_tool("todo_write", {"items": [{"content": "space session", "status": "pending"}]}, timeout=10).json()
+            self.assertEqual(spaced.get("session"), spaced_session)
+            self.assertEqual(client.call_tool("todo_read", {}, timeout=10).json().get("items"), spaced.get("items"))
 
 
 def main() -> int:
