@@ -123,6 +123,8 @@ and shared development tooling. Distro-specific product policy belongs in
   need compound predicates, actions, or advanced flags.
 - Release tags must reach GitHub with the release commits; use `make push`,
   which pushes the core repo with `--follow-tags`.
+- Never reinstall or update the active/live agent runtime, including production
+  `TABULA_HOME=$HOME/.tabula`, without explicit user approval.
 
 # Go code rules
 
