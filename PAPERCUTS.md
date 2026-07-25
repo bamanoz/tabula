@@ -73,3 +73,7 @@ Running `tabula-testbed lint/direct` for a suite selecting `security:hook-*` com
 ## 2026-07-25 13:51 — externcash/gpt-5.5
 
 Running `python3 -m pytest tools/tabula-distro/tests/test_manifest.py tools/tabula-distro/tests/test_install.py tools/tabula-distro/tests/test_install_cli.py -q` after bundle rename → pytest reported no tests collected, while each file passed when run separately. Re-run narrowed files before assuming collection failure is real.
+
+## 2026-07-25 12:22 — externcash/gpt-5.5
+
+Running `make release-local-dry-run` for v0.18.0 → `scripts/package-skills.sh` failed copying missing `config/global.toml`. Keep release payload example generation independent from repo-local runtime config files.

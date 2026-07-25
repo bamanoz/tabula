@@ -12,7 +12,10 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 payload="$tmp/payload"
 mkdir -p "$payload/bin" "$payload/config" "$payload/libexec" "$payload/tools" "$payload/scripts"
-cp config/global.toml "$payload/config/global.toml.example"
+cat > "$payload/config/global.toml.example" <<'EOF'
+# Optional structured global Tabula config.
+# Most installs start with only $TABULA_HOME/.env.
+EOF
 cp scripts/install_payload.py "$payload/libexec/install_payload.py"
 cp scripts/install-service.sh "$payload/scripts/install-service.sh"
 cp scripts/uninstall-service.sh "$payload/scripts/uninstall-service.sh"
