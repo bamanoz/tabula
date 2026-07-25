@@ -190,7 +190,7 @@ class ConfigTests(unittest.TestCase):
             root.mkdir()
             (root / "distro.toml").write_text(
                 '[distro]\nid="tabula.demo"\nname="demo"\n[sources.tabula-bundles]\nsource="git+https://example.invalid/bundles.git@main"\n'
-                '[[bundles]]\nname="base"\nsource="source:tabula-bundles#path=base"\n',
+                '[[bundles]]\nname="extensions"\nsource="source:tabula-bundles#path=extensions"\n',
                 encoding="utf-8",
             )
             (root / "distro.override.toml").write_text(
@@ -199,7 +199,7 @@ class ConfigTests(unittest.TestCase):
             )
             c = cfg.load(root)
             self.assertEqual(c.sources["tabula-bundles"].source, "local:/tmp/tabula-bundles")
-            self.assertEqual(c.bundles[0].source, "source:tabula-bundles#path=base")
+            self.assertEqual(c.bundles[0].source, "source:tabula-bundles#path=extensions")
 
     def test_source_alias_can_be_overridden_by_environment(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -207,7 +207,7 @@ class ConfigTests(unittest.TestCase):
             root.mkdir()
             (root / "distro.toml").write_text(
                 '[distro]\nid="tabula.demo"\nname="demo"\n[sources.tabula-bundles]\nsource="git+https://example.invalid/bundles.git@main"\n'
-                '[[bundles]]\nname="base"\nsource="source:tabula-bundles#path=base"\n',
+                '[[bundles]]\nname="extensions"\nsource="source:tabula-bundles#path=extensions"\n',
                 encoding="utf-8",
             )
             old = os.environ.get("TABULA_SOURCE_ALIAS_TABULA_BUNDLES")
@@ -220,7 +220,7 @@ class ConfigTests(unittest.TestCase):
                 else:
                     os.environ["TABULA_SOURCE_ALIAS_TABULA_BUNDLES"] = old
             self.assertEqual(c.sources["tabula-bundles"].source, "local:/tmp/tabula-bundles")
-            self.assertEqual(c.bundles[0].source, "source:tabula-bundles#path=base")
+            self.assertEqual(c.bundles[0].source, "source:tabula-bundles#path=extensions")
 
 
 class InstallTests(unittest.TestCase):
@@ -466,15 +466,15 @@ class InstallTests(unittest.TestCase):
             distro = _make_minimal_distro(root, "demo")
 
             repo = root / "tabula-bundles"
-            _make_skill(repo / "base", "shell", "shell-v1")
+            _make_skill(repo / "extensions", "shell", "shell-v1")
             _make_skill(repo / "caveman", "caveman-compress", "caveman-v1")
             _touch(repo / "_lib" / "python" / "src" / "shared" / "__init__.py", "X=1\n")
-            _touch(repo / "base" / "bundle.toml", '[bundle]\nname="base"\n')
+            _touch(repo / "extensions" / "bundle.toml", '[bundle]\nname="extensions"\n')
             _touch(repo / "caveman" / "bundle.toml", '[bundle]\nname="caveman"\n')
 
             (distro / "distro.toml").write_text(
                 '[distro]\nid="tabula.demo"\nname="demo"\n[sources.tabula-bundles]\nsource="local:../tabula-bundles"\n'
-                '[[bundles]]\nname="base"\nsource="source:tabula-bundles#path=base"\n'
+                '[[bundles]]\nname="extensions"\nsource="source:tabula-bundles#path=extensions"\n'
                 '[[bundles]]\nname="caveman"\nsource="source:tabula-bundles#path=caveman"\n',
                 encoding="utf-8",
             )
@@ -483,9 +483,9 @@ class InstallTests(unittest.TestCase):
             self.assertTrue((home / "skills" / "shell" / "marker.txt").exists())
             self.assertTrue((home / "skills" / "caveman-compress" / "marker.txt").exists())
             self.assertFalse((home / "_lib").exists())
-            self.assertEqual(lock.bundles["base"].source, "local:../tabula-bundles#path=base")
+            self.assertEqual(lock.bundles["extensions"].source, "local:../tabula-bundles#path=extensions")
             self.assertEqual(lock.bundles["caveman"].source, "local:../tabula-bundles#path=caveman")
-            self.assertEqual(lock.bundles["base"].resolved_path, str((repo / "base").resolve()))
+            self.assertEqual(lock.bundles["extensions"].resolved_path, str((repo / "extensions").resolve()))
 
     def test_mixed_bundle_sources_with_identical_legacy_shared_lib_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -495,14 +495,14 @@ class InstallTests(unittest.TestCase):
 
             local_repo = root / "local-repo"
             git_repo = root / "git-repo"
-            _make_skill(local_repo / "base", "shell", "shell-v1")
+            _make_skill(local_repo / "extensions", "shell", "shell-v1")
             _make_skill(git_repo / "caveman", "caveman-compress", "caveman-v1")
             _touch(local_repo / "_lib" / "python" / "src" / "shared" / "__init__.py", "X=1\n")
             _touch(git_repo / "_lib" / "python" / "src" / "shared" / "__init__.py", "X=1\n")
 
             (distro / "distro.toml").write_text(
                 '[distro]\nid="tabula.demo"\nname="demo"\n'
-                '[[bundles]]\nname="base"\nsource="local:../local-repo/base"\n'
+                '[[bundles]]\nname="extensions"\nsource="local:../local-repo/extensions"\n'
                 '[[bundles]]\nname="caveman"\nsource="local:../git-repo/caveman"\n',
                 encoding="utf-8",
             )
@@ -520,14 +520,14 @@ class InstallTests(unittest.TestCase):
 
             local_repo = root / "local-repo"
             git_repo = root / "git-repo"
-            _make_skill(local_repo / "base", "shell", "shell-v1")
+            _make_skill(local_repo / "extensions", "shell", "shell-v1")
             _make_skill(git_repo / "caveman", "caveman-compress", "caveman-v1")
             _touch(local_repo / "_lib" / "python" / "src" / "shared" / "__init__.py", "X=1\n")
             _touch(git_repo / "_lib" / "python" / "src" / "shared" / "__init__.py", "X=2\n")
 
             (distro / "distro.toml").write_text(
                 '[distro]\nid="tabula.demo"\nname="demo"\n'
-                '[[bundles]]\nname="base"\nsource="local:../local-repo/base"\n'
+                '[[bundles]]\nname="extensions"\nsource="local:../local-repo/extensions"\n'
                 '[[bundles]]\nname="caveman"\nsource="local:../git-repo/caveman"\n'
                 'override=true\n',
                 encoding="utf-8",
@@ -694,18 +694,18 @@ class InstallTests(unittest.TestCase):
             home = root / "home"
             distro = _make_minimal_distro(root, "demo")
 
-            bundle = root / "ext" / "bundles" / "base"
+            bundle = root / "ext" / "bundles" / "extensions"
             _make_plugin(bundle, "sessions")
             _make_python_package(bundle / "sessions" / "sdk" / "python" / "src", "tabula_session_sdk")
             _touch(bundle / "bundle.toml", (
-                '[bundle]\nname="base"\ncomponents=["sessions"]\n'
+                '[bundle]\nname="extensions"\ncomponents=["sessions"]\n'
                 '[[exports.python_packages]]\n'
                 'name="tabula_session_sdk"\n'
                 'path="sessions/sdk/python/src/tabula_session_sdk"\n'
             ))
             (distro / "distro.toml").write_text(
                 '[distro]\nid="tabula.demo"\nname="demo"\n'
-                '[[bundles]]\nname="base"\nsource="local:../ext/bundles/base"\n',
+                '[[bundles]]\nname="extensions"\nsource="local:../ext/bundles/extensions"\n',
                 encoding="utf-8",
             )
 
@@ -737,11 +737,11 @@ class InstallTests(unittest.TestCase):
             home = root / "home"
             distro = _make_minimal_distro(root, "demo")
 
-            base = root / "ext" / "bundles" / "base"
-            _make_plugin(base, "sessions")
-            _make_python_package(base / "sessions" / "sdk" / "python" / "src", "tabula_session_sdk")
-            _touch(base / "bundle.toml", (
-                '[bundle]\nname="base"\ncomponents=["sessions"]\n'
+            extensions = root / "ext" / "bundles" / "extensions"
+            _make_plugin(extensions, "sessions")
+            _make_python_package(extensions / "sessions" / "sdk" / "python" / "src", "tabula_session_sdk")
+            _touch(extensions / "bundle.toml", (
+                '[bundle]\nname="extensions"\ncomponents=["sessions"]\n'
                 '[[exports.python_packages]]\n'
                 'name="tabula_session_sdk"\n'
                 'path="sessions/sdk/python/src/tabula_session_sdk"\n'
@@ -758,7 +758,7 @@ class InstallTests(unittest.TestCase):
             ))
             (distro / "distro.toml").write_text(
                 '[distro]\nid="tabula.demo"\nname="demo"\n'
-                '[[bundles]]\nname="base"\nsource="local:../ext/bundles/base"\n'
+                '[[bundles]]\nname="extensions"\nsource="local:../ext/bundles/extensions"\n'
                 '[[bundles]]\nname="drivers"\nsource="local:../ext/bundles/drivers"\n',
                 encoding="utf-8",
             )
@@ -806,7 +806,7 @@ class InstallTests(unittest.TestCase):
             _touch(gateways / "bundle.toml", (
                 '[bundle]\nname="gateways"\ncomponents=["gateway-web"]\n'
                 '[[dependencies]]\n'
-                'bundle="base"\n'
+                'bundle="extensions"\n'
                 'python_packages=["tabula_session_sdk"]\n'
             ))
             (distro / "distro.toml").write_text(
@@ -815,7 +815,7 @@ class InstallTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(installmod.InstallError, "depends on bundle 'base'"):
+            with self.assertRaisesRegex(installmod.InstallError, "depends on bundle 'extensions'"):
                 installmod.install(distro, home)
 
     def test_bundle_dependency_requires_exported_python_package(self):
@@ -824,21 +824,21 @@ class InstallTests(unittest.TestCase):
             home = root / "home"
             distro = _make_minimal_distro(root, "demo")
 
-            base = root / "ext" / "bundles" / "base"
-            _make_plugin(base, "sessions")
-            _touch(base / "bundle.toml", '[bundle]\nname="base"\ncomponents=["sessions"]\n')
+            extensions = root / "ext" / "bundles" / "extensions"
+            _make_plugin(extensions, "sessions")
+            _touch(extensions / "bundle.toml", '[bundle]\nname="extensions"\ncomponents=["sessions"]\n')
 
             gateways = root / "ext" / "bundles" / "gateways"
             _make_plugin(gateways, "gateway-web")
             _touch(gateways / "bundle.toml", (
                 '[bundle]\nname="gateways"\ncomponents=["gateway-web"]\n'
                 '[[dependencies]]\n'
-                'bundle="base"\n'
+                'bundle="extensions"\n'
                 'python_packages=["tabula_session_sdk"]\n'
             ))
             (distro / "distro.toml").write_text(
                 '[distro]\nid="tabula.demo"\nname="demo"\n'
-                '[[bundles]]\nname="base"\nsource="local:../ext/bundles/base"\n'
+                '[[bundles]]\nname="extensions"\nsource="local:../ext/bundles/extensions"\n'
                 '[[bundles]]\nname="gateways"\nsource="local:../ext/bundles/gateways"\n',
                 encoding="utf-8",
             )
@@ -852,21 +852,21 @@ class InstallTests(unittest.TestCase):
             home = root / "home"
             distro = _make_minimal_distro(root, "demo")
 
-            base = root / "ext" / "bundles" / "base"
-            _make_plugin(base, "skills")
-            _touch(base / "bundle.toml", '[bundle]\nname="base"\ncomponents=["skills"]\n')
+            extensions = root / "ext" / "bundles" / "extensions"
+            _make_plugin(extensions, "skills")
+            _touch(extensions / "bundle.toml", '[bundle]\nname="extensions"\ncomponents=["skills"]\n')
 
             gateway = root / "ext" / "bundles" / "gateway"
             _make_plugin(gateway, "gateway-node")
             _touch(gateway / "bundle.toml", (
                 '[bundle]\nname="gateway"\ncomponents=["gateway-node"]\n'
                 '[[dependencies]]\n'
-                'bundle="base"\n'
+                'bundle="extensions"\n'
                 'typescript_packages=["@tabula/skill-sdk"]\n'
             ))
             (distro / "distro.toml").write_text(
                 '[distro]\nid="tabula.demo"\nname="demo"\n'
-                '[[bundles]]\nname="base"\nsource="local:../ext/bundles/base"\n'
+                '[[bundles]]\nname="extensions"\nsource="local:../ext/bundles/extensions"\n'
                 '[[bundles]]\nname="gateway"\nsource="local:../ext/bundles/gateway"\n',
                 encoding="utf-8",
             )
@@ -880,20 +880,20 @@ class InstallTests(unittest.TestCase):
             home = root / "home"
             distro = _make_minimal_distro(root, "demo")
 
-            base = root / "ext" / "bundles" / "base"
-            _make_plugin(base, "skills")
-            package_root = base / "skills" / "sdk" / "typescript"
+            extensions = root / "ext" / "bundles" / "extensions"
+            _make_plugin(extensions, "skills")
+            package_root = extensions / "skills" / "sdk" / "typescript"
             _touch(package_root / "package.json", '{"name":"@tabula/skill-sdk","version":"0.1.0"}\n')
             _touch(package_root / "src" / "index.ts", "export const ok = true;\n")
-            _touch(base / "bundle.toml", (
-                '[bundle]\nname="base"\ncomponents=["skills"]\n'
+            _touch(extensions / "bundle.toml", (
+                '[bundle]\nname="extensions"\ncomponents=["skills"]\n'
                 '[[exports.typescript_packages]]\n'
                 'name="@tabula/skill-sdk"\n'
                 'path="skills/sdk/typescript"\n'
             ))
             (distro / "distro.toml").write_text(
                 '[distro]\nid="tabula.demo"\nname="demo"\n'
-                '[[bundles]]\nname="base"\nsource="local:../ext/bundles/base"\n',
+                '[[bundles]]\nname="extensions"\nsource="local:../ext/bundles/extensions"\n',
                 encoding="utf-8",
             )
 

@@ -507,11 +507,10 @@ This is the same mechanism the agent uses when it writes a new skill for
 itself — there is no separate "agent-authored skills" path.
 
 See the
-[`skill-contract`](https://github.com/bamanoz/tabula-bundles/tree/main/base/skill-contract)
-skill in `tabula-bundles` for the current claw skill convention. Contract
-versioning across the wire protocol, runtime config, claw skill manifests,
-and packaged SDK contracts is still being stabilized; don't rely on temporary
-legacy support-dir internals yet.
+[`tabula-guide`](https://github.com/bamanoz/tabula-bundles/tree/main/extensions/tabula-guide)
+skill in `tabula-bundles` for current skill, plugin, runtime layout, and config
+conventions. Contract versioning across the wire protocol, runtime config, skill
+manifests, and packaged SDK contracts is still being stabilized.
 
 ## Testing
 

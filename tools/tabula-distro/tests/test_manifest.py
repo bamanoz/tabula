@@ -18,7 +18,7 @@ class BundleManifestTests(unittest.TestCase):
             root = Path(tmp)
             _write(root / "bundle.toml", """
 [bundle]
-name = "base"
+name = "extensions"
 components = ["plugin-sdk"]
 
 [[exports.python_packages]]
@@ -94,7 +94,7 @@ path = "../skill-sdk"
 name = "bad"
 
 [[dependencies]]
-bundle = "base"
+bundle = "extensions"
 typescript_packages = [1]
 """)
 

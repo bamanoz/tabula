@@ -85,11 +85,11 @@ from pathlib import Path
 
 root = Path(sys.argv[1]).resolve()
 paths = [
-    root / "base" / "plugin-sdk" / "sdk" / "python" / "src",
-    root / "base" / "skills" / "sdk" / "python" / "src",
-    root / "base" / "tool-result-store" / "sdk" / "python" / "src",
-    root / "base" / "sessions" / "sdk" / "python" / "src",
-    root / "base" / "deferred-tools" / "sdk" / "python" / "src",
+    root / "extensions" / "plugin-sdk" / "sdk" / "python" / "src",
+    root / "extensions" / "skills" / "sdk" / "python" / "src",
+    root / "async" / "tool-result-store" / "sdk" / "python" / "src",
+    root / "collaboration" / "sessions" / "sdk" / "python" / "src",
+    root / "async" / "deferred-tools" / "sdk" / "python" / "src",
     root / "drivers" / "driver" / "sdk" / "python" / "src",
     root / "mempalace" / "mempalace-common" / "sdk" / "python" / "src",
 ]

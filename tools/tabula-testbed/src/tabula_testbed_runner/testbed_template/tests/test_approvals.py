@@ -81,11 +81,13 @@ class OpenAI:
 
 
 class ApprovalFlowInstalled(unittest.TestCase):
+    tenant_id = "approvals"
     url = "ws://localhost:8089/ws"
     tabula_home = ""
 
     def test_hook_approvals_prompts_and_persists_allow_rule(self):
         home = Path(self.tabula_home)
+        self.ensure_tenant(home)
         self.assertTrue((home / "plugins" / "hook-permissions" / "plugin.toml").is_file(), "hook-permissions plugin missing")
         self.assertTrue((home / "plugins" / "hook-approvals" / "plugin.toml").is_file(), "hook-approvals plugin missing")
         self.assertTrue((home / "plugins" / "exec" / "plugin.toml").is_file(), "exec plugin missing")
@@ -133,7 +135,7 @@ class ApprovalFlowInstalled(unittest.TestCase):
                 self.assertRegex(str(second_persisted["text"]), r"^turn-\d+-done$")
                 self.assertIsNone(second_persisted["ask"])
 
-            history = home / "data" / "sessions" / session / "history.jsonl"
+            history = home / "tenants" / self.tenant_id / "state" / "sessions" / session / "history.jsonl"
             text = history.read_text(encoding="utf-8")
             self.assertIn('"id": "call-1", "name": "exec_run"', text)
             self.assertIn('"id": "call-2", "name": "exec_run"', text)
@@ -163,7 +165,7 @@ class ApprovalFlowInstalled(unittest.TestCase):
                 sends=["message.user", "tool.call", "exchange.approve"],
                 receives=["session.init", "message.user", "tool.result", "error", "usage.update", "stream.start", "stream.delta", "stream.end", "turn.done", "tool.call", "exchange.approve"],
             )
-            client.join(session)
+            client.join(session, tenant_id=self.tenant_id)
             last_tools = {tool.get("name") for tool in client.tools() if tool.get("name")}
             if "exec_run" in last_tools:
                 return client
@@ -269,14 +271,14 @@ class ApprovalFlowInstalled(unittest.TestCase):
             "TABULA_HOME": self.tabula_home,
             "TABULA_URL": self.url,
             "TABULA_VERBOSE": "1",
-            "TABULA_TENANT_ID": "default",
+            "TABULA_TENANT_ID": self.tenant_id,
             "TABULA_PLUGIN_DRIVER_OPENAI_API_KEY": "test-key",
             "TABULA_PLUGIN_DRIVER_OPENAI_MODEL": "o3",
             "PYTHONPATH": f"{stub_dir}{os.pathsep}{env.get('PYTHONPATH', '')}" if env.get("PYTHONPATH") else str(stub_dir),
         })
         log_handle = log_path.open("wb")
         proc = subprocess.Popen(
-            [str(python), str(driver), "--session", session, "--provider", "openai", "--tenant", "default"],
+            [str(python), str(driver), "--session", session, "--provider", "openai", "--tenant", self.tenant_id],
             env=env,
             stdout=log_handle,
             stderr=subprocess.STDOUT,
@@ -303,6 +305,26 @@ class ApprovalFlowInstalled(unittest.TestCase):
             'timeout_default_seconds = 30\n'
             'timeout_max_seconds = 30\n',
             encoding="utf-8",
+        )
+
+    def ensure_tenant(self, home: Path) -> None:
+        if (home / "tenants" / self.tenant_id / "install.lock.json").is_file():
+            return
+        env = os.environ.copy()
+        env["TABULA_HOME"] = str(home)
+        agent = home / ".venv" / ("Scripts/tabula-agent.exe" if os.name == "nt" else "bin/tabula-agent")
+        subprocess.run(
+            [
+                str(agent),
+                "--home", str(home),
+                "install",
+                "--distro", str(home / "generated-testbed"),
+                "--tenant", self.tenant_id,
+                "--no-start",
+                "--non-interactive",
+            ],
+            env=env,
+            check=True,
         )
 
     def write_driver_config(self, home: Path) -> None:
@@ -336,7 +358,7 @@ class ApprovalFlowInstalled(unittest.TestCase):
         return home / "config" / "plugins" / "hook-permissions" / "config.toml"
 
     def approvals_config_path(self, home: Path) -> Path:
-        return home / "tenants" / "default" / "config" / "plugins" / "hook-approvals" / "config.toml"
+        return home / "tenants" / self.tenant_id / "config" / "plugins" / "hook-approvals" / "config.toml"
 
     def format_driver_log(self, log_path: Path) -> str:
         if not log_path.is_file():

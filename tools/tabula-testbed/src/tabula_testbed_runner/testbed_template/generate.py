@@ -102,9 +102,6 @@ def write_distro(output: Path, manifest: dict, selected: list[str], components: 
         "[requires]",
         'kernel = ">=0.9.0,<1.0.0"',
         "",
-        "[tenant_contract]",
-        'materializer = "python3 materialize_app.py"',
-        "",
     ]
     for alias in sorted(sources):
         source = sources[alias].get("source", "")

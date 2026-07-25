@@ -53,3 +53,23 @@ Running `tabula-bundles/gateways/tests` directly → imports failed with `Module
 ## 2026-07-24 13:31 — externcash/gpt-5.5
 
 Running the broader `tools.tabula-distro.tests.test_runtime_config` suite while validating unrelated readiness edits → existing `test_rewrite_preserves_user_comments_and_unknown_sections` failed because leading comments were not preserved. Keep readiness validation narrowed unless fixing runtime config TOML trivia preservation.
+
+## 2026-07-24 11:14 — externcash/gpt-5.5
+
+Reading `/Users/mak/.tabula/skills/tabula-guide/SKILL.md` with `fs_read` → tool rejected path as outside configured roots even though environment lists `/Users/mak/.tabula/skills` as allowed. Use shell read or fix fs root exposure for installed skills.
+
+## 2026-07-24 11:31 — externcash/gpt-5.5
+
+Editing one-line TOML `rules = [...]` with `sed "0,/rules = \[/s//.../"` → command printed updated but inserted nothing on macOS sed/regex. Verify with grep/count after text rewrites; prefer small Python rewrite for structured one-line TOML when fs tools cannot access `$TABULA_HOME`.
+
+## 2026-07-25 07:55 — externcash/gpt-5.5
+
+Checking generated `__pycache__` with `find ... -type d -name __pycache__ -print` under RTK hook → command output looked rewritten/misleading and stderr said `rtk find: unknown flag '-print', ignored`. Use `rtk proxy find ...` or `fs_glob`/`fs_delete` for generated-artifact cleanup checks.
+
+## 2026-07-25 08:00 — externcash/gpt-5.5
+
+Running `tabula-testbed lint/direct` for a suite selecting `security:hook-*` components → checks passed, but installed `tabula-testbed run` failed because `security` depends on selected bundle `base`. Add dependency validation to lint/direct or keep an installed run for bundle-boundary moves.
+
+## 2026-07-25 13:51 — externcash/gpt-5.5
+
+Running `python3 -m pytest tools/tabula-distro/tests/test_manifest.py tools/tabula-distro/tests/test_install.py tools/tabula-distro/tests/test_install_cli.py -q` after bundle rename → pytest reported no tests collected, while each file passed when run separately. Re-run narrowed files before assuming collection failure is real.

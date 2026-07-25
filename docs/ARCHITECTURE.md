@@ -571,13 +571,17 @@ manifest filename does.
 
 Current bundles:
 
-- `base/` — cron, hook-logger, hook-permissions, observer, pair,
-  sessions, skill-contract, tabula-guide, timer, mcp
+- `extensions/` — plugin SDK, skills plugin, and `tabula-guide`
+- `security/` — permission and approval hooks plus security guide
+- `async/` — deferred tool calls and tool result artifacts
+- `collaboration/` — sessions and pairing
+- `integrations/` — external integrations such as MCP
+- `interaction/` — human interaction tools such as `question`
+- `observability/` — runtime logging hooks
+- `productivity/` — `cron`, `todo`, and `wait`
 - `workspace/` — `fs` and `exec` plugins
-- `drivers/` — `driver`, `subagent`, plus `_drivers/` shared support code
-- `mempalace/` — mempalace, mempalace-admin
-- `caveman/` — minimal experimental skill set
-- `code/`, `subagents/` — coding and delegation components
+- `drivers/` — `driver` plus driver SDKs and shared support code
+- `mempalace/`, `caveman/`, `codegraph/`, `openspec/`, `subagents/` — domain-specific capabilities
 
 A distro lists bundles in `distro.toml`:
 
@@ -586,8 +590,8 @@ A distro lists bundles in `distro.toml`:
 source = "git+https://github.com/bamanoz/tabula-bundles.git@main"
 
 [[bundles]]
-name = "base"
-source = "source:tabula-bundles#path=base"
+name = "extensions"
+source = "source:tabula-bundles#path=extensions"
 
 [[bundles]]
 name = "drivers"

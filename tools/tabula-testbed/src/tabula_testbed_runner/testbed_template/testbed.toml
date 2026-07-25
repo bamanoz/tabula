@@ -6,13 +6,20 @@ source = "git+https://github.com/bamanoz/tabula-distrib.git@main"
 
 [sets]
 empty = []
-baseline = ["base", "drivers", "workspace", "mempalace", "test-fixtures"]
-base = ["base", "test-fixtures"]
-workspace = ["base", "workspace", "test-fixtures"]
-caveman = ["base", "caveman", "test-fixtures"]
-openspec = ["base", "openspec", "test-fixtures"]
+baseline = ["extensions", "async", "collaboration", "integrations", "interaction", "observability", "productivity", "security", "drivers", "workspace", "mempalace", "test-fixtures"]
+extensions = ["extensions", "security", "test-fixtures"]
+workspace = ["extensions", "security", "workspace", "test-fixtures"]
+caveman = ["extensions", "security", "caveman", "test-fixtures"]
+openspec = ["extensions", "security", "openspec", "test-fixtures"]
 all = [
-  "base",
+  "extensions",
+  "async",
+  "collaboration",
+  "integrations",
+  "interaction",
+  "observability",
+  "productivity",
+  "security",
   "drivers",
   "gateways",
   "workspace",
@@ -26,8 +33,29 @@ all = [
   "test-fixtures",
 ]
 
-[bundles.base]
-source = "source:tabula-bundles#path=base"
+[bundles.extensions]
+source = "source:tabula-bundles#path=extensions"
+
+[bundles.async]
+source = "source:tabula-bundles#path=async"
+
+[bundles.collaboration]
+source = "source:tabula-bundles#path=collaboration"
+
+[bundles.integrations]
+source = "source:tabula-bundles#path=integrations"
+
+[bundles.interaction]
+source = "source:tabula-bundles#path=interaction"
+
+[bundles.observability]
+source = "source:tabula-bundles#path=observability"
+
+[bundles.productivity]
+source = "source:tabula-bundles#path=productivity"
+
+[bundles.security]
+source = "source:tabula-bundles#path=security"
 
 [bundles.drivers]
 source = "source:tabula-bundles#path=drivers"
@@ -68,22 +96,22 @@ tests = ["tests/smoke.py"]
 runtime_tenants = ["*"]
 
 [suites.plugin-fixture-execution]
-set = "base"
+set = "extensions"
 components = ["test-fixtures:testbed-cold-python", "test-fixtures:testbed-cold-bash", "test-fixtures:testbed-cold-node"]
 tests = ["tests/test_plugin_fixture_execution.py"]
 
 [suites.plugin-failure-modes]
-set = "base"
+set = "extensions"
 components = ["test-fixtures:testbed-cold-python", "test-fixtures:testbed-cold-node", "test-fixtures:testbed-fail"]
 tests = ["tests/test_skill_failure_modes.py"]
 
 [suites.plugin-concurrency]
-set = "base"
+set = "extensions"
 components = ["test-fixtures:testbed-cold-python"]
 tests = ["tests/test_skill_concurrency.py"]
 
 [suites.tenant-isolation]
-set = "base"
+set = "extensions"
 components = ["test-fixtures:testbed-cold-python"]
 tests = ["tests/test_tenant_isolation.py"]
 runtime_tenants = ["*"]
@@ -94,26 +122,26 @@ tests = ["tests/test_multi_distro_tenants.py"]
 runtime_tenants = ["*"]
 
 [suites.tenant-installer-fanout]
-set = "base"
+set = "extensions"
 components = ["test-fixtures:testbed-cold-python"]
 tests = ["tests/test_tenant_installer_fanout.py"]
 runtime_tenants = ["*"]
 
 [suites.tenant-runtime-whitelist]
-set = "base"
+set = "extensions"
 components = ["test-fixtures:testbed-cold-python"]
 tests = ["tests/test_tenant_runtime_whitelist.py"]
 runtime_tenants = ["alpha"]
 
 [suites.tenant-config-overlay]
-set = "base"
+set = "extensions"
 components = ["test-fixtures:testbed-tenant-config"]
 tests = ["tests/test_tenant_config_overlay.py"]
 runtime_tenants = ["*"]
 
 [suites.fs-plugin]
 set = "workspace"
-components = ["base:sessions", "workspace:fs"]
+components = ["collaboration:sessions", "workspace:fs"]
 tests = ["tests/test_fs_plugin.py"]
 runtime_tenants = ["*"]
 
@@ -137,107 +165,123 @@ runtime_tenants = ["*"]
 
 [suites.mcp]
 set = "empty"
-components = ["base:mcp"]
+bundles = ["extensions"]
+components = ["integrations:mcp"]
 tests = ["tests/test_mcp.py"]
 
 [suites.pair]
 set = "empty"
-components = ["base:pair"]
+bundles = ["extensions"]
+components = ["collaboration:pair"]
 tests = ["tests/test_pair.py"]
 
 [suites.cron]
 set = "empty"
-components = ["base:cron"]
+bundles = ["extensions"]
+components = ["productivity:cron"]
 tests = ["tests/test_cron.py"]
 
 [suites.wait]
 set = "empty"
-components = ["base:wait"]
+bundles = ["extensions"]
+components = ["productivity:wait"]
 tests = ["tests/test_wait.py"]
 
 [suites.question]
 set = "empty"
-components = ["base:question"]
+bundles = ["extensions"]
+components = ["interaction:question"]
 tests = ["tests/test_question.py"]
 
 [suites.todo]
 set = "empty"
-components = ["base:todo"]
+bundles = ["extensions"]
+components = ["productivity:todo"]
 tests = ["tests/test_todo.py"]
 
 [suites.approvals]
 set = "empty"
-components = ["base:deferred-tools", "base:hook-approvals", "base:hook-permissions", "drivers:driver", "workspace:exec"]
+bundles = ["extensions", "collaboration"]
+components = ["async:deferred-tools", "security:hook-approvals", "security:hook-permissions", "drivers:driver", "workspace:exec"]
 tests = ["tests/test_approvals.py"]
+runtime_tenants = ["approvals"]
 
 [suites.sessions]
 set = "empty"
-components = ["base:sessions"]
+bundles = ["extensions"]
+components = ["collaboration:sessions"]
 tests = ["tests/test_sessions.py"]
 
 [suites.tool-lifecycle]
 set = "empty"
-components = ["base:sessions", "drivers:driver", "gateways:gateway-web"]
+bundles = ["extensions", "async"]
+components = ["collaboration:sessions", "drivers:driver", "gateways:gateway-web"]
 tests = ["tests/test_tool_lifecycle.py"]
 
 [suites.turn-steer]
 set = "empty"
-components = ["base:sessions", "base:deferred-tools", "drivers:driver", "gateways:gateway-web"]
+bundles = ["extensions"]
+components = ["collaboration:sessions", "async:deferred-tools", "drivers:driver", "gateways:gateway-web"]
 tests = ["tests/test_turn_steer.py"]
 
 [suites.deferred-tools]
 set = "empty"
-components = ["base:deferred-tools", "base:hook-permissions", "workspace:exec"]
+bundles = ["extensions"]
+components = ["async:deferred-tools", "security:hook-permissions", "workspace:exec"]
 tests = ["tests/test_deferred_tools.py"]
 
 [suites.tool-result-store]
 set = "empty"
-components = ["base:tool-result-store"]
+bundles = ["extensions"]
+components = ["async:tool-result-store"]
 tests = ["tests/test_tool_result_store.py"]
 
 [suites.mempalace]
 set = "empty"
-bundles = ["base"]
+bundles = ["extensions", "collaboration"]
 components = ["mempalace:mempalace", "mempalace:mempalace-admin"]
 tests = ["tests/test_mempalace.py"]
 
 [suites.codegraph]
 set = "empty"
-bundles = ["base"]
+bundles = ["extensions"]
 components = ["codegraph:codegraph-query", "codegraph:codegraph-admin"]
 tests = ["tests/test_codegraph.py"]
 
 [suites.openspec]
 set = "empty"
-bundles = ["base"]
+bundles = ["extensions"]
 components = ["openspec:openspec-cli"]
 tests = ["tests/test_openspec.py"]
 
 [suites.subagents]
 set = "empty"
-components = ["base:sessions", "drivers:driver", "workspace:exec", "subagents:subagent", "subagents:subagent-acp", "subagents:subagents"]
+bundles = ["extensions", "async", "collaboration"]
+components = ["collaboration:sessions", "drivers:driver", "workspace:exec", "subagents:subagent", "subagents:subagent-acp", "subagents:subagents"]
 tests = ["tests/test_subagents.py"]
 
 [suites.compaction]
 set = "empty"
-bundles = ["base"]
+bundles = ["extensions", "async", "collaboration"]
 components = ["drivers:driver"]
 tests = ["tests/test_compaction.py", "tests/test_driver_config.py"]
 
 [suites.managed-driver-session]
 set = "empty"
-bundles = ["base"]
+bundles = ["extensions", "async", "collaboration"]
 components = ["drivers:driver"]
 tests = ["tests/test_managed_driver_session.py"]
 runtime_tenants = ["*"]
 
 [suites.acp]
 set = "empty"
-components = ["base:question", "base:hook-approvals", "base:hook-permissions", "drivers:driver", "gateways:gateway-acp", "workspace:exec"]
+bundles = ["extensions", "async", "collaboration"]
+components = ["interaction:question", "security:hook-approvals", "security:hook-permissions", "drivers:driver", "gateways:gateway-acp", "workspace:exec"]
 tests = ["tests/test_acp.py"]
 
 [suites.telegram-gateway]
-set = "base"
+set = "extensions"
+bundles = ["async", "collaboration"]
 components = ["drivers:driver", "gateways:telegram-gateway"]
 tests = ["tests/test_telegram_gateway.py"]
 

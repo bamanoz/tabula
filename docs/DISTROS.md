@@ -116,7 +116,7 @@ What it is for:
 
 What it includes:
 
-- shared bundles: `base`, `workspace`, `drivers`, `gateways`, `memory`
+- shared bundles: `extensions`, `security`, `workspace`, `drivers`, `gateways`, `mempalace`, plus capability bundles
 - required runtime executables: `npx`, `uvx`
 - optional runtime executable: `rg` for faster grep
 
@@ -136,9 +136,10 @@ What it includes:
 
 - unified driver plugin (Anthropic and OpenAI selected per-turn)
 - gateways: CLI and Telegram
-- tool and support components via bundles: `workspace`, `base` (sessions, pair,
-  timer, cron, hook-logger, hook-permissions, observer,
-  skill-contract, tabula-guide), `memory` (save/search/admin), `mcp`
+- tool and support components via bundles: `extensions` (plugin SDK, skills,
+  tabula-guide), `security` (permissions/approvals), `async`, `collaboration`,
+  `integrations`, `interaction`, `observability`, `productivity`, `workspace`,
+  and memory/domain bundles
 - shared subagent runtime (from the `drivers` bundle)
 
 How it works:
@@ -207,10 +208,10 @@ These concepts are related but different.
 Smallest extension units.
 
 - **Skill** (`SKILL.md`): prompt/instruction artifact. Examples:
-  `tabula-guide`, `skill-contract`.
+  `tabula-guide`, `plugin-security-guide`.
 - **Plugin** (`plugin.toml`): runtime worker process; subscribes to events;
   owns executable tools; has state. Examples: `mcp`,
-  `hook-permissions`, `drivers/driver`, `timer`, `mempalace`, `code/git`.
+  `hook-permissions`, `drivers/driver`, `cron`, `mempalace`, `code/git`.
 
 See [SKILL_AUTHORING.md](SKILL_AUTHORING.md) and
 [PLUGIN_AUTHORING.md](PLUGIN_AUTHORING.md).
@@ -222,7 +223,7 @@ Reusable collection of skills and plugins, kept in
 
 - referenced from a distro via `distro.toml`
 - materialized into the flat runtime surface at install time
-- examples: `base`, `workspace`, `drivers`, `memory`, `caveman`, `code`
+- examples: `extensions`, `security`, `workspace`, `drivers`, `mempalace`, `caveman`, `codegraph`
 
 Bundles are capability packs — they may contain a mix of skills and plugins
 on the same level.

@@ -123,7 +123,7 @@ public = true
 owner = "skills"
 
 [[dependencies]]
-bundle = "base"
+bundle = "extensions"
 python_packages = ["tabula_session_sdk"]
 typescript_packages = ["@tabula/skill-sdk"]
 ```

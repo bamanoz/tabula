@@ -163,9 +163,9 @@ class InstallCliTests(unittest.TestCase):
                 distro / "distro.toml",
                 '[distro]\nid = "tabula.demo"\nname = "demo"\nversion = "0.1.0"\n'
                 '[sources.bundles]\nsource = "git+https://example.invalid/bundles.git@main"\n'
-                '[[bundles]]\nname = "base"\nsource = "source:bundles#path=base"\ncomponents = ["hello"]\n',
+                '[[bundles]]\nname = "extensions"\nsource = "source:bundles#path=extensions"\ncomponents = ["hello"]\n',
             )
-            _make_bundle(workspace / "bundles", "base", "hello")
+            _make_bundle(workspace / "bundles", "extensions", "hello")
             prev_cwd = Path.cwd()
             os.chdir(repo)
             try:

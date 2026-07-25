@@ -223,7 +223,7 @@ the installed SDK must implement the current `op`-based worker frames.
 |-----------------------------|---------|-------------------|
 | `tabula-plugin-sdk` (Python)| `1.x`   | `1`               |
 
-The Python SDK source lives in `tabula-bundles/base/plugin-sdk/sdk/python/src/tabula_plugin_sdk` and installs through bundle package exports.
+The Python SDK source lives in `tabula-bundles/extensions/plugin-sdk/sdk/python/src/tabula_plugin_sdk` and installs through bundle package exports.
 Bumping the worker protocol requires updating both `tabula-runtime` and the SDK
 in lockstep.
 
