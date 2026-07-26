@@ -422,6 +422,92 @@ class InstallTests(unittest.TestCase):
             for tenant_name in ("alpha", "beta"):
                 self.assertFalse((home / "tenants" / tenant_name / "skills").exists())
 
+    def test_install_update_retargets_pinned_tenants_to_new_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            bundle = root / "ext" / "bundles" / "mempalace"
+            _make_skill(bundle, "mempalace", "save-v1")
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n\n'
+                '[[bundles]]\nname="mempalace"\nsource="local:../ext/bundles/mempalace"\n',
+                encoding="utf-8",
+            )
+
+            (home / "tenants" / "beta").mkdir(parents=True, exist_ok=True)
+            first = installmod.install(distro, home, tenant="alpha")
+            first_lock = json.loads((home / "tenants" / "alpha" / "install.lock.json").read_text(encoding="utf-8"))
+            self.assertEqual(first_lock["generation"]["name"], first.generation.name)
+            self.assertEqual((home / "tenants" / "alpha" / "skills" / "mempalace" / "marker.txt").read_text(encoding="utf-8"), "save-v1")
+
+            _touch(bundle / "mempalace" / "marker.txt", "save-v2")
+            second = installmod.install(distro, home, update=True)
+
+            second_lock = json.loads((home / "tenants" / "alpha" / "install.lock.json").read_text(encoding="utf-8"))
+            self.assertEqual(second_lock["generation"]["name"], second.generation.name)
+            self.assertNotEqual(first.generation.name, second.generation.name)
+            self.assertEqual((home / "tenants" / "alpha" / "skills" / "mempalace" / "marker.txt").read_text(encoding="utf-8"), "save-v2")
+            self.assertFalse((home / "tenants" / "beta" / "skills").exists())
+
+    def test_install_for_one_tenant_retargets_other_pinned_tenants_to_new_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            bundle = root / "ext" / "bundles" / "mempalace"
+            _make_skill(bundle, "mempalace", "save-v1")
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n\n'
+                '[[bundles]]\nname="mempalace"\nsource="local:../ext/bundles/mempalace"\n',
+                encoding="utf-8",
+            )
+
+            first = installmod.install(distro, home, tenant="alpha")
+            _touch(bundle / "mempalace" / "marker.txt", "save-v2")
+            second = installmod.install(distro, home, update=True, tenant="beta")
+
+            alpha_lock = json.loads((home / "tenants" / "alpha" / "install.lock.json").read_text(encoding="utf-8"))
+            beta_lock = json.loads((home / "tenants" / "beta" / "install.lock.json").read_text(encoding="utf-8"))
+            self.assertNotEqual(first.generation.name, second.generation.name)
+            self.assertEqual(alpha_lock["generation"]["name"], second.generation.name)
+            self.assertEqual(beta_lock["generation"]["name"], second.generation.name)
+            self.assertEqual((home / "tenants" / "alpha" / "skills" / "mempalace" / "marker.txt").read_text(encoding="utf-8"), "save-v2")
+            self.assertEqual((home / "tenants" / "beta" / "skills" / "mempalace" / "marker.txt").read_text(encoding="utf-8"), "save-v2")
+
+    def test_install_noop_retargets_stale_pinned_tenants_to_current_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+
+            bundle = root / "ext" / "bundles" / "mempalace"
+            _make_skill(bundle, "mempalace", "save-v1")
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n\n'
+                '[[bundles]]\nname="mempalace"\nsource="local:../ext/bundles/mempalace"\n',
+                encoding="utf-8",
+            )
+
+            first = installmod.install(distro, home, tenant="alpha")
+            _touch(bundle / "mempalace" / "marker.txt", "save-v2")
+            current = installmod.install(distro, home, update=True, tenant="beta")
+            installmod._write_tenant_install_lock(home, "alpha", first.generation, current.lock)
+            installmod._refresh_tenant_runtime_surface(home / "tenants" / "alpha", first.generation.path)
+            stale_lock = json.loads((home / "tenants" / "alpha" / "install.lock.json").read_text(encoding="utf-8"))
+            self.assertEqual(stale_lock["generation"]["name"], first.generation.name)
+            self.assertEqual((home / "tenants" / "alpha" / "skills" / "mempalace" / "marker.txt").read_text(encoding="utf-8"), "save-v1")
+
+            noop = installmod.install(distro, home, update=True)
+
+            self.assertFalse(noop.changed)
+            self.assertEqual(noop.generation.name, current.generation.name)
+            refreshed_lock = json.loads((home / "tenants" / "alpha" / "install.lock.json").read_text(encoding="utf-8"))
+            self.assertEqual(refreshed_lock["generation"]["name"], current.generation.name)
+            self.assertEqual((home / "tenants" / "alpha" / "skills" / "mempalace" / "marker.txt").read_text(encoding="utf-8"), "save-v2")
+
     def test_parallel_tenant_runtime_refresh_does_not_corrupt_surfaces(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1307,7 +1393,7 @@ class InstallTests(unittest.TestCase):
             self.assertEqual([g.number for g in gs], [1, 2])
             self.assertEqual(gens.current_generation(home, "demo").number, 2)
 
-    def test_prune_preserves_tenant_referenced_generation(self):
+    def test_prune_removes_old_generation_after_tenant_retarget(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
@@ -1332,8 +1418,10 @@ class InstallTests(unittest.TestCase):
                 installmod.install(distro, home, keep_generations=1)
 
             generations = gens.list_generations(home, "demo")
-            self.assertEqual([g.number for g in generations], [1, 3])
-            self.assertTrue(first.generation.path.is_dir())
+            self.assertEqual([g.number for g in generations], [3])
+            self.assertFalse(first.generation.path.is_dir())
+            lock = json.loads((tenant / "install.lock.json").read_text(encoding="utf-8"))
+            self.assertEqual(lock["generation"]["name"], gens.current_generation(home, "demo").name)
 
     def test_two_distros_pin_separate_tenant_surfaces(self):
         with tempfile.TemporaryDirectory() as tmp:

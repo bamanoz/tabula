@@ -494,7 +494,8 @@ def install(distro_dir: str | Path, home: Path, *,
         _set_active(home, distro.name, expose_global_boot=expose_global_boot)
         if tenant is not None:
             _write_tenant_install_lock(home, tenant, current, new_lock)
-        _refresh_runtime_surface(home, tenant=tenant, generation=current)
+        _retarget_tenant_install_locks(home, distro.name, current, new_lock)
+        _refresh_runtime_surface(home, generation=current)
         _write_kernel_config(home)
         return InstallResult(current, new_lock, False)
 
@@ -509,7 +510,8 @@ def install(distro_dir: str | Path, home: Path, *,
     _set_active(home, distro.name, expose_global_boot=expose_global_boot)
     if tenant is not None:
         _write_tenant_install_lock(home, tenant, new_gen, new_lock)
-    _refresh_runtime_surface(home, tenant=tenant, generation=new_gen)
+    _retarget_tenant_install_locks(home, distro.name, new_gen, new_lock)
+    _refresh_runtime_surface(home, generation=new_gen)
     _write_kernel_config(home)
     gens.prune(home, distro.name, keep=keep_generations, referenced_names=_tenant_generation_refs(home, distro.name))
     return InstallResult(new_gen, new_lock, True)
@@ -1080,6 +1082,22 @@ def _write_tenant_install_lock(
     os.replace(tmp, path)
 
 
+def _retarget_tenant_install_locks(
+    home: Path,
+    distro_name: str,
+    generation: gens.Generation,
+    distro_lock: lockmod.Lock,
+) -> None:
+    for tenant_dir in _tenant_roots(home):
+        payload = _read_tenant_install_lock(tenant_dir)
+        if payload is None:
+            continue
+        existing_generation = payload.get("generation")
+        if not isinstance(existing_generation, dict) or existing_generation.get("distro") != distro_name:
+            continue
+        _write_tenant_install_lock(home, tenant_dir.name, generation, distro_lock)
+
+
 def _read_tenant_install_lock(tenant_dir: Path) -> dict[str, object] | None:
     try:
         payload = json.loads((tenant_dir / "install.lock.json").read_text(encoding="utf-8"))
@@ -1102,7 +1120,7 @@ def _tenant_generation_path(home: Path, tenant_dir: Path) -> Path | None:
     if not _safe_path_name(distro_name) or not _safe_path_name(generation_name):
         return None
     path = gens.generations_dir(home, distro_name) / generation_name
-    return path.resolve() if path.is_dir() else None
+    return path if path.is_dir() else None
 
 
 def _safe_path_name(value: object) -> bool:
