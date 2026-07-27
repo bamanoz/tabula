@@ -7,6 +7,10 @@ import (
 	"sync"
 	"time"
 
+	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
+	"github.com/bamanoz/tabula/internal/kernel/process"
+	"github.com/bamanoz/tabula/internal/kernel/toolstate"
+	runtimeconfig "github.com/bamanoz/tabula/internal/runtime/registryconfig"
 	"github.com/bamanoz/tabula/internal/tenant"
 )
 
@@ -14,8 +18,8 @@ import (
 type Hub struct {
 	clients      *ClientRegistry
 	sessions     *SessionRegistry
-	processes    *ProcessSupervisor
-	hooks        *HookEngine
+	processes    *process.Supervisor
+	hooks        *khooks.Engine
 	policy       *PolicyEngine
 	tools        *ToolService
 	runtimes     *RuntimeRegistry
@@ -69,15 +73,15 @@ func (h *Hub) SetTenantInitMeta(tenantID string, meta json.RawMessage) {
 }
 
 // NewHub creates a new Hub.
-func NewHub(toolsJSON json.RawMessage, _ int, _ int, logger *slog.Logger) *Hub {
+func NewHub(toolsJSON json.RawMessage, logger *slog.Logger) *Hub {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	hub := &Hub{
 		clients:            NewClientRegistry(),
 		sessions:           NewSessionRegistry(),
-		processes:          NewProcessSupervisor(logger, 3*time.Second),
-		hooks:              NewHookEngine(logger),
+		processes:          process.NewSupervisor(logger, 3*time.Second),
+		hooks:              khooks.NewEngine(logger),
 		runtimes:           NewRuntimeRegistry(),
 		tenants:            tenant.NewMemoryStore(tenant.Tenant{ID: tenant.DefaultID, CreatedAt: time.Now().UTC()}),
 		toolExec:           make(map[string]toolDispatch),
@@ -85,7 +89,7 @@ func NewHub(toolsJSON json.RawMessage, _ int, _ int, logger *slog.Logger) *Hub {
 		suspendedExchanges: make(map[string]pendingSuspendedExchange),
 		runtimeBusy:        make(map[string]*runtimeBusyState),
 		tenantInitMeta:     map[string]json.RawMessage{},
-		runID:              newKernelRunID(),
+		runID:              toolstate.NewRunID(),
 		toolsJSON:          toolsJSON,
 		Logger:             logger,
 		MaxClients:         100,
@@ -98,31 +102,9 @@ func NewHub(toolsJSON json.RawMessage, _ int, _ int, logger *slog.Logger) *Hub {
 	return hub
 }
 
-func (h *Hub) ConfigureRuntimeRegistry(tabulaHome string) error {
+func (h *Hub) ConfigureRuntimeRegistry(definitions []runtimeconfig.Definition, bindings map[string]runtimeconfig.Binding) error {
 	if h == nil {
 		return nil
-	}
-	definitions, err := LoadRuntimeDefinitions(tabulaHome)
-	if err != nil {
-		return err
-	}
-	runtimeIDs := make(map[string]struct{}, len(definitions))
-	for _, definition := range definitions {
-		runtimeIDs[definition.ID] = struct{}{}
-	}
-	bindings := map[string]TenantRuntimeBinding{}
-	if h.tenants != nil {
-		items, err := h.tenants.List()
-		if err != nil {
-			return err
-		}
-		for _, item := range items {
-			binding, err := LoadTenantRuntimeBinding(tabulaHome, item.ID, runtimeIDs)
-			if err != nil {
-				return err
-			}
-			bindings[item.ID] = binding
-		}
 	}
 	if h.runtimes == nil {
 		h.runtimes = NewRuntimeRegistry()
@@ -218,7 +200,7 @@ func (h *Hub) RegisterSpawn(cmd *exec.Cmd, command, session string) {
 // Shutdown gracefully stops all spawned processes.
 // Sends interrupt signal first, waits up to ShutdownTimeout, then force-kills remaining.
 func (h *Hub) Shutdown() {
-	h.processes.timeout = h.ShutdownTimeout
+	h.processes.SetTimeout(h.ShutdownTimeout)
 	h.processes.Shutdown()
 }
 

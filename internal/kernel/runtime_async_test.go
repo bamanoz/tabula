@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
 	"log/slog"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
 	runtimemock "github.com/bamanoz/tabula/internal/runtime/mock"
+	runtimeconfig "github.com/bamanoz/tabula/internal/runtime/registryconfig"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
 	"github.com/bamanoz/tabula/internal/tenant"
 )
@@ -18,7 +20,7 @@ import (
 func TestHubRuntimeAsyncSinkRedactsStructuredPluginLogFields(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, logger)
+	hub := NewHub(json.RawMessage(`[]`), logger)
 
 	hub.runtimeAsyncSink().PluginLogged("local", wire.PluginLog{
 		Op:      wire.OpPluginLog,
@@ -63,11 +65,11 @@ func TestBusMessagePreservesMessageEnvelopeFields(t *testing.T) {
 func TestPickRuntimeForSessionLogsPreferredRuntimeFallbackReason(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, logger)
+	hub := NewHub(json.RawMessage(`[]`), logger)
 	hub.runtimes = NewRuntimeRegistry()
 	if err := hub.runtimes.Configure(
-		[]RuntimeDefinition{{ID: "local", Backend: "local"}, {ID: "remote", Backend: "attach"}},
-		map[string]TenantRuntimeBinding{"alpha": {AllowedRuntimes: []string{"local", "remote"}, DefaultRuntime: "local"}},
+		[]runtimeconfig.Definition{{ID: "local", Backend: "local"}, {ID: "remote", Backend: "attach"}},
+		map[string]runtimeconfig.Binding{"alpha": {AllowedRuntimes: []string{"local", "remote"}, DefaultRuntime: "local"}},
 	); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
@@ -104,7 +106,7 @@ func TestRuntimeCatalogUpdateRefreshesToolsWithoutPromptHooks(t *testing.T) {
 	driver := env.connectAndJoin("driver", "s1", []string{}, []string{TopicSessionInit})
 	_ = readMsg(t, driver) // initial init
 
-	promptHook := env.connectHook("prompt", []HookSubscription{{Event: "before_prompt_build", Priority: 100}})
+	promptHook := env.connectHook("prompt", []khooks.Subscription{{Event: "before_prompt_build", Priority: 100}})
 
 	go env.Hub.broadcastRuntimeCatalogUpdate(runtimeapi.Capability{
 		Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"},
@@ -222,7 +224,7 @@ func TestRuntimeToolCatalogUpdatePreservesActivePromptHookContext(t *testing.T) 
 }
 
 func TestRuntimeCatalogRefreshCoalescesConcurrentPromptBuilds(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	tenantID := tenant.DefaultID
 	client := addTenantCaptureClient(t, hub, tenantID, "driver", "s1", []string{TopicSessionInit}, nil)
 	timeout := int64(500)
@@ -370,9 +372,9 @@ func TestRuntimeLifecycleCrashRemovesRuntimeHookTarget(t *testing.T) {
 }
 
 func TestSnapshotRuntimesSanitizesRuntimeDiagnostics(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.runtimes = NewRuntimeRegistry()
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	conn := runtimemock.New()
 	if err := hub.runtimes.RegisterHello("local", conn, []wire.Capability{{
 		Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"},

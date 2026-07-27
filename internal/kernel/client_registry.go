@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"encoding/json"
+	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
 	"sync"
 
 	"github.com/bamanoz/tabula/internal/tenant"
@@ -36,7 +37,7 @@ func (r *ClientRegistry) Remove(c *Client) {
 	delete(r.clients, c)
 }
 
-func (r *ClientRegistry) Configure(c *Client, name string, sends, receives, receivesGlobal []string, hooks []HookSubscription, meta json.RawMessage, depth int) int {
+func (r *ClientRegistry) Configure(c *Client, name string, sends, receives, receivesGlobal []string, hooks []khooks.Subscription, meta json.RawMessage, depth int) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	c.name = name

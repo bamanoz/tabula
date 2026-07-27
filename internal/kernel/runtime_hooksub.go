@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
 	"log/slog"
 
 	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
@@ -22,7 +23,7 @@ type runtimeHookSubscriber struct {
 	logger     *slog.Logger
 }
 
-func newRuntimeHookSubscriber(target runtimeHookTarget, busy func(string, wire.Target) bool, markBusy func(string, wire.Target) func(), tryBusy func(string, wire.Target) (func(), bool), busyDone func(string, wire.Target) <-chan struct{}, logger *slog.Logger) HookSubscriber {
+func newRuntimeHookSubscriber(target runtimeHookTarget, busy func(string, wire.Target) bool, markBusy func(string, wire.Target) func(), tryBusy func(string, wire.Target) (func(), bool), busyDone func(string, wire.Target) <-chan struct{}, logger *slog.Logger) khooks.Subscriber {
 	return &runtimeHookSubscriber{
 		runtimeID:  target.RuntimeID,
 		capability: target.Capability,
@@ -34,6 +35,13 @@ func newRuntimeHookSubscriber(target runtimeHookTarget, busy func(string, wire.T
 		busyDone:   busyDone,
 		logger:     logger,
 	}
+}
+
+func (s *runtimeHookSubscriber) RuntimeID() string {
+	if s == nil {
+		return ""
+	}
+	return s.runtimeID
 }
 
 func (s *runtimeHookSubscriber) Name() string {
@@ -74,29 +82,29 @@ func (s *runtimeHookSubscriber) BusyDone() <-chan struct{} {
 	return s.busyDone(s.runtimeID, s.capability.Target)
 }
 
-func (s *runtimeHookSubscriber) Hooks() []HookSubscription {
+func (s *runtimeHookSubscriber) Hooks() []khooks.Subscription {
 	if s == nil {
 		return nil
 	}
-	out := make([]HookSubscription, 0, len(s.capability.Hooks))
+	out := make([]khooks.Subscription, 0, len(s.capability.Hooks))
 	for _, hook := range s.capability.Hooks {
 		var timeout *int
 		if hook.TimeoutMS != nil {
 			v := int(*hook.TimeoutMS)
 			timeout = &v
 		}
-		out = append(out, HookSubscription{Event: hook.Event, Priority: hook.Priority, TimeoutMs: timeout})
+		out = append(out, khooks.Subscription{Event: hook.Event, Priority: hook.Priority, TimeoutMs: timeout})
 	}
 	return out
 }
 
-func (s *runtimeHookSubscriber) SendMsg(msg *Message) {
+func (s *runtimeHookSubscriber) SendHook(msg *khooks.Message) {
 	if s == nil || s.conn == nil || msg == nil || msg.Type != string(MsgHook) {
 		return
 	}
-	replyMode := runtimeHookReplyMode(msg.Name)
-	if replyMode != wire.HookReplyModeNone && msg.release == nil && s.markBusy != nil {
-		msg.release = s.markBusy(s.runtimeID, s.capability.Target)
+	replyMode := khooks.ReplyMode(msg.Name)
+	if replyMode != wire.HookReplyModeNone && msg.Release == nil && s.markBusy != nil {
+		msg.Release = s.markBusy(s.runtimeID, s.capability.Target)
 	}
 	callID := msg.ID
 	event := wire.HookEvent{
@@ -125,21 +133,6 @@ func (s *runtimeHookSubscriber) SendMsg(msg *Message) {
 			)
 		}
 		_ = s.conn.Close()
-	}
-}
-
-func runtimeHookReplyMode(event string) wire.HookReplyMode {
-	def, ok := HookEvents[event]
-	if !ok {
-		return wire.HookReplyModeModifying
-	}
-	switch def.Strategy {
-	case strategyVoid:
-		return wire.HookReplyModeNone
-	case strategyClaiming:
-		return wire.HookReplyModeClaiming
-	default:
-		return wire.HookReplyModeModifying
 	}
 }
 

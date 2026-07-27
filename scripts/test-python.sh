@@ -20,7 +20,7 @@ run_pytest_allow_empty() {
 
 case "$LAYER" in
   unit)
-    exec "$PYTHON_BIN" -m pytest -m unit tests tools/tabula-distro/tests -q
+    exec "$PYTHON_BIN" -m pytest tests tools/tabula-distro/tests -q
     ;;
   smoke)
     run_pytest_allow_empty -m smoke tests -q
@@ -31,7 +31,8 @@ case "$LAYER" in
     exit $?
     ;;
   contract)
-    exec "$PYTHON_BIN" -m pytest -m contract tests tools/tabula-distro/tests -q
+    run_pytest_allow_empty -m contract tests tools/tabula-distro/tests -q
+    exit $?
     ;;
   all)
     "$0" unit

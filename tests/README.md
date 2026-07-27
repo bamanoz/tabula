@@ -17,13 +17,10 @@
 - `unit`: `cmd/tabula`, `tools/tabula-distro/tests`, and any fast tests under `tests/`
 - `smoke`: selected `internal/kernel` tests run by `scripts/test-go.sh smoke`
 - `e2e`: currently empty in this repo; distro/bundle e2e suites live with `tabula-distrib` / `tabula-bundles`
-- `contract`: temporary compatibility check in the legacy Python support-dir
-  protocol test.
-  Replace this with the packaged Python SDK contract suite once the external
-  SDK wheel evidence row is green.
+- `contract`: currently empty in this repo; `scripts/test-python.sh contract` allows an empty selection until explicit contract tests return.
 - `manual`: ad hoc local checks, not part of the default matrix
 
 ## Notes
 
-- `conftest.py` assigns Python test markers automatically by file, so we can split layers without rewriting every test module.
+- Python unit tests are selected by path in `scripts/test-python.sh unit`; do not rely on implicit marker injection.
 - `scripts/test-go.sh smoke` still depends on local socket bind permissions because `internal/kernel` tests use `httptest`.

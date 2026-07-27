@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,12 +14,13 @@ import (
 
 	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
 	runtimemock "github.com/bamanoz/tabula/internal/runtime/mock"
+	runtimeconfig "github.com/bamanoz/tabula/internal/runtime/registryconfig"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
 	"github.com/bamanoz/tabula/internal/tenant"
 )
 
 func TestNewHubStartsWithoutDynamicDispatch(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	if _, ok := toolDispatchEntry(hub, "echo"); ok {
 		t.Fatal("expected no dynamic dispatch entries before runtime attach")
 	}
@@ -40,9 +42,9 @@ func TestResolveToolDeadlineCapsAtOneHour(t *testing.T) {
 }
 
 func TestHandleDynamicTool_RuntimeSourceInvokesAttachedRuntime(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	rc := runtimemock.New()
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
 	rc.OnInvoke("alpha", target, "mcp__echo").Return([]byte(`"ok"`))
@@ -79,9 +81,9 @@ func TestHandleDynamicTool_RuntimeSourceInvokesAttachedRuntime(t *testing.T) {
 }
 
 func TestRuntimeLifecycleCrashHidesToolFromPromptsButKeepsDispatchRoutable(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	rc := runtimemock.New()
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "memory"}
 	ready := wire.Capability{Target: target, Tools: []wire.ToolSpec{{Name: "mempalace_checkpoint"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}
@@ -123,9 +125,9 @@ func TestRuntimeLifecycleCrashHidesToolFromPromptsButKeepsDispatchRoutable(t *te
 }
 
 func TestHandleCancelCancelsInFlightRuntimeTool(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	rc := runtimemock.New()
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
 	rc.OnInvoke("alpha", target, "mcp__slow").Delay(30 * time.Second).Return([]byte(`"late"`))
@@ -159,10 +161,10 @@ func TestHandleCancelCancelsInFlightRuntimeTool(t *testing.T) {
 }
 
 func TestHandleDynamicTool_LargeRuntimeResultWithoutRewriteFailsExplicitly(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetSessionStore(NewDiskSessionStore(t.TempDir()))
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	rc := runtimemock.New()
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
 	rc.OnInvoke("alpha", target, "mcp__echo").Return([]byte(`"` + strings.Repeat("x", 13000) + `"`))
@@ -189,10 +191,10 @@ func TestHandleDynamicTool_LargeRuntimeResultWithoutRewriteFailsExplicitly(t *te
 
 func TestHandleDynamicTool_InvokeStreamCleansKernelSpool(t *testing.T) {
 	home := t.TempDir()
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetSessionStore(NewDiskSessionStore(home))
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	rc := runtimemock.New()
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
 	rc.OnInvoke("alpha", target, "mcp__echo").Return([]byte(`"ok"`))
@@ -219,10 +221,10 @@ func TestHandleDynamicTool_InvokeStreamCleansKernelSpool(t *testing.T) {
 
 func TestHandleDynamicTool_BroadcastsBoundedToolResultStreamEvents(t *testing.T) {
 	home := t.TempDir()
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetSessionStore(NewDiskSessionStore(home))
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	rc := runtimemock.New()
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
 	rc.OnInvoke("alpha", target, "mcp__echo").Return([]byte(`"` + strings.Repeat("x", toolResultInlineLimitBytes+100) + `"`))
@@ -255,10 +257,10 @@ func TestHandleDynamicTool_BroadcastsBoundedToolResultStreamEvents(t *testing.T)
 }
 
 func TestHandleDynamicTool_FailedRuntimeResultDoesNotBroadcastStreamEnd(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetSessionStore(NewDiskSessionStore(t.TempDir()))
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	rc := runtimemock.New()
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
 	rc.OnInvoke("alpha", target, "mcp__echo").ReturnError(wire.Error{Code: wire.ErrorInternal, Message: "boom"})
@@ -304,7 +306,7 @@ func waitForEmptySpoolDir(t *testing.T, spoolDir string) {
 }
 
 func TestInvokeResultSpoolTracksTerminalStateAndPreview(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetSessionStore(NewDiskSessionStore(t.TempDir()))
 	spool, err := newInvokeResultSpool(hub, "alpha", "s1", "tid-preview")
 	if err != nil {
@@ -336,7 +338,7 @@ func TestInvokeResultSpoolTracksTerminalStateAndPreview(t *testing.T) {
 
 func TestInvokeResultSpoolJanitorRemovesStaleFiles(t *testing.T) {
 	home := t.TempDir()
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetSessionStore(NewDiskSessionStore(home))
 	spoolDir := filepath.Join(home, "run", "tool-results")
 	if err := os.MkdirAll(spoolDir, 0o700); err != nil {
@@ -370,7 +372,7 @@ func TestInvokeResultSpoolJanitorRemovesStaleFiles(t *testing.T) {
 }
 
 func TestInvokeResultSpoolIdleTimeoutCancelsStartedStream(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetSessionStore(NewDiskSessionStore(t.TempDir()))
 	spool, err := newInvokeResultSpool(hub, "alpha", "s1", "tid-idle")
 	if err != nil {
@@ -395,9 +397,9 @@ func TestInvokeResultSpoolIdleTimeoutCancelsStartedStream(t *testing.T) {
 }
 
 func TestBusyRuntimeTargetWaitsForPromptBuildHooks(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "subagents"}
 	timeout := int64(100)
 	capability := wire.Capability{
@@ -414,7 +416,7 @@ func TestBusyRuntimeTargetWaitsForPromptBuildHooks(t *testing.T) {
 	}
 	hub.syncRuntimeCapability("local", capability)
 	hub.rebuildHookIndex()
-	if entries := hub.hooks.entries("before_prompt_build"); len(entries) != 1 {
+	if entries := hub.hooks.Subscribers("before_prompt_build"); len(entries) != 1 {
 		t.Fatalf("expected runtime hook subscriber, got %+v", entries)
 	}
 
@@ -444,9 +446,9 @@ func TestBusyRuntimeTargetWaitsForPromptBuildHooks(t *testing.T) {
 }
 
 func TestPendingRuntimeHookQueuesPromptBuildHooks(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	timeout := int64(200)
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "mempalace"}
 	capability := wire.Capability{
@@ -493,7 +495,7 @@ func TestPendingRuntimeHookQueuesPromptBuildHooks(t *testing.T) {
 			if event.CallID == "" {
 				return
 			}
-			hub.hooks.HandleRuntimeResult("local", &Message{Type: string(MsgHookReply), ID: event.CallID, Action: string(ActionPass)})
+			hub.hooks.HandleRuntimeResult("local", hookMessageFromKernel(&Message{Type: string(MsgHookReply), ID: event.CallID, Action: string(khooks.ActionPass)}))
 		}
 	}()
 
@@ -532,9 +534,9 @@ func TestPendingRuntimeHookQueuesPromptBuildHooks(t *testing.T) {
 }
 
 func TestConcurrentRuntimePromptBuildHooksSerializeTarget(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	timeout := int64(200)
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "mempalace"}
 	capability := wire.Capability{
@@ -568,7 +570,7 @@ func TestConcurrentRuntimePromptBuildHooksSerializeTarget(t *testing.T) {
 			if event.CallID == "" {
 				return
 			}
-			hub.hooks.HandleRuntimeResult("local", &Message{Type: string(MsgHookReply), ID: event.CallID, Action: string(ActionPass)})
+			hub.hooks.HandleRuntimeResult("local", hookMessageFromKernel(&Message{Type: string(MsgHookReply), ID: event.CallID, Action: string(khooks.ActionPass)}))
 		}
 	}()
 
@@ -599,9 +601,9 @@ func TestConcurrentRuntimePromptBuildHooksSerializeTarget(t *testing.T) {
 }
 
 func TestParallelRuntimeApprovalHooksDoNotFailBusyWhileFirstIsSuspended(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	timeout := int64(1000)
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-approvals"}
 	capability := wire.Capability{
@@ -618,7 +620,7 @@ func TestParallelRuntimeApprovalHooksDoNotFailBusyWhileFirstIsSuspended(t *testi
 	hub.syncRuntimeCapability("local", capability)
 	hub.rebuildHookIndex()
 
-	var firstBlocked *HookDispatchDecision
+	var firstBlocked *khooks.DispatchDecision
 	firstDone := make(chan struct{})
 	go func() {
 		defer close(firstDone)
@@ -651,9 +653,9 @@ func TestParallelRuntimeApprovalHooksDoNotFailBusyWhileFirstIsSuspended(t *testi
 }
 
 func TestConcurrentRuntimeSecurityHooksSerializeTarget(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	timeout := int64(200)
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-permissions"}
 	capability := wire.Capability{
@@ -692,9 +694,9 @@ func TestConcurrentRuntimeSecurityHooksSerializeTarget(t *testing.T) {
 }
 
 func TestHandleToolUseSecurityHookTimeoutSendsTerminalResult(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-permissions"}
 	timeout := int64(10)
 	capability := wire.Capability{
@@ -757,18 +759,18 @@ func (c *suspendingExchangeRuntimeConn) SendHookEvent(ctx context.Context, req r
 	}
 	if len(c.HookEvents()) == 1 {
 		go func() {
-			c.hub.hooks.HandleRuntimeResult("local", &Message{
+			c.hub.hooks.HandleRuntimeResult("local", hookMessageFromKernel(&Message{
 				Type:    string(MsgHookReply),
 				ID:      req.CallID,
-				Action:  string(ActionSuspend),
+				Action:  string(khooks.ActionSuspend),
 				Reason:  "approve exec",
 				Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve?","details":{"tool":"exec_run"},"options":["allow once","deny once"]}`),
-			})
+			}))
 			c.once.Do(func() { close(c.firstSuspended) })
 		}()
 		return nil
 	}
-	go c.hub.hooks.HandleRuntimeResult("local", &Message{Type: string(MsgHookReply), ID: req.CallID, Action: string(ActionPass)})
+	go c.hub.hooks.HandleRuntimeResult("local", hookMessageFromKernel(&Message{Type: string(MsgHookReply), ID: req.CallID, Action: string(khooks.ActionPass)}))
 	return nil
 }
 
@@ -806,10 +808,10 @@ func (c *openHookRuntimeConn) HookEvents() []runtimeapi.HookEventReq {
 }
 
 func TestBusyRuntimeTargetWaitsForSecurityHooks(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
-	hub.hooks.defaultTimeout = 20 * time.Millisecond
+	hub := NewHub(json.RawMessage(`[]`), nil)
+	hub.hooks.SetDefaultTimeout(20 * time.Millisecond)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	timeout := int64(100)
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-permissions"}
 	capability := wire.Capability{
@@ -845,12 +847,12 @@ func TestBusyRuntimeTargetWaitsForSecurityHooks(t *testing.T) {
 }
 
 func TestUnavailableRuntimeSecurityHookFailsClosed(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(
 		tenant.Tenant{ID: "alpha", CreatedAt: time.Now()},
 		tenant.Tenant{ID: "beta", CreatedAt: time.Now()},
 	))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	timeout := int64(20)
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-permissions"}
 	capability := wire.Capability{
@@ -877,10 +879,10 @@ func TestUnavailableRuntimeSecurityHookFailsClosed(t *testing.T) {
 }
 
 func TestBusyRuntimeSecurityHookFailsClosedEvenWhenAnotherHookIsAvailable(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
-	hub.hooks.defaultTimeout = 20 * time.Millisecond
+	hub := NewHub(json.RawMessage(`[]`), nil)
+	hub.hooks.SetDefaultTimeout(20 * time.Millisecond)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	short := int64(20)
 	availableTarget := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-permissions"}
 	busyTarget := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-approvals"}
@@ -920,9 +922,9 @@ func TestBusyRuntimeSecurityHookFailsClosedEvenWhenAnotherHookIsAvailable(t *tes
 }
 
 func TestSuspendedSecurityHookReacquiresRemainingRuntimeHookOnResume(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: tenant.DefaultID, CreatedAt: time.Now()}))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	timeout := int64(200)
 	approvalTarget := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-approvals"}
 	policyTarget := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-permissions"}
@@ -951,7 +953,7 @@ func TestSuspendedSecurityHookReacquiresRemainingRuntimeHookOnResume(t *testing.
 
 	type hookDispatchResult struct {
 		ok      bool
-		blocked *HookDispatchDecision
+		blocked *khooks.DispatchDecision
 	}
 	dispatchDone := make(chan hookDispatchResult, 1)
 	go func() {
@@ -970,8 +972,8 @@ func TestSuspendedSecurityHookReacquiresRemainingRuntimeHookOnResume(t *testing.
 	if len(firstEvents) != 1 || firstEvents[0].Target.ID != approvalTarget.ID {
 		t.Fatalf("expected only approval hook before resume, got %+v", firstEvents)
 	}
-	hub.hooks.HandleRuntimeResult("local", &Message{ID: firstEvents[0].CallID, Action: string(ActionSuspend)})
-	var blocked *HookDispatchDecision
+	hub.hooks.HandleRuntimeResult("local", hookMessageFromKernel(&Message{ID: firstEvents[0].CallID, Action: string(khooks.ActionSuspend)}))
+	var blocked *khooks.DispatchDecision
 	select {
 	case result := <-dispatchDone:
 		if result.ok || result.blocked == nil || !result.blocked.Pending {
@@ -1005,7 +1007,7 @@ func TestSuspendedSecurityHookReacquiresRemainingRuntimeHookOnResume(t *testing.
 	if len(events) != 2 || events[1].Target.ID != policyTarget.ID {
 		t.Fatalf("expected policy hook after resume, got %+v", events)
 	}
-	hub.hooks.HandleRuntimeResult("local", &Message{ID: events[1].CallID, Action: string(ActionPass)})
+	hub.hooks.HandleRuntimeResult("local", hookMessageFromKernel(&Message{ID: events[1].CallID, Action: string(khooks.ActionPass)}))
 	select {
 	case result := <-resumeDone:
 		if !result.ok || result.blocked != nil {
@@ -1024,9 +1026,9 @@ func TestSuspendedSecurityHookReacquiresRemainingRuntimeHookOnResume(t *testing.
 }
 
 func TestRuntimeModifyingHookReplyReleasesBusyMarker(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: tenant.DefaultID, CreatedAt: time.Now()}))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	timeout := int64(200)
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-permissions"}
 	capability := wire.Capability{
@@ -1063,7 +1065,7 @@ func TestRuntimeModifyingHookReplyReleasesBusyMarker(t *testing.T) {
 	if event.CallID == "" {
 		t.Fatal("expected runtime hook event")
 	}
-	hub.hooks.HandleRuntimeResult("local", &Message{ID: event.CallID, Action: string(ActionPass)})
+	hub.hooks.HandleRuntimeResult("local", hookMessageFromKernel(&Message{ID: event.CallID, Action: string(khooks.ActionPass)}))
 	select {
 	case <-done:
 	case <-time.After(time.Second):
@@ -1075,9 +1077,9 @@ func TestRuntimeModifyingHookReplyReleasesBusyMarker(t *testing.T) {
 }
 
 func TestRuntimeVoidHookDoesNotMarkTargetBusy(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "cancel-observer"}
 	capability := wire.Capability{
 		Target: target,
@@ -1149,10 +1151,10 @@ func (c *failingHookRuntimeConn) Close() error {
 func (c *failingHookRuntimeConn) Done() <-chan struct{} { return c.done }
 
 func TestRuntimeHookSendErrorClosesConnAndBlocksQuickly(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: tenant.DefaultID, CreatedAt: time.Now()}))
 	hub.runtimes = NewRuntimeRegistry()
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	timeout := int64(20)
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-permissions"}
 	capability := wire.Capability{
@@ -1182,11 +1184,11 @@ func TestRuntimeHookSendErrorClosesConnAndBlocksQuickly(t *testing.T) {
 }
 
 func TestRuntimeToolsAreScopedByTenant(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.runtimes = NewRuntimeRegistry()
 	if err := hub.runtimes.Configure(
-		[]RuntimeDefinition{{ID: "alpha-runtime", Backend: "attach"}, {ID: "beta-runtime", Backend: "attach"}},
-		map[string]TenantRuntimeBinding{
+		[]runtimeconfig.Definition{{ID: "alpha-runtime", Backend: "attach"}, {ID: "beta-runtime", Backend: "attach"}},
+		map[string]runtimeconfig.Binding{
 			"alpha": {AllowedRuntimes: []string{"alpha-runtime"}, DefaultRuntime: "alpha-runtime"},
 			"beta":  {AllowedRuntimes: []string{"beta-runtime"}, DefaultRuntime: "beta-runtime"},
 		},
@@ -1245,12 +1247,12 @@ func TestRuntimeToolsAreScopedByTenant(t *testing.T) {
 }
 
 func TestTenantScopedCapabilityUpdateDoesNotEvictSiblingTenantDispatch(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 1, 1, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(
 		tenant.Tenant{ID: "alpha", CreatedAt: time.Now()},
 		tenant.Tenant{ID: "beta", CreatedAt: time.Now()},
 	))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	if err := hub.runtimes.RegisterHello("local", runtimemock.New(), nil, 0, []string{"alpha", "beta"}); err != nil {
 		t.Fatalf("RegisterHello: %v", err)
 	}
@@ -1270,12 +1272,12 @@ func TestTenantScopedCapabilityUpdateDoesNotEvictSiblingTenantDispatch(t *testin
 }
 
 func TestTenantScopedCatalogUpdateDoesNotWidenRuntimeTenants(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 1, 1, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(
 		tenant.Tenant{ID: "bootstrap", CreatedAt: time.Now()},
 		tenant.Tenant{ID: "alpha", CreatedAt: time.Now()},
 	))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	if err := hub.runtimes.RegisterHello("local", runtimemock.New(), nil, 0, []string{"bootstrap"}); err != nil {
 		t.Fatalf("RegisterHello: %v", err)
 	}
@@ -1306,12 +1308,12 @@ func TestTenantScopedCatalogUpdateDoesNotWidenRuntimeTenants(t *testing.T) {
 }
 
 func TestInitRefreshesAttachedRuntimeCapabilitiesAfterLateTenantAppears(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 1, 1, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(
 		tenant.Tenant{ID: "bootstrap", CreatedAt: time.Now()},
 		tenant.Tenant{ID: "alpha", CreatedAt: time.Now()},
 	))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	bootstrapTarget := wire.Target{Kind: wire.TargetKindPlugin, ID: "bootstrap-fs"}
 	alphaTarget := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
 	bootstrapCapability := wire.Capability{Target: bootstrapTarget, Tenants: []string{"bootstrap"}, Tools: []wire.ToolSpec{{Name: "bootstrap_read"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker, Revision: 1}
@@ -1335,11 +1337,11 @@ func TestInitRefreshesAttachedRuntimeCapabilitiesAfterLateTenantAppears(t *testi
 }
 
 func TestHandleDynamicTool_FallsBackToTenantDefaultRuntimeForGlobalDispatch(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.runtimes = NewRuntimeRegistry()
 	if err := hub.runtimes.Configure(
-		[]RuntimeDefinition{{ID: "remote", Backend: "attach"}},
-		map[string]TenantRuntimeBinding{"alpha": {AllowedRuntimes: []string{"remote"}, DefaultRuntime: "remote"}},
+		[]runtimeconfig.Definition{{ID: "remote", Backend: "attach"}},
+		map[string]runtimeconfig.Binding{"alpha": {AllowedRuntimes: []string{"remote"}, DefaultRuntime: "remote"}},
 	); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
@@ -1370,11 +1372,11 @@ func TestHandleDynamicTool_FallsBackToTenantDefaultRuntimeForGlobalDispatch(t *t
 }
 
 func TestHandleDynamicTool_PrefersSessionRuntimeForGlobalDispatch(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.runtimes = NewRuntimeRegistry()
 	if err := hub.runtimes.Configure(
-		[]RuntimeDefinition{{ID: "local", Backend: "local"}, {ID: "remote", Backend: "attach"}},
-		map[string]TenantRuntimeBinding{"alpha": {AllowedRuntimes: []string{"local", "remote"}, DefaultRuntime: "local"}},
+		[]runtimeconfig.Definition{{ID: "local", Backend: "local"}, {ID: "remote", Backend: "attach"}},
+		map[string]runtimeconfig.Binding{"alpha": {AllowedRuntimes: []string{"local", "remote"}, DefaultRuntime: "local"}},
 	); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
@@ -1414,11 +1416,11 @@ func TestHandleDynamicTool_PrefersSessionRuntimeForGlobalDispatch(t *testing.T) 
 }
 
 func TestHandleDynamicTool_FallsBackWhenSessionRuntimeUnavailable(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.runtimes = NewRuntimeRegistry()
 	if err := hub.runtimes.Configure(
-		[]RuntimeDefinition{{ID: "local", Backend: "local"}, {ID: "remote", Backend: "attach"}},
-		map[string]TenantRuntimeBinding{"alpha": {AllowedRuntimes: []string{"local", "remote"}, DefaultRuntime: "local"}},
+		[]runtimeconfig.Definition{{ID: "local", Backend: "local"}, {ID: "remote", Backend: "attach"}},
+		map[string]runtimeconfig.Binding{"alpha": {AllowedRuntimes: []string{"local", "remote"}, DefaultRuntime: "local"}},
 	); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
@@ -1450,11 +1452,11 @@ func TestHandleDynamicTool_FallsBackWhenSessionRuntimeUnavailable(t *testing.T) 
 }
 
 func TestHandleDynamicTool_ReturnsErrorWithoutImplicitKernelDefaultRuntimeFallback(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.runtimes = NewRuntimeRegistry()
 	if err := hub.runtimes.Configure(
-		[]RuntimeDefinition{{ID: "local", Backend: "local"}, {ID: "remote", Backend: "attach"}},
-		map[string]TenantRuntimeBinding{},
+		[]runtimeconfig.Definition{{ID: "local", Backend: "local"}, {ID: "remote", Backend: "attach"}},
+		map[string]runtimeconfig.Binding{},
 	); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
@@ -1486,11 +1488,11 @@ func TestHandleDynamicTool_ReturnsErrorWithoutImplicitKernelDefaultRuntimeFallba
 }
 
 func TestHandleDynamicToolInvokesRuntimeOwningTool(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.runtimes = NewRuntimeRegistry()
 	if err := hub.runtimes.Configure(
-		[]RuntimeDefinition{{ID: "local", Backend: "local"}, {ID: "remote", Backend: "attach"}},
-		map[string]TenantRuntimeBinding{"alpha": {AllowedRuntimes: []string{"local", "remote"}, DefaultRuntime: "local"}},
+		[]runtimeconfig.Definition{{ID: "local", Backend: "local"}, {ID: "remote", Backend: "attach"}},
+		map[string]runtimeconfig.Binding{"alpha": {AllowedRuntimes: []string{"local", "remote"}, DefaultRuntime: "local"}},
 	); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
@@ -1529,10 +1531,10 @@ func TestHandleDynamicToolInvokesRuntimeOwningTool(t *testing.T) {
 }
 
 func TestHandleDynamicTool_ReturnsTenantForbiddenWhenDefaultRuntimeDisallowed(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	if err := hub.runtimes.Configure(
-		[]RuntimeDefinition{{ID: "local", Backend: "local"}, {ID: "remote", Backend: "attach"}},
-		map[string]TenantRuntimeBinding{"alpha": {AllowedRuntimes: []string{"local"}, DefaultRuntime: "remote"}},
+		[]runtimeconfig.Definition{{ID: "local", Backend: "local"}, {ID: "remote", Backend: "attach"}},
+		map[string]runtimeconfig.Binding{"alpha": {AllowedRuntimes: []string{"local"}, DefaultRuntime: "remote"}},
 	); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
@@ -1552,7 +1554,7 @@ func TestHandleDynamicTool_ReturnsTenantForbiddenWhenDefaultRuntimeDisallowed(t 
 }
 
 func TestJoinBindsSessionTenantAndRejectsUnknownTenant(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
 	c := &Client{hub: hub, name: "test", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicSessionInit: true}, sends: map[string]bool{}, state: ClientProtocolReady, done: make(chan struct{})}
 	if !hub.addClient(c) {
@@ -1574,8 +1576,8 @@ func TestJoinBindsSessionTenantAndRejectsUnknownTenant(t *testing.T) {
 }
 
 func TestRuntimeSkillCapabilitiesAreIgnored(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	hub := NewHub(json.RawMessage(`[]`), nil)
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	rc := runtimemock.New()
 	target := wire.Target{Kind: wire.TargetKindSkill, ID: "skill:timer"}
 	if err := hub.runtimes.RegisterHello("local", rc, nil, 0); err != nil {

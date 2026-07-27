@@ -2,9 +2,12 @@ package kernel
 
 import (
 	"encoding/json"
+	"github.com/bamanoz/tabula/internal/kernel/clientmeta"
+	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
 	"strconv"
 	"unicode/utf8"
 
+	"github.com/bamanoz/tabula/internal/kernel/process"
 	"github.com/bamanoz/tabula/internal/tenant"
 )
 
@@ -38,10 +41,10 @@ func (h *Hub) allClients() []*Client {
 // allHookSubscribers returns the union of all WebSocket clients and any
 // runtime-owned hook targets. Used by the hook engine to rebuild its dispatch
 // index whenever the subscriber set changes.
-func (h *Hub) allHookSubscribers() []HookSubscriber {
+func (h *Hub) allHookSubscribers() []khooks.Subscriber {
 	clients := h.clients.All()
 	runtimeTargets := h.runtimeHookTargets()
-	subs := make([]HookSubscriber, 0, len(clients)+len(runtimeTargets))
+	subs := make([]khooks.Subscriber, 0, len(clients)+len(runtimeTargets))
 	for _, c := range clients {
 		subs = append(subs, c)
 	}
@@ -58,9 +61,9 @@ func (h *Hub) runtimeHookTargets() []runtimeHookTarget {
 	return h.runtimes.HookTargets()
 }
 
-func (h *Hub) sessionProcesses(session string) []*SpawnedProcess {
-	processes := make([]*SpawnedProcess, 0)
-	h.processes.ForEach(func(_ int, proc *SpawnedProcess) {
+func (h *Hub) sessionProcesses(session string) []*process.Spawned {
+	processes := make([]*process.Spawned, 0)
+	h.processes.ForEach(func(_ int, proc *process.Spawned) {
 		if proc == nil {
 			return
 		}
@@ -173,14 +176,14 @@ func clientPreferredRuntime(c *Client) string {
 	if c == nil {
 		return ""
 	}
-	return normalizeClientRuntimeID(decodeClientMeta(c.meta).RuntimeID)
+	return clientmeta.NormalizeRuntimeID(clientmeta.Decode(c.meta).RuntimeID)
 }
 
 func clientIsManagedUserInput(c *Client) bool {
 	if c == nil {
 		return false
 	}
-	meta := decodeClientMeta(c.meta)
+	meta := clientmeta.Decode(c.meta)
 	return meta.Managed && meta.Role == "user"
 }
 

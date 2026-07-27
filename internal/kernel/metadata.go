@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/bamanoz/tabula/internal/kernel/clientmeta"
 	"strconv"
 	"time"
 )
@@ -158,7 +159,7 @@ func kernelPreferredRuntime(raw json.RawMessage) string {
 		return ""
 	}
 	runtimeID, _ := kernel[preferredRuntimeKernelMetaKey].(string)
-	return normalizeClientRuntimeID(runtimeID)
+	return clientmeta.NormalizeRuntimeID(runtimeID)
 }
 
 func ensureTurnCorrelationMeta(raw json.RawMessage) (json.RawMessage, string) {

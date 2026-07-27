@@ -7,78 +7,14 @@ import (
 	"testing"
 
 	runtimemock "github.com/bamanoz/tabula/internal/runtime/mock"
+	runtimeconfig "github.com/bamanoz/tabula/internal/runtime/registryconfig"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
 	"github.com/bamanoz/tabula/internal/tenant"
 )
 
-func TestLoadRuntimeDefinitionsWithoutConfigReturnsEmpty(t *testing.T) {
-	defs, err := LoadRuntimeDefinitions(t.TempDir())
-	if err != nil {
-		t.Fatalf("LoadRuntimeDefinitions: %v", err)
-	}
-	if len(defs) != 0 {
-		t.Fatalf("definitions = %#v", defs)
-	}
-}
-
-func TestLoadRuntimeDefinitionsRejectsDuplicateRuntimeID(t *testing.T) {
-	home := t.TempDir()
-	writeKernelConfigFile(t, filepath.Join(home, "config", "global.toml"), `[[runtime]]
-id = "local"
-backend = "local"
-
-[[runtime]]
-id = "local"
-backend = "attach"
-url = "unix:///tmp/runtime.sock"
-`)
-	_, err := LoadRuntimeDefinitions(home)
-	if err == nil {
-		t.Fatal("expected duplicate runtime id error")
-	}
-}
-
-func TestLoadRuntimeDefinitionsRejectsUnsupportedBackend(t *testing.T) {
-	home := t.TempDir()
-	writeKernelConfigFile(t, filepath.Join(home, "config", "global.toml"), `[[runtime]]
-id = "remote"
-backend = "ftp"
-`)
-	_, err := LoadRuntimeDefinitions(home)
-	if err == nil {
-		t.Fatal("expected unsupported backend error")
-	}
-}
-
-func TestLoadTenantRuntimeBindingValidatesUnknownRuntime(t *testing.T) {
-	home := t.TempDir()
-	writeKernelConfigFile(t, filepath.Join(home, "tenants", "alpha", "config", "tenant.toml"), `[tenant]
-allowed_runtimes = ["missing"]
-default_runtime = "local"
-`)
-	_, err := LoadTenantRuntimeBinding(home, "alpha", map[string]struct{}{"local": {}})
-	if err == nil {
-		t.Fatal("expected unknown runtime error")
-	}
-}
-
-func TestLoadTenantRuntimeBindingAllowsMissingDefaultRuntime(t *testing.T) {
-	home := t.TempDir()
-	writeKernelConfigFile(t, filepath.Join(home, "tenants", "alpha", "config", "tenant.toml"), `[tenant]
-allowed_runtimes = ["local"]
-`)
-	binding, err := LoadTenantRuntimeBinding(home, "alpha", map[string]struct{}{"local": {}})
-	if err != nil {
-		t.Fatalf("LoadTenantRuntimeBinding: %v", err)
-	}
-	if binding.DefaultRuntime != "" || len(binding.AllowedRuntimes) != 1 || binding.AllowedRuntimes[0] != "local" {
-		t.Fatalf("binding = %#v", binding)
-	}
-}
-
 func TestRuntimeForTenantAllowsAttachedRuntimeWithoutConfiguredDefinition(t *testing.T) {
-	hub := NewHub(nil, 0, 0, nil)
-	if err := hub.runtimes.Configure(nil, map[string]TenantRuntimeBinding{"alpha": {AllowedRuntimes: []string{"local"}}}); err != nil {
+	hub := NewHub(nil, nil)
+	if err := hub.runtimes.Configure(nil, map[string]runtimeconfig.Binding{"alpha": {AllowedRuntimes: []string{"local"}}}); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
 	conn := runtimemock.New()
@@ -110,9 +46,9 @@ url = "unix:///tmp/runtime.sock"
 allowed_runtimes = ["remote"]
 default_runtime = "remote"
 `)
-	hub := NewHub(nil, 0, 0, nil)
+	hub := NewHub(nil, nil)
 	hub.SetTenantStore(store)
-	if err := hub.ConfigureRuntimeRegistry(home); err != nil {
+	if err := configureRuntimeRegistryFromFiles(t, hub, home, store); err != nil {
 		t.Fatalf("ConfigureRuntimeRegistry: %v", err)
 	}
 	binding := hub.runtimes.tenantBindings["alpha"]
@@ -140,7 +76,7 @@ url = "unix:///tmp/runtime.sock"
 allowed_runtimes = ["local", "remote"]
 default_runtime = "local"
 `)
-	hub := NewHub(nil, 0, 0, nil)
+	hub := NewHub(nil, nil)
 	hub.SetTenantStore(store)
 	local := runtimemock.New()
 	remote := runtimemock.New()
@@ -150,7 +86,7 @@ default_runtime = "local"
 	if err := hub.runtimes.RegisterHello("remote", remote, nil, 0); err != nil {
 		t.Fatalf("RegisterHello remote: %v", err)
 	}
-	if err := hub.ConfigureRuntimeRegistry(home); err != nil {
+	if err := configureRuntimeRegistryFromFiles(t, hub, home, store); err != nil {
 		t.Fatalf("ConfigureRuntimeRegistry local: %v", err)
 	}
 	conn, runtimeID, code, err := hub.pickRuntime("alpha")
@@ -162,7 +98,7 @@ default_runtime = "local"
 allowed_runtimes = ["local", "remote"]
 default_runtime = "remote"
 `)
-	if err := hub.ConfigureRuntimeRegistry(home); err != nil {
+	if err := configureRuntimeRegistryFromFiles(t, hub, home, store); err != nil {
 		t.Fatalf("ConfigureRuntimeRegistry remote: %v", err)
 	}
 	conn, runtimeID, code, err = hub.pickRuntime("alpha")
@@ -175,10 +111,10 @@ default_runtime = "remote"
 }
 
 func TestPickRuntimeDoesNotAutoSelectSingleConfiguredRuntime(t *testing.T) {
-	hub := NewHub(nil, 0, 0, nil)
+	hub := NewHub(nil, nil)
 	if err := hub.runtimes.Configure(
-		[]RuntimeDefinition{{ID: "local", Backend: "local"}},
-		map[string]TenantRuntimeBinding{},
+		[]runtimeconfig.Definition{{ID: "local", Backend: "local"}},
+		map[string]runtimeconfig.Binding{},
 	); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
@@ -195,10 +131,37 @@ func TestPickRuntimeDoesNotAutoSelectSingleConfiguredRuntime(t *testing.T) {
 	}
 }
 
+func configureRuntimeRegistryFromFiles(t *testing.T, hub *Hub, home string, store tenant.Store) error {
+	t.Helper()
+	defs, err := runtimeconfig.LoadDefinitions(home)
+	if err != nil {
+		return err
+	}
+	runtimeIDs := make(map[string]struct{}, len(defs))
+	for _, def := range defs {
+		runtimeIDs[def.ID] = struct{}{}
+	}
+	bindings := map[string]runtimeconfig.Binding{}
+	if store != nil {
+		items, err := store.List()
+		if err != nil {
+			return err
+		}
+		for _, item := range items {
+			binding, err := runtimeconfig.LoadBinding(home, item.ID, runtimeIDs)
+			if err != nil {
+				return err
+			}
+			bindings[item.ID] = binding
+		}
+	}
+	return hub.ConfigureRuntimeRegistry(defs, bindings)
+}
+
 func writeKernelConfigFile(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", path, err)
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
 	}
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)

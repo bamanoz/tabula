@@ -157,7 +157,7 @@ tabula-install distro install <local-path-or-github-tree-url>
 ```powershell
 irm https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.ps1 | iex
 
-# one-shot core + project-scoped agent install
+# core + project-scoped agent install
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.ps1))) --distro 'git+https://github.com/owner/distros.git@main#path=my-distro'
 ```
 
@@ -370,7 +370,6 @@ More about what each distro contains lives in the
 | `tabula serve --runtime-mode managed`               | Start kernel plus local runtime stack         |
 | `tabula-install distro install <path-or-uri>`       | Install or switch global distro surface      |
 | `tabula serve --runtime-mode external`              | Start kernel without local runtime child     |
-| `tabula run --prompt "..."`                        | One-shot prompt → response                   |
 
 `tabula serve --runtime-mode managed` is the local stack entrypoint used by
 foreground runs and user services. Kernel owns the `tabula-runtime` child and
@@ -467,8 +466,6 @@ Useful environment variables:
 | `TABULA_WORKSPACE`                         | Assistant workspace, default `~/.agents`   |
 | `TABULA_PROVIDER`                          | Active provider                            |
 | `TABULA_URL`                               | Kernel WebSocket URL                       |
-| `TABULA_MAX_SPAWN_DEPTH`                   | Max nested subagent depth                  |
-| `TABULA_MAX_CHILDREN_PER_SESSION`          | Max child subagents per session            |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`     | Provider API keys                          |
 
 ## Project-Scoped Agents

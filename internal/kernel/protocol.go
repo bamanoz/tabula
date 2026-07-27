@@ -3,6 +3,7 @@ package kernel
 import (
 	"encoding/json"
 	"fmt"
+	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
 )
 
 // ProtocolVersion is the current wire protocol version.
@@ -67,17 +68,6 @@ func isExchangeTopic(topic string) bool {
 const (
 	MinPluginProtocolVersion = 1
 	MaxPluginProtocolVersion = 1
-)
-
-// HookAction constants for hook responses.
-type HookAction string
-
-const (
-	ActionPass    HookAction = "pass"
-	ActionModify  HookAction = "modify"
-	ActionBlock   HookAction = "block"
-	ActionClaim   HookAction = "claim"
-	ActionSuspend HookAction = "suspend"
 )
 
 // validateMessage checks that a client message has the required fields for its type.
@@ -151,14 +141,14 @@ func validateMessage(msg *Message) error {
 }
 
 type helloData struct {
-	Name          string             `json:"name"`
-	AuthToken     string             `json:"auth_token"`
-	Roles         []string           `json:"roles,omitempty"`
-	SendTopics    []string           `json:"send_topics,omitempty"`
-	ReceiveTopics []string           `json:"receive_topics,omitempty"`
-	GlobalTopics  []string           `json:"global_topics,omitempty"`
-	Hooks         []HookSubscription `json:"hooks,omitempty"`
-	Meta          json.RawMessage    `json:"meta,omitempty"`
+	Name          string                `json:"name"`
+	AuthToken     string                `json:"auth_token"`
+	Roles         []string              `json:"roles,omitempty"`
+	SendTopics    []string              `json:"send_topics,omitempty"`
+	ReceiveTopics []string              `json:"receive_topics,omitempty"`
+	GlobalTopics  []string              `json:"global_topics,omitempty"`
+	Hooks         []khooks.Subscription `json:"hooks,omitempty"`
+	Meta          json.RawMessage       `json:"meta,omitempty"`
 }
 
 func decodeHelloData(msg *Message) (helloData, error) {

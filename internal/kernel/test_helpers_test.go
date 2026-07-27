@@ -3,14 +3,16 @@ package kernel
 import (
 	"context"
 	"encoding/json"
+	"os/exec"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
+	runtimeconfig "github.com/bamanoz/tabula/internal/runtime/registryconfig"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
-	"github.com/bamanoz/tabula/internal/shell"
 	"github.com/bamanoz/tabula/internal/tenant"
 )
 
@@ -149,7 +151,7 @@ func (testRuntimeConn) Close() error { return nil }
 
 func attachTestRuntime(t *testing.T, hub *Hub, capabilities ...wire.Capability) {
 	t.Helper()
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	conn := testRuntimeConn{}
 	if err := hub.runtimes.RegisterHello("local", conn, capabilities, 0); err != nil {
 		t.Fatalf("RegisterHello: %v", err)
@@ -160,7 +162,7 @@ func attachTestRuntime(t *testing.T, hub *Hub, capabilities ...wire.Capability) 
 	hub.rebuildHookIndex()
 }
 
-func ensureRuntimeDefinitionsForTest(t *testing.T, hub *Hub, defs ...RuntimeDefinition) {
+func ensureRuntimeDefinitionsForTest(t *testing.T, hub *Hub, defs ...runtimeconfig.Definition) {
 	t.Helper()
 	if hub == nil {
 		t.Fatal("hub is nil")
@@ -169,13 +171,13 @@ func ensureRuntimeDefinitionsForTest(t *testing.T, hub *Hub, defs ...RuntimeDefi
 		hub.runtimes = NewRuntimeRegistry()
 	}
 	hub.runtimes.mu.RLock()
-	defined := make(map[string]RuntimeDefinition, len(hub.runtimes.defined)+len(defs))
+	defined := make(map[string]runtimeconfig.Definition, len(hub.runtimes.defined)+len(defs))
 	for id, def := range hub.runtimes.defined {
 		defined[id] = def
 	}
-	bindings := make(map[string]TenantRuntimeBinding, len(hub.runtimes.tenantBindings))
+	bindings := make(map[string]runtimeconfig.Binding, len(hub.runtimes.tenantBindings))
 	for tenantID, binding := range hub.runtimes.tenantBindings {
-		bindings[tenantID] = TenantRuntimeBinding{
+		bindings[tenantID] = runtimeconfig.Binding{
 			AllowedRuntimes: append([]string(nil), binding.AllowedRuntimes...),
 			DefaultRuntime:  binding.DefaultRuntime,
 		}
@@ -184,7 +186,7 @@ func ensureRuntimeDefinitionsForTest(t *testing.T, hub *Hub, defs ...RuntimeDefi
 	for _, def := range defs {
 		defined[def.ID] = def
 	}
-	merged := make([]RuntimeDefinition, 0, len(defined))
+	merged := make([]runtimeconfig.Definition, 0, len(defined))
 	for _, def := range defined {
 		merged = append(merged, def)
 	}
@@ -217,6 +219,13 @@ func runTestShellInvoke(req runtimeapi.InvokeReq) (runtimeapi.InvokeResp, error)
 	if err := json.Unmarshal(req.Args, &input); err != nil || strings.TrimSpace(input.Command) == "" {
 		return runtimeStringResult(req.CallID, "ERROR: missing command"), nil
 	}
-	out, err := shell.Command(input.Command + " 2>&1").Output()
+	out, err := testShellCommand(input.Command + " 2>&1").Output()
 	return runtimeStringResult(req.CallID, formatCommandResult(out, err)), nil
+}
+
+func testShellCommand(command string) *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		return exec.Command("cmd", "/c", command)
+	}
+	return exec.Command("sh", "-c", command)
 }

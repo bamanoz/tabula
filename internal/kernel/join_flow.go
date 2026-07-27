@@ -3,6 +3,7 @@ package kernel
 import (
 	"context"
 	"encoding/json"
+	"github.com/bamanoz/tabula/internal/kernel/clientmeta"
 	"strings"
 	"time"
 
@@ -121,7 +122,7 @@ func (h *Hub) finalizeJoinPlan(c *Client, plan *joinPlan) {
 			h.observePersistedSessionRestart(sess)
 		}
 		sess.AddClient(c.name)
-		sess.BindPreferredRuntime(decodeClientMeta(c.meta).RuntimeID)
+		sess.BindPreferredRuntime(clientmeta.Decode(c.meta).RuntimeID)
 		if created {
 			context, blocked := h.policy.StartSession(plan.session, plan.tenantID, c.name)
 			if blocked {
@@ -188,6 +189,10 @@ func (h *Hub) initMetaJSON(tenantID string) json.RawMessage {
 		}
 	}
 	return nil
+}
+
+func (h *Hub) InitMetaForTenant(tenantID string) json.RawMessage {
+	return h.initMetaJSON(tenantID)
 }
 
 func (h *Hub) initToolsJSON(tenantID ...string) json.RawMessage {

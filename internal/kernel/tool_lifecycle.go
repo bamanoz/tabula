@@ -2,32 +2,10 @@ package kernel
 
 import (
 	"fmt"
-	"time"
 
+	"github.com/bamanoz/tabula/internal/kernel/toolstate"
 	"github.com/bamanoz/tabula/internal/tenant"
 )
-
-const toolLifecycleKind = "tool.lifecycle"
-
-type toolLifecycleStore interface {
-	AppendToolLifecycle(session, tenantID string, event toolLifecycleEvent) error
-	LoadToolLifecycle(session, tenantID string) ([]toolLifecycleEvent, error)
-}
-
-type toolLifecycleEvent struct {
-	State         string
-	ToolID        string
-	ToolName      string
-	RunID         string
-	Status        string
-	ExchangeID    string
-	Reason        string
-	PreviousRunID string
-}
-
-func newKernelRunID() string {
-	return fmt.Sprintf("kernel-%d", time.Now().UnixNano())
-}
 
 func (h *Hub) recordToolStarted(tenantID, session, toolID, toolName string) {
 	if h != nil && session != "" {
@@ -64,7 +42,7 @@ func (h *Hub) recordToolLifecycle(tenantID, session, toolID, toolName, state str
 	if h == nil || session == "" || toolID == "" || state == "" {
 		return
 	}
-	store, ok := h.sessionStore.(toolLifecycleStore)
+	store, ok := h.sessionStore.(toolstate.Store)
 	if !ok {
 		return
 	}
@@ -74,7 +52,7 @@ func (h *Hub) recordToolLifecycle(tenantID, session, toolID, toolName, state str
 	if tenantID == "" {
 		tenantID = tenant.DefaultID
 	}
-	event := toolLifecycleEvent{
+	event := toolstate.Event{
 		State:    state,
 		ToolID:   toolID,
 		ToolName: toolName,
@@ -103,7 +81,7 @@ func (h *Hub) reconcileInterruptedTools(tenantID, session string) {
 	if h == nil || session == "" {
 		return
 	}
-	store, ok := h.sessionStore.(toolLifecycleStore)
+	store, ok := h.sessionStore.(toolstate.Store)
 	if !ok {
 		return
 	}
@@ -121,12 +99,12 @@ func (h *Hub) reconcileInterruptedTools(tenantID, session string) {
 		h.Logger.Warn("load tool lifecycle failed", "session", session, "tenant_id", tenantID, "err", err)
 		return
 	}
-	states := toolLifecycleStates(events)
+	states := toolstate.States(events)
 	for _, state := range states {
 		if state.ToolID == "" || state.Terminal || state.Suspended || state.RunID == "" || state.RunID == h.runID {
 			continue
 		}
-		if err := store.AppendToolLifecycle(session, tenantID, toolLifecycleEvent{
+		if err := store.AppendToolLifecycle(session, tenantID, toolstate.Event{
 			State:         "terminal",
 			ToolID:        state.ToolID,
 			ToolName:      state.ToolName,
@@ -139,39 +117,4 @@ func (h *Hub) reconcileInterruptedTools(tenantID, session string) {
 			continue
 		}
 	}
-}
-
-func toolLifecycleStates(events []toolLifecycleEvent) map[string]toolLifecycleState {
-	states := map[string]toolLifecycleState{}
-	for _, event := range events {
-		if event.ToolID == "" {
-			continue
-		}
-		state := states[event.ToolID]
-		state.ToolID = event.ToolID
-		if event.ToolName != "" {
-			state.ToolName = event.ToolName
-		}
-		switch event.State {
-		case "started":
-			state.RunID = event.RunID
-			state.Terminal = false
-			state.Suspended = false
-		case "suspended":
-			state.Suspended = true
-		case "terminal":
-			state.Terminal = true
-			state.Suspended = false
-		}
-		states[event.ToolID] = state
-	}
-	return states
-}
-
-type toolLifecycleState struct {
-	ToolID    string
-	ToolName  string
-	RunID     string
-	Terminal  bool
-	Suspended bool
 }

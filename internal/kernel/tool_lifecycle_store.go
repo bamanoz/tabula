@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"github.com/bamanoz/tabula/internal/kernel/toolstate"
 )
 
-func (s *DiskSessionStore) AppendToolLifecycle(session, tenantID string, event toolLifecycleEvent) error {
+func (s *DiskSessionStore) AppendToolLifecycle(session, tenantID string, event toolstate.Event) error {
 	if s == nil || s.home == "" {
 		return nil
 	}
@@ -29,18 +31,17 @@ func (s *DiskSessionStore) AppendToolLifecycle(session, tenantID string, event t
 	if event.PreviousRunID != "" {
 		payload["previous_run_id"] = event.PreviousRunID
 	}
-	appendSessionLedgerEvent(s.home, session, tenantID, toolLifecycleKind, "kernel:tool_lifecycle", payload)
-	return nil
+	return appendSessionLedgerEvent(s.home, session, tenantID, toolstate.Kind, "kernel:tool_lifecycle", payload)
 }
 
-func (s *DiskSessionStore) LoadToolLifecycle(session, tenantID string) ([]toolLifecycleEvent, error) {
+func (s *DiskSessionStore) LoadToolLifecycle(session, tenantID string) ([]toolstate.Event, error) {
 	if s == nil || s.home == "" {
 		return nil, nil
 	}
 	return loadToolLifecycleEvents(filepath.Join(s.home, "data", "sessions", session, "ledger.jsonl"))
 }
 
-func loadToolLifecycleEvents(path string) ([]toolLifecycleEvent, error) {
+func loadToolLifecycleEvents(path string) ([]toolstate.Event, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -50,7 +51,7 @@ func loadToolLifecycleEvents(path string) ([]toolLifecycleEvent, error) {
 	}
 	defer file.Close()
 
-	var events []toolLifecycleEvent
+	var events []toolstate.Event
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		var event struct {
@@ -62,10 +63,10 @@ func loadToolLifecycleEvents(path string) ([]toolLifecycleEvent, error) {
 				RunID      string `json:"run_id"`
 			} `json:"payload"`
 		}
-		if json.Unmarshal(scanner.Bytes(), &event) != nil || event.Kind != toolLifecycleKind || event.Payload.ToolCallID == "" {
+		if json.Unmarshal(scanner.Bytes(), &event) != nil || event.Kind != toolstate.Kind || event.Payload.ToolCallID == "" {
 			continue
 		}
-		events = append(events, toolLifecycleEvent{
+		events = append(events, toolstate.Event{
 			State:    event.Payload.State,
 			ToolID:   event.Payload.ToolCallID,
 			ToolName: event.Payload.Tool,

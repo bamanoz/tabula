@@ -1,5 +1,4 @@
-// Package logging provides structured logging setup with dual output
-// (console + file) and automatic format detection.
+// Package logging provides structured logging setup for Tabula processes.
 package logging
 
 import (
@@ -12,13 +11,38 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-// Config controls how logging is initialized.
+const (
+	formatAuto = "auto"
+	formatJSON = "json"
+	formatText = "text"
+
+	outputStdout  = "stdout"
+	outputStderr  = "stderr"
+	outputDiscard = "discard"
+)
+
+// Config controls logging policy for one process.
 type Config struct {
-	// Console output level (default: "warn"). Set to "silent" to disable.
+	// Component is attached to every log record when set.
+	Component string
+
+	// ConsoleLevel controls console logging (default: "warn"). Set to
+	// "silent" to disable.
 	ConsoleLevel string
-	// File output level (default: "silent" — no file logging).
+	// ConsoleFormat controls console format: "auto", "json", or "text".
+	// Empty means "auto".
+	ConsoleFormat string
+	// ConsoleOutput controls default console destination: "stdout", "stderr",
+	// or "discard". Empty means "stdout". ConsoleWriter wins when set.
+	ConsoleOutput string
+	// ConsoleWriter overrides ConsoleOutput. Useful for tests and runtime stdio.
+	ConsoleWriter io.Writer
+
+	// FileLevel controls file logging (default: "silent").
 	FileLevel string
-	// Path for log file. Required if FileLevel is not silent.
+	// FileFormat controls file format: "json" or "text". Empty means "json".
+	FileFormat string
+	// FilePath is required when FileLevel is not silent.
 	FilePath string
 	// Max megabytes before rotation (default 10).
 	MaxSizeMB int
@@ -26,14 +50,16 @@ type Config struct {
 	MaxAgeDays int
 	// Max number of old log files to keep (default 3).
 	MaxBackups int
-	// Compress rotated log files (default true).
+	// Compress rotated log files (default true when set by caller).
 	Compress bool
 }
 
-// Logger wraps a slog.Logger and an optional closer for the file writer.
+// Logger wraps a slog.Logger, mutable level controls, and an optional closer.
 type Logger struct {
 	*slog.Logger
-	closer io.Closer
+	ConsoleLevel *slog.LevelVar
+	FileLevel    *slog.LevelVar
+	closer       io.Closer
 }
 
 // Close closes the underlying file writer if any.
@@ -44,52 +70,36 @@ func (l *Logger) Close() error {
 	return nil
 }
 
-// Setup creates a structured logger and sets it as the slog default.
-//
-// Output strategy:
-//   - Console: always stdout. Text format if TTY, JSON if not.
-//   - File: JSON with lumberjack rotation, only if FilePath is set and FileLevel != silent.
-//   - Both handlers run independently with their own levels.
+// Setup creates a logger and sets it as the slog default.
 func Setup(cfg Config) *Logger {
-	consoleLevel := parseLevel(cfg.ConsoleLevel, slog.LevelWarn)
-	fileLevel := parseLevel(cfg.FileLevel, silentLevel)
+	logger := New(cfg)
+	slog.SetDefault(logger.Logger)
+	return logger
+}
+
+// New creates a logger without changing slog.Default.
+func New(cfg Config) *Logger {
+	consoleLevel := newLevelVar(cfg.ConsoleLevel, slog.LevelWarn)
+	fileLevel := newLevelVar(cfg.FileLevel, silentLevel)
 
 	var handlers []slog.Handler
 	var closer io.Closer
 
-	// Console handler
-	if consoleLevel < silentLevel {
-		if isTTY(os.Stdout) {
-			handlers = append(handlers, slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: consoleLevel}))
-		} else {
-			handlers = append(handlers, slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: consoleLevel}))
-		}
+	consoleWriter := resolveConsoleWriter(cfg)
+	if consoleLevel.Level() < silentLevel && consoleWriter != io.Discard {
+		handlers = append(handlers, newHandler(consoleWriter, resolveConsoleFormat(cfg, consoleWriter), consoleLevel))
 	}
 
-	// File handler
-	if fileLevel < silentLevel && cfg.FilePath != "" {
-		maxSize := cfg.MaxSizeMB
-		if maxSize <= 0 {
-			maxSize = 10
-		}
-		maxAge := cfg.MaxAgeDays
-		if maxAge <= 0 {
-			maxAge = 7
-		}
-		maxBackups := cfg.MaxBackups
-		if maxBackups <= 0 {
-			maxBackups = 3
-		}
-
+	if fileLevel.Level() < silentLevel && strings.TrimSpace(cfg.FilePath) != "" {
 		lj := &lumberjack.Logger{
 			Filename:   cfg.FilePath,
-			MaxSize:    maxSize,
-			MaxAge:     maxAge,
-			MaxBackups: maxBackups,
+			MaxSize:    positiveOr(cfg.MaxSizeMB, 10),
+			MaxAge:     positiveOr(cfg.MaxAgeDays, 7),
+			MaxBackups: positiveOr(cfg.MaxBackups, 3),
 			Compress:   cfg.Compress,
 		}
 		closer = lj
-		handlers = append(handlers, slog.NewJSONHandler(lj, &slog.HandlerOptions{Level: fileLevel}))
+		handlers = append(handlers, newHandler(lj, resolveFileFormat(cfg.FileFormat), fileLevel))
 	}
 
 	var handler slog.Handler
@@ -102,14 +112,58 @@ func Setup(cfg Config) *Logger {
 		handler = &multiHandler{handlers: handlers}
 	}
 
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
+	base := slog.New(handler)
+	if component := strings.TrimSpace(cfg.Component); component != "" {
+		base = base.With("component", component)
+	}
+	return &Logger{Logger: base, ConsoleLevel: consoleLevel, FileLevel: fileLevel, closer: closer}
+}
 
-	return &Logger{Logger: logger, closer: closer}
+// ApplyEnv overlays Fujin-style logging knobs from one env prefix.
+//
+// For prefix TABULA_RUNTIME, supported keys are:
+//
+//   - TABULA_RUNTIME_LOG_LEVEL
+//   - TABULA_RUNTIME_LOG_FORMAT or TABULA_RUNTIME_LOG_TYPE
+//   - TABULA_RUNTIME_LOG_OUTPUT
+//   - TABULA_RUNTIME_LOG_FILE
+//   - TABULA_RUNTIME_FILE_LOG_LEVEL
+//   - TABULA_RUNTIME_FILE_LOG_FORMAT or TABULA_RUNTIME_FILE_LOG_TYPE
+func ApplyEnv(cfg Config, prefix string) Config {
+	prefix = strings.Trim(strings.TrimSpace(prefix), "_")
+	if prefix == "" {
+		return cfg
+	}
+	if value := strings.TrimSpace(os.Getenv(prefix + "_LOG_LEVEL")); value != "" {
+		cfg.ConsoleLevel = value
+	}
+	if value := firstEnv(prefix+"_LOG_FORMAT", prefix+"_LOG_TYPE"); value != "" {
+		cfg.ConsoleFormat = value
+	}
+	if value := strings.TrimSpace(os.Getenv(prefix + "_LOG_OUTPUT")); value != "" {
+		cfg.ConsoleOutput = value
+		cfg.ConsoleWriter = nil
+	}
+	if value := strings.TrimSpace(os.Getenv(prefix + "_LOG_FILE")); value != "" {
+		cfg.FilePath = value
+	}
+	if value := strings.TrimSpace(os.Getenv(prefix + "_FILE_LOG_LEVEL")); value != "" {
+		cfg.FileLevel = value
+	}
+	if value := firstEnv(prefix+"_FILE_LOG_FORMAT", prefix+"_FILE_LOG_TYPE"); value != "" {
+		cfg.FileFormat = value
+	}
+	return cfg
 }
 
 // silentLevel is above slog.LevelError so nothing passes the filter.
 const silentLevel = slog.Level(12)
+
+func newLevelVar(s string, fallback slog.Level) *slog.LevelVar {
+	level := &slog.LevelVar{}
+	level.Set(parseLevel(s, fallback))
+	return level
+}
 
 func parseLevel(s string, fallback slog.Level) slog.Level {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -128,6 +182,65 @@ func parseLevel(s string, fallback slog.Level) slog.Level {
 	}
 }
 
+func newHandler(w io.Writer, format string, level slog.Leveler) slog.Handler {
+	switch format {
+	case formatJSON:
+		return slog.NewJSONHandler(w, &slog.HandlerOptions{Level: level})
+	default:
+		return slog.NewTextHandler(w, &slog.HandlerOptions{Level: level})
+	}
+}
+
+func resolveConsoleWriter(cfg Config) io.Writer {
+	if cfg.ConsoleWriter != nil {
+		return cfg.ConsoleWriter
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.ConsoleOutput)) {
+	case outputStderr:
+		return os.Stderr
+	case outputDiscard:
+		return io.Discard
+	default:
+		return os.Stdout
+	}
+}
+
+func resolveConsoleFormat(cfg Config, w io.Writer) string {
+	switch strings.ToLower(strings.TrimSpace(cfg.ConsoleFormat)) {
+	case formatJSON:
+		return formatJSON
+	case formatText:
+		return formatText
+	}
+	if f, ok := w.(*os.File); ok && isTTY(f) {
+		return formatText
+	}
+	return formatJSON
+}
+
+func resolveFileFormat(format string) string {
+	if strings.EqualFold(strings.TrimSpace(format), formatText) {
+		return formatText
+	}
+	return formatJSON
+}
+
+func positiveOr(value, fallback int) int {
+	if value > 0 {
+		return value
+	}
+	return fallback
+}
+
+func firstEnv(names ...string) string {
+	for _, name := range names {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 // isTTY reports whether f is a terminal.
 func isTTY(f *os.File) bool {
 	fi, err := f.Stat()
@@ -142,9 +255,9 @@ type multiHandler struct {
 	handlers []slog.Handler
 }
 
-func (m *multiHandler) Enabled(_ context.Context, level slog.Level) bool {
+func (m *multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	for _, h := range m.handlers {
-		if h.Enabled(context.Background(), level) {
+		if h.Enabled(ctx, level) {
 			return true
 		}
 	}
@@ -152,12 +265,15 @@ func (m *multiHandler) Enabled(_ context.Context, level slog.Level) bool {
 }
 
 func (m *multiHandler) Handle(ctx context.Context, r slog.Record) error {
+	var firstErr error
 	for _, h := range m.handlers {
 		if h.Enabled(ctx, r.Level) {
-			_ = h.Handle(ctx, r)
+			if err := h.Handle(ctx, r); err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
-	return nil
+	return firstErr
 }
 
 func (m *multiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {

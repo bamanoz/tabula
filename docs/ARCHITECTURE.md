@@ -440,11 +440,9 @@ The parent driver requests a spawn through the subagent plugin, which owns the
 child process group. Results are returned through `subagent_wait` or
 `subagent_spawn` with `mode="sync"` as structured tool results.
 
-Target ownership for the skill/plugin architecture is that `MaxSpawnDepth`,
-`MaxChildren`, and child authentication live inside the subagent plugin itself —
-the kernel should not enforce them as a global invariant. During migration,
-removing the remaining kernel bridge is gated on external driver/subagent plugin
-evidence for equivalent depth, child-count, auth, lifecycle, and cleanup tests.
+Subagent depth limits, child-count limits, and child authentication live inside
+the subagent plugin itself. The kernel does not enforce them as a global
+invariant.
 
 Operational controls such as limits, orphan cleanup, and spawn policy live in
 the subagent bundle rather than the kernel.

@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"encoding/json"
+	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
 	"sync"
 	"time"
 
@@ -35,7 +36,7 @@ type Client struct {
 	sends          map[string]bool
 	receives       map[string]bool
 	receivesGlobal map[string]bool // message types to receive from all sessions
-	hooks          []HookSubscription
+	hooks          []khooks.Subscription
 	sendCh         chan []byte
 	sendMu         sync.Mutex
 	sendClosed     bool
@@ -123,11 +124,11 @@ func (c *Client) IsConnected() bool {
 
 func (c *Client) IsBusy() bool { return false }
 
-// Name returns the client's name. Implements HookSubscriber.
+// Name returns the client's name. Implements khooks.Subscriber.
 func (c *Client) Name() string { return c.name }
 
 // Session returns the client's session id (empty for global subscribers).
-// Implements HookSubscriber.
+// Implements khooks.Subscriber.
 func (c *Client) Session() string { return c.session }
 
 func (c *Client) TenantID() string { return c.tenantID }
@@ -136,8 +137,8 @@ func (c *Client) ServesTenant(tenantID string) bool {
 	return c.tenantID == "" || c.tenantID == tenantID
 }
 
-// Hooks returns the client's hook subscriptions. Implements HookSubscriber.
-func (c *Client) Hooks() []HookSubscription { return c.hooks }
+// Hooks returns the client's hook subscriptions. Implements khooks.Subscriber.
+func (c *Client) Hooks() []khooks.Subscription { return c.hooks }
 
 func (c *Client) canSend(msgType string) bool {
 	return c.sends[msgType]
@@ -151,6 +152,24 @@ func (c *Client) canReceive(msgType string) bool {
 // message type from all sessions (regardless of session membership).
 func (c *Client) canReceiveGlobal(msgType string) bool {
 	return c.receivesGlobal[msgType]
+}
+
+func (c *Client) SendHook(msg *khooks.Message) {
+	if msg == nil {
+		return
+	}
+	_ = c.queueMsg(&Message{
+		Type:     msg.Type,
+		ID:       msg.ID,
+		Name:     msg.Name,
+		Session:  msg.Session,
+		TenantID: msg.TenantID,
+		Payload:  msg.Payload,
+		Data:     msg.Data,
+		Action:   msg.Action,
+		Reason:   msg.Reason,
+		release:  msg.Release,
+	})
 }
 
 // SendMsg marshals and queues a message for sending.

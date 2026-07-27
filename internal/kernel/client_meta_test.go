@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"encoding/json"
+	"github.com/bamanoz/tabula/internal/kernel/clientmeta"
 	"testing"
 	"time"
 
@@ -9,17 +10,17 @@ import (
 )
 
 func TestDecodeClientMetaNormalizesRuntimeID(t *testing.T) {
-	meta := decodeClientMeta(json.RawMessage(`{"tabula.client_role":"user","tabula.managed":true,"tabula.runtime_id":" remote "}`))
+	meta := clientmeta.Decode(json.RawMessage(`{"tabula.client_role":"user","tabula.managed":true,"tabula.runtime_id":" remote "}`))
 	if meta.Role != "user" || !meta.Managed || meta.RuntimeID != "remote" {
 		t.Fatalf("unexpected client meta: %+v", meta)
 	}
-	if got := decodeClientMeta(json.RawMessage(`{"tabula.runtime_id":"bad runtime"}`)).RuntimeID; got != "" {
+	if got := clientmeta.Decode(json.RawMessage(`{"tabula.runtime_id":"bad runtime"}`)).RuntimeID; got != "" {
 		t.Fatalf("invalid runtime id should be ignored, got %q", got)
 	}
 }
 
 func TestJoinBindsSessionPreferredRuntimeFromFirstClientMeta(t *testing.T) {
-	hub := NewHub(nil, 0, 0, nil)
+	hub := NewHub(nil, nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
 
 	first := &Client{hub: hub, name: "ui-1", meta: json.RawMessage(`{"tabula.client_role":"user","tabula.managed":true,"tabula.runtime_id":"remote"}`), recvCh: make(chan *Message, 4), receives: map[string]bool{}, sends: map[string]bool{}, state: ClientProtocolReady, done: make(chan struct{})}
@@ -41,7 +42,7 @@ func TestJoinBindsSessionPreferredRuntimeFromFirstClientMeta(t *testing.T) {
 }
 
 func TestConnectPreservesRuntimeAffinityMeta(t *testing.T) {
-	hub := NewHub(nil, 0, 0, nil)
+	hub := NewHub(nil, nil)
 	hub.SetClientAuthToken("test-kernel-token")
 	client := &Client{hub: hub, recvCh: make(chan *Message, 1), done: make(chan struct{})}
 	if !hub.addClient(client) {
@@ -63,7 +64,7 @@ func TestConnectPreservesRuntimeAffinityMeta(t *testing.T) {
 		t.Fatalf("connect rejected: %s", plan.errorMsg)
 	}
 
-	meta := decodeClientMeta(client.meta)
+	meta := clientmeta.Decode(client.meta)
 	if meta.Role != "user" || meta.RuntimeID != "remote" {
 		t.Fatalf("unexpected client meta: %+v", meta)
 	}

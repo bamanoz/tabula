@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"encoding/json"
+	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -18,12 +19,12 @@ import (
 type tenantHookProbe struct {
 	name     string
 	tenantID string
-	hooks    []HookSubscription
+	hooks    []khooks.Subscription
 	sent     atomic.Int32
 	done     chan struct{}
 }
 
-func newTenantHookProbe(name, tenantID string, hooks []HookSubscription) *tenantHookProbe {
+func newTenantHookProbe(name, tenantID string, hooks []khooks.Subscription) *tenantHookProbe {
 	return &tenantHookProbe{name: name, tenantID: tenantID, hooks: hooks, done: make(chan struct{})}
 }
 
@@ -32,14 +33,14 @@ func (p *tenantHookProbe) Session() string { return "" }
 func (p *tenantHookProbe) ServesTenant(tenantID string) bool {
 	return p.tenantID == "" || p.tenantID == tenantID
 }
-func (p *tenantHookProbe) IsConnected() bool         { return true }
-func (p *tenantHookProbe) IsBusy() bool              { return false }
-func (p *tenantHookProbe) Hooks() []HookSubscription { return p.hooks }
-func (p *tenantHookProbe) SendMsg(*Message)          { p.sent.Add(1) }
-func (p *tenantHookProbe) Done() <-chan struct{}     { return p.done }
+func (p *tenantHookProbe) IsConnected() bool            { return true }
+func (p *tenantHookProbe) IsBusy() bool                 { return false }
+func (p *tenantHookProbe) Hooks() []khooks.Subscription { return p.hooks }
+func (p *tenantHookProbe) SendHook(*khooks.Message)     { p.sent.Add(1) }
+func (p *tenantHookProbe) Done() <-chan struct{}        { return p.done }
 
 // connectHook dials + sends connect with hook subscriptions (no join — global subscriber).
-func (e *testEnv) connectHook(name string, hooks []HookSubscription) *websocket.Conn {
+func (e *testEnv) connectHook(name string, hooks []khooks.Subscription) *websocket.Conn {
 	e.t.Helper()
 	conn := e.dial()
 	writeJSON(e.t, conn, Message{
@@ -117,7 +118,7 @@ func TestHookVoid_FireAndForget(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Hook subscriber: listens to after_message (void)
-	hook := env.connectHook("logger", []HookSubscription{
+	hook := env.connectHook("logger", []khooks.Subscription{
 		{Event: "after_message", Priority: 0},
 	})
 
@@ -155,10 +156,10 @@ func TestHookVoid_FireAndForget(t *testing.T) {
 }
 
 func TestHookDispatchFiltersGlobalSubscribersByTenant(t *testing.T) {
-	engine := NewHookEngine(nil)
-	alpha := newTenantHookProbe("alpha-approval", "alpha", []HookSubscription{{Event: "after_tool_call", Priority: 10}})
-	beta := newTenantHookProbe("beta-approval", "beta", []HookSubscription{{Event: "after_tool_call", Priority: 10}})
-	engine.RebuildIndex([]HookSubscriber{alpha, beta})
+	engine := khooks.NewEngine(nil)
+	alpha := newTenantHookProbe("alpha-approval", "alpha", []khooks.Subscription{{Event: "after_tool_call", Priority: 10}})
+	beta := newTenantHookProbe("beta-approval", "beta", []khooks.Subscription{{Event: "after_tool_call", Priority: 10}})
+	engine.RebuildIndex([]khooks.Subscriber{alpha, beta})
 
 	_, ok, _ := engine.DispatchDetailedExcept("after_tool_call", json.RawMessage(`{"tool":"exec_run"}`), "alpha", "main", nil)
 	if !ok {
@@ -176,7 +177,7 @@ func TestHookVoid_SessionStart(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Hook subscriber: listens to session_start (modifying strategy)
-	hook := env.connectHook("logger", []HookSubscription{
+	hook := env.connectHook("logger", []khooks.Subscription{
 		{Event: "session_start", Priority: 0},
 	})
 
@@ -217,7 +218,7 @@ func TestHookVoid_SessionStart(t *testing.T) {
 func TestHookVoid_SessionJoinFiresOnEveryJoin(t *testing.T) {
 	env := newTestEnv(t)
 
-	hook := env.connectHook("logger", []HookSubscription{{Event: "session_join", Priority: 0}})
+	hook := env.connectHook("logger", []khooks.Subscription{{Event: "session_join", Priority: 0}})
 
 	first := env.connect("cli-1", []string{TopicMessageUser}, []string{})
 	go func() {
@@ -251,7 +252,7 @@ func TestHookVoid_SessionJoinFiresOnEveryJoin(t *testing.T) {
 func TestHookSessionStartCanBlockJoin(t *testing.T) {
 	env := newTestEnv(t)
 
-	hook := env.connectHook("guard", []HookSubscription{
+	hook := env.connectHook("guard", []khooks.Subscription{
 		{Event: "session_start", Priority: 100},
 	})
 
@@ -295,7 +296,7 @@ func TestHookSessionStartCanBlockJoin(t *testing.T) {
 func TestHookReplyRequiresSubscriberIdentity(t *testing.T) {
 	env := newTestEnv(t)
 
-	hook := env.connectHook("guard", []HookSubscription{
+	hook := env.connectHook("guard", []khooks.Subscription{
 		{Event: "session_start", Priority: 100},
 	})
 	attacker := env.connect("attacker", []string{"hook_reply"}, []string{})
@@ -336,7 +337,7 @@ func TestHookReplyRequiresSubscriberIdentity(t *testing.T) {
 func TestHookSessionStartCanInjectInitContext(t *testing.T) {
 	env := newTestEnv(t)
 
-	hook := env.connectHook("ctx", []HookSubscription{
+	hook := env.connectHook("ctx", []khooks.Subscription{
 		{Event: "session_start", Priority: 100},
 	})
 
@@ -401,10 +402,10 @@ func TestHookSessionStart_ConcatenatesContextAcrossHooks(t *testing.T) {
 	// Higher priority runs first; lower priority must see the first
 	// hook's context as input and the engine must concatenate the two
 	// contributions instead of replacing.
-	hookHigh := env.connectHook("hi", []HookSubscription{
+	hookHigh := env.connectHook("hi", []khooks.Subscription{
 		{Event: "session_start", Priority: 20},
 	})
-	hookLow := env.connectHook("lo", []HookSubscription{
+	hookLow := env.connectHook("lo", []khooks.Subscription{
 		{Event: "session_start", Priority: 10},
 	})
 
@@ -443,8 +444,8 @@ func TestHookSessionStart_ConcatenatesContextAcrossHooks(t *testing.T) {
 func TestHookBeforePromptBuild_AppendsContextPerJoin(t *testing.T) {
 	env := newTestEnv(t)
 
-	startHook := env.connectHook("start", []HookSubscription{{Event: "session_start", Priority: 100}})
-	promptHook := env.connectHook("prompt", []HookSubscription{{Event: "before_prompt_build", Priority: 100}})
+	startHook := env.connectHook("start", []khooks.Subscription{{Event: "session_start", Priority: 100}})
+	promptHook := env.connectHook("prompt", []khooks.Subscription{{Event: "before_prompt_build", Priority: 100}})
 
 	conn := env.connect("cli", []string{TopicMessageUser}, []string{TopicSessionInit})
 	go func() {
@@ -503,7 +504,7 @@ func TestHookBeforePromptBuild_AppendsContextPerJoin(t *testing.T) {
 
 func TestHookBeforePromptBuild_CanRewriteInitTools(t *testing.T) {
 	env := newTestEnv(t)
-	promptHook := env.connectHook("prompt", []HookSubscription{{Event: "before_prompt_build", Priority: 100}})
+	promptHook := env.connectHook("prompt", []khooks.Subscription{{Event: "before_prompt_build", Priority: 100}})
 
 	conn := env.connect("cli", []string{TopicMessageUser}, []string{TopicSessionInit})
 	go func() {
@@ -542,7 +543,7 @@ func TestHookBeforePromptBuild_CanRewriteInitTools(t *testing.T) {
 
 func TestHookBeforeTurn_InjectsTransientTurnContext(t *testing.T) {
 	env := newTestEnv(t)
-	hook := env.connectHook("memory", []HookSubscription{{Event: "before_turn", Priority: 100}})
+	hook := env.connectHook("memory", []khooks.Subscription{{Event: "before_turn", Priority: 100}})
 
 	gw := env.connectAndJoin("gw", "s1", []string{TopicMessageUser}, []string{})
 	drv := env.connectAndJoin("drv", "s1", []string{TopicTurnDone}, []string{TopicMessageUser})
@@ -591,7 +592,7 @@ func TestHookBeforeTurn_InjectsTransientTurnContext(t *testing.T) {
 
 func TestHookBeforeTurn_QueuedInputRunsAtDispatchTime(t *testing.T) {
 	env := newTestEnv(t)
-	hook := env.connectHook("memory", []HookSubscription{{Event: "before_turn", Priority: 100}})
+	hook := env.connectHook("memory", []khooks.Subscription{{Event: "before_turn", Priority: 100}})
 
 	gw := env.connectAndJoin("gw", "s1", []string{TopicMessageUser}, []string{TopicTurnDone})
 	drv := env.connectAndJoin("drv", "s1", []string{TopicTurnDone}, []string{TopicMessageUser})
@@ -676,7 +677,7 @@ func TestHookBeforeTurn_QueuedInputRunsAtDispatchTime(t *testing.T) {
 
 func TestHookBeforeTurn_ManagedInputQueuesWhenReceiverDisconnectsDuringHook(t *testing.T) {
 	env := newTestEnv(t)
-	hook := env.connectHook("memory", []HookSubscription{{Event: "before_turn", Priority: 100}})
+	hook := env.connectHook("memory", []khooks.Subscription{{Event: "before_turn", Priority: 100}})
 
 	gw := env.connectManagedUserInputAndJoin("gw", "user", "s1", []string{TopicMessageUser}, []string{TopicTurnDone})
 	drv := env.connectAndJoin("drv", "s1", []string{TopicTurnDone}, []string{TopicMessageUser})
@@ -744,7 +745,7 @@ func TestHookBeforeTurn_ManagedInputQueuesWhenReceiverDisconnectsDuringHook(t *t
 
 func TestHookBeforeTurn_ManagedInputQueuesWhenBroadcastDeliversZero(t *testing.T) {
 	env := newTestEnv(t)
-	hook := env.connectHook("memory", []HookSubscription{{Event: "before_turn", Priority: 100}})
+	hook := env.connectHook("memory", []khooks.Subscription{{Event: "before_turn", Priority: 100}})
 
 	gw := env.connectManagedUserInputAndJoin("gw", "user", "s1", []string{TopicMessageUser}, []string{TopicTurnDone, TopicSessionStatus})
 	drv := env.connectAndJoin("drv", "s1", []string{TopicTurnDone}, []string{TopicMessageUser})
@@ -775,7 +776,7 @@ func TestHookBeforeTurn_ManagedInputQueuesWhenBroadcastDeliversZero(t *testing.T
 
 func TestHookBeforeTurn_QueuedManagedInputRequeuesWhenBroadcastDeliversZero(t *testing.T) {
 	env := newTestEnv(t)
-	hook := env.connectHook("memory", []HookSubscription{{Event: "before_turn", Priority: 100}})
+	hook := env.connectHook("memory", []khooks.Subscription{{Event: "before_turn", Priority: 100}})
 
 	gw := env.connectManagedUserInputAndJoin("gw", "user", "s1", []string{TopicMessageUser}, []string{TopicTurnDone, TopicSessionStatus})
 	drv := env.connectAndJoin("drv", "s1", []string{TopicTurnDone}, []string{TopicMessageUser})
@@ -817,7 +818,7 @@ func TestHookBeforeTurn_QueuedManagedInputRequeuesWhenBroadcastDeliversZero(t *t
 
 func TestHookBeforeTurn_QueuedManagedInputMirrorsObserversWithoutCountingAsTurnDelivery(t *testing.T) {
 	env := newTestEnv(t)
-	hook := env.connectHook("memory", []HookSubscription{{Event: "before_turn", Priority: 100}})
+	hook := env.connectHook("memory", []khooks.Subscription{{Event: "before_turn", Priority: 100}})
 
 	gw := env.connectManagedUserInputAndJoin("gw", "user", "s1", []string{TopicMessageUser}, []string{TopicTurnDone, TopicSessionStatus})
 	observer := env.connectAndJoin("observer", "s1", nil, []string{TopicMessageUser})
@@ -864,7 +865,7 @@ func TestHookBeforeTurn_QueuedManagedInputMirrorsObserversWithoutCountingAsTurnD
 
 func TestHookAfterTurn_FiresOnTurnDone(t *testing.T) {
 	env := newTestEnv(t)
-	hook := env.connectHook("memory", []HookSubscription{{Event: "after_turn", Priority: 100}})
+	hook := env.connectHook("memory", []khooks.Subscription{{Event: "after_turn", Priority: 100}})
 
 	gw := env.connectAndJoin("gw", "s1", []string{TopicMessageUser}, []string{TopicTurnDone})
 	drv := env.connectAndJoin("drv", "s1", []string{TopicTurnDone}, []string{TopicMessageUser})
@@ -898,7 +899,7 @@ func TestHookAfterTurn_FiresOnTurnDone(t *testing.T) {
 
 func TestHookBeforeCompaction_FiresBeforeForwardingCompactionStart(t *testing.T) {
 	env := newTestEnv(t)
-	hook := env.connectHook("memory", []HookSubscription{{Event: "before_compaction", Priority: 100}})
+	hook := env.connectHook("memory", []khooks.Subscription{{Event: "before_compaction", Priority: 100}})
 
 	ui := env.connectAndJoin("user", "s1", []string{}, []string{TopicCompactionStart})
 	drv := env.connectAndJoin("drv", "s1", []string{TopicCompactionStart}, []string{})
@@ -958,7 +959,7 @@ func TestHookModifying_PassThrough(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Hook subscriber: before_message (modifying), responds with "pass"
-	hook := env.connectHook("filter", []HookSubscription{
+	hook := env.connectHook("filter", []khooks.Subscription{
 		{Event: "before_message", Priority: 10},
 	})
 
@@ -993,7 +994,7 @@ func TestHookModifying_PassThrough(t *testing.T) {
 func TestHookModifying_ModifyText(t *testing.T) {
 	env := newTestEnv(t)
 
-	hook := env.connectHook("filter", []HookSubscription{
+	hook := env.connectHook("filter", []khooks.Subscription{
 		{Event: "before_message", Priority: 10},
 	})
 
@@ -1024,7 +1025,7 @@ func TestHookModifying_ModifyText(t *testing.T) {
 func TestHookModifying_Block(t *testing.T) {
 	env := newTestEnv(t)
 
-	hook := env.connectHook("filter", []HookSubscription{
+	hook := env.connectHook("filter", []khooks.Subscription{
 		{Event: "before_message", Priority: 10},
 	})
 
@@ -1062,7 +1063,7 @@ func TestHookModifying_Timeout(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Hook subscriber that never responds
-	_ = env.connectHook("slow", []HookSubscription{
+	_ = env.connectHook("slow", []khooks.Subscription{
 		{Event: "before_message", Priority: 10},
 	})
 
@@ -1088,10 +1089,10 @@ func TestHookModifying_PriorityOrder(t *testing.T) {
 
 	// Two hooks: low priority adds prefix, high priority adds suffix.
 	// High runs first (priority 20), then low (priority 10).
-	hookHigh := env.connectHook("high", []HookSubscription{
+	hookHigh := env.connectHook("high", []khooks.Subscription{
 		{Event: "before_message", Priority: 20},
 	})
-	hookLow := env.connectHook("low", []HookSubscription{
+	hookLow := env.connectHook("low", []khooks.Subscription{
 		{Event: "before_message", Priority: 10},
 	})
 
@@ -1162,7 +1163,7 @@ func newTestEnvWithPluginTool(t *testing.T) *testEnv {
 func newTestEnvWithPluginToolHome(t *testing.T, home string) *testEnv {
 	t.Helper()
 	toolsJSON := json.RawMessage(`[{"name":"echo_tool","description":"echo","params":{"text":{"type":"string","description":"text"},"command":{"type":"string","description":"command text"}},"required":[]}]`)
-	hub := NewHub(toolsJSON, 3, 5, nil)
+	hub := NewHub(toolsJSON, nil)
 	hub.SetClientAuthToken("test-kernel-token")
 	hub.SetSessionStore(NewDiskSessionStore(home))
 	attachTestRuntime(t, hub, runtimePluginCapability("echo", "echo_tool"))
@@ -1190,7 +1191,7 @@ func TestBeforeToolCallHookFiresForDynamicPluginTool(t *testing.T) {
 	}
 	env := newTestEnvWithPluginTool(t)
 
-	hook := env.connectHook("perm", []HookSubscription{
+	hook := env.connectHook("perm", []khooks.Subscription{
 		{Event: "before_tool_call", Priority: 100},
 	})
 
@@ -1240,7 +1241,7 @@ func TestBeforeToolCallHookFiresForDynamicPluginTool(t *testing.T) {
 func TestBeforeToolCallHookFiresForPluginTool(t *testing.T) {
 	env := newTestEnvWithPluginTool(t)
 
-	hook := env.connectHook("perm", []HookSubscription{
+	hook := env.connectHook("perm", []khooks.Subscription{
 		{Event: "before_tool_call", Priority: 100},
 	})
 
@@ -1289,7 +1290,7 @@ func TestBeforeToolCallHookFiresForPluginTool(t *testing.T) {
 func TestBeforeToolCallHookCanBlockDynamicPluginTool(t *testing.T) {
 	env := newTestEnvWithPluginTool(t)
 
-	hook := env.connectHook("perm", []HookSubscription{
+	hook := env.connectHook("perm", []khooks.Subscription{
 		{Event: "before_tool_call", Priority: 100},
 	})
 
@@ -1344,7 +1345,7 @@ func TestBeforeToolCallHookCanBlockDynamicPluginTool(t *testing.T) {
 func TestBeforeToolCallHookCanBlockPluginTool(t *testing.T) {
 	env := newTestEnvWithPluginTool(t)
 
-	hook := env.connectHook("perm", []HookSubscription{
+	hook := env.connectHook("perm", []khooks.Subscription{
 		{Event: "before_tool_call", Priority: 100},
 	})
 
@@ -1397,7 +1398,7 @@ func TestSecurityHookTimeoutBlocksToolCall(t *testing.T) {
 	env := newTestEnvWithPluginTool(t)
 
 	// Hook that never responds on before_tool_call (security event)
-	_ = env.connectHook("slow-perm", []HookSubscription{
+	_ = env.connectHook("slow-perm", []khooks.Subscription{
 		{Event: "before_tool_call", Priority: 100},
 	})
 
@@ -1442,7 +1443,7 @@ func TestDomainHookTimeoutPassesThrough(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Hook that never responds on session_start (domain event)
-	_ = env.connectHook("slow-domain", []HookSubscription{
+	_ = env.connectHook("slow-domain", []khooks.Subscription{
 		{Event: "session_start", Priority: 100},
 	})
 
@@ -1463,7 +1464,7 @@ func TestDomainHookTimeoutPassesThrough(t *testing.T) {
 
 func TestAfterToolCallHookTruncatesLargeOutput(t *testing.T) {
 	env := newTestEnv(t)
-	hook := env.connectHook("observer", []HookSubscription{
+	hook := env.connectHook("observer", []khooks.Subscription{
 		{Event: "after_tool_call", Priority: 0},
 	})
 

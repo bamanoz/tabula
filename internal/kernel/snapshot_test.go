@@ -12,7 +12,7 @@ import (
 )
 
 func TestSnapshotSessionsUsesRecordedPID(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 
 	sess := hub.sessions.GetOrCreate("s1", "default")
 	sess.AddClient("driver")
@@ -54,7 +54,7 @@ func TestSnapshotSessionsUsesRecordedPID(t *testing.T) {
 }
 
 func TestSnapshotSessionsIncludesClientMeta(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	client := &Client{name: "driver", id: 7, tenantID: "tenant", session: "s1", meta: json.RawMessage(`{"tabula.role":"driver"}`), state: ClientJoined}
 	if !hub.addClient(client) {
 		t.Fatal("add client")
@@ -78,7 +78,7 @@ func TestSnapshotSessionsIncludesClientMeta(t *testing.T) {
 }
 
 func TestKernelSessionsSnapshotRequest(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	client := &Client{name: "requester", id: 1, sends: map[string]bool{string(MsgRequest): true}, receives: map[string]bool{string(MsgReply): true}, state: ClientJoined, recvCh: make(chan *Message, 1), done: make(chan struct{})}
 	hub.sessions.GetOrCreate("s1", "tenant")
 
@@ -99,7 +99,7 @@ func TestKernelSessionsSnapshotRequest(t *testing.T) {
 }
 
 func TestSnapshotRuntimesSanitizesDetachedLastError(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.runtimes = NewRuntimeRegistry()
 	conn := runtimemock.New()
 	if err := hub.runtimes.RegisterHello(runtimeauth.LocalRuntimeID, conn, nil, 0); err != nil {

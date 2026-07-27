@@ -43,7 +43,7 @@ func TestSessionLifecycle(t *testing.T) {
 }
 
 func TestSessionRestartObservationSuspendsAfterThreshold(t *testing.T) {
-	hub := NewHub(nil, 0, 0, slog.Default())
+	hub := NewHub(nil, slog.Default())
 	home := t.TempDir()
 	store := NewDiskSessionStore(home)
 	hub.SetSessionStore(store)
@@ -73,7 +73,7 @@ func TestSessionRestartObservationSuspendsAfterThreshold(t *testing.T) {
 }
 
 func TestSessionRestartObservationIgnoresIdleSnapshot(t *testing.T) {
-	hub := NewHub(nil, 0, 0, slog.Default())
+	hub := NewHub(nil, slog.Default())
 	store := NewDiskSessionStore(t.TempDir())
 	hub.SetSessionStore(store)
 
@@ -104,7 +104,7 @@ func TestSetSessionStoreHydratesPersistedSessions(t *testing.T) {
 		t.Fatalf("save previous session: %v", err)
 	}
 
-	hub := NewHub(nil, 0, 0, slog.Default())
+	hub := NewHub(nil, slog.Default())
 	hub.SetSessionStore(NewDiskSessionStore(home))
 
 	sess, ok := hub.sessions.Get("codegraph", "alpha")
@@ -127,7 +127,7 @@ func TestSetSessionStoreHydratesPersistedSessions(t *testing.T) {
 }
 
 func TestSessionArchiveLifecyclePersistsAndBroadcasts(t *testing.T) {
-	hub := NewHub(nil, 0, 0, slog.Default())
+	hub := NewHub(nil, slog.Default())
 	home := t.TempDir()
 	hub.SetSessionStore(NewDiskSessionStore(home))
 	client := addTenantCaptureClient(t, hub, "tenant", "gateway", "main", []string{TopicSessionArchived}, nil)
@@ -146,7 +146,7 @@ func TestSessionArchiveLifecyclePersistsAndBroadcasts(t *testing.T) {
 }
 
 func TestSessionDeleteLifecycleTombstonesAndBlocksTurns(t *testing.T) {
-	hub := NewHub(nil, 0, 0, slog.Default())
+	hub := NewHub(nil, slog.Default())
 	home := t.TempDir()
 	hub.SetSessionStore(NewDiskSessionStore(home))
 	client := addTenantCaptureClient(t, hub, "tenant", "gateway", "main", []string{TopicSessionDeleted}, nil)
@@ -239,7 +239,7 @@ func TestSessionPreferredRuntimeCanBeUpdated(t *testing.T) {
 }
 
 func TestSessionRestartObservationRestoresPreferredRuntime(t *testing.T) {
-	hub := NewHub(nil, 0, 0, slog.Default())
+	hub := NewHub(nil, slog.Default())
 	store := NewDiskSessionStore(t.TempDir())
 	hub.SetSessionStore(store)
 

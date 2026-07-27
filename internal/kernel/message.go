@@ -1,6 +1,10 @@
 package kernel
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
+)
 
 // Message is the generic JSON message exchanged over WebSocket.
 type Message struct {
@@ -30,10 +34,10 @@ type Message struct {
 	Token          string   `json:"token,omitempty"`
 	AuthToken      string   `json:"auth_token,omitempty"`
 	// Hook fields
-	Hooks   []HookSubscription `json:"hooks,omitempty"`
-	Payload json.RawMessage    `json:"payload,omitempty"`
-	Action  string             `json:"action,omitempty"`
-	Reason  string             `json:"reason,omitempty"`
+	Hooks   []khooks.Subscription `json:"hooks,omitempty"`
+	Payload json.RawMessage       `json:"payload,omitempty"`
+	Action  string                `json:"action,omitempty"`
+	Reason  string                `json:"reason,omitempty"`
 	// Meta is an optional opaque JSON object carried alongside the message.
 	// The kernel does not interpret its contents; it is forwarded as-is.
 	// Conventional uses:
@@ -76,7 +80,7 @@ func cloneMessage(msg *Message) *Message {
 		clone.ReceivesGlobal = append([]string(nil), msg.ReceivesGlobal...)
 	}
 	if msg.Hooks != nil {
-		clone.Hooks = append([]HookSubscription(nil), msg.Hooks...)
+		clone.Hooks = append([]khooks.Subscription(nil), msg.Hooks...)
 	}
 	clone.release = nil
 	return &clone

@@ -3,6 +3,8 @@ package kernel
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/bamanoz/tabula/internal/kernel/clientmeta"
+	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
 	"sort"
 )
 
@@ -65,7 +67,7 @@ func (h *Hub) handleExchangeReply(sender *Client, msg *Message) {
 	h.broadcastExchangeResolved(pending.responders, sender, pending.tenantID, pending.session, pending.topic, msg.ID, msg.Data)
 }
 
-func (h *Hub) requestExchangeForPendingTool(pending pendingToolCall, blocked *HookDispatchDecision) {
+func (h *Hub) requestExchangeForPendingTool(pending pendingToolCall, blocked *khooks.DispatchDecision) {
 	if h == nil {
 		return
 	}
@@ -190,7 +192,7 @@ func (h *Hub) handleSuspendedExchangeReply(sender *Client, msg *Message) bool {
 	return true
 }
 
-func exchangeRequestData(pending pendingToolCall, blocked *HookDispatchDecision) json.RawMessage {
+func exchangeRequestData(pending pendingToolCall, blocked *khooks.DispatchDecision) json.RawMessage {
 	if len(pending.ExchangeData) > 0 {
 		var data map[string]any
 		if json.Unmarshal(pending.ExchangeData, &data) == nil {
@@ -202,7 +204,7 @@ func exchangeRequestData(pending pendingToolCall, blocked *HookDispatchDecision)
 	return mustMarshalRaw(map[string]any{"exchange_id": pending.ExchangeID})
 }
 
-func exchangeRequestDataFromDecision(toolName string, blocked *HookDispatchDecision) json.RawMessage {
+func exchangeRequestDataFromDecision(toolName string, blocked *khooks.DispatchDecision) json.RawMessage {
 	_ = toolName
 	if blocked == nil || len(blocked.Payload) == 0 {
 		return nil
@@ -337,7 +339,7 @@ func exchangeResponderScore(c *Client) int {
 	if c == nil || len(c.meta) == 0 {
 		return 0
 	}
-	meta := decodeClientMeta(c.meta)
+	meta := clientmeta.Decode(c.meta)
 	score := 0
 	if meta.Role == "user" {
 		score += 2

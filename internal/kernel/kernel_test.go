@@ -14,6 +14,7 @@ import (
 	"time"
 
 	runtimemock "github.com/bamanoz/tabula/internal/runtime/mock"
+	runtimeconfig "github.com/bamanoz/tabula/internal/runtime/registryconfig"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
 	"github.com/bamanoz/tabula/internal/tenant"
 	"github.com/gorilla/websocket"
@@ -39,7 +40,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 
 	toolsJSON := json.RawMessage(`[{"name":"echo_tool","description":"echo stdin","params":{"text":{"type":"string","description":"text to echo"}},"required":[]},{"name":"test_shell","description":"test-only shell-style skill","params":{"command":{"type":"string","description":"command to run"}},"required":["command"]}]`)
-	hub := NewHub(toolsJSON, 3, 5, nil)
+	hub := NewHub(toolsJSON, nil)
 	hub.SetClientAuthToken("test-kernel-token")
 	attachTestRuntime(t, hub,
 		runtimePluginCapability("echo", "echo_tool"),
@@ -427,7 +428,7 @@ func TestJoinPersistsSessionStateUnderTenantDir(t *testing.T) {
 
 func TestRemovedKernelBuiltinsNotExposedOrExecutable(t *testing.T) {
 	toolsJSON := json.RawMessage(`[{"name":"echo_tool","description":"echo stdin","params":{"text":{"type":"string","description":"text to echo"}},"required":[]}]`)
-	hub := NewHub(toolsJSON, 3, 5, nil)
+	hub := NewHub(toolsJSON, nil)
 	hub.SetClientAuthToken("test-kernel-token")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
@@ -470,7 +471,7 @@ func TestRemovedKernelBuiltinsNotExposedOrExecutable(t *testing.T) {
 }
 
 func TestInitIncludesRuntimeManifestLoadedTools(t *testing.T) {
-	hub := NewHub(nil, 3, 5, nil)
+	hub := NewHub(nil, nil)
 	hub.syncRuntimeCapability("local", wire.Capability{
 		Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "dynamic"},
 		Tools:  []wire.ToolSpec{{Name: "testbed_dynamic_ping"}},
@@ -490,7 +491,7 @@ func TestInitIncludesRuntimeManifestLoadedTools(t *testing.T) {
 }
 
 func TestInitToolsPreserveFullRuntimeSchema(t *testing.T) {
-	hub := NewHub(nil, 3, 5, nil)
+	hub := NewHub(nil, nil)
 	schema := json.RawMessage(`{"type":"object","properties":{"server":{"type":"string","description":"Configured MCP server name."}},"required":["server"],"additionalProperties":false}`)
 	hub.syncRuntimeCapability("local", wire.Capability{
 		Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "mcp"},
@@ -531,8 +532,8 @@ func TestInitToolsPreserveFullRuntimeSchema(t *testing.T) {
 }
 
 func TestInitSyncsAttachedRuntimeCapabilities(t *testing.T) {
-	hub := NewHub(nil, 3, 5, nil)
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	hub := NewHub(nil, nil)
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	conn := runtimemock.New().WithCapabilities(wire.Capability{
 		Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "cron"},
 		Tools:  []wire.ToolSpec{{Name: "cron_add"}, {Name: "cron_list"}},
@@ -552,7 +553,7 @@ func TestInitSyncsAttachedRuntimeCapabilities(t *testing.T) {
 func TestRuntimeCatalogUpdateRefreshesJoinedClients(t *testing.T) {
 	env := newTestEnv(t)
 	env.Hub.runtimes = NewRuntimeRegistry()
-	ensureRuntimeDefinitionsForTest(t, env.Hub, RuntimeDefinition{ID: "local", Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, env.Hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
 	conn := runtimemock.New().WithCapabilities(wire.Capability{
 		Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "mcp"},
 		Tools:  []wire.ToolSpec{{Name: "mcp_call"}},
@@ -788,7 +789,7 @@ func TestUserMessagesGetTurnCorrelationID(t *testing.T) {
 }
 
 func TestUserMessagesStampPreferredRuntimeAndQueuedTurnsUpdateOnDispatch(t *testing.T) {
-	hub := NewHub(nil, 3, 5, nil)
+	hub := NewHub(nil, nil)
 	gatewayA := addCaptureClient(t, hub, "gateway-a", "main", nil, nil)
 	gatewayA.meta = json.RawMessage(`{"tabula.runtime_id":"rt-aaaaaaaaaaaaaaaaaaaa"}`)
 	gatewayB := addCaptureClient(t, hub, "gateway-b", "main", nil, nil)
@@ -826,7 +827,7 @@ func TestUserMessagesStampPreferredRuntimeAndQueuedTurnsUpdateOnDispatch(t *test
 }
 
 func TestTurnSteerStampsPreferredRuntimeMeta(t *testing.T) {
-	hub := NewHub(nil, 3, 5, nil)
+	hub := NewHub(nil, nil)
 	gateway := addCaptureClient(t, hub, "gateway", "main", nil, nil)
 	gateway.meta = json.RawMessage(`{"tabula.runtime_id":"rt-cccccccccccccccccccc"}`)
 	driver := addCaptureClient(t, hub, "driver", "main", []string{TopicTurnSteer}, nil)
@@ -851,7 +852,7 @@ func TestExchangeReplyRequiresEligibleResponder(t *testing.T) {
 }
 
 func TestExchangeApproveHelperReachesTenantSessionResponder(t *testing.T) {
-	hub := NewHub(nil, 3, 5, nil)
+	hub := NewHub(nil, nil)
 	hub.sessions.GetOrCreate("s1", "tenant-a")
 	responder := addTenantCaptureClient(t, hub, "tenant-a", "responder", "s1", []string{TopicExchangeApprove}, nil)
 	help := addTenantCaptureClient(t, hub, "tenant-a", "helper", "s1", []string{TopicExchangeApprove}, nil)
@@ -916,7 +917,7 @@ func TestTenantSessionsWithSameIDAreIsolated(t *testing.T) {
 }
 
 func testExchangeReplyRequiresEligibleResponder(t *testing.T, topic string) {
-	hub := NewHub(nil, 3, 5, nil)
+	hub := NewHub(nil, nil)
 	requester := addCaptureClient(t, hub, "requester", "main", []string{topic}, []string{topic, string(MsgError)})
 	responder := addCaptureClient(t, hub, "responder", "main", []string{topic}, []string{topic, string(MsgError)})
 	secondResponder := addCaptureClient(t, hub, "second", "main", []string{topic}, []string{topic, string(MsgError)})
@@ -969,7 +970,7 @@ func testExchangeReplyRequiresEligibleResponder(t *testing.T, topic string) {
 }
 
 func TestLateExchangeApprovalReplyAfterRequesterDisconnectIsRejected(t *testing.T) {
-	hub := NewHub(nil, 3, 5, nil)
+	hub := NewHub(nil, nil)
 	approval := addCaptureClient(t, hub, "hook-approvals", "main", []string{TopicExchangeApprove, string(MsgError)}, []string{TopicExchangeApprove, string(MsgError)})
 	ui := addCaptureClient(t, hub, "gateway-web", "main", []string{TopicExchangeApprove, string(MsgError)}, []string{TopicExchangeApprove, string(MsgError)})
 	approval.sends[TopicExchangeApprove] = true
@@ -1008,7 +1009,7 @@ func TestLateExchangeApprovalReplyAfterRequesterDisconnectIsRejected(t *testing.
 }
 
 func TestPickExchangeResponderPrefersManagedUIClient(t *testing.T) {
-	hub := NewHub(nil, 3, 5, nil)
+	hub := NewHub(nil, nil)
 	requester := addCaptureClient(t, hub, "requester", "main", []string{TopicExchangeChoose}, []string{TopicExchangeChoose, string(MsgError)})
 	generic := addCaptureClient(t, hub, "generic", "main", []string{TopicExchangeChoose}, nil)
 	ui := addCaptureClient(t, hub, "gateway-web", "main", []string{TopicExchangeChoose}, nil)
@@ -1037,7 +1038,7 @@ func TestPickExchangeResponderPrefersManagedUIClient(t *testing.T) {
 }
 
 func TestPickExchangeResponderFansOutToAllEqualPreferredUIClients(t *testing.T) {
-	hub := NewHub(nil, 3, 5, nil)
+	hub := NewHub(nil, nil)
 	requester := addCaptureClient(t, hub, "requester", "main", []string{TopicExchangeChoose}, []string{TopicExchangeChoose, string(MsgError)})
 	older := addCaptureClient(t, hub, "gateway-old", "main", []string{TopicExchangeChoose}, nil)
 	newer := addCaptureClient(t, hub, "gateway-new", "main", []string{TopicExchangeChoose}, nil)
@@ -1314,7 +1315,7 @@ func TestSlowClientDropsMessages(t *testing.T) {
 }
 
 func TestCriticalToolResultWaitsForSlowInternalClient(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	c := &Client{
 		hub:      hub,
 		name:     "slow-internal",
@@ -1517,7 +1518,7 @@ func TestUserMessageQueuesUntilTurnReceiverJoins(t *testing.T) {
 }
 
 func TestQueuedFollowUpBroadcastsBackToOriginalSenderWhenDispatched(t *testing.T) {
-	hub := NewHub(nil, 3, 5, nil)
+	hub := NewHub(nil, nil)
 	gateway := addCaptureClient(t, hub, "gateway", "main", []string{TopicMessageUser}, nil)
 	driver := addCaptureClient(t, hub, "driver", "main", []string{TopicMessageUser}, nil)
 	queued := userMessage("queued")
@@ -1651,7 +1652,7 @@ func TestTurnSteerBypassesSessionQueueDuringActiveTurn(t *testing.T) {
 }
 
 func TestTurnSteerWaitsForActiveToolCallToFinish(t *testing.T) {
-	hub := NewHub(nil, 3, 5, nil)
+	hub := NewHub(nil, nil)
 	gateway := addTenantCaptureClient(t, hub, "default", "gateway", "main", nil, nil)
 	driver := addTenantCaptureClient(t, hub, "default", "driver", "main", []string{TopicTurnSteer}, nil)
 

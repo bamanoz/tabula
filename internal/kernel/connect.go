@@ -3,6 +3,7 @@ package kernel
 import (
 	"encoding/json"
 	"fmt"
+	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
 )
 
 // connectPlan holds the complete result of a connect computation.
@@ -11,7 +12,7 @@ type connectPlan struct {
 	sends          []string
 	receives       []string
 	receivesGlobal []string
-	hooks          []HookSubscription
+	hooks          []khooks.Subscription
 	meta           json.RawMessage
 	depth          int
 	clientID       int

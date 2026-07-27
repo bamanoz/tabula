@@ -8,6 +8,7 @@ import (
 	"time"
 
 	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
+	runtimeconfig "github.com/bamanoz/tabula/internal/runtime/registryconfig"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
 )
 
@@ -19,8 +20,8 @@ import (
 type RuntimeRegistry struct {
 	mu             sync.RWMutex
 	runtimes       map[string]*RuntimeAttachment
-	defined        map[string]RuntimeDefinition
-	tenantBindings map[string]TenantRuntimeBinding
+	defined        map[string]runtimeconfig.Definition
+	tenantBindings map[string]runtimeconfig.Binding
 }
 
 // RuntimeAttachment is the read-model record for one runtime.
@@ -54,14 +55,14 @@ type runtimeHookTarget struct {
 
 // NewRuntimeRegistry creates an empty runtime attachment registry.
 func NewRuntimeRegistry() *RuntimeRegistry {
-	return &RuntimeRegistry{runtimes: make(map[string]*RuntimeAttachment), defined: map[string]RuntimeDefinition{}, tenantBindings: map[string]TenantRuntimeBinding{}}
+	return &RuntimeRegistry{runtimes: make(map[string]*RuntimeAttachment), defined: map[string]runtimeconfig.Definition{}, tenantBindings: map[string]runtimeconfig.Binding{}}
 }
 
-func (r *RuntimeRegistry) Configure(definitions []RuntimeDefinition, bindings map[string]TenantRuntimeBinding) error {
+func (r *RuntimeRegistry) Configure(definitions []runtimeconfig.Definition, bindings map[string]runtimeconfig.Binding) error {
 	if r == nil {
 		return fmt.Errorf("runtime registry is nil")
 	}
-	defined := make(map[string]RuntimeDefinition, len(definitions))
+	defined := make(map[string]runtimeconfig.Definition, len(definitions))
 	for _, definition := range definitions {
 		if err := wire.ValidateRuntimeID(definition.ID); err != nil {
 			return err
@@ -71,9 +72,9 @@ func (r *RuntimeRegistry) Configure(definitions []RuntimeDefinition, bindings ma
 		}
 		defined[definition.ID] = definition
 	}
-	copyBindings := make(map[string]TenantRuntimeBinding, len(bindings))
+	copyBindings := make(map[string]runtimeconfig.Binding, len(bindings))
 	for tenantID, binding := range bindings {
-		copyBindings[tenantID] = TenantRuntimeBinding{AllowedRuntimes: append([]string(nil), binding.AllowedRuntimes...), DefaultRuntime: binding.DefaultRuntime}
+		copyBindings[tenantID] = runtimeconfig.Binding{AllowedRuntimes: append([]string(nil), binding.AllowedRuntimes...), DefaultRuntime: binding.DefaultRuntime}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -189,15 +190,15 @@ func (r *RuntimeRegistry) RuntimeAllowedForTenant(tenantID, runtimeID string) bo
 	return runtimeAllowed(binding.AllowedRuntimes, runtimeID) && attachment != nil && runtimeServesTenant(attachment.TenantsServed, tenantID)
 }
 
-func (r *RuntimeRegistry) bindingForTenantLocked(tenantID string) TenantRuntimeBinding {
+func (r *RuntimeRegistry) bindingForTenantLocked(tenantID string) runtimeconfig.Binding {
 	binding, ok := r.tenantBindings[tenantID]
 	if ok {
 		return binding
 	}
-	return TenantRuntimeBinding{AllowedRuntimes: []string{"*"}}
+	return runtimeconfig.Binding{AllowedRuntimes: []string{"*"}}
 }
 
-func (r *RuntimeRegistry) runtimeForTenantLocked(tenantID string, binding TenantRuntimeBinding, runtimeID string) (runtimeapi.RuntimeConn, wire.ErrorCode, error) {
+func (r *RuntimeRegistry) runtimeForTenantLocked(tenantID string, binding runtimeconfig.Binding, runtimeID string) (runtimeapi.RuntimeConn, wire.ErrorCode, error) {
 	if !runtimeAllowed(binding.AllowedRuntimes, runtimeID) {
 		return nil, wire.ErrorTenantForbidden, fmt.Errorf("tenant %q cannot use runtime %q", tenantID, runtimeID)
 	}

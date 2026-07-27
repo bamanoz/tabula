@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
 	runtimeauth "github.com/bamanoz/tabula/internal/runtime/auth"
 	"github.com/bamanoz/tabula/internal/runtime/codec"
 	runtimeconn "github.com/bamanoz/tabula/internal/runtime/conn"
@@ -137,20 +136,4 @@ func (h *Hub) DetachRuntimeForRevoke(runtimeID string) {
 	h.rebuildHookIndex()
 	h.scheduleRuntimeCatalogRefreshForTenants(tenants, rebuildContext)
 	h.Logger.Warn("runtime detached for revoke", "runtime_id", runtimeID, "tenants", tenants, "removed_tools", removedTools)
-}
-
-// ConfigureRuntimeRegistryForTest replaces runtime definitions in tests.
-func (h *Hub) ConfigureRuntimeRegistryForTest(definitions []RuntimeDefinition) {
-	if h.runtimes == nil {
-		h.runtimes = NewRuntimeRegistry()
-	}
-	_ = h.runtimes.Configure(definitions, nil)
-}
-
-// RegisterRuntimeForTest attaches a runtime connection in tests.
-func (h *Hub) RegisterRuntimeForTest(runtimeID string, conn runtimeapi.RuntimeConn) error {
-	if h.runtimes == nil {
-		h.runtimes = NewRuntimeRegistry()
-	}
-	return h.runtimes.RegisterHello(runtimeID, conn, nil, 0)
 }

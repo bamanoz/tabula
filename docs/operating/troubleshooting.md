@@ -36,6 +36,14 @@ Structured kernel/runtime logs also include `turn_correlation_id` on tool and
 runtime-dispatch paths, so you can cross-reference the same id in log files
 without exposing raw prompt contents.
 
+Logging policy is controlled by environment variables. Kernel processes use
+`TABULA_LOG_LEVEL`, `TABULA_LOG_FORMAT` or `TABULA_LOG_TYPE`,
+`TABULA_LOG_OUTPUT`, `TABULA_LOG_FILE`, `TABULA_FILE_LOG_LEVEL`, and
+`TABULA_FILE_LOG_FORMAT` or `TABULA_FILE_LOG_TYPE`. Runtime processes use the
+same names with `TABULA_RUNTIME_` prefix, for example
+`TABULA_RUNTIME_LOG_LEVEL=debug` and `TABULA_RUNTIME_LOG_TYPE=text`. Levels are
+`debug`, `info`, `warn`, `error`, or `silent`; formats are `json` or `text`.
+
 ## `tenant_forbidden`
 
 The tenant is not allowed to use the selected runtime. Check tenant config:

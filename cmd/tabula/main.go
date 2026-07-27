@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	tabulaapp "github.com/bamanoz/tabula/internal/tabula"
+	tabulaapp "github.com/bamanoz/tabula/internal/cli/tabula"
 )
 
 var (

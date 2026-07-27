@@ -31,14 +31,13 @@ When implementation contradicts an ADR, say so explicitly instead of silently re
 
 ## Implementation Anchors
 
-- `cmd/tabula/main.go` is the main CLI entrypoint; command wiring lives under `internal/tabula/`.
+- `cmd/tabula/main.go` is the main CLI entrypoint; command wiring lives under `internal/cli/tabula/`.
 - `cmd/tabula-runtime/main.go` starts the local runtime daemon.
-- `internal/kernel/` owns hub state, sessions, WebSocket client protocol, hook dispatch, tool routing, runtime registry, session persistence, and liveness state.
+- `internal/kernel/` owns hub state, sessions, WebSocket client protocol adapters, tool routing, runtime registry, session persistence, and liveness state. Kernel support packages include `internal/kernel/clientauth/`, `internal/kernel/clientmeta/`, `internal/kernel/hooks/`, `internal/kernel/process/`, and `internal/kernel/toolstate/`; CLI composition lives outside the hub. Runtime registry TOML loading lives in `internal/runtime/registryconfig/`.
 - `internal/runtime/wire/` defines the kernel-to-runtime Runtime API frames.
 - `internal/runtime/worker/wire/` defines the runtime-to-worker protocol used after the runtime host starts a worker.
 - `internal/runtime/host/` owns runtime daemon config, manifest discovery, execution policy, warm worker pool, and Runtime API request handling.
-- `internal/runtime/paths/` centralizes `TABULA_HOME` path conventions for Go code.
-- `internal/config/` loads tenant-aware config overlays.
+- `internal/layout/` centralizes `TABULA_HOME` path conventions for Go code.
 - `internal/tenant/` defines tenant metadata and filesystem layout.
 - `tools/tabula-distro/` owns distro and tenant install/materialization.
 - `tools/tabula-testbed/` owns installed-layout testbed orchestration and the Python test client.
@@ -76,13 +75,13 @@ Use `generation` for installed distro snapshots, not for source bundles.
 
 ### Hub
 
-The in-process kernel coordinator (`internal/kernel.Hub`). It owns client registry, session registry, process supervision hooks, policy engine, tool service, runtime registry, tenant store, session store, and tool dispatch table.
+The in-process kernel coordinator (`internal/kernel.Hub`). It owns client registry, session registry, process supervision state, policy engine, tool service, runtime registry, tenant store, session store, and tool dispatch table. It accepts parsed runtime registry configuration; CLI code loads TOML and tenant bindings before calling it.
 
 Use `kernel hub` or `Hub` only for this coordinator, not for the whole CLI.
 
 ### Hook
 
-A kernel event subscription and reply mechanism used for policy gates, approvals, and side-channel interaction. Hooks are not general tool calls. Hook subscribers have priorities and optional timeouts.
+A kernel event subscription and reply mechanism used for policy gates, approvals, and side-channel interaction. Hooks are not general tool calls. Hook subscribers have priorities and optional timeouts. Hook engine/model code lives in `internal/kernel/hooks/`; `internal/kernel` adapts clients/runtime targets and records session ledger audit events.
 
 ### Kernel
 
@@ -162,7 +161,7 @@ A tenant is not a globally unique agent identity, authorization, billing, or quo
 
 ### `TABULA_HOME`
 
-The runtime/config/state root. It is not the user's workspace. Go path helpers live in `internal/runtime/paths/` and should be used instead of hardcoded paths.
+The runtime/config/state root. It is not the user's workspace. Go path helpers live in `internal/layout/` and should be used instead of hardcoded paths.
 
 Do not hardcode `~/.tabula` in user-facing text except when documenting the default value of `TABULA_HOME`.
 

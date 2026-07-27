@@ -2,7 +2,9 @@ package kernel
 
 import (
 	"bufio"
+
 	"encoding/json"
+	"github.com/bamanoz/tabula/internal/kernel/toolstate"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,7 +12,7 @@ import (
 
 func TestReconcileInterruptedToolsMarksOldStartedToolTerminal(t *testing.T) {
 	home := t.TempDir()
-	hub := NewHub(nil, 0, 0, nil)
+	hub := NewHub(nil, nil)
 	hub.SetSessionStore(NewDiskSessionStore(home))
 	hub.runID = "run-old"
 	hub.recordToolStarted("tenant-a", "main", "call-1", "exec_run")
@@ -30,7 +32,7 @@ func TestReconcileInterruptedToolsMarksOldStartedToolTerminal(t *testing.T) {
 
 func TestReconcileInterruptedToolsDoesNotMarkCurrentRunTool(t *testing.T) {
 	home := t.TempDir()
-	hub := NewHub(nil, 0, 0, nil)
+	hub := NewHub(nil, nil)
 	hub.SetSessionStore(NewDiskSessionStore(home))
 	hub.runID = "run-current"
 	hub.recordToolStarted("tenant-a", "main", "call-1", "exec_run")
@@ -45,7 +47,7 @@ func TestReconcileInterruptedToolsDoesNotMarkCurrentRunTool(t *testing.T) {
 
 func TestReconcileInterruptedToolsDoesNotMarkSuspendedApproval(t *testing.T) {
 	home := t.TempDir()
-	hub := NewHub(nil, 0, 0, nil)
+	hub := NewHub(nil, nil)
 	hub.SetSessionStore(NewDiskSessionStore(home))
 	hub.runID = "run-old"
 	hub.recordToolStarted("tenant-a", "main", "call-1", "exec_run")
@@ -62,7 +64,7 @@ func TestReconcileInterruptedToolsDoesNotMarkSuspendedApproval(t *testing.T) {
 
 func TestToolLifecycleUsesStoreAbstraction(t *testing.T) {
 	store := &memoryToolLifecycleStore{}
-	hub := NewHub(nil, 0, 0, nil)
+	hub := NewHub(nil, nil)
 	hub.SetSessionStore(store)
 	hub.runID = "run-old"
 	hub.recordToolStarted("tenant-a", "main", "call-1", "exec_run")
@@ -80,7 +82,7 @@ func TestToolLifecycleUsesStoreAbstraction(t *testing.T) {
 }
 
 type memoryToolLifecycleStore struct {
-	events []toolLifecycleEvent
+	events []toolstate.Event
 }
 
 func (s *memoryToolLifecycleStore) Save(*Session) error { return nil }
@@ -89,13 +91,13 @@ func (s *memoryToolLifecycleStore) Load(string, string) (*sessionFile, error) { 
 
 func (s *memoryToolLifecycleStore) Delete(string, string) error { return nil }
 
-func (s *memoryToolLifecycleStore) AppendToolLifecycle(_ string, _ string, event toolLifecycleEvent) error {
+func (s *memoryToolLifecycleStore) AppendToolLifecycle(_ string, _ string, event toolstate.Event) error {
 	s.events = append(s.events, event)
 	return nil
 }
 
-func (s *memoryToolLifecycleStore) LoadToolLifecycle(_ string, _ string) ([]toolLifecycleEvent, error) {
-	return append([]toolLifecycleEvent(nil), s.events...), nil
+func (s *memoryToolLifecycleStore) LoadToolLifecycle(_ string, _ string) ([]toolstate.Event, error) {
+	return append([]toolstate.Event(nil), s.events...), nil
 }
 
 type testToolLifecycleEvent struct {
@@ -126,7 +128,7 @@ func readToolLifecycleEvents(t *testing.T, home, session string) []testToolLifec
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
 			t.Fatalf("unmarshal ledger event: %v", err)
 		}
-		if event.Kind == toolLifecycleKind {
+		if event.Kind == toolstate.Kind {
 			events = append(events, event)
 		}
 	}

@@ -2,6 +2,7 @@ package kernel
 
 import (
 	"encoding/json"
+	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -19,7 +20,7 @@ func TestBeforeToolCallHookCanModifyToolInput(t *testing.T) {
 
 	env := newTestEnvWithPluginTool(t)
 
-	hook := env.connectHook("perm", []HookSubscription{
+	hook := env.connectHook("perm", []khooks.Subscription{
 		{Event: "before_tool_call", Priority: 100},
 	})
 
@@ -69,7 +70,7 @@ func TestBeforeToolCallHookReceivesToolMeta(t *testing.T) {
 	}
 
 	env := newTestEnvWithPluginTool(t)
-	hook := env.connectHook("perm", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
+	hook := env.connectHook("perm", []khooks.Subscription{{Event: "before_tool_call", Priority: 100}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
 
 	go func() {
@@ -106,7 +107,7 @@ func TestBeforeToolCallHookCanSuspendForApprovalAndResume(t *testing.T) {
 	}
 
 	env := newTestEnvWithPluginTool(t)
-	hook := env.connectHook("approval", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
+	hook := env.connectHook("approval", []khooks.Subscription{{Event: "before_tool_call", Priority: 100}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolCall, TopicToolResult, "tool.suspended", "tool.resumed"})
 	ui := env.connectAndJoin("ui", "main", []string{TopicExchangeApprove}, []string{TopicExchangeApprove})
 	ui2 := env.connectAndJoin("telegram-ui", "main", []string{TopicExchangeApprove}, []string{TopicExchangeApprove, string(MsgError)})
@@ -122,7 +123,7 @@ func TestBeforeToolCallHookCanSuspendForApprovalAndResume(t *testing.T) {
 	writeJSON(t, hook, Message{
 		Type:    string(MsgHookReply),
 		ID:      hookMsg.ID,
-		Action:  string(ActionSuspend),
+		Action:  string(khooks.ActionSuspend),
 		Reason:  "approve exec",
 		Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`),
 	})
@@ -144,7 +145,7 @@ func TestBeforeToolCallHookCanSuspendForApprovalAndResume(t *testing.T) {
 	if resumedHook.Type != "hook" || resumedHook.Name != "before_tool_call" || !strings.Contains(string(resumedHook.Payload), "__tabula_exchange_reply") {
 		t.Fatalf("expected resumed before_tool_call hook with exchange reply, got %+v", resumedHook)
 	}
-	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: resumedHook.ID, Action: string(ActionPass)})
+	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: resumedHook.ID, Action: string(khooks.ActionPass)})
 	resolvedEvent := readMsg(t, ui2)
 	if resolvedEvent.Type != string(MsgEvent) || resolvedEvent.Topic != TopicExchangeApprove || resolvedEvent.ID != approvalReq.ID || !strings.Contains(string(resolvedEvent.Data), "exchange.resolved") {
 		t.Fatalf("expected exchange resolved for second UI, got %+v", resolvedEvent)
@@ -174,7 +175,7 @@ func TestBeforeToolCallHookCanSuspendForExchangeChooseAndResume(t *testing.T) {
 	}
 
 	env := newTestEnvWithPluginTool(t)
-	hook := env.connectHook("question", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
+	hook := env.connectHook("question", []khooks.Subscription{{Event: "before_tool_call", Priority: 100}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolCall, TopicToolResult, "tool.suspended", "tool.resumed"})
 	ui := env.connectAndJoin("ui", "main", []string{TopicExchangeChoose}, []string{TopicExchangeChoose})
 
@@ -189,7 +190,7 @@ func TestBeforeToolCallHookCanSuspendForExchangeChooseAndResume(t *testing.T) {
 	writeJSON(t, hook, Message{
 		Type:   string(MsgHookReply),
 		ID:     hookMsg.ID,
-		Action: string(ActionSuspend),
+		Action: string(khooks.ActionSuspend),
 		Reason: "ask user",
 		Payload: json.RawMessage(`{
 			"kind":"question",
@@ -229,7 +230,7 @@ func TestBeforeToolCallHookCanSuspendForExchangeChooseAndResume(t *testing.T) {
 	if resumedHook.Type != "hook" || resumedHook.Name != "before_tool_call" || !strings.Contains(string(resumedHook.Payload), "__tabula_exchange_reply") {
 		t.Fatalf("expected resumed before_tool_call hook with exchange reply, got %+v", resumedHook)
 	}
-	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: resumedHook.ID, Action: string(ActionPass)})
+	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: resumedHook.ID, Action: string(khooks.ActionPass)})
 
 	for i := 0; i < 4; i++ {
 		msg := readMsg(t, drv)
@@ -250,8 +251,8 @@ func TestSuspendedBeforeToolCallResumesLaterRewriteHookAfterApproval(t *testing.
 	}
 
 	env := newTestEnvWithPluginTool(t)
-	approval := env.connectHook("approval", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
-	rewriter := env.connectHook("rewriter", []HookSubscription{{Event: "before_tool_call", Priority: 10}})
+	approval := env.connectHook("approval", []khooks.Subscription{{Event: "before_tool_call", Priority: 100}})
+	rewriter := env.connectHook("rewriter", []khooks.Subscription{{Event: "before_tool_call", Priority: 10}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolCall, TopicToolResult, "tool.suspended", "tool.resumed"})
 	ui := env.connectAndJoin("ui", "main", []string{TopicExchangeApprove}, []string{TopicExchangeApprove})
 
@@ -263,7 +264,7 @@ func TestSuspendedBeforeToolCallResumesLaterRewriteHookAfterApproval(t *testing.
 	if approvalMsg.Type != "hook" || approvalMsg.Name != "before_tool_call" {
 		t.Fatalf("expected approval before_tool_call, got %+v", approvalMsg)
 	}
-	writeJSON(t, approval, Message{Type: string(MsgHookReply), ID: approvalMsg.ID, Action: string(ActionSuspend), Reason: "approve rewritten"})
+	writeJSON(t, approval, Message{Type: string(MsgHookReply), ID: approvalMsg.ID, Action: string(khooks.ActionSuspend), Reason: "approve rewritten"})
 
 	approvalReq := readMsg(t, ui)
 	if approvalReq.Type != string(MsgRequest) || approvalReq.Topic != TopicExchangeApprove {
@@ -282,13 +283,13 @@ func TestSuspendedBeforeToolCallResumesLaterRewriteHookAfterApproval(t *testing.
 	if resumedApprovalMsg.Type != "hook" || resumedApprovalMsg.Name != "before_tool_call" || !strings.Contains(string(resumedApprovalMsg.Payload), "__tabula_exchange_reply") {
 		t.Fatalf("expected resumed approval before_tool_call with exchange reply, got %+v", resumedApprovalMsg)
 	}
-	writeJSON(t, approval, Message{Type: string(MsgHookReply), ID: resumedApprovalMsg.ID, Action: string(ActionPass)})
+	writeJSON(t, approval, Message{Type: string(MsgHookReply), ID: resumedApprovalMsg.ID, Action: string(khooks.ActionPass)})
 
 	rewriteMsg := readMsg(t, rewriter)
 	if rewriteMsg.Type != "hook" || rewriteMsg.Name != "before_tool_call" {
 		t.Fatalf("expected rewrite before_tool_call after approval, got %+v", rewriteMsg)
 	}
-	env.Hub.hooks.HandleRuntimeResult("", &Message{ID: rewriteMsg.ID, Action: string(ActionModify), Data: json.RawMessage(`{"input":{"text":"rewritten"}}`)})
+	env.Hub.hooks.HandleRuntimeResult("", hookMessageFromKernel(&Message{ID: rewriteMsg.ID, Action: string(khooks.ActionModify), Data: json.RawMessage(`{"input":{"text":"rewritten"}}`)}))
 
 	var called Message
 	for i := 0; i < 4; i++ {
@@ -322,7 +323,7 @@ func TestSuspendedApprovalResendsWhenUIRejoins(t *testing.T) {
 	}
 
 	env := newTestEnvWithPluginTool(t)
-	hook := env.connectHook("approval", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
+	hook := env.connectHook("approval", []khooks.Subscription{{Event: "before_tool_call", Priority: 100}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
 	ui := env.connectAndJoin("ui", "main", []string{TopicExchangeApprove}, []string{TopicExchangeApprove})
 
@@ -330,7 +331,7 @@ func TestSuspendedApprovalResendsWhenUIRejoins(t *testing.T) {
 		writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-resend", Input: json.RawMessage(`{"text":"needs approval"}`)})
 	}()
 	hookMsg := readMsg(t, hook)
-	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: hookMsg.ID, Action: string(ActionSuspend), Reason: "approve exec", Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve again?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`)})
+	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: hookMsg.ID, Action: string(khooks.ActionSuspend), Reason: "approve exec", Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve again?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`)})
 	firstReq := readMsg(t, ui)
 	if firstReq.Topic != TopicExchangeApprove || firstReq.ID == "" {
 		t.Fatalf("expected initial approval request, got %+v", firstReq)
@@ -353,7 +354,7 @@ func TestSuspendedExchangeBroadcastsPendingToGlobalListeners(t *testing.T) {
 	}
 
 	env := newTestEnvWithPluginTool(t)
-	hook := env.connectHook("approval", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
+	hook := env.connectHook("approval", []khooks.Subscription{{Event: "before_tool_call", Priority: 100}})
 	drv := env.connectAndJoinTenant("driver", tenant.DefaultID, "subagent-sa-test", []string{TopicToolCall}, []string{TopicToolResult})
 	targetUI := env.connectAndJoinTenant("target-ui", tenant.DefaultID, "subagent-sa-test", []string{TopicExchangeApprove}, []string{TopicExchangeApprove})
 
@@ -381,7 +382,7 @@ func TestSuspendedExchangeBroadcastsPendingToGlobalListeners(t *testing.T) {
 		writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-global-pending", Input: json.RawMessage(`{"text":"needs approval"}`)})
 	}()
 	hookMsg := readMsg(t, hook)
-	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: hookMsg.ID, Action: string(ActionSuspend), Reason: "approve exec", Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve from another session?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`)})
+	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: hookMsg.ID, Action: string(khooks.ActionSuspend), Reason: "approve exec", Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve from another session?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`)})
 
 	request := readMsg(t, targetUI)
 	if request.Type != string(MsgRequest) || request.Topic != TopicExchangeApprove || request.ID == "" {
@@ -403,7 +404,7 @@ func TestSuspendedExchangeWithoutResponderStaysPendingUntilUIJoins(t *testing.T)
 	}
 
 	env := newTestEnvWithPluginTool(t)
-	hook := env.connectHook("exchange-gate", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
+	hook := env.connectHook("exchange-gate", []khooks.Subscription{{Event: "before_tool_call", Priority: 100}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult, "tool.suspended"})
 
 	go func() {
@@ -411,7 +412,7 @@ func TestSuspendedExchangeWithoutResponderStaysPendingUntilUIJoins(t *testing.T)
 	}()
 
 	hookMsg := readMsg(t, hook)
-	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: hookMsg.ID, Action: string(ActionSuspend), Reason: "needs exchange", Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve later?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`)})
+	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: hookMsg.ID, Action: string(khooks.ActionSuspend), Reason: "needs exchange", Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve later?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`)})
 
 	suspended := readMsg(t, drv)
 	if suspended.Topic != "tool.suspended" {
@@ -441,7 +442,7 @@ func TestSuspendedExchangeRedeliversAfterUIProjectSwitch(t *testing.T) {
 		tenant.Tenant{ID: "corex", CreatedAt: time.Now()},
 		tenant.Tenant{ID: "fujin", CreatedAt: time.Now()},
 	))
-	hook := env.connectHook("exchange-gate", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
+	hook := env.connectHook("exchange-gate", []khooks.Subscription{{Event: "before_tool_call", Priority: 100}})
 	drv := env.connectAndJoinTenant("driver", "corex", "main", []string{TopicToolCall}, []string{TopicToolResult, "tool.suspended"})
 	ui := env.connectAndJoinTenant("ui", "corex", "main", []string{TopicExchangeApprove}, []string{TopicExchangeApprove})
 
@@ -450,7 +451,7 @@ func TestSuspendedExchangeRedeliversAfterUIProjectSwitch(t *testing.T) {
 	}()
 
 	hookMsg := readMsg(t, hook)
-	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: hookMsg.ID, Action: string(ActionSuspend), Reason: "needs exchange", Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve after switch?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`)})
+	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: hookMsg.ID, Action: string(khooks.ActionSuspend), Reason: "needs exchange", Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve after switch?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`)})
 
 	first := readMsg(t, ui)
 	if first.Type != string(MsgRequest) || first.Topic != TopicExchangeApprove || first.ID == "" {
@@ -493,7 +494,7 @@ func TestBeforeToolCallHook_InfiniteTimeout_RepliesAfterDelay(t *testing.T) {
 	env := newTestEnvWithPluginTool(t)
 
 	infinite := 0
-	hook := env.connectHook("approval", []HookSubscription{
+	hook := env.connectHook("approval", []khooks.Subscription{
 		{Event: "before_tool_call", Priority: 10, TimeoutMs: &infinite},
 	})
 
@@ -546,7 +547,7 @@ func TestBeforeToolCallHook_InfiniteTimeout_DisconnectBlocks(t *testing.T) {
 	env := newTestEnvWithPluginTool(t)
 
 	infinite := 0
-	hook := env.connectHook("approval", []HookSubscription{
+	hook := env.connectHook("approval", []khooks.Subscription{
 		{Event: "before_tool_call", Priority: 10, TimeoutMs: &infinite},
 	})
 
@@ -601,10 +602,10 @@ func TestBeforeToolCallHookTimeoutThenNextSubscriberDisconnect(t *testing.T) {
 	env := newTestEnvWithPluginTool(t)
 	permTimeout := 20
 	infinite := 0
-	perm := env.connectHook("hook-permissions", []HookSubscription{
+	perm := env.connectHook("hook-permissions", []khooks.Subscription{
 		{Event: "before_tool_call", Priority: 100, TimeoutMs: &permTimeout},
 	})
-	approval := env.connectHook("hook-approvals", []HookSubscription{
+	approval := env.connectHook("hook-approvals", []khooks.Subscription{
 		{Event: "before_tool_call", Priority: 10, TimeoutMs: &infinite},
 	})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
@@ -663,7 +664,7 @@ func TestBeforeToolCallHookTimeoutThenNextSubscriberDisconnect(t *testing.T) {
 
 func TestBeforeToolCallHookBlockCarriesGenericRetryableDetails(t *testing.T) {
 	env := newTestEnvWithPluginTool(t)
-	hook := env.connectHook("policy", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
+	hook := env.connectHook("policy", []khooks.Subscription{{Event: "before_tool_call", Priority: 100}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
 
 	writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-retryable", Input: json.RawMessage(`{"text":"blocked"}`)})
@@ -671,7 +672,7 @@ func TestBeforeToolCallHookBlockCarriesGenericRetryableDetails(t *testing.T) {
 	writeJSON(t, hook, Message{
 		Type:    string(MsgHookReply),
 		ID:      hookMsg.ID,
-		Action:  string(ActionBlock),
+		Action:  string(khooks.ActionBlock),
 		Reason:  "transient gate unavailable",
 		Payload: mustMarshalRaw(map[string]any{"kind": "approval_required", "retryable": true}),
 	})
@@ -719,7 +720,7 @@ func TestBeforeToolCallHookSkipsSenderHookSubscription(t *testing.T) {
 			"name":           "gateway-self-hook",
 			"send_topics":    []string{TopicToolCall, "hook_reply"},
 			"receive_topics": []string{TopicToolResult, "hook"},
-			"hooks":          []HookSubscription{{Event: "before_tool_call", Priority: 10, TimeoutMs: &infinite}},
+			"hooks":          []khooks.Subscription{{Event: "before_tool_call", Priority: 10, TimeoutMs: &infinite}},
 			"auth_token":     env.Token,
 		}),
 	})
@@ -758,7 +759,7 @@ func TestBeforeToolResultHookTimeoutFailsOpenForSmallResult(t *testing.T) {
 
 	env := newTestEnvWithPluginTool(t)
 	timeout := 10
-	hook := env.connectHook("tool-results", []HookSubscription{{Event: "before_tool_result", Priority: 100, TimeoutMs: &timeout}})
+	hook := env.connectHook("tool-results", []khooks.Subscription{{Event: "before_tool_result", Priority: 100, TimeoutMs: &timeout}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
 
 	go func() {
@@ -787,7 +788,7 @@ func TestBeforeToolResultHookCanRewriteLargeResultFromSpool(t *testing.T) {
 	}
 
 	env := newTestEnvWithPluginTool(t)
-	hook := env.connectHook("tool-results", []HookSubscription{{Event: "before_tool_result", Priority: 100}})
+	hook := env.connectHook("tool-results", []khooks.Subscription{{Event: "before_tool_result", Priority: 100}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
 	large := strings.Repeat("x", 13000)
 
@@ -864,7 +865,7 @@ func TestBeforeToolCallHookWritesDispatchAuditEvents(t *testing.T) {
 
 	home := t.TempDir()
 	env := newTestEnvWithPluginToolHome(t, home)
-	hook := env.connectHook("perm", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
+	hook := env.connectHook("perm", []khooks.Subscription{{Event: "before_tool_call", Priority: 100}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
 
 	go func() {
@@ -891,7 +892,7 @@ func TestBeforeToolCallHookWritesDispatchAuditEvents(t *testing.T) {
 
 func TestDispatchHookWritesMissingAuditEvent(t *testing.T) {
 	home := t.TempDir()
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetSessionStore(NewDiskSessionStore(home))
 	hub.dispatchHook("before_tool_call", json.RawMessage(`{"tool":"echo_tool","id":"t-missing","input":{"text":"ok"}}`), "default", "main")
 	data, err := os.ReadFile(filepath.Join(home, "data", "sessions", "main", "ledger.jsonl"))
@@ -907,7 +908,7 @@ func TestDispatchHookWritesMissingAuditEvent(t *testing.T) {
 func TestDispatchHookWritesTimeoutAuditEvent(t *testing.T) {
 	home := t.TempDir()
 	env := newTestEnvWithPluginToolHome(t, home)
-	hook := env.connectHook("perm", []HookSubscription{{Event: "before_tool_call", Priority: 100}})
+	hook := env.connectHook("perm", []khooks.Subscription{{Event: "before_tool_call", Priority: 100}})
 	defer hook.Close()
 	env.Hub.dispatchHook("before_tool_call", json.RawMessage(`{"tool":"echo_tool","id":"t-timeout","input":{"text":"ok"}}`), "default", "main")
 	data, err := os.ReadFile(filepath.Join(home, "data", "sessions", "main", "ledger.jsonl"))
@@ -922,7 +923,7 @@ func TestDispatchHookWritesTimeoutAuditEvent(t *testing.T) {
 
 func TestHookDispatchAuditRedactsExecCommandInput(t *testing.T) {
 	home := t.TempDir()
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetSessionStore(NewDiskSessionStore(home))
 	hub.dispatchHook("before_tool_call", json.RawMessage(`{"tool":"exec_run","id":"t-exec","input":{"cmd":"echo super-secret-token","timeout_seconds":30}}`), "default", "main")
 	data, err := os.ReadFile(filepath.Join(home, "data", "sessions", "main", "ledger.jsonl"))

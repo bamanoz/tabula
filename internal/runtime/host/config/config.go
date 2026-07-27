@@ -10,7 +10,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/bamanoz/tabula/internal/runtime/paths"
+	"github.com/bamanoz/tabula/internal/layout"
 )
 
 // Config is the runtime-side configuration file. The list-of-tables shape is
@@ -77,7 +77,7 @@ type Kernel struct {
 // DefaultPath returns $TABULA_HOME/config/runtime.toml. The caller is expected
 // to use this only when no explicit --config path was provided.
 func DefaultPath() (string, error) {
-	return paths.RuntimeConfigFile(), nil
+	return layout.RuntimeConfigFile(layout.Home()), nil
 }
 
 // Load reads and validates a runtime.toml file.
@@ -182,7 +182,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	if len(c.PluginDirs) == 0 {
-		c.PluginDirs = []string{paths.PluginsDir()}
+		c.PluginDirs = []string{layout.PluginsDir(layout.Home())}
 	}
 	for i := range c.PluginDirs {
 		c.PluginDirs[i] = cleanPath(os.ExpandEnv(strings.TrimSpace(c.PluginDirs[i])))

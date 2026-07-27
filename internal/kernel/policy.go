@@ -3,6 +3,9 @@ package kernel
 import (
 	"encoding/json"
 	"fmt"
+	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
+
+	"github.com/bamanoz/tabula/internal/kernel/clientauth"
 )
 
 // PolicyError describes why a policy check failed.
@@ -11,7 +14,7 @@ type PolicyError struct{ Reason string }
 func (e *PolicyError) Error() string { return e.Reason }
 
 // PolicyEngine is the single audit point for all security boundaries.
-// It coordinates existing components (HookEngine, ProcessSupervisor, ClientRegistry)
+// It coordinates existing components (HookEngine, process supervision, ClientRegistry)
 // without duplicating their logic.
 type PolicyEngine struct {
 	hub *Hub
@@ -28,7 +31,7 @@ func (pe *PolicyEngine) CanConnect(spawnToken string, authToken string) (int, er
 	if spawnToken != "" {
 		return 0, &PolicyError{Reason: "spawn tokens are no longer accepted by the kernel"}
 	}
-	if pe == nil || pe.hub == nil || !tokenMatches(pe.hub.clientAuthToken, authToken) {
+	if pe == nil || pe.hub == nil || !clientauth.Matches(pe.hub.clientAuthToken, authToken) {
 		return 0, &PolicyError{Reason: "invalid kernel client token"}
 	}
 	return 0, nil
@@ -190,7 +193,7 @@ func (pe *PolicyEngine) BeforeMessage(sender *Client, msg *Message) (string, boo
 
 // CanUseTool runs the before_tool_call hook and returns the effective input.
 // If a hook stops dispatch before invoke, blocked contains the generic hook facts.
-func (pe *PolicyEngine) CanUseTool(sender *Client, toolName string, toolID string, input json.RawMessage, meta json.RawMessage, session string) (json.RawMessage, *HookDispatchDecision) {
+func (pe *PolicyEngine) CanUseTool(sender *Client, toolName string, toolID string, input json.RawMessage, meta json.RawMessage, session string) (json.RawMessage, *khooks.DispatchDecision) {
 	hookPayload, _ := json.Marshal(map[string]any{
 		"tool": toolName, "id": toolID, "input": input, "meta": meta, "tenant_id": sender.tenantID,
 	})

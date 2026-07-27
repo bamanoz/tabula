@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -19,13 +20,14 @@ import (
 	"github.com/bamanoz/tabula/internal/runtime/codec"
 	runtimeconn "github.com/bamanoz/tabula/internal/runtime/conn"
 	runtimemock "github.com/bamanoz/tabula/internal/runtime/mock"
+	runtimeconfig "github.com/bamanoz/tabula/internal/runtime/registryconfig"
 	"github.com/bamanoz/tabula/internal/runtime/transport/wss"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
 	"github.com/bamanoz/tabula/internal/tenant"
 )
 
 func TestServeAuthenticatedRuntimeRegistersAndDetachesRuntime(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	store := runtimeauth.NewMemoryStore()
 	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good"}); err != nil {
 		t.Fatalf("store token: %v", err)
@@ -63,7 +65,7 @@ func TestServeAuthenticatedRuntimeRegistersAndDetachesRuntime(t *testing.T) {
 }
 
 func TestServeAuthenticatedRuntimeRejectsWrongTokenWithoutRegistering(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	store := runtimeauth.NewMemoryStore()
 	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good"}); err != nil {
 		t.Fatalf("store token: %v", err)
@@ -127,7 +129,7 @@ func assertRuntimeSnapshot(t *testing.T, raw []byte, attached bool) {
 }
 
 func TestServeAuthenticatedRuntimeSnapshotsRuntimePIDWhenKnown(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	store := runtimeauth.NewMemoryStore()
 	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good"}); err != nil {
 		t.Fatalf("store token: %v", err)
@@ -172,7 +174,7 @@ func TestServeAuthenticatedRuntimeSnapshotsRuntimePIDWhenKnown(t *testing.T) {
 }
 
 func TestServeAuthenticatedRuntimeCatalogUpdatePopulatesRuntimeDispatchAndSnapshot(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	store := runtimeauth.NewMemoryStore()
 	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good"}); err != nil {
 		t.Fatalf("store token: %v", err)
@@ -231,7 +233,7 @@ func TestServeAuthenticatedRuntimeCatalogUpdatePopulatesRuntimeDispatchAndSnapsh
 	if entry.Source != toolSourceRuntime || entry.RuntimeID != runtimeauth.LocalRuntimeID {
 		t.Fatalf("runtime dispatch not installed: entry=%+v", entry)
 	}
-	if entries := hub.hooks.entries("before_tool_call"); len(entries) != 1 || entries[0].sub.Name() != "runtime:local:plugin:fs" {
+	if entries := hub.hooks.Subscribers("before_tool_call"); len(entries) != 1 || entries[0].Name() != "runtime:local:plugin:fs" {
 		t.Fatalf("runtime hook subscriber not indexed: %+v", entries)
 	}
 
@@ -300,7 +302,7 @@ func TestRuntimeHookSubscriberSendsCallIDForVoidHooks(t *testing.T) {
 		},
 	}, nil, nil, nil, nil, nil)
 
-	sub.SendMsg(&Message{
+	sub.SendHook(&khooks.Message{
 		Type:     string(MsgHook),
 		ID:       "h-session-join",
 		Name:     "session_join",
@@ -337,8 +339,8 @@ func TestRuntimeSessionJoinHookDeliveredWhenTargetBusy(t *testing.T) {
 	}, func(runtimeID string, busyTarget wire.Target) bool {
 		return runtimeID == runtimeauth.LocalRuntimeID && busyTarget == target
 	}, nil, nil, nil, nil)
-	engine := NewHookEngine(nil)
-	engine.RebuildIndex([]HookSubscriber{sub})
+	engine := khooks.NewEngine(nil)
+	engine.RebuildIndex([]khooks.Subscriber{sub})
 
 	engine.Dispatch("session_join", json.RawMessage(`{"session":"web-fresh","tenant_id":"code-immune-tabula-dev","client":"gateway-web"}`), "code-immune-tabula-dev", "web-fresh")
 
@@ -362,7 +364,7 @@ func TestManagedUIJoinDispatchesRuntimeSessionJoinHook(t *testing.T) {
 		State:   wire.CapabilityStateReady,
 		Source:  wire.CapabilitySourceWorker,
 	}
-	ensureRuntimeDefinitionsForTest(t, env.Hub, RuntimeDefinition{ID: runtimeauth.LocalRuntimeID, Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, env.Hub, runtimeconfig.Definition{ID: runtimeauth.LocalRuntimeID, Backend: "local"})
 	if err := env.Hub.runtimes.RegisterHello(runtimeauth.LocalRuntimeID, recorder, []wire.Capability{capability}, 0, []string{"code-immune-tabula-dev"}); err != nil {
 		t.Fatalf("RegisterHello: %v", err)
 	}
@@ -448,7 +450,7 @@ func (c *recordingRuntimeConn) waitHookEvent(timeout time.Duration) (runtimeapi.
 }
 
 func TestServeAuthenticatedRuntimeInitialCapabilitiesReachInitTools(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	store := runtimeauth.NewMemoryStore()
 	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good"}); err != nil {
 		t.Fatalf("store token: %v", err)
@@ -503,7 +505,7 @@ func TestServeAuthenticatedRuntimeInitialCapabilitiesReachInitTools(t *testing.T
 }
 
 func TestServeAuthenticatedRuntimeAsyncFramesRouteHookRepliesAndBusMessages(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	store := runtimeauth.NewMemoryStore()
 	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good"}); err != nil {
 		t.Fatalf("store token: %v", err)
@@ -527,9 +529,9 @@ func TestServeAuthenticatedRuntimeAsyncFramesRouteHookRepliesAndBusMessages(t *t
 		t.Fatalf("Handshake: %v", err)
 	}
 
-	hookResultCh := make(chan *HookResult, 1)
-	hub.hooks.addPendingRuntimeHook("hook-1", runtimeauth.LocalRuntimeID, hookResultCh)
-	defer hub.hooks.removePendingHook("hook-1")
+	hookResultCh := make(chan *khooks.Result, 1)
+	hub.hooks.AddPendingRuntimeHook("hook-1", runtimeauth.LocalRuntimeID, hookResultCh)
+	defer hub.hooks.RemovePending("hook-1")
 
 	if err := client.Write(context.Background(), wire.PluginSend{
 		Op:        wire.OpPluginSend,
@@ -562,7 +564,7 @@ func TestServeAuthenticatedRuntimeAsyncFramesRouteHookRepliesAndBusMessages(t *t
 	}
 	select {
 	case result := <-hookResultCh:
-		if result == nil || result.Action != string(ActionModify) || string(result.Payload) != `{"tool":"safe"}` || result.Reason != "rewritten" {
+		if result == nil || result.Action != string(khooks.ActionModify) || string(result.Payload) != `{"tool":"safe"}` || result.Reason != "rewritten" {
 			t.Fatalf("unexpected hook result: %+v", result)
 		}
 	case <-time.After(time.Second):
@@ -574,7 +576,7 @@ func TestServeAuthenticatedRuntimeAsyncFramesRouteHookRepliesAndBusMessages(t *t
 }
 
 func TestServeAuthenticatedRuntimeDetachRemovesRuntimeTools(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	store := runtimeauth.NewMemoryStore()
 	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good"}); err != nil {
 		t.Fatalf("store token: %v", err)
@@ -632,7 +634,7 @@ func TestServeAuthenticatedRuntimeDetachRemovesRuntimeTools(t *testing.T) {
 }
 
 func TestServeAuthenticatedRuntimePromptHookCapabilityRefreshesPromptContext(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	store := runtimeauth.NewMemoryStore()
 	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good"}); err != nil {
 		t.Fatalf("store token: %v", err)
@@ -699,7 +701,7 @@ func TestServeAuthenticatedRuntimePromptHookCapabilityRefreshesPromptContext(t *
 }
 
 func TestReloadAttachedRuntimeUsesAttachedConn(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.runtimes = NewRuntimeRegistry()
 	rc := runtimemock.New()
 	if err := hub.runtimes.RegisterHello(runtimeauth.LocalRuntimeID, rc, nil, 0); err != nil {
@@ -731,7 +733,7 @@ func TestReloadAttachedRuntimeUsesAttachedConn(t *testing.T) {
 }
 
 func TestRuntimeSnapshotCapabilitiesByTenantUsesCapabilityTenants(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.runtimes = NewRuntimeRegistry()
 	alphaCapability := wire.Capability{
 		Target:  wire.Target{Kind: wire.TargetKindPlugin, ID: "alpha-fs"},
@@ -875,9 +877,9 @@ func TestRuntimeHookTargetsDropBroadManifestWhenTenantWorkerReady(t *testing.T) 
 }
 
 func TestSyncAttachedRuntimeCapabilitiesRebuildsHookIndex(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "code-immune-tabula-dev", CreatedAt: time.Now()}))
-	ensureRuntimeDefinitionsForTest(t, hub, RuntimeDefinition{ID: runtimeauth.LocalRuntimeID, Backend: "local"})
+	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: runtimeauth.LocalRuntimeID, Backend: "local"})
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "hook-approvals"}
 	manifest := wire.Capability{
 		Target:  target,
@@ -901,13 +903,13 @@ func TestSyncAttachedRuntimeCapabilitiesRebuildsHookIndex(t *testing.T) {
 
 	hub.syncAttachedRuntimeCapabilities()
 
-	entries := hub.hooks.entries("before_tool_call")
+	entries := hub.hooks.Subscribers("before_tool_call")
 	if len(entries) != 1 {
 		t.Fatalf("expected hook index to contain only tenant worker subscriber after sync, got %d", len(entries))
 	}
-	sub, ok := entries[0].sub.(*runtimeHookSubscriber)
+	sub, ok := entries[0].(*runtimeHookSubscriber)
 	if !ok {
-		t.Fatalf("expected runtime hook subscriber, got %T", entries[0].sub)
+		t.Fatalf("expected runtime hook subscriber, got %T", entries[0])
 	}
 	if sub.capability.Source != wire.CapabilitySourceWorker || !sameTenantSet(sub.capability.Tenants, []string{"code-immune-tabula-dev"}) {
 		t.Fatalf("expected tenant worker subscriber, got source=%s tenants=%+v", sub.capability.Source, sub.capability.Tenants)
@@ -915,7 +917,7 @@ func TestSyncAttachedRuntimeCapabilitiesRebuildsHookIndex(t *testing.T) {
 }
 
 func TestRuntimeAttachedTracksRegistryState(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	if hub.RuntimeAttached(runtimeauth.LocalRuntimeID) {
 		t.Fatal("expected runtime to start detached")
 	}
@@ -934,7 +936,7 @@ func TestRuntimeAttachedTracksRegistryState(t *testing.T) {
 }
 
 func TestServeAuthenticatedRuntimeUnixAndWSSCoexist(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	store := runtimeauth.NewMemoryStore()
 	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: "unix-runtime", Token: "rtk_unix"}); err != nil {
 		t.Fatalf("store unix token: %v", err)
@@ -1022,7 +1024,7 @@ func TestServeAuthenticatedRuntimeUnixAndWSSCoexist(t *testing.T) {
 }
 
 func TestSetAttachedRuntimePIDUpdatesSnapshot(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.runtimes = NewRuntimeRegistry()
 	rc := runtimemock.New()
 	if err := hub.runtimes.RegisterHello(runtimeauth.LocalRuntimeID, rc, nil, 0); err != nil {
@@ -1043,7 +1045,7 @@ func TestSetAttachedRuntimePIDUpdatesSnapshot(t *testing.T) {
 }
 
 func TestDetachRuntimeForRevokeClosesRuntimeAndRemovesTools(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), 3, 5, nil)
+	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.runtimes = NewRuntimeRegistry()
 	rc := runtimemock.New()
 	if err := hub.runtimes.RegisterHello("remote", rc, []runtimeapi.Capability{{Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Tools: []wire.ToolSpec{{Name: "fs_read"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}}, 0); err != nil {
