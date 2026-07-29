@@ -78,18 +78,16 @@ Use this flow for the globally installed production agent in the default
 installer through authenticated `gh api` instead of raw GitHub URLs.
 
 ```bash
-tag="$(gh release view --repo bamanoz/tabula --json tagName --jq .tagName)" && \
-tmp="$(mktemp)" && printf '[workspace]\npath = "%s"\n' "$HOME" > "$tmp" && \
-cd "$HOME" && \
-gh api -H 'Accept: application/vnd.github.raw' \
+tag="$(env -u GITHUB_TOKEN -u GH_TOKEN gh release view --repo bamanoz/tabula --json tagName --jq .tagName)" && \
+env -u GITHUB_TOKEN -u GH_TOKEN gh api -H 'Accept: application/vnd.github.raw' \
   "repos/bamanoz/tabula/contents/scripts/install.sh?ref=${tag}" \
   | TABULA_HOME="$HOME/.tabula" VERSION="$tag" bash -s -- \
       --distro 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=code-immune' \
       --tenant code-immune \
-      --values "$tmp" \
+      --default \
+      --bind "$HOME" \
       --update \
-      --non-interactive; \
-rm -f "$tmp"
+      --non-interactive
 ```
 
 `--update` is intentional: it refreshes an existing tenant to the latest distro
