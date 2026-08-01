@@ -82,7 +82,7 @@ func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
 
 func (s *ToolService) executeFinalizedToolCall(tenantID, session, toolID, toolName string, input, meta json.RawMessage, turnCorrelationID string, sender *Client) {
 	s.broadcastFinalizedToolCall(tenantID, session, toolID, toolName, input, meta, sender)
-	s.handleDynamicTool(tenantID, session, toolID, toolName, input, turnCorrelationID)
+	s.handleDynamicToolWithMeta(tenantID, session, toolID, toolName, input, meta, turnCorrelationID)
 }
 
 func (s *ToolService) broadcastFinalizedToolCall(tenantID, session, toolID, toolName string, input, meta json.RawMessage, sender *Client) {
@@ -97,6 +97,10 @@ func (s *ToolService) broadcastFinalizedToolCall(tenantID, session, toolID, tool
 }
 
 func (s *ToolService) handleDynamicTool(tenantID, session, toolID, toolName string, input json.RawMessage, turnCorrelationID string) {
+	s.handleDynamicToolWithMeta(tenantID, session, toolID, toolName, input, nil, turnCorrelationID)
+}
+
+func (s *ToolService) handleDynamicToolWithMeta(tenantID, session, toolID, toolName string, input, meta json.RawMessage, turnCorrelationID string) {
 	s.hub.toolExecMu.RLock()
 	entry, ok := s.hub.toolExec[toolExecKey(tenantID, toolName)]
 	if !ok {
@@ -120,7 +124,7 @@ func (s *ToolService) handleDynamicTool(tenantID, session, toolID, toolName stri
 	}
 	switch entry.Source {
 	case toolSourceRuntime:
-		s.handleRuntimeTool(tenantID, session, toolID, toolName, entry, input, turnCorrelationID)
+		s.handleRuntimeTool(tenantID, session, toolID, toolName, entry, input, meta, turnCorrelationID)
 	default:
 		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: tool %s has unknown dispatch source", toolName), nil, false)
 	}
@@ -165,7 +169,7 @@ func buildNotInvokedToolResult(blocked *khooks.DispatchDecision) string {
 	return string(mustMarshalRaw(result))
 }
 
-func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName string, entry toolDispatch, input json.RawMessage, turnCorrelationID string) {
+func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName string, entry toolDispatch, input, meta json.RawMessage, turnCorrelationID string) {
 	go func() {
 		var conn runtimeapi.RuntimeConn
 		pickedRuntimeID := entry.RuntimeID
@@ -208,6 +212,7 @@ func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName stri
 			TenantID:          tenantID,
 			SessionID:         session,
 			TurnCorrelationID: turnCorrelationID,
+			Meta:              meta,
 			Target:            entry.Target,
 			Tool:              toolName,
 			Args:              input,

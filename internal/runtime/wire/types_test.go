@@ -11,7 +11,7 @@ func TestEncodeDecodeRoundTripEveryOp(t *testing.T) {
 	frames := []any{
 		&Hello{Op: OpHello, RuntimeID: "local", Token: "redacted", ProtocolVersion: "1", Capabilities: []Capability{{Target: Target{Kind: TargetKindPlugin, ID: "fs"}, Tools: []ToolSpec{{Name: "read"}}, Hooks: []HookSpec{{Event: "before_tool_call", Priority: 10}}, Revision: 1, State: CapabilityStateReady, Source: CapabilitySourceWorker}}},
 		&HelloAck{Op: OpHelloAck, Accepted: true, KernelID: "main"},
-		&Invoke{Op: OpInvoke, CallID: "call-1", TenantID: "default", Target: Target{Kind: TargetKindSkill, ID: "timer"}, Tool: "run", Args: raw, TimeoutMS: 5000},
+		&Invoke{Op: OpInvoke, CallID: "call-1", TenantID: "default", Meta: json.RawMessage(`{"actor":"agent/build"}`), Target: Target{Kind: TargetKindSkill, ID: "timer"}, Tool: "run", Args: raw, TimeoutMS: 5000},
 		&InvokeResult{Op: OpInvokeResult, CallID: "call-1", OK: true, Data: json.RawMessage(`{"ok":true}`)},
 		&InvokeResultStart{Op: OpInvokeResultStart, CallID: "call-2"},
 		&InvokeResultDelta{Op: OpInvokeResultDelta, CallID: "call-2", Seq: 1, Data: `{"ok":`},

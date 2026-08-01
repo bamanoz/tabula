@@ -45,7 +45,7 @@ class DistroKernelCompatTests(unittest.TestCase):
                 '[distro]\nid="tabula.demo"\nname="demo"\nversion="0.1.0"\n'
                 '[requires]\nkernel=">=0.8.0,<1.0.0"\n'
             ))
-            gen, lock = installmod.install(distro, home)
+            lock = installmod.install(distro, home).lock
             self.assertEqual(lock.kernel_version, "0.8.0")
             self.assertEqual(lock.distro_version, "0.1.0")
 
@@ -99,7 +99,7 @@ class BundleKernelCompatTests(unittest.TestCase):
                 '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[bundles]]\nname="drivers"\nsource="local:../ext/drivers"\n'
             ))
-            _, lock = installmod.install(distro, home)
+            lock = installmod.install(distro, home).lock
             self.assertEqual(lock.bundles["drivers"].version, "0.1.0")
 
     def test_bundle_requires_kernel_fails(self):
@@ -136,7 +136,7 @@ class BundleKernelCompatTests(unittest.TestCase):
                 '[distro]\nid="tabula.demo"\nname="demo"\n'
                 '[[bundles]]\nname="legacy"\nsource="local:../ext/legacy"\n'
             ))
-            _, lock = installmod.install(distro, home)
+            lock = installmod.install(distro, home).lock
             self.assertIsNone(lock.bundles["legacy"].version)
 
 

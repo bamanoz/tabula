@@ -228,41 +228,57 @@ with:
 
 `tabula-install distro install <source>` resolves the distro itself from a local path,
 `local:` URI, or `git+...@ref#path=...` URI; resolves the bundles declared in
-`distro.toml`; and lays the result out under
-`$TABULA_HOME/distrib/<name>/<generation>/` with `current` and `active` symlinks.
+`distro.toml`; composes private staging under
+`$TABULA_HOME/run/install/<name>/`; and transactionally replaces
+`$TABULA_HOME/distrib/<name>/`. `$TABULA_HOME/distrib/active` selects one
+installed distro for root-level compatibility surfaces.
 
 ### Active distro layout
 
-The selected distro is activated through symlinks/copies under
-`$TABULA_HOME/distrib/<name>/`:
-
 ```text
-$TABULA_HOME/distrib/claw/current       -> <generation>
+$TABULA_HOME/distrib/claw/              installed distro tree
 $TABULA_HOME/distrib/active             -> claw
-$TABULA_HOME/templates/*                -> distrib/active/current/templates/*
-$TABULA_HOME/skills/*                   -> distrib/active/current/skills/* + bundle skills
-$TABULA_HOME/plugins/*                  -> distrib/active/current/plugins/* + bundle plugins
-$TABULA_HOME/tenants/<id>/templates/*   -> distrib/<distro>/generations/<generation>/templates/*
-$TABULA_HOME/tenants/<id>/skills/*      -> distrib/<distro>/generations/<generation>/skills/*
-$TABULA_HOME/tenants/<id>/plugins/*     -> distrib/<distro>/generations/<generation>/plugins/*
-$TABULA_HOME/tenants/<id>/apps/*        -> distrib/<distro>/generations/<generation>/apps/*
-$TABULA_HOME/tenants/<id>/packages/*    -> distrib/<distro>/generations/<generation>/packages/*
+$TABULA_HOME/templates/*                -> distrib/active/templates/*
+$TABULA_HOME/skills/*                   -> distrib/active/skills/* + bundle skills
+$TABULA_HOME/plugins/*                  -> distrib/active/plugins/* + bundle plugins
+$TABULA_HOME/tenants/<id>/templates/*   -> distrib/<distro>/templates/*
+$TABULA_HOME/tenants/<id>/skills/*      -> distrib/<distro>/skills/*
+$TABULA_HOME/tenants/<id>/plugins/*     -> distrib/<distro>/plugins/*
+$TABULA_HOME/tenants/<id>/apps/*        -> distrib/<distro>/apps/*
+$TABULA_HOME/tenants/<id>/packages/*    -> distrib/<distro>/packages/*
 ```
 
-Shared SDK packages such as `tabula_plugin_sdk` are installed into
-`$TABULA_HOME/.venv` by the installer from bundled package artifacts. They are not
-materialized as special legacy support directories in the runtime surface.
+Shared SDK packages such as `tabula_plugin_sdk`, `tabula_subagents_sdk`,
+`tabula_tasks_sdk`, and `tabula_scheduling_sdk` are installed into
+`$TABULA_HOME/.venv` by the installer from
+bundled package artifacts. They are not materialized as special legacy support
+directories in the runtime surface.
 
-The root runtime surface remains a flat compatibility view of the active distro.
-Each materialized tenant instead pins one exact distro generation in its install
-lock and links its component surfaces directly to that immutable tree. Installing
-or selecting another distro does not rewrite existing tenant surfaces. Bundle
-code is shared through links; tenant config, sessions, state, cache, logs, and
-workers remain isolated.
+Durable task and scheduling semantics remain userland-owned. The `todo`
+component exports revisioned, leased task storage; the `cron` component exports
+canonical one-shot/recurring schedule storage and `schedule_*` tools. Its warm
+plugin worker is the single delivery runner. Kernel code does not know about
+tasks, schedules, leases, retries, or occurrence delivery IDs.
 
-## Skills and plugins
+Root runtime surface remains flat compatibility view of active distro. Each
+materialized tenant records stable `distrib/<name>` path in version 2 install lock
+and links component surfaces directly to that installed tree. Bundle code is
+shared through links; tenant config, sessions, state, cache, logs, and workers
+remain isolated.
 
-Tabula has two extension shapes, each identified by its manifest filename.
+Installer transaction under `run/install/<name>/` exists only for crash-safe
+replacement. It stages and validates new tree, preserves previous tree while
+refreshing runtime surfaces, then commits or restores. Candidate retention,
+health confirmation, known-good selection, and release rollback belong to an
+external supervisor. Kernel sees only normal runtime config and
+`run/reload.touch`.
+
+Optional evolution capability follows this boundary. `change-control` creates reviewed commits in isolated source worktrees outside `TABULA_HOME`; `evolution` persists campaigns and seals exact candidate payloads; external `evolution-supervisor` host service validates requests, switches protected targets, observes host-owned probes, and restores retained known-good bytes. Candidate manifests cannot provide stop/start/install/probe commands, and normal campaigns cannot replace their own supervisor.
+
+## Extension components
+
+Tabula extension shapes are identified by manifest filename. Skills and plugins
+run inside prompt/runtime surfaces; host services run outside kernel/runtime.
 
 ### Skill (`SKILL.md`)
 
@@ -418,9 +434,13 @@ Important modules:
 - `config` — config and env parsing
 - `filelock` — cross-process file locking
 
-Driver and subagent runtime (`driver_runtime`, `subagent_runtime`,
-`providers`, `provider_selection`, `prompt_builder`, `compaction`) lives in the
-`drivers` bundle as bundle-internal support code.
+Driver runtime (`driver_runtime`, `subagent_runtime`, `providers`,
+`provider_selection`, `prompt_builder`, `compaction`) lives in the `drivers`
+bundle as bundle-internal support code. Reusable subagent process orchestration
+is exported by the `subagents` bundle as public package
+`tabula_subagents_sdk`; see ADR 0014. Structured Git operations are owned by
+`workspace:vcs` and exported as `tabula_workspace_vcs`; subagent worktree
+lifecycle reuses that package's per-repository serialization. See ADR 0018.
 
 This keeps the kernel-side contract tiny, and lets provider-specific code
 evolve inside the `tabula-bundles` repo.
@@ -438,7 +458,10 @@ They are:
 
 The parent driver requests a spawn through the subagent plugin, which owns the
 child process group. Results are returned through `subagent_wait` or
-`subagent_spawn` with `mode="sync"` as structured tool results.
+`subagent_spawn` with `mode="sync"` as structured tool results. Installed
+plugins can use `tabula_subagents_sdk.SubagentService` for the same lifecycle
+without invoking agent-facing tools; tool handlers are thin adapters over that
+service.
 
 Subagent depth limits, child-count limits, and child authentication live inside
 the subagent plugin itself. The kernel does not enforce them as a global
@@ -556,30 +579,41 @@ channel, not by re-spawning a new process.
 
 This keeps every execution boundary explicit and language-neutral.
 
+### Host service (`service.toml`)
+
+A host-global executable requiring recovery authority outside kernel, plugin,
+tenant, and replaceable distro process trees. Installer validates and hashes the
+artifact, then trusted lifecycle code copies immutable releases under
+`$TABULA_HOME/host-services/<id>/releases/`, registers a platform adapter, and
+checks generic readiness. Upgrade retains and restores `previous` on failure.
+Product-specific health policy and rollback authority remain in the owning
+bundle capability, never kernel or generic descriptor.
+
 ## Bundles
 
-Bundles are reusable collections of skills and plugins, kept in the
+Bundles are reusable collections of skills, plugins, apps, SDK exports, and host services, kept in the
 [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles) repo and pulled
 into a distro at install time via `distro.toml`.
 
-A bundle is a directory whose top level contains skill directories
-(with `SKILL.md`) and plugin directories (with `plugin.toml`) on the same
-level. The kernel doesn't distinguish between them at the bundle level — the
-manifest filename does.
+A bundle is a directory whose top level contains component directories.
+`SKILL.md`, `plugin.toml`, `app.toml`, and `service.toml` identify component
+kind. Kernel sees only installed runtime-facing skills/plugins/apps; host-service
+lifecycle remains installer/platform-adapter territory.
 
 Current bundles:
 
 - `extensions/` — plugin SDK, skills plugin, and `tabula-guide`
 - `security/` — permission and approval hooks plus security guide
-- `async/` — deferred tool calls and tool result artifacts
+- `async/` — deferred tool calls and the tenant-local durable artifact owner (`tabula_artifacts`), including oversized tool results
 - `collaboration/` — sessions and pairing
 - `integrations/` — external integrations such as MCP
 - `interaction/` — human interaction tools such as `question`
 - `observability/` — runtime logging hooks
 - `productivity/` — `cron`, `todo`, and `wait`
-- `workspace/` — `fs` and `exec` plugins
+- `workspace/` — `fs`, `exec`, and structured roots-aware `vcs` plugins; `vcs` exports `tabula_workspace_vcs` for shared worktree/ref operations
 - `drivers/` — `driver` plus driver SDKs and shared support code
 - `mempalace/`, `caveman/`, `codegraph/`, `openspec/`, `subagents/` — domain-specific capabilities
+- `evolution/` — reviewed source-change transactions, durable sealed campaigns, and external activation/recovery supervisor
 
 A distro lists bundles in `distro.toml`:
 
@@ -601,17 +635,21 @@ that changes `[sources.tabula-bundles]` to a single `local:` checkout.
 
 At install time, bundle components are linked into the flat runtime surface:
 skill components under `skills/`, plugin components under `plugins/`, and
-app components under `apps/`.
+app components under `apps/`. Bundle manifests may require components from
+sibling bundles. Installer resolves this graph transitively, pins git closure to
+one source revision, rejects cycles or incompatible explicit allowlists, and
+records selected components in immutable install lock.
 
 ## Current boundaries
 
 If you are extending Tabula, the important seams are:
 
 - **kernel <-> runtime** — Runtime API attachment, tenant-scoped catalogs, tool
-  calls, events, reload, and status.
+  calls, opaque finalized call metadata, events, reload, and status.
 - **runtime <-> plugin** — long-lived stdio NDJSON worker protocol (`init`,
   `call`, `result`, `event`, `event_reply`, `tools_updated`, `send`, `log`,
-  `shutdown`).
+  `shutdown`). `call.meta` remains separate from tool arguments and is exposed
+  as non-overriding plugin handler context.
 - **kernel config <-> kernel** — `$TABULA_HOME/config/kernel.toml`.
 - **distro <-> install** — `tabula-install` expects `distro.toml`, templates,
   and optional in-tree components.

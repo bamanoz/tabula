@@ -436,19 +436,82 @@ def selected_bundles(manifest: dict[str, Any], set_name: str, all_set: bool, bun
     return selected, {name: ordered_unique(values) for name, values in component_map.items() if name in selected and name not in unfiltered_set_bundles}
 
 
-def lint_selection(manifest: dict[str, Any], source_roots: dict[str, str], set_name: str, all_set: bool,
-                   bundles: list[str], without: list[str], components: list[str], tests: list[Path]) -> tuple[list[str], dict[str, list[str]], dict[str, Path]]:
-    selected, component_map = selected_bundles(manifest, set_name, all_set, bundles, without, components)
+def resolve_bundle_dependency_closure(
+    selected: list[str],
+    component_map: dict[str, list[str]],
+    manifest: dict[str, Any],
+    source_roots: dict[str, str],
+    excluded: set[str],
+) -> dict[str, Path]:
     roots: dict[str, Path] = {}
-    for bundle in selected:
+    visiting: list[str] = []
+    visited: set[str] = set()
+    explicitly_restricted = set(component_map)
+
+    def visit(bundle: str) -> None:
+        if bundle in visited:
+            return
+        if bundle in visiting:
+            cycle = visiting[visiting.index(bundle):] + [bundle]
+            raise SystemExit(f"bundle dependency cycle: {' -> '.join(cycle)}")
+        if bundle in excluded:
+            parent = visiting[-1] if visiting else "selection"
+            raise SystemExit(f"bundle {parent!r} depends on explicitly excluded bundle {bundle!r}")
+
         root = resolve_bundle_root(bundle, manifest, source_roots)
+        if root is None and visiting:
+            root = roots[visiting[-1]].parent / bundle
         if root is None:
-            continue
-        roots[bundle] = root
+            raise SystemExit(f"bundle {bundle!r} has no locally resolvable source for dependency validation")
         if not root.is_dir():
             raise SystemExit(f"bundle {bundle!r} root does not exist: {root}")
         if not (root / "bundle.toml").is_file():
             raise SystemExit(f"bundle {bundle!r} missing bundle.toml: {root}")
+
+        visiting.append(bundle)
+        roots[bundle] = root
+        data = load_toml(root / "bundle.toml")
+        dependencies = data.get("dependencies") or []
+        if not isinstance(dependencies, list):
+            raise SystemExit(f"bundle {bundle!r} dependencies must be an array of tables")
+        for entry in dependencies:
+            if not isinstance(entry, dict):
+                raise SystemExit(f"bundle {bundle!r} dependencies entries must be tables")
+            dependency = str(entry.get("bundle") or "").strip()
+            if not dependency:
+                raise SystemExit(f"bundle {bundle!r} dependency entry missing bundle")
+            required = entry.get("components") or []
+            if not isinstance(required, list) or not all(isinstance(value, str) and value.strip() for value in required):
+                raise SystemExit(f"bundle {bundle!r} dependency {dependency!r} components must be list[str]")
+            visit(dependency)
+            if dependency not in selected:
+                selected.append(dependency)
+                component_map[dependency] = ordered_unique(required)
+            elif required and dependency in component_map:
+                missing = [value for value in required if value not in component_map[dependency]]
+                if missing and dependency in explicitly_restricted:
+                    allowed = ", ".join(component_map[dependency]) or "none"
+                    raise SystemExit(
+                        f"bundle {dependency!r} selection allows components {allowed}, "
+                        f"but bundle {bundle!r} requires {', '.join(missing)}"
+                    )
+                component_map[dependency] = ordered_unique(component_map[dependency] + required)
+        visiting.pop()
+        visited.add(bundle)
+
+    roots_in_order = list(selected)
+    for bundle in roots_in_order:
+        visit(bundle)
+
+    ordered_roots = {bundle: roots[bundle] for bundle in selected}
+    return ordered_roots
+
+
+def lint_selection(manifest: dict[str, Any], source_roots: dict[str, str], set_name: str, all_set: bool,
+                   bundles: list[str], without: list[str], components: list[str], tests: list[Path]) -> tuple[list[str], dict[str, list[str]], dict[str, Path]]:
+    selected, component_map = selected_bundles(manifest, set_name, all_set, bundles, without, components)
+    roots = resolve_bundle_dependency_closure(selected, component_map, manifest, source_roots, set(without))
+    for bundle, root in roots.items():
         for component in component_map.get(bundle, []):
             if not (root / component).is_dir():
                 raise SystemExit(f"bundle {bundle!r} missing component {component!r}: {root / component}")
@@ -771,7 +834,12 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps({"ok": True, "mode": "lint", "suites": suites, "bundles": selected, "components": component_map}, sort_keys=True))
         return 0
 
-    selected, component_map, _ = lint_selection(manifest, source_roots, set_name, all_set, bundles, without, components, tests)
+    requested, requested_components = selected_bundles(
+        manifest, set_name, all_set, bundles, without, components
+    )
+    selected, component_map, _ = lint_selection(
+        manifest, source_roots, set_name, all_set, bundles, without, components, tests
+    )
 
     home = Path(args.home).resolve() if args.home else Path(tempfile.mkdtemp(prefix="tabula-testbed."))
     keep = args.keep or bool(args.home)
@@ -853,11 +921,13 @@ def main(argv: list[str] | None = None) -> int:
             generate_args.extend(["--source", f"{alias}={source}"])
         if all_set:
             generate_args.append("--all")
-        for value in selected:
+        for value in requested:
             generate_args.extend(["--bundle", value])
         for value in without:
             generate_args.extend(["--without", value])
-        for bundle, values in sorted(component_map.items()):
+        for bundle, values in sorted(requested_components.items()):
+            if not values:
+                generate_args.extend(["--empty-components", bundle])
             for component in values:
                 generate_args.extend(["--component", f"{bundle}:{component}"])
 

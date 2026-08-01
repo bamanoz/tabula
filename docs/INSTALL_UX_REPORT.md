@@ -356,7 +356,7 @@ Checks:
 
 - `TABULA_HOME` exists and has expected layout.
 - `tabula`, `tabula-runtime`, `tabula-agent`, and `tabula-install` are reachable.
-- Selected tenant and its pinned distro generation exist.
+- Selected tenant and its version 2 install lock points to an installed distro tree.
 - Distro runtime requirements are satisfied.
 - Provider credentials are present.
 - Managed service status is known.

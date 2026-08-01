@@ -1,4 +1,4 @@
-"""Composition pipeline: resolve sources -> stage generation -> atomic switch."""
+"""Composition pipeline: resolve sources -> stage tree -> transactional replacement."""
 from __future__ import annotations
 
 import hashlib
@@ -11,9 +11,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import config as cfg
-from . import generations as gens
+from . import host_service
 from . import links
 from . import lock as lockmod
+from . import process_lock
 from . import requirements as reqmod
 from . import runtime_config as runtimecfg
 from . import sources as srcmod
@@ -112,15 +113,14 @@ def _fingerprint_tree(root: Path) -> str:
     return h.hexdigest()
 
 
-def _generation_fingerprint(gen_path: Path) -> str | None:
-    """Return the cached fingerprint of an installed generation, if present."""
-    marker = gen_path / _FINGERPRINT_FILE
+def _installed_fingerprint(distro_path: Path) -> str | None:
+    marker = distro_path / _FINGERPRINT_FILE
     if marker.is_file():
         return marker.read_text(encoding="utf-8").strip()
-    # Legacy generations installed before fingerprinting: compute on the fly so
-    # the next no-op install can dedupe against them too.
+    if not distro_path.is_dir():
+        return None
     try:
-        return _fingerprint_tree(gen_path)
+        return _fingerprint_tree(distro_path)
     except FileNotFoundError:
         return None
 
@@ -380,15 +380,9 @@ class Plan:
 
 @dataclass(frozen=True)
 class InstallResult:
-    generation: gens.Generation
+    distro_path: Path
     lock: lockmod.Lock
     changed: bool
-
-    def __iter__(self):
-        # Preserve the historical `gen, lock = install(...)` API while letting
-        # callers opt into the changed flag as `result.changed`.
-        yield self.generation
-        yield self.lock
 
 
 @dataclass(frozen=True)
@@ -396,6 +390,7 @@ class InstalledBundleComponents:
     skills: tuple[str, ...] = ()
     plugins: tuple[str, ...] = ()
     apps: tuple[str, ...] = ()
+    host_services: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -406,6 +401,96 @@ class ResolvedBundleInstall:
     manifest: BundleManifest
 
 
+def _install_transaction_paths(home: Path, distro_name: str) -> tuple[Path, Path, Path]:
+    root = home / "run" / "install" / distro_name
+    return root / "staging", root / "previous", root / "transaction.json"
+
+
+def _write_install_journal(path: Path, phase: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"version": 1, "phase": phase}, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _installed_content_path(installed: Path) -> Path:
+    target = links.resolve_reference(installed / "current")
+    return target if target is not None else installed
+
+
+def _restore_active_reference(home: Path, target: Path | None) -> None:
+    active = home / "distrib" / "active"
+    if target is None:
+        links.remove_path(active)
+        return
+    links.replace_directory_reference(active, target)
+
+
+def _remove_install_transaction_root(journal: Path) -> None:
+    journal.with_suffix(".tmp").unlink(missing_ok=True)
+    try:
+        journal.parent.rmdir()
+        journal.parent.parent.rmdir()
+    except OSError:
+        pass
+
+
+def _recover_install_transaction(installed: Path, staging: Path, previous: Path, journal: Path) -> bool:
+    if not journal.is_file():
+        return False
+    try:
+        payload = json.loads(journal.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise InstallError(f"read install transaction {journal}: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("version") != 1 or payload.get("phase") not in {"prepared", "previous_saved", "installed"}:
+        raise InstallError(f"invalid install transaction: {journal}")
+
+    if installed.is_dir():
+        return True
+    if previous.is_dir():
+        installed.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(previous, installed)
+    shutil.rmtree(staging, ignore_errors=True)
+    journal.unlink(missing_ok=True)
+    _remove_install_transaction_root(journal)
+    return False
+
+
+def _begin_install_replacement(installed: Path, staging: Path, previous: Path, journal: Path) -> None:
+    shutil.rmtree(previous, ignore_errors=True)
+    _write_install_journal(journal, "prepared")
+    if installed.exists() or installed.is_symlink():
+        os.replace(installed, previous)
+        _write_install_journal(journal, "previous_saved")
+    try:
+        installed.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(staging, installed)
+    except Exception:
+        if previous.is_dir() and not installed.exists():
+            os.replace(previous, installed)
+        journal.unlink(missing_ok=True)
+        _remove_install_transaction_root(journal)
+        raise
+    _write_install_journal(journal, "installed")
+
+
+def _rollback_install_replacement(installed: Path, staging: Path, previous: Path, journal: Path) -> None:
+    if installed.exists() or installed.is_symlink():
+        links.remove_path(installed)
+    if previous.is_dir():
+        os.replace(previous, installed)
+    shutil.rmtree(staging, ignore_errors=True)
+    journal.unlink(missing_ok=True)
+    _remove_install_transaction_root(journal)
+
+
+def _commit_install_replacement(staging: Path, previous: Path, journal: Path) -> None:
+    shutil.rmtree(previous, ignore_errors=True)
+    shutil.rmtree(staging, ignore_errors=True)
+    journal.unlink(missing_ok=True)
+    _remove_install_transaction_root(journal)
+
+
 def install(distro_dir: str | Path, home: Path, *,
             override_name: str | None = None,
             offline: bool = False,
@@ -413,28 +498,38 @@ def install(distro_dir: str | Path, home: Path, *,
             update_only: tuple[str, ...] = (),
             tenant: str | None = None,
             expose_global_boot: bool = True,
-            base_dir: Path | None = None,
-            keep_generations: int = 5) -> InstallResult:
-    """Install a distro into ``home``.
+            base_dir: Path | None = None) -> InstallResult:
+    lock_path = home / "run" / "locks" / "distro-install.lock"
+    with process_lock.exclusive(lock_path):
+        return _install_unlocked(
+            distro_dir,
+            home,
+            override_name=override_name,
+            offline=offline,
+            update=update,
+            update_only=update_only,
+            tenant=tenant,
+            expose_global_boot=expose_global_boot,
+            base_dir=base_dir,
+        )
 
-    ``distro_dir`` may be:
-      - a local path (``Path`` or ``str``),
-      - a ``local:<path>`` URI,
-      - a ``git+<url>@<ref>[#path=<subdir>]`` URI.
 
-    Returns an ``InstallResult``. It remains unpackable as ``(generation, lock)``
-    for compatibility; use ``result.changed`` to tell whether a new generation
-    was promoted.
-    """
-    distro_path, distro_source_uri, distro_resolved_sha = _resolve_distro_source(
+def _install_unlocked(distro_dir: str | Path, home: Path, *,
+                      override_name: str | None = None,
+                      offline: bool = False,
+                      update: bool = False,
+                      update_only: tuple[str, ...] = (),
+                      tenant: str | None = None,
+                      expose_global_boot: bool = True,
+                      base_dir: Path | None = None) -> InstallResult:
+    """Build and transactionally replace one installed distro tree."""
+    source_path, distro_source_uri, distro_resolved_sha = _resolve_distro_source(
         distro_dir, home, offline=offline, base_dir=base_dir,
     )
-    distro = cfg.load(distro_path, override_name=override_name)
+    distro = cfg.load(source_path, override_name=override_name)
     if tenant is not None and not _safe_path_name(tenant):
         raise InstallError(f"invalid tenant id: {tenant!r}")
 
-    # Hard-fail before doing any work if the distro is incompatible with the
-    # installed kernel.
     kernel_version = _read_kernel_version(home)
     _check_kernel_compat(distro, kernel_version)
     statuses = reqmod.require_executables(distro)
@@ -442,22 +537,38 @@ def install(distro_dir: str | Path, home: Path, *,
         print(f"tabula-distro: warning: {warning}")
 
     plan = Plan(distro=distro, home=home, offline=offline, update=update, update_only=tuple(update_only))
-
     home.mkdir(parents=True, exist_ok=True)
-    gens.migrate_legacy(home, distro.name)
-    existing_gens = gens.list_generations(home, distro.name)
-    new_name = gens.next_generation_name(existing_gens)
-    new_path = gens.generations_dir(home, distro.name) / new_name
-    new_path.parent.mkdir(parents=True, exist_ok=True)
+    installed = home / "distrib" / distro.name
+    staging, previous, journal = _install_transaction_paths(home, distro.name)
+    recovered_installed = _recover_install_transaction(installed, staging, previous, journal)
+    if recovered_installed:
+        active_target = links.resolve_reference(home / "distrib" / "active")
+        tenant_lock_snapshots = _snapshot_tenant_install_locks(home)
+        try:
+            recovered_lock = lockmod.load(installed / "distro.lock.json")
+            if recovered_lock is None or recovered_lock.distro != distro.name:
+                raise InstallError(f"recovered distro {distro.name!r} has invalid lock")
+            installed_resolved = installed.resolve()
+            if active_target == installed_resolved or (active_target is not None and installed_resolved in active_target.parents):
+                _set_active(home, distro.name, expose_global_boot=expose_global_boot)
+            _retarget_tenant_install_locks(home, distro.name, installed, recovered_lock)
+            _refresh_runtime_surface(home)
+            _write_kernel_config(home)
+        except Exception:
+            _rollback_install_replacement(installed, staging, previous, journal)
+            _restore_active_reference(home, active_target)
+            _restore_tenant_install_locks(tenant_lock_snapshots)
+            raise
+        _commit_install_replacement(staging, previous, journal)
 
-    staging = new_path.with_name(new_name + ".staging")
-    if staging.exists():
-        shutil.rmtree(staging)
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.parent.mkdir(parents=True, exist_ok=True)
 
     try:
         new_lock = _stage(plan, staging, kernel_version=kernel_version)
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
+        _remove_install_transaction_root(journal)
         raise
 
     if distro_source_uri is not None:
@@ -469,9 +580,6 @@ def install(distro_dir: str | Path, home: Path, *,
     if kernel_version is not None:
         new_lock.kernel_version = str(kernel_version)
 
-    # Snapshot the live plugin protocol / SDK surface into the lock. These come
-    # from the kernel install (PROTOCOL file) and the staged package surface, so
-    # they reflect the contract that this generation actually satisfies.
     proto_range = _read_kernel_protocol_range(home)
     if proto_range is not None:
         new_lock.plugin_protocol_version = proto_range[1]
@@ -480,41 +588,56 @@ def install(distro_dir: str | Path, home: Path, *,
         if sdk_version is not None:
             new_lock.sdk_versions[sdk_name] = str(sdk_version)
 
-    # If the staged tree is byte-identical to the current generation, reuse it
-    # instead of promoting a new generation. Keeps `distrib/<name>/generations/`
-    # from growing on every no-op re-install.
     staging_fp = _fingerprint_tree(staging)
-    current = gens.current_generation(home, distro.name)
-    if current is not None and _generation_fingerprint(current.path) == staging_fp:
+    active_tree = _installed_content_path(installed)
+    legacy_layout = active_tree != installed
+    if not legacy_layout and _installed_fingerprint(installed) == staging_fp:
         shutil.rmtree(staging, ignore_errors=True)
-        # Refresh lockfile/runtime surface with any non-tree updates (e.g. new
-        # lock metadata) but keep the existing generation as current.
-        lockmod.save(gens.distro_root(home, distro.name) / "distro.lock.json", new_lock)
-        _expose_current(home, distro.name)
+        installed_lock_path = installed / "distro.lock.json"
+        installed_lock_snapshot = installed_lock_path.read_bytes() if installed_lock_path.is_file() else None
+        active_target = links.resolve_reference(home / "distrib" / "active")
+        tenant_lock_snapshots = _snapshot_tenant_install_locks(home, tenant=tenant)
+        try:
+            lockmod.save(installed_lock_path, new_lock)
+            _set_active(home, distro.name, expose_global_boot=expose_global_boot)
+            if tenant is not None:
+                _write_tenant_install_lock(home, tenant, installed, new_lock)
+            _retarget_tenant_install_locks(home, distro.name, installed, new_lock)
+            _refresh_runtime_surface(home)
+            _write_kernel_config(home)
+        except Exception:
+            if installed_lock_snapshot is None:
+                installed_lock_path.unlink(missing_ok=True)
+            else:
+                tmp = installed_lock_path.with_suffix(installed_lock_path.suffix + ".tmp")
+                tmp.write_bytes(installed_lock_snapshot)
+                os.replace(tmp, installed_lock_path)
+            _restore_active_reference(home, active_target)
+            _restore_tenant_install_locks(tenant_lock_snapshots)
+            raise
+        finally:
+            _remove_install_transaction_root(journal)
+        return InstallResult(installed, new_lock, False)
+
+    (staging / _FINGERPRINT_FILE).write_text(staging_fp, encoding="utf-8")
+    lockmod.save(staging / "distro.lock.json", new_lock)
+    active_target = links.resolve_reference(home / "distrib" / "active")
+    tenant_lock_snapshots = _snapshot_tenant_install_locks(home, tenant=tenant)
+    _begin_install_replacement(installed, staging, previous, journal)
+    try:
         _set_active(home, distro.name, expose_global_boot=expose_global_boot)
         if tenant is not None:
-            _write_tenant_install_lock(home, tenant, current, new_lock)
-        _retarget_tenant_install_locks(home, distro.name, current, new_lock)
-        _refresh_runtime_surface(home, generation=current)
+            _write_tenant_install_lock(home, tenant, installed, new_lock)
+        _retarget_tenant_install_locks(home, distro.name, installed, new_lock)
+        _refresh_runtime_surface(home)
         _write_kernel_config(home)
-        return InstallResult(current, new_lock, False)
-
-    (staging / ".fingerprint").write_text(staging_fp, encoding="utf-8")
-    os.replace(staging, new_path)
-    new_gen = gens.Generation(number=int(new_name.split("-", 1)[0]), name=new_name, path=new_path)
-
-    lockmod.save(gens.distro_root(home, distro.name) / "distro.lock.json", new_lock)
-
-    gens.set_current(home, distro.name, new_gen)
-    _expose_current(home, distro.name)
-    _set_active(home, distro.name, expose_global_boot=expose_global_boot)
-    if tenant is not None:
-        _write_tenant_install_lock(home, tenant, new_gen, new_lock)
-    _retarget_tenant_install_locks(home, distro.name, new_gen, new_lock)
-    _refresh_runtime_surface(home, generation=new_gen)
-    _write_kernel_config(home)
-    gens.prune(home, distro.name, keep=keep_generations, referenced_names=_tenant_generation_refs(home, distro.name))
-    return InstallResult(new_gen, new_lock, True)
+    except Exception:
+        _rollback_install_replacement(installed, staging, previous, journal)
+        _restore_active_reference(home, active_target)
+        _restore_tenant_install_locks(tenant_lock_snapshots)
+        raise
+    _commit_install_replacement(staging, previous, journal)
+    return InstallResult(installed, new_lock, True)
 
 
 def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lockmod.Lock:
@@ -522,8 +645,8 @@ def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lock
     distro = plan.distro
     _copytree(distro.path, staging)
 
-    # Keep distro.toml in the immutable generation: runtime-neutral metadata such
-    # as the tenant materializer contract must resolve from the pinned tree.
+    # Keep distro.toml in the installed tree so runtime-neutral tenant contracts
+    # resolve from the same content that was validated during staging.
     for noise in ("distro.override.toml", "distro.lock.json"):
         p = staging / noise
         if p.exists():
@@ -535,11 +658,13 @@ def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lock
     plugins_dir.mkdir(parents=True, exist_ok=True)
     apps_dir = staging / "apps"
     apps_dir.mkdir(parents=True, exist_ok=True)
+    host_services_dir = staging / "host-services"
+    host_services_dir.mkdir(parents=True, exist_ok=True)
     packages_dir = staging / "packages"
     packages_dir.mkdir(parents=True, exist_ok=True)
 
     cache = GitCache(plan.home / "cache")
-    prior_lock = lockmod.load(gens.distro_root(plan.home, distro.name) / "distro.lock.json")
+    prior_lock = lockmod.load(plan.home / "distrib" / distro.name / "distro.lock.json")
     new_lock = lockmod.Lock(distro=distro.name)
     installed_python_packages: dict[str, tuple[str, Path]] = {}
     installed_typescript_packages: dict[str, tuple[str, Path]] = {}
@@ -560,26 +685,20 @@ def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lock
         _install_plugin(resolved_dir, plugins_dir / entry.name, override=entry.override, label=f"plugin {entry.name}")
         new_lock.plugins[entry.name] = lock_entry
 
-    resolved_bundles: list[ResolvedBundleInstall] = []
-    bundle_manifests: dict[str, BundleManifest] = {}
-    for entry in distro.bundles:
-        bundle_names = _bundle_update_names(entry, prior_lock)
-        resolved_dir, lock_entry = _resolve(entry.source, distro.path, cache, plan,
-                                            prior=_prior_bundle(prior_lock, entry.name),
-                                            lock_names=bundle_names)
-        manifest = load_bundle_manifest(resolved_dir)
-        _check_bundle_compat(entry.name, manifest, kernel_version)
-        if manifest.version is not None:
-            lock_entry.version = str(manifest.version)
-        resolved_bundles.append(ResolvedBundleInstall(entry=entry, resolved_dir=resolved_dir, lock_entry=lock_entry, manifest=manifest))
-        bundle_manifests[entry.name] = manifest
-
+    resolved_bundles = _resolve_bundle_closure(
+        distro,
+        cache,
+        plan,
+        prior_lock=prior_lock,
+        kernel_version=kernel_version,
+    )
+    bundle_manifests = {resolved.entry.name: resolved.manifest for resolved in resolved_bundles}
     _validate_bundle_dependencies(bundle_manifests)
 
     for resolved in resolved_bundles:
         entry = resolved.entry
         lock_entry = resolved.lock_entry
-        installed = _install_bundle(resolved.resolved_dir, skills_dir, plugins_dir, apps_dir, packages_dir, installed_python_packages, installed_typescript_packages, manifest=resolved.manifest,
+        installed = _install_bundle(resolved.resolved_dir, skills_dir, plugins_dir, apps_dir, host_services_dir, packages_dir, installed_python_packages, installed_typescript_packages, manifest=resolved.manifest,
                                       allowlist=entry.components, override=entry.override,
                                       bundle_name=entry.name, source_uri=lock_entry.source)
         new_lock.bundles[entry.name] = lock_entry
@@ -589,6 +708,14 @@ def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lock
             new_lock.plugins[name] = replace(lock_entry)
         for name in installed.apps:
             new_lock.apps[name] = replace(lock_entry)
+        for name in installed.host_services:
+            service_root = host_services_dir / name
+            service_manifest = host_service.load_manifest(service_root)
+            new_lock.host_services[name] = replace(
+                lock_entry,
+                artifact_sha256=host_service.artifact_digest(service_root),
+                platforms=service_manifest.platforms,
+            )
 
     # Plugin compat checks run last so staged package exports are fully
     # populated by all bundles. We re-walk `staging/plugins` rather than
@@ -605,6 +732,163 @@ def _stage(plan: Plan, staging: Path, *, kernel_version: Version | None) -> lock
         )
 
     return new_lock
+
+
+def _resolve_bundle_closure(
+    distro: cfg.DistroConfig,
+    cache: GitCache,
+    plan: Plan,
+    *,
+    prior_lock: lockmod.Lock | None,
+    kernel_version: Version | None,
+) -> list[ResolvedBundleInstall]:
+    explicit_entries = {entry.name: entry for entry in distro.bundles}
+    resolved: dict[str, ResolvedBundleInstall] = {}
+    visiting: list[str] = []
+
+    def visit(name: str, parent: ResolvedBundleInstall | None = None) -> None:
+        if name in resolved:
+            return
+        if name in visiting:
+            cycle = visiting[visiting.index(name):] + [name]
+            raise InstallError(f"bundle dependency cycle: {' -> '.join(cycle)}")
+
+        visiting.append(name)
+        entry = explicit_entries.get(name)
+        if entry is not None:
+            bundle_names = _bundle_update_names(entry, prior_lock)
+            resolved_dir, lock_entry = _resolve(
+                entry.source,
+                distro.path,
+                cache,
+                plan,
+                prior=_prior_bundle(prior_lock, entry.name),
+                lock_names=bundle_names,
+            )
+        elif parent is not None:
+            entry, resolved_dir, lock_entry = _resolve_sibling_bundle(name, parent, cache, plan)
+        else:
+            raise InstallError(f"bundle dependency {name!r} has no source")
+
+        manifest = load_bundle_manifest(resolved_dir)
+        if manifest.name is not None and manifest.name != name:
+            raise InstallError(
+                f"bundle dependency {name!r} resolved to manifest named {manifest.name!r}: {resolved_dir / 'bundle.toml'}"
+            )
+        _check_bundle_compat(name, manifest, kernel_version)
+        if manifest.version is not None:
+            lock_entry.version = str(manifest.version)
+
+        current = ResolvedBundleInstall(
+            entry=entry,
+            resolved_dir=resolved_dir,
+            lock_entry=lock_entry,
+            manifest=manifest,
+        )
+        for dependency in manifest.dependencies:
+            visit(dependency.bundle, current)
+            target = resolved[dependency.bundle]
+            if dependency.components:
+                available = {component for component, _path in _bundle_component_candidates(
+                    target.resolved_dir,
+                    target.manifest,
+                    bundle_name=dependency.bundle,
+                )}
+                unavailable = [component for component in dependency.components if component not in available]
+                if unavailable:
+                    raise InstallError(
+                        f"bundle {name!r} requires component(s) {', '.join(unavailable)} from bundle "
+                        f"{dependency.bundle!r}, but that bundle does not provide them"
+                    )
+                explicit_target = explicit_entries.get(dependency.bundle)
+                if explicit_target is not None and explicit_target.components is not None:
+                    missing = [component for component in dependency.components if component not in explicit_target.components]
+                    if missing:
+                        allowed = ", ".join(explicit_target.components) or "none"
+                        raise InstallError(
+                            f"bundle {dependency.bundle!r} explicitly allows components {allowed}, "
+                            f"but bundle {name!r} requires {', '.join(missing)}"
+                        )
+                if explicit_target is not None and explicit_target.components is None:
+                    merged = None
+                else:
+                    merged = tuple(dict.fromkeys((target.entry.components or ()) + dependency.components))
+                target_entry = replace(target.entry, components=merged)
+                target_lock = replace(target.lock_entry, components=merged)
+                resolved[dependency.bundle] = replace(target, entry=target_entry, lock_entry=target_lock)
+
+        selected_components = entry.components
+        lock_entry.components = selected_components
+        resolved[name] = replace(current, lock_entry=lock_entry)
+        visiting.pop()
+
+    for entry in distro.bundles:
+        visit(entry.name)
+
+    return list(resolved.values())
+
+
+def _resolve_sibling_bundle(
+    name: str,
+    parent: ResolvedBundleInstall,
+    cache: GitCache,
+    plan: Plan,
+) -> tuple[cfg.BundleEntry, Path, lockmod.LockEntry]:
+    parent_source = srcmod.parse(parent.lock_entry.source, base_dir=plan.distro.path)
+    source_body, _ = srcmod.split_fragment(parent.lock_entry.source)
+
+    if isinstance(parent_source, LocalSource):
+        resolved_dir = parent.resolved_dir.parent / name
+        if not resolved_dir.is_dir():
+            raise InstallError(
+                f"bundle {parent.entry.name!r} depends on bundle {name!r}, but sibling bundle directory is missing: {resolved_dir}"
+            )
+        source = f"local:{resolved_dir.resolve()}"
+        entry = cfg.BundleEntry(name=name, source=source, components=())
+        return entry, resolved_dir, lockmod.LockEntry(
+            source=source,
+            resolved_path=str(resolved_dir.resolve()),
+            fetched_at=lockmod.now_iso(),
+            components=(),
+        )
+
+    assert isinstance(parent_source, GitSource)
+    if not parent.lock_entry.resolved_sha:
+        raise InstallError(
+            f"bundle {parent.entry.name!r} depends on bundle {name!r}, but its git source has no resolved revision"
+        )
+    parent_subpath = parent_source.subpath
+    sibling_parent = Path(parent_subpath).parent.as_posix() if parent_subpath else ""
+    sibling_subpath = "/".join(part for part in (sibling_parent if sibling_parent != "." else "", name) if part)
+    sibling_source = srcmod.join_path_fragment(source_body, sibling_subpath)
+    pinned = GitSource(
+        url=parent_source.url,
+        ref=parent.lock_entry.resolved_sha,
+        subpath=sibling_subpath,
+        pinned_sha=True,
+    )
+    try:
+        checkout = cache.fetch(pinned, offline=plan.offline)
+    except Exception as exc:
+        raise InstallError(
+            f"bundle {parent.entry.name!r} depends on bundle {name!r}, "
+            f"but revision {parent.lock_entry.resolved_sha} could not be resolved: {exc}"
+        ) from exc
+    resolved_dir = checkout.worktree / sibling_subpath if sibling_subpath else checkout.worktree
+    if not resolved_dir.is_dir():
+        raise InstallError(
+            f"bundle {parent.entry.name!r} depends on bundle {name!r}, but sibling bundle directory is missing "
+            f"at revision {parent.lock_entry.resolved_sha}: {sibling_subpath}"
+        )
+    entry = cfg.BundleEntry(name=name, source=sibling_source, components=())
+    return entry, resolved_dir, lockmod.LockEntry(
+        source=sibling_source,
+        resolved_sha=checkout.sha,
+        resolved_ref=parent.lock_entry.resolved_ref or parent_source.ref,
+        subpath=sibling_subpath or None,
+        fetched_at=parent.lock_entry.fetched_at or lockmod.now_iso(),
+        components=(),
+    )
 
 
 def _prior_skill(lock: lockmod.Lock | None, name: str) -> lockmod.LockEntry | None:
@@ -796,7 +1080,8 @@ def _validate_app_manifest(src: Path, *, label: str) -> str:
     return app_id
 
 
-def _install_bundle(bundle_root: Path, skills_dir: Path, plugins_dir: Path, apps_dir: Path, packages_dir: Path,
+def _install_bundle(bundle_root: Path, skills_dir: Path, plugins_dir: Path, apps_dir: Path,
+                    host_services_dir: Path, packages_dir: Path,
                     installed_python_packages: dict[str, tuple[str, Path]],
                     installed_typescript_packages: dict[str, tuple[str, Path]], *,
                     manifest: BundleManifest, allowlist: tuple[str, ...] | None,
@@ -817,11 +1102,13 @@ def _install_bundle(bundle_root: Path, skills_dir: Path, plugins_dir: Path, apps
     installed_skills: list[str] = []
     installed_plugins: list[str] = []
     installed_apps: list[str] = []
+    installed_host_services: list[str] = []
     for name, entry in candidates:
         has_skill = (entry / "SKILL.md").is_file()
         has_plugin = (entry / "plugin.toml").is_file()
         has_app = (entry / "app.toml").is_file()
-        kinds = sum(1 for present in (has_skill, has_plugin, has_app) if present)
+        has_host_service = (entry / "service.toml").is_file()
+        kinds = sum(1 for present in (has_skill, has_plugin, has_app, has_host_service) if present)
         if kinds > 1:
             raise InstallError(f"bundle {bundle_name}: component {name!r} has multiple component manifests")
         if has_skill:
@@ -837,11 +1124,31 @@ def _install_bundle(bundle_root: Path, skills_dir: Path, plugins_dir: Path, apps
             _install_component(entry, apps_dir / app_id, override=override,
                                label=f"bundle {bundle_name} -> app {name}")
             installed_apps.append(app_id)
+        elif has_host_service:
+            try:
+                service_manifest = host_service.load_manifest(entry)
+            except host_service.HostServiceError as exc:
+                raise InstallError(f"bundle {bundle_name} -> host service {name}: {exc}") from exc
+            if service_manifest.service_id != name:
+                raise InstallError(
+                    f"bundle {bundle_name} -> host service {name}: service.id "
+                    f"{service_manifest.service_id!r} must match directory name {name!r}"
+                )
+            _install_component(entry, host_services_dir / name, override=override,
+                               label=f"bundle {bundle_name} -> host service {name}")
+            installed_host_services.append(name)
         else:
-            raise InstallError(f"bundle {bundle_name}: component {name!r} has no SKILL.md, plugin.toml or app.toml")
+            raise InstallError(
+                f"bundle {bundle_name}: component {name!r} has no SKILL.md, plugin.toml, app.toml or service.toml"
+            )
     _install_bundle_python_exports(bundle_root, manifest, packages_dir, installed_python_packages, bundle_name=bundle_name)
     _install_bundle_typescript_exports(bundle_root, manifest, packages_dir, installed_typescript_packages, bundle_name=bundle_name)
-    return InstalledBundleComponents(skills=tuple(installed_skills), plugins=tuple(installed_plugins), apps=tuple(installed_apps))
+    return InstalledBundleComponents(
+        skills=tuple(installed_skills),
+        plugins=tuple(installed_plugins),
+        apps=tuple(installed_apps),
+        host_services=tuple(installed_host_services),
+    )
 
 
 def _validate_bundle_dependencies(bundle_manifests: dict[str, BundleManifest]) -> None:
@@ -990,20 +1297,12 @@ def _bundle_component_candidates(bundle_root: Path, manifest: BundleManifest, *,
             continue
         if entry.name in IGNORE_NAMES or entry.name.startswith("."):
             continue
-        if (entry / "SKILL.md").is_file() or (entry / "plugin.toml").is_file() or (entry / "app.toml").is_file():
+        if any((entry / manifest).is_file() for manifest in ("SKILL.md", "plugin.toml", "app.toml", "service.toml")):
             candidates.append((entry.name, entry))
     return candidates
 
 
-# ── exposing current generation through stable paths ──────────────────────
-
-
-def _expose_current(home: Path, distro_name: str) -> None:
-    root = gens.distro_root(home, distro_name)
-    for entry in ("skills", "plugins", "apps", "templates", "packages"):
-        link = root / entry
-        links.remove_path(link)
-        links.create_directory_reference(link, Path("current") / entry)
+# ── exposing installed distro through stable paths ───────────────────────
 
 
 def _set_active(home: Path, distro_name: str, *, expose_global_boot: bool = True) -> None:
@@ -1015,12 +1314,7 @@ def _set_active(home: Path, distro_name: str, *, expose_global_boot: bool = True
 
 
 
-def _refresh_runtime_surface(
-    home: Path,
-    *,
-    tenant: str | None = None,
-    generation: gens.Generation | None = None,
-) -> None:
+def _refresh_runtime_surface(home: Path, *, tenant: str | None = None, distro_path: Path | None = None) -> None:
     for obsolete in (home / "drivers", home / "gateways", home / "_lib"):
         links.remove_path(obsolete)
     _link_runtime(home / "distrib" / "active" / "packages", home / "packages")
@@ -1028,12 +1322,12 @@ def _refresh_runtime_surface(
     _link_runtime(home / "distrib" / "active" / "templates", home / "templates")
     _link_runtime(home / "distrib" / "active" / "plugins", home / "plugins")
     _link_runtime(home / "distrib" / "active" / "skills", home / "skills")
-    if tenant is not None and generation is not None:
+    if tenant is not None and distro_path is not None:
         for tenant_dir in _tenant_roots(home, tenant=tenant):
-            _refresh_tenant_runtime_surface(tenant_dir, generation.path)
+            _refresh_tenant_runtime_surface(tenant_dir, distro_path)
     elif tenant is None:
         for tenant_dir in _tenant_roots(home):
-            source = _tenant_generation_path(home, tenant_dir)
+            source = _tenant_distro_path(home, tenant_dir)
             if source is not None:
                 _refresh_tenant_runtime_surface(tenant_dir, source)
     _touch_reload_trigger(home, tenant=tenant)
@@ -1049,32 +1343,28 @@ def _tenant_roots(home: Path, *, tenant: str | None = None) -> list[Path]:
     return [entry for entry in roots if entry.name == tenant]
 
 
-def _refresh_tenant_runtime_surface(tenant_dir: Path, generation_path: Path) -> None:
+def _refresh_tenant_runtime_surface(tenant_dir: Path, distro_path: Path) -> None:
     obsolete = tenant_dir / "_lib"
     links.remove_path(obsolete)
-    _link_runtime(generation_path / "packages", tenant_dir / "packages")
-    _link_runtime(generation_path / "apps", tenant_dir / "apps")
-    _link_runtime(generation_path / "templates", tenant_dir / "templates")
-    _link_runtime(generation_path / "plugins", tenant_dir / "plugins")
-    _link_runtime(generation_path / "skills", tenant_dir / "skills")
+    _link_runtime(distro_path / "packages", tenant_dir / "packages")
+    _link_runtime(distro_path / "apps", tenant_dir / "apps")
+    _link_runtime(distro_path / "templates", tenant_dir / "templates")
+    _link_runtime(distro_path / "plugins", tenant_dir / "plugins")
+    _link_runtime(distro_path / "skills", tenant_dir / "skills")
 
 
 def _write_tenant_install_lock(
     home: Path,
     tenant: str,
-    generation: gens.Generation,
+    distro_path: Path,
     distro_lock: lockmod.Lock,
 ) -> None:
     tenant_dir = home / "tenants" / tenant
     tenant_dir.mkdir(parents=True, exist_ok=True)
     payload = {
-        "version": 1,
+        "version": 2,
         "distro": distro_lock.to_json(),
-        "generation": {
-            "distro": distro_lock.distro,
-            "name": generation.name,
-            "path": str(Path("distrib") / distro_lock.distro / "generations" / generation.name),
-        },
+        "path": str(distro_path.relative_to(home)),
     }
     path = tenant_dir / "install.lock.json"
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -1085,17 +1375,17 @@ def _write_tenant_install_lock(
 def _retarget_tenant_install_locks(
     home: Path,
     distro_name: str,
-    generation: gens.Generation,
+    distro_path: Path,
     distro_lock: lockmod.Lock,
 ) -> None:
     for tenant_dir in _tenant_roots(home):
         payload = _read_tenant_install_lock(tenant_dir)
         if payload is None:
             continue
-        existing_generation = payload.get("generation")
-        if not isinstance(existing_generation, dict) or existing_generation.get("distro") != distro_name:
+        existing_distro = payload.get("distro")
+        if not isinstance(existing_distro, dict) or existing_distro.get("distro") != distro_name:
             continue
-        _write_tenant_install_lock(home, tenant_dir.name, generation, distro_lock)
+        _write_tenant_install_lock(home, tenant_dir.name, distro_path, distro_lock)
 
 
 def _read_tenant_install_lock(tenant_dir: Path) -> dict[str, object] | None:
@@ -1103,43 +1393,48 @@ def _read_tenant_install_lock(tenant_dir: Path) -> dict[str, object] | None:
         payload = json.loads((tenant_dir / "install.lock.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    if not isinstance(payload, dict) or payload.get("version") != 1:
+    if not isinstance(payload, dict) or payload.get("version") != 2:
         return None
     return payload
 
 
-def _tenant_generation_path(home: Path, tenant_dir: Path) -> Path | None:
+def _snapshot_tenant_install_locks(home: Path, *, tenant: str | None = None) -> dict[Path, bytes | None]:
+    snapshots: dict[Path, bytes | None] = {}
+    for tenant_dir in _tenant_roots(home):
+        path = tenant_dir / "install.lock.json"
+        snapshots[path] = path.read_bytes() if path.is_file() else None
+    if tenant is not None:
+        path = home / "tenants" / tenant / "install.lock.json"
+        snapshots.setdefault(path, path.read_bytes() if path.is_file() else None)
+    return snapshots
+
+
+def _restore_tenant_install_locks(snapshots: dict[Path, bytes | None]) -> None:
+    for path, content in snapshots.items():
+        if content is None:
+            path.unlink(missing_ok=True)
+            continue
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_bytes(content)
+        os.replace(tmp, path)
+
+
+def _tenant_distro_path(home: Path, tenant_dir: Path) -> Path | None:
     payload = _read_tenant_install_lock(tenant_dir)
     if payload is None:
         return None
-    generation = payload.get("generation")
-    if not isinstance(generation, dict):
+    value = payload.get("path")
+    if not isinstance(value, str):
         return None
-    distro_name = generation.get("distro")
-    generation_name = generation.get("name")
-    if not _safe_path_name(distro_name) or not _safe_path_name(generation_name):
+    path = Path(value)
+    if path.is_absolute() or ".." in path.parts:
         return None
-    path = gens.generations_dir(home, distro_name) / generation_name
-    return path if path.is_dir() else None
+    resolved = home / path
+    return resolved if resolved.is_dir() else None
 
 
 def _safe_path_name(value: object) -> bool:
     return isinstance(value, str) and bool(value) and value not in {".", ".."} and Path(value).name == value
-
-
-def _tenant_generation_refs(home: Path, distro_name: str) -> set[str]:
-    refs: set[str] = set()
-    for tenant_dir in _tenant_roots(home):
-        payload = _read_tenant_install_lock(tenant_dir)
-        if payload is None:
-            continue
-        generation = payload.get("generation")
-        if not isinstance(generation, dict) or generation.get("distro") != distro_name:
-            continue
-        name = generation.get("name")
-        if _safe_path_name(name):
-            refs.add(name)
-    return refs
 
 
 def touch_reload_trigger(home: Path, *, tenant: str | None = None) -> None:
@@ -1195,25 +1490,3 @@ def _link_runtime(src_dir: Path, dst_dir: Path, preserve: set[str] | None = None
             links.create_directory_reference(target, relative)
         else:
             links.create_file_reference(target, relative)
-
-
-def rollback(home: Path, distro_name: str, *, to: int | None = None) -> gens.Generation:
-    available = gens.list_generations(home, distro_name)
-    if not available:
-        raise InstallError(f"no generations for distro {distro_name!r}")
-    current = gens.current_generation(home, distro_name)
-    if to is None:
-        candidates = [g for g in available if not current or g.number < current.number]
-        if not candidates:
-            raise InstallError(f"already at oldest generation for {distro_name!r}")
-        target = candidates[-1]
-    else:
-        match = [g for g in available if g.number == to]
-        if not match:
-            raise InstallError(f"generation {to} not found for {distro_name!r}")
-        target = match[0]
-    gens.set_current(home, distro_name, target)
-    _expose_current(home, distro_name)
-    _set_active(home, distro_name)
-    _refresh_runtime_surface(home)
-    return target

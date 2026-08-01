@@ -264,7 +264,7 @@ $TABULA_HOME/
 │   ├── claw/current/
 │   ├── guardian/current/
 │   └── active -> claw
-├── templates/      -> distrib/active/current/templates
+├── templates/      -> distrib/active/templates
 ├── skills/         # distro skills + bundle skills
 ├── plugins/        # distro plugins + bundle plugins
 ├── config/
@@ -468,7 +468,7 @@ Useful environment variables:
 
 ## Project-Scoped Agents
 
-`tabula-agent install` creates a tenant pinned to an immutable distro generation
+`tabula-agent install` creates a tenant linked to stable installed distro tree
 and binds it directly to a project directory:
 
 ```bash

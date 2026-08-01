@@ -95,20 +95,21 @@ class TenantMaterializerTests(unittest.TestCase):
 
             self.assertEqual(code, 0, err)
             self.assertIn("installed tenant project-demo", out)
-            installed = distro_config.load(home / "distrib" / "demo" / "current")
+            installed_path = home / "distrib" / "demo"
+            installed = distro_config.load(installed_path)
             self.assertEqual(installed.tenant_values_schema, "values.schema.json")
             self.assertEqual(installed.tenant_values_defaults, "values.defaults.toml")
             tenant = home / "tenants" / "project-demo"
             lock = json.loads((tenant / "install.lock.json").read_text(encoding="utf-8"))
             self.assertEqual(lock["distro"]["distro_source"], str(distro.resolve()))
-            generation = home / lock["generation"]["path"]
-            self.assertTrue(generation.is_dir())
-            self.assertTrue((generation / "distro.toml").is_file())
+            self.assertEqual(lock["path"], "distrib/demo")
+            self.assertTrue(installed_path.is_dir())
+            self.assertTrue((installed_path / "distro.toml").is_file())
             self.assertTrue((tenant / "plugins" / "demo" / "plugin.toml").is_file())
             self.assertEqual(tomllib.loads((tenant / "values.toml").read_text(encoding="utf-8"))["profile"]["mode"], "strict")
             contract = json.loads((tenant / "contract.json").read_text(encoding="utf-8"))
             self.assertEqual(contract["id"], "project-demo")
-            self.assertEqual(Path(contract["distro_dir"]).resolve(), generation.resolve())
+            self.assertEqual(Path(contract["distro_dir"]).resolve(), installed_path.resolve())
             self.assertEqual(Path(contract["project_root"]).resolve(), project.resolve())
             self.assertEqual(Path(contract["lock"]).resolve(), (tenant / "install.lock.json").resolve())
             compiled = tomllib.loads((tenant / "config" / "plugins" / "demo" / "config.toml").read_text(encoding="utf-8"))
@@ -118,7 +119,7 @@ class TenantMaterializerTests(unittest.TestCase):
             self.assertEqual(runtime["tenant"][0]["id"], "project-demo")
             self.assertEqual([Path(path).resolve() for path in runtime["tenant"][0]["plugin_dirs"]], [(tenant / "plugins").resolve()])
             self.assertEqual(runtime["distro"]["active"], "demo")
-            self.assertEqual(Path(runtime["distro"]["dir"]).resolve(), generation.resolve())
+            self.assertEqual(Path(runtime["distro"]["dir"]).resolve(), installed_path.resolve())
             bindings = tomllib.loads((home / "bindings.toml").read_text(encoding="utf-8"))
             self.assertEqual(bindings["directory"], [{"root": str(project.resolve()), "tenant": "project-demo"}])
 
@@ -202,7 +203,7 @@ class TenantMaterializerTests(unittest.TestCase):
             bindings = tomllib.loads((home / "bindings.toml").read_text(encoding="utf-8"))
             self.assertEqual(bindings["directory"][0]["tenant"], "replacement")
 
-    def test_tenant_install_rejects_contract_file_outside_generation(self):
+    def test_tenant_install_rejects_contract_file_outside_installed_distro(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
@@ -221,7 +222,7 @@ class TenantMaterializerTests(unittest.TestCase):
             ])
 
             self.assertEqual(code, 1)
-            self.assertIn("must name a file inside the distro generation", err)
+            self.assertIn("must name a file inside the installed distro", err)
             self.assertFalse((home / "tenants" / "project-demo").exists())
 
     def test_tenant_install_rejects_existing_tenant(self):

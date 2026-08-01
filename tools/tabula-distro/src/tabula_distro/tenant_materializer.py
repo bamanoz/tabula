@@ -47,7 +47,6 @@ def install(
     display_name: str = "",
     offline: bool = False,
     update: bool = False,
-    keep_generations: int = 5,
     replace_binding: bool = False,
     bind_project: bool = True,
 ) -> TenantInstallResult:
@@ -74,19 +73,18 @@ def install(
             update=update,
             tenant=tenant_id,
             expose_global_boot=False,
-            keep_generations=keep_generations,
         )
         _write_tenant_metadata(tenant_dir, tenant_id, display_name or tenant_id)
         _write_values(tenant_dir / "values.toml", values)
         materialized = _run_materializer(
-            result.generation.path,
+            result.distro_path,
             result.lock.distro,
             home,
             tenant_id,
             project_root,
         )
         compiled = plugin_config.compile_plugin_configs(home, tenant_dir)
-        runtime_config.sync_tenant(home, tenant_id, tenant_dir, distro_dir=result.generation.path)
+        runtime_config.sync_tenant(home, tenant_id, tenant_dir, distro_dir=result.distro_path)
         tenant_bindings.save(home, registry)
     except Exception:
         shutil.rmtree(tenant_dir, ignore_errors=True)
@@ -109,7 +107,6 @@ def refresh(
     *,
     offline: bool,
     update: bool,
-    keep_generations: int,
 ) -> TenantInstallResult:
     tenant_dir = home / "tenants" / tenant_id
     if not tenant_dir.is_dir():
@@ -121,19 +118,18 @@ def refresh(
         update=update,
         tenant=tenant_id,
         expose_global_boot=False,
-        keep_generations=keep_generations,
     )
     values = _load_values(values_path) if values_path is not None else _load_values(tenant_dir / "values.toml")
     _write_values(tenant_dir / "values.toml", values)
     materialized = _run_materializer(
-        result.generation.path,
+        result.distro_path,
         result.lock.distro,
         home,
         tenant_id,
         project_root.expanduser().resolve(),
     )
     compiled = plugin_config.compile_plugin_configs(home, tenant_dir)
-    runtime_config.sync_tenant(home, tenant_id, tenant_dir, distro_dir=result.generation.path)
+    runtime_config.sync_tenant(home, tenant_id, tenant_dir, distro_dir=result.distro_path)
     installmod.touch_reload_trigger(home, tenant=tenant_id)
     return TenantInstallResult(
         tenant_dir=tenant_dir,
@@ -155,24 +151,24 @@ def rematerialize(
         payload = json.loads(lock_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise TenantMaterializationError(f"read tenant install lock {lock_path}: {exc}") from exc
-    generation = payload.get("generation")
     distro = payload.get("distro")
-    if not isinstance(generation, dict) or not isinstance(distro, dict):
+    distro_path = payload.get("path")
+    if not isinstance(distro, dict) or not isinstance(distro_path, str):
         raise TenantMaterializationError(f"tenant install lock is incomplete: {lock_path}")
-    generation_path = generation.get("path")
     distro_name = distro.get("distro")
-    if not isinstance(generation_path, str) or not isinstance(distro_name, str):
+    if not isinstance(distro_name, str):
         raise TenantMaterializationError(f"tenant install lock is incomplete: {lock_path}")
-    generation_root = Path(generation_path)
-    if not generation_root.is_absolute():
-        generation_root = home / generation_root
+    distro_root = Path(distro_path)
+    if distro_root.is_absolute() or ".." in distro_root.parts:
+        raise TenantMaterializationError(f"tenant install lock has invalid distro path: {lock_path}")
+    distro_root = home / distro_root
     values = _load_values(values_path)
     _write_values(tenant_dir / "values.toml", values)
     _run_materializer(
-        generation_root, distro_name, home, tenant_id, project_root.expanduser().resolve()
+        distro_root, distro_name, home, tenant_id, project_root.expanduser().resolve()
     )
     plugin_config.compile_plugin_configs(home, tenant_dir)
-    runtime_config.sync_tenant(home, tenant_id, tenant_dir, distro_dir=generation_root)
+    runtime_config.sync_tenant(home, tenant_id, tenant_dir, distro_dir=distro_root)
     installmod.touch_reload_trigger(home, tenant=tenant_id)
 
 
@@ -218,13 +214,15 @@ def _write_values(path: Path, values: dict[str, object]) -> None:
 
 
 def _run_materializer(
-    generation_path: Path,
+    distro_path: Path,
     distro_name: str,
     home: Path,
     tenant_id: str,
     project_root: Path,
+    *,
+    tenant_dir_override: Path | None = None,
 ) -> bool:
-    distro = cfg.load(generation_path, override_name=distro_name)
+    distro = cfg.load(distro_path, override_name=distro_name)
     _validate_contract_files(distro)
     raw = distro.tenant_materializer
     if raw is None:
@@ -233,14 +231,14 @@ def _run_materializer(
     if not command:
         raise TenantMaterializationError("tenant materializer command is empty")
     command = _normalize_python_command(command)
-    tenant_dir = home / "tenants" / tenant_id
+    tenant_dir = tenant_dir_override or home / "tenants" / tenant_id
     _reset_materializer_output(tenant_dir)
     env = os.environ.copy()
     env.update({
         "TABULA_HOME": str(home),
         "TABULA_TENANT_ID": tenant_id,
         "TABULA_TENANT_DIR": str(tenant_dir),
-        "TABULA_TENANT_DISTRO_DIR": str(generation_path),
+        "TABULA_TENANT_DISTRO_DIR": str(distro_path),
         "TABULA_TENANT_PROJECT_ROOT": str(project_root),
         "TABULA_TENANT_VALUES": str(tenant_dir / "values.toml"),
         "TABULA_TENANT_INSTALL_LOCK": str(tenant_dir / "install.lock.json"),
@@ -248,7 +246,7 @@ def _run_materializer(
     _prepend_pythonpath(env, tenant_dir / "packages" / "python" / "src")
     process = subprocess.run(
         command,
-        cwd=generation_path,
+        cwd=distro_path,
         env=env,
         capture_output=True,
         text=True,
@@ -272,7 +270,7 @@ def _validate_contract_files(distro: cfg.DistroConfig) -> None:
         path = Path(relative)
         if path.is_absolute() or ".." in path.parts or not (distro.path / path).is_file():
             raise TenantMaterializationError(
-                f"tenant_contract.{field} must name a file inside the distro generation: {relative}"
+                f"tenant_contract.{field} must name a file inside the installed distro: {relative}"
             )
 
 

@@ -68,7 +68,7 @@ func (s *ToolService) resolvePendingExchange(exchangeID string) bool {
 		return true
 	}
 	s.broadcastFinalizedToolCall(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, effectiveInput, pending.Meta, nil)
-	s.handleDynamicTool(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, effectiveInput, pending.TurnCorrelationID)
+	s.handleDynamicToolWithMeta(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, effectiveInput, pending.Meta, pending.TurnCorrelationID)
 	return true
 }
 

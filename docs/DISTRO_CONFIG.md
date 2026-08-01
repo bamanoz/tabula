@@ -27,7 +27,7 @@ source = "git+https://github.com/bamanoz/tabula-bundles.git@main"
 [[bundles]]
 name   = "workspace"
 source = "source:tabula-bundles#path=workspace"
-# components = ["fs", "exec"]  # optional skill/plugin/app allowlist
+# components = ["fs", "exec"]  # optional skill/plugin/app/host-service allowlist
 # override = false              # must be true to replace existing
 
 [[bundles]]
@@ -54,10 +54,10 @@ required_for = ["mcp.context7"]
 install_hint = "Install Node.js LTS from https://nodejs.org/."
 ```
 
-A bundle is a directory whose top level holds skill directories (`SKILL.md`) and
-plugin directories (`plugin.toml`) on the same level. The `components = [...]`
-allowlist on a bundle entry filters by component directory name and applies to
-both shapes. The legacy `skills = [...]` spelling is still parsed as an alias
+A bundle is a directory whose top level holds component directories identified
+by `SKILL.md`, `plugin.toml`, `app.toml`, or `service.toml`. The
+`components = [...]` allowlist on a bundle entry filters by component directory
+name and applies to every shape. The legacy `skills = [...]` spelling is still parsed as an alias
 for one compatibility cycle; new configs should use `components`.
 
 ### Fields
@@ -78,17 +78,17 @@ for one compatibility cycle; new configs should use `components`.
   - `name` — required. Target path under `skills/` for skills, `plugins/` for
     plugins, or bundle identity for bundles.
   - `source` — required. See URI grammar below.
-  - `components` — bundles only. Optional allowlist of skill/plugin/app component
+  - `components` — bundles only. Optional allowlist of skill/plugin/app/host-service component
     subdirectories to include. `skills` is a deprecated alias.
   - `override` — required to replace a pre-existing target with the same name.
 - `[tenant_contract]` — optional tenant materialization metadata.
-  - `materializer` — shell-split command executed from the tenant's exact
-    immutable generation. It receives only `TABULA_TENANT_*` context.
-  - `values_schema` — generation-local distro-owned values schema.
-  - `values_defaults` — generation-local distro-owned default values TOML.
+  - `materializer` — shell-split command executed from stable installed distro
+    tree. It receives only `TABULA_TENANT_*` context.
+  - `values_schema` — distro-owned values schema.
+  - `values_defaults` — distro-owned default values TOML.
   See [Tenant Materializer Contract](TENANT_MATERIALIZER_CONTRACT.md).
 - `[[runtime_requirements.executables]]` — external commands the distro expects
-  on `PATH`. The installer checks these before staging a generation.
+  on `PATH`. Installer checks these before replacing installed tree.
   - `name` — executable name to resolve with `PATH`.
   - `required` — defaults to `true`. Missing required executables fail install
     or app apply/run; missing optional executables produce a warning.
@@ -124,6 +124,7 @@ owner = "skills"
 
 [[dependencies]]
 bundle = "extensions"
+components = ["sessions"]
 python_packages = ["tabula_session_sdk"]
 typescript_packages = ["@tabula/skill-sdk"]
 ```
@@ -132,8 +133,8 @@ When present, `[requires].kernel` is enforced just like the distro-level
 constraint. Bundles without a `bundle.toml` are accepted as legacy/unversioned
 and skip the check (their entry in `distro.lock.json` will have no `version`).
 If `[bundle].components` is omitted, `tabula-distro` discovers components by
-walking immediate child directories and selecting those with `SKILL.md` or
-`plugin.toml` or `app.toml`. If `components` is present, only those relative component paths
+walking immediate child directories and selecting those with `SKILL.md`,
+`plugin.toml`, `app.toml`, or `service.toml`. If `components` is present, only those relative component paths
 are installed; missing entries fail the install instead of being silently
 skipped.
 
@@ -142,8 +143,38 @@ component-owned SDK/runtime packages. `name` is the import/package name, `path`
 is a bundle-relative source path, `owner` identifies the owning component, and
 `public` marks whether the package is a stable SDK surface (`true`) or an
 internal shared package declared for installation/dependency validation
-(`false`). `[[dependencies]]` entries can require packages exported by another
-selected bundle through `python_packages` and `typescript_packages`.
+(`false`). `[[dependencies]]` entries can require runtime `components` and
+packages exported through `python_packages` or `typescript_packages`.
+
+Installer resolves dependency closure transitively. Unselected dependencies are
+sibling bundles in same source tree. Git dependencies use exact resolved SHA of
+requiring bundle; local dependencies use sibling directory in same checkout.
+Auto-resolved bundles install union of required components. Package-only
+dependencies install no runtime components but still export packages. Explicit
+distro component allowlists remain authoritative and cannot be widened by a
+bundle dependency. Missing siblings/components, cycles, export mismatches, and
+component collisions fail before installed tree replacement.
+
+A host-service component contains `service.toml` and an executable entry. Its
+descriptor is generic: stable ID, entry, arguments, string environment values,
+supported platforms, readiness probe, and shutdown timeout. Installer copies the
+component without running bundle-controlled install scripts and records its
+artifact hash. Trusted lifecycle commands then materialize immutable releases
+outside the replaceable distro tree:
+
+```text
+$TABULA_HOME/host-services/<service-id>/releases/<sha256>/
+$TABULA_HOME/host-services/<service-id>/current
+$TABULA_HOME/host-services/<service-id>/previous
+```
+
+Use `tabula-install host-service reconcile` after installing/selecting a distro.
+`list`, `status`, `start`, `stop`, `restart`, and `remove [--purge]` expose the
+generic lifecycle. macOS defaults to a user launchd adapter. Explicit
+`--adapter process` is for development and testbeds; unsupported persistent
+platforms fail clearly. Failed readiness and interrupted activation restore the
+previous release. Ordinary removal preserves service-owned state; `--purge`
+removes it.
 
 Declared Python exports are staged into `$TABULA_HOME/packages/python/src`, and
 declared TypeScript exports are staged by package name under
@@ -164,8 +195,8 @@ source:<alias>[#path=<subdir>]
 ```
 
 - `local:` paths are resolved relative to the containing `distro.toml`, or may
-  be absolute. Always materialized as a **copy** (not a symlink) in the
-  installed generation, so that generations stay immutable snapshots.
+  be absolute. Always materialized as a **copy** (not a symlink) in transaction
+  staging, so installed content does not depend on source checkout mutation.
 - `git+` requires an explicit `@ref` (tag, branch, or full/short sha).
   A ref that looks like a hex sha is resolved directly; otherwise it is
   fetched and rev-parsed.
@@ -181,10 +212,11 @@ source:<alias>[#path=<subdir>]
 Resolution order within a distro (first writer wins):
 
 1. In-tree `skills/<name>/`, `plugins/<name>/`, and `apps/<name>/` directories.
+   Host services are bundle-only and compose under `host-services/<name>/`.
 2. `[[skills]]` and `[[plugins]]` entries, in declaration order.
 3. `[[bundles]]`, in declaration order — each provides skill components under
-   `skills/`, plugin components under `plugins/`, and app components under
-   `apps/`.
+   `skills/`, plugin components under `plugins/`, app components under
+   `apps/`, and host-service components under `host-services/`.
 
 If a later entry collides with an earlier one, installation fails unless the
 later entry is marked `override = true`. Silent overwrites are refused on
@@ -214,7 +246,7 @@ root (`$TABULA_HOME/distrib/<name>/distro.lock.json`). Example:
 
 ```json
 {
-  "version": 3,
+  "version": 6,
   "distro": "claw",
   "distro_version": "0.1.0",
   "kernel_version": "0.8.0",
@@ -225,6 +257,7 @@ root (`$TABULA_HOME/distrib/<name>/distro.lock.json`). Example:
       "resolved_sha": "abc123…",
       "resolved_ref": "main",
       "version":      "0.1.0",
+      "components":   ["memory"],
       "fetched_at":   "2026-04-21T14:30:00Z"
     }
   },
@@ -243,6 +276,14 @@ root (`$TABULA_HOME/distrib/<name>/distro.lock.json`). Example:
       "resolved_ref": "main",
       "subpath":      "plugin"
     }
+  },
+  "host_services": {
+    "evolution-supervisor": {
+      "source":          "git+…@main",
+      "resolved_sha":    "012345…",
+      "artifact_sha256": "89abcdef…",
+      "platforms":       ["darwin", "linux"]
+    }
   }
 }
 ```
@@ -257,9 +298,9 @@ Semantics:
   shas for the selected entries, re-resolves them, and writes a new lock.
 - `tabula-install distro install --frozen` forbids any network access: the lock
   must fully describe the distro, otherwise the install fails.
-- Lock v3 records `plugins`, `clients`, plugin protocol, and SDK versions
-  alongside `bundles` and `skills`. Older lockfiles are migrated on load and
-  rewritten on the next install.
+- Lock v6 records host-service artifact hashes/platforms in addition to installed
+  apps, plugin protocol, SDK versions, and selected bundle components. Older
+  locks migrate on read and are rewritten after successful install.
 
 Local sources (`local:…`) are not hashable by design; their lock entry only
 records the resolved absolute path.
@@ -276,10 +317,10 @@ tabula-install tenant install \
   --values /path/to/values.toml
 ```
 
-This writes `$TABULA_HOME/tenants/<id>/install.lock.json`, pins all tenant
-component links to one exact generation, runs the distro's optional
+This writes `$TABULA_HOME/tenants/<id>/install.lock.json`, links tenant
+components to stable installed distro tree, runs distro's optional
 `[tenant_contract]` materializer, compiles tenant plugin config, registers
-tenant-specific runtime directories, and binds `--root` to the installed tenant.
+tenant-specific runtime directories, and binds `--root` to installed tenant.
 Use `--replace-binding` to replace a conflicting directory binding.
 
 For normal project-local installation, let `tabula-agent` generate the
@@ -297,30 +338,38 @@ install lock records the same distro source. A different source or invalid lock
 requires `--replace-binding`. Generated tenant IDs and bindings remain under
 `$TABULA_HOME`; no identity file is written into the project repository.
 
-## Generations and atomic switch
+## Transactional Installed Layout
 
-### Generations layout
+Installed distro has one stable path:
 
-```
+```text
 $TABULA_HOME/distrib/claw/
-  generations/
-    0001-2026-04-21T10-00-00Z/   # full staged tree
-    0002-2026-04-21T14-30-00Z/
-  current  -> generations/0002-...
-  skills   -> current/skills
-  plugins  -> current/plugins
-  templates-> current/templates
+  apps/
+  packages/
+  plugins/
+  skills/
+  templates/
   distro.lock.json
+  distro.toml
 ```
 
-- A staging directory (`<name>.staging`) is built first; on success it is
-  renamed into place, then the `current` symlink is atomically swapped.
-- `tabula-install distro rollback [name] [--to N]` flips `current` to a previous
-  generation without touching the filesystem otherwise.
-- Old generations are pruned after install (default: keep 5 + the current).
+Installer uses private transaction scratch:
 
-Existing installs without a `generations/` layout are auto-migrated on first
-run: the existing tree is moved into `generations/0001-legacy/`.
+```text
+$TABULA_HOME/run/install/claw/staging/
+$TABULA_HOME/run/install/claw/previous/
+$TABULA_HOME/run/install/claw/transaction.json
+```
+
+Under distro install lock, installer first recovers any interrupted transaction,
+then composes and validates `staging`. Existing installed tree moves to
+`previous` only while stable path is replaced and runtime/tenant surfaces are
+refreshed. Failure restores `previous`; success removes scratch and touches
+`run/reload.touch`.
+
+Installer has no public candidate, promotion, history, pruning, or rollback
+lifecycle. External supervisors own release candidates, health, known-good
+selection, and rollback policy.
 
 ## Git source cache
 
@@ -328,7 +377,7 @@ Git sources are cached under `$TABULA_HOME/cache/git/<url-sha1>/`:
 
 - `repo.git/` — a bare clone, fetched on demand.
 - `worktrees/<commit-sha>/` — one worktree per pinned commit, shared across
-  distros and generations.
+  distro installs.
 
 `tabula-install distro gc` removes worktrees not referenced by any installed
 distro's lockfile.
@@ -358,8 +407,8 @@ keep these two surfaces separate:
   such as `[kernel].url` and optional `[runtime_wss]` listener settings. It must
   not contain workspace, provider, prompt, plugin, or skill policy.
 
-- The installer writes `plugin_dirs` from the installed generation's plugin
-  surface and writes kernel transport settings to `kernel.toml`.
+- Installer writes `plugin_dirs` from installed distro's plugin surface and
+  writes kernel transport settings to `kernel.toml`.
 - `runtime.toml` may also declare runtime composition between plugin manifest
   kinds, for example `[plugin_kinds.gateway] depends_on = ["driver"]`.
 - The running kernel reads `kernel.toml` for its own transport settings and

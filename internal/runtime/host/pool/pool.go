@@ -401,7 +401,7 @@ func (p *Pool) invokeWarm(ctx context.Context, plugin manifest.Plugin, in wire.I
 		return failed(in.CallID, wire.ErrorInternal, safeWorkerErrorMessage("worker initialization failed", err))
 	}
 	defer p.releaseWarmOperationSlot(e, toolOperation(tool))
-	result, err := worker.Call(ctx, workerwire.WorkerCall{CallID: in.CallID, TenantID: in.TenantID, Tool: in.Tool, Args: in.Args, SessionID: in.SessionID, TurnCorrelationID: in.TurnCorrelationID})
+	result, err := worker.Call(ctx, workerwire.WorkerCall{CallID: in.CallID, TenantID: in.TenantID, Tool: in.Tool, Args: in.Args, SessionID: in.SessionID, TurnCorrelationID: in.TurnCorrelationID, Meta: in.Meta})
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			if p.shouldResetWarmWorkerAfterCallError(e, worker) {
@@ -581,7 +581,7 @@ func (p *Pool) invokeColdPlugin(ctx context.Context, plugin manifest.Plugin, in 
 	if _, err := worker.Init(ctx, workerwire.WorkerInit{Op: workerwire.OpInit, KernelID: p.kernelID, TenantID: in.TenantID, TargetID: in.Target.ID, Manifest: plugin.RawJSON()}); err != nil {
 		return failed(in.CallID, wire.ErrorInternal, err.Error())
 	}
-	result, err := worker.Call(ctx, workerwire.WorkerCall{Op: workerwire.OpCall, CallID: in.CallID, TenantID: in.TenantID, Tool: in.Tool, Args: in.Args, SessionID: in.SessionID, TurnCorrelationID: in.TurnCorrelationID})
+	result, err := worker.Call(ctx, workerwire.WorkerCall{Op: workerwire.OpCall, CallID: in.CallID, TenantID: in.TenantID, Tool: in.Tool, Args: in.Args, SessionID: in.SessionID, TurnCorrelationID: in.TurnCorrelationID, Meta: in.Meta})
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return failed(in.CallID, wire.ErrorTimeout, "invoke timed out")

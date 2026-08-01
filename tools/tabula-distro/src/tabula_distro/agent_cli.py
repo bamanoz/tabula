@@ -62,7 +62,7 @@ def _install_lock(home: Path, tenant_id: str) -> dict[str, object] | None:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    if not isinstance(payload, dict) or payload.get("version") != 1:
+    if not isinstance(payload, dict) or payload.get("version") != 2:
         return None
     return payload
 
@@ -110,10 +110,9 @@ def _cmd_install(args: argparse.Namespace, home: Path) -> int:
                     Path(args.values) if args.values else None,
                     offline=bool(args.frozen),
                     update=True,
-                    keep_generations=args.keep_generations,
                 )
                 print(f"updated existing tenant {existing_tenant}")
-                print(f"  distro: {result.distro.lock.distro} ({result.distro.generation.name})")
+                print(f"  distro: {result.distro.lock.distro}")
             elif args.values:
                 tenant_materializer.rematerialize(
                     home, existing_tenant, project_root, Path(args.values)
@@ -151,7 +150,6 @@ def _cmd_install(args: argparse.Namespace, home: Path) -> int:
         values_path=Path(args.values) if args.values else None,
         offline=bool(args.frozen),
         update=bool(args.update),
-        keep_generations=args.keep_generations,
         replace_binding=bool(args.replace_binding),
         bind_project=not bool(args.default),
     )
@@ -161,7 +159,7 @@ def _cmd_install(args: argparse.Namespace, home: Path) -> int:
         )
         tenant_bindings.save(home, registry)
     print(f"installed tenant {tenant_id}")
-    print(f"  distro: {result.distro.lock.distro} ({result.distro.generation.name})")
+    print(f"  distro: {result.distro.lock.distro}")
     print(f"  binding: {'default' if args.default else project_root}")
     print(f"  lock:    {result.tenant_dir / 'install.lock.json'}")
     if not args.no_start:
@@ -378,8 +376,7 @@ def _cmd_apply(args: argparse.Namespace, home: Path) -> int:
             values=str(values_path),
             frozen=bool(args.frozen),
             update=bool(args.update),
-            keep_generations=args.keep_generations,
-            replace_binding=bool(args.replace_binding),
+                replace_binding=bool(args.replace_binding),
             no_start=bool(args.no_start),
             non_interactive=True,
             timeout=args.timeout,
@@ -546,7 +543,6 @@ def _parser() -> argparse.ArgumentParser:
     install.add_argument("--values", default="", help="distro-owned values TOML")
     install.add_argument("--frozen", action="store_true", help="require cached sources; no network access")
     install.add_argument("--update", action="store_true", help="resolve latest revisions")
-    install.add_argument("--keep-generations", type=int, default=5)
     install.add_argument("--replace-binding", action="store_true", help="replace a binding owned by another installation")
     install.add_argument("--no-start", action="store_true", help="install without starting or checking the user service")
     install.add_argument("--non-interactive", action="store_true", help="disable prompts; fail on missing required input")
@@ -562,7 +558,6 @@ def _parser() -> argparse.ArgumentParser:
     apply.add_argument("--root", default=None, help="project directory (default: current directory)")
     apply.add_argument("--frozen", action="store_true", help="require cached sources; no network access")
     apply.add_argument("--update", action="store_true", help="resolve latest revisions")
-    apply.add_argument("--keep-generations", type=int, default=5)
     apply.add_argument("--replace-binding", action="store_true")
     apply.add_argument("--no-start", action="store_true")
     apply.add_argument("--timeout", type=float, default=30.0)

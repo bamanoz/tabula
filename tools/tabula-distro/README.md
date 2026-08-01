@@ -8,11 +8,11 @@ resolves the distro's declared sources (local paths or git repositories),
 composes them into a single staged tree, and atomically switches `$TABULA_HOME`
 to point at it.
 
-The installer is intentionally separate from the kernel binary: it only manages
-files on disk under `$TABULA_HOME`. The kernel does not know about sources,
-locks, generations, projects, or bindings. Root-level surfaces still expose a
-transitional active distro, while each tenant links directly to its pinned
-immutable generation.
+The installer is intentionally separate from the kernel binary: it manages
+files and generic external host-service lifecycle under `$TABULA_HOME`. The
+kernel does not know about sources, installer transactions, projects, bindings,
+or host services. Installed distro content lives at
+`$TABULA_HOME/distrib/<name>/`; root and tenant surfaces link to that stable tree.
 
 ## Quick start
 
@@ -21,6 +21,10 @@ pip install -e tools/tabula-distro
 tabula-install distro install ../tabula-distrib/claw
 tabula-install distro list
 tabula-install distro reinstall claw --frozen
+
+tabula-install host-service reconcile
+tabula-install host-service list
+tabula-install host-service status <service-id>
 
 tabula-agent install \
   --distro ../tabula-distrib/claw \
@@ -33,10 +37,19 @@ tabula-install tenant install ../tabula-distrib/claw \
   --root /path/to/my-project
 ```
 
-Tenant installation writes `tenants/<id>/install.lock.json`, pins component
-surfaces to one exact generation, runs an optional distro-owned
+Tenant installation writes `tenants/<id>/install.lock.json`, links component
+surfaces to the stable installed distro tree, runs an optional distro-owned
 `[tenant_contract]` materializer, and adds tenant-specific runtime directories.
 See `docs/TENANT_MATERIALIZER_CONTRACT.md` in the main repo.
+
+Bundles may also contain `service.toml` host-service components. Distro install
+pins and copies them under `distrib/<name>/host-services`; explicit
+`host-service reconcile` installs immutable releases under
+`$TABULA_HOME/host-services`, registers the platform service, and verifies
+generic readiness. Upgrade retains the previous executable and rolls back on
+failed readiness. `remove` preserves service state; `remove --purge` removes it.
+macOS uses a user launchd adapter by default. `--adapter process` is an explicit
+development/testbed path.
 
 `tabula-agent install` binds current directory by default and starts/checks the
 managed local service. Use `--bind <path>` to select another directory,
@@ -110,5 +123,5 @@ Source URI grammar:
 
 Local overrides go in `distro.override.toml` (gitignored).
 
-See `docs/distro-config.md` in the main repo for full schema, lockfile format,
-and generation/rollback semantics.
+See `docs/DISTRO_CONFIG.md` in the main repo for full schema, lockfile format,
+and transactional replacement semantics.

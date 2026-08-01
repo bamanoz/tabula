@@ -69,7 +69,7 @@ Kernel code must stay distro-agnostic. If a rule names a concrete product, works
 
 ### Generation
 
-An atomically switchable installed distro tree under `$TABULA_HOME/distrib/<name>/generations/<id>/`, with `current` pointing at the active generation. The installer stages a full generation, validates it, then flips the symlink.
+A transactionally replaced installed distro tree at `$TABULA_HOME/distrib/<name>/`. Installer composes and validates private staging under `$TABULA_HOME/run/install/<name>/`, preserves previous tree during replacement, then commits or restores it.
 
 Use `generation` for installed distro snapshots, not for source bundles.
 
@@ -157,7 +157,7 @@ A user-facing workspace context. Workspace-backed agents use one project-scoped 
 
 A project-scoped runtime instance of an agent profile and the isolation namespace for config, sessions, runtime state, cache, logs, workers, filesystem policy, and installed component surfaces. Tenant IDs must match the grammar in `internal/tenant` and cannot use reserved IDs such as `admin`, `kernel`, `runtime`, or `system`.
 
-A tenant is not a globally unique agent identity, authorization, billing, or quota object. Tenant component surfaces pin one exact distro generation and do not follow `distrib/active`.
+A tenant is not a globally unique agent identity, authorization, billing, or quota object. Tenant component surfaces follow stable distro path recorded in version 2 install lock and do not resolve through `distrib/active`.
 
 ### `TABULA_HOME`
 
@@ -186,8 +186,9 @@ Use these path names precisely:
 - `$TABULA_HOME/config/runtime.toml` for runtime daemon config produced by install tooling.
 - `$TABULA_HOME/config/plugins/<plugin-id>/config.toml` for user-owned plugin config.
 - `$TABULA_HOME/tenants/<tenant>/config/plugins/<plugin-id>/config.toml` for tenant plugin config.
-- `$TABULA_HOME/distrib/<name>/generations/<id>/` for installed generation content.
-- `$TABULA_HOME/distrib/<name>/current` for active generation symlink.
+- `$TABULA_HOME/distrib/<name>/` for installed distro content.
+- `$TABULA_HOME/distrib/active` for root-level active distro reference.
+- `$TABULA_HOME/run/install/<name>/` for private installer transaction scratch.
 - `$TABULA_HOME/run/reload.touch` for best-effort live reload notification after installer switch.
 
 ## Boundary Rules

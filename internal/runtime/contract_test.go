@@ -317,7 +317,7 @@ func (c *runtimePipeClient) Handshake(ctx context.Context, hello wire.Hello) (wi
 
 func (c *runtimePipeClient) Invoke(ctx context.Context, req InvokeReq) (InvokeResp, error) {
 	ch := c.registerPending(req.CallID)
-	frame := wire.Invoke{Op: wire.OpInvoke, CallID: req.CallID, TenantID: req.TenantID, Target: req.Target, Tool: req.Tool, Args: req.Args, TimeoutMS: req.TimeoutMS}
+	frame := wire.Invoke{Op: wire.OpInvoke, CallID: req.CallID, TenantID: req.TenantID, SessionID: req.SessionID, TurnCorrelationID: req.TurnCorrelationID, Meta: req.Meta, Target: req.Target, Tool: req.Tool, Args: req.Args, TimeoutMS: req.TimeoutMS}
 	if err := c.writeFrame(frame); err != nil {
 		c.unregisterPending(req.CallID)
 		return InvokeResp{}, err

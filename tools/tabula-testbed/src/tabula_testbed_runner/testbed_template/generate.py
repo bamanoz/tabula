@@ -74,7 +74,8 @@ def build_config(args: argparse.Namespace, manifest: dict) -> tuple[list[str], d
 
     selected = list(sets[set_name])
     selected.extend(args.bundle)
-    components: dict[str, list[str]] = {}
+    selected.extend(args.empty_components)
+    components: dict[str, list[str]] = {bundle: [] for bundle in args.empty_components}
     for bundle, component in args.component:
         selected.append(bundle)
         components.setdefault(bundle, []).append(component)
@@ -115,7 +116,7 @@ def write_distro(output: Path, manifest: dict, selected: list[str], components: 
             f"name = {toml_quote(name)}",
             f"source = {toml_quote(entry['source'])}",
         ])
-        if components.get(name):
+        if name in components:
             lines.append(f"components = {toml_array(components[name])}")
         lines.append("")
     (output / "distro.toml").write_text("\n".join(lines), encoding="utf-8")
@@ -164,6 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bundle", action="append", default=[])
     parser.add_argument("--without", action="append", default=[])
     parser.add_argument("--component", action="append", default=[], type=parse_component)
+    parser.add_argument("--empty-components", action="append", default=[])
     parser.add_argument("--source", action="append", default=[], type=parse_source, help="Override source alias: ALIAS=SOURCE")
     args = parser.parse_args(argv)
 

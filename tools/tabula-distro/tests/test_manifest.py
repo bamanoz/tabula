@@ -41,6 +41,7 @@ owner = "skills"
 
 [[dependencies]]
 bundle = "drivers"
+components = ["driver", "reviewer"]
 python_packages = ["tabula_driver_sdk"]
 typescript_packages = ["@tabula/driver-sdk"]
 """)
@@ -52,6 +53,7 @@ typescript_packages = ["@tabula/driver-sdk"]
         self.assertEqual(manifest.exports_python_packages[1].owner, "tool-result-store")
         self.assertEqual([item.name for item in manifest.exports_typescript_packages], ["@tabula/skill-sdk"])
         self.assertEqual(manifest.exports_typescript_packages[0].path, "skills/sdk/typescript")
+        self.assertEqual(manifest.dependencies[0].components, ("driver", "reviewer"))
         self.assertEqual(manifest.dependencies[0].python_packages, ("tabula_driver_sdk",))
         self.assertEqual(manifest.dependencies[0].typescript_packages, ("@tabula/driver-sdk",))
 
@@ -99,6 +101,21 @@ typescript_packages = [1]
 """)
 
             with self.assertRaisesRegex(ManifestError, r"typescript_packages must be list\[str\]"):
+                load_bundle_manifest(root)
+
+    def test_rejects_invalid_dependency_component_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(root / "bundle.toml", """
+[bundle]
+name = "bad"
+
+[[dependencies]]
+bundle = "extensions"
+components = ["../plugin-sdk"]
+""")
+
+            with self.assertRaisesRegex(ManifestError, "component must be relative"):
                 load_bundle_manifest(root)
 
 

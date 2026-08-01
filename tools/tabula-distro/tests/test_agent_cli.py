@@ -232,7 +232,6 @@ class AgentCliTests(unittest.TestCase):
             result = SimpleNamespace(
                 distro=SimpleNamespace(
                     lock=SimpleNamespace(distro="demo"),
-                    generation=SimpleNamespace(name="0002-refresh"),
                 )
             )
 
@@ -249,7 +248,6 @@ class AgentCliTests(unittest.TestCase):
                 None,
                 offline=False,
                 update=True,
-                keep_generations=5,
             )
 
     def test_install_no_start_does_not_read_kernel_config(self):

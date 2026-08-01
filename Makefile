@@ -231,7 +231,7 @@ agent-prepare:
 	else \
 		TABULA_HOME="$(AGENT_HOME)" bash scripts/install-dev.sh; \
 		$(MAKE) agent-write-gateway-config AGENT_PROFILE="$(AGENT_PROFILE)" AGENT_HOME="$(AGENT_HOME)" AGENT_KERNEL_URL="$(AGENT_KERNEL_URL)" AGENT_GATEWAY_WEB_PORT="$(AGENT_GATEWAY_WEB_PORT)"; \
-		if [ -d "$(AGENT_HOME)/tenants/$(AGENT_TENANT)" ] && [ ! -e "$(AGENT_HOME)/tenants/$(AGENT_TENANT)/install.lock.json" ]; then rm -rf "$(AGENT_HOME)/tenants/$(AGENT_TENANT)"; fi; \
+		if [ -d "$(AGENT_HOME)/tenants/$(AGENT_TENANT)" ] && ! "$(AGENT_VENV)/bin/python" -c 'import json, sys; value = json.load(open(sys.argv[1], encoding="utf-8")); raise SystemExit(0 if isinstance(value, dict) and value.get("version") == 2 else 1)' "$(AGENT_HOME)/tenants/$(AGENT_TENANT)/install.lock.json" 2>/dev/null; then rm -rf "$(AGENT_HOME)/tenants/$(AGENT_TENANT)"; fi; \
 		TABULA_HOME="$(AGENT_HOME)" TABULA_URL="$(AGENT_KERNEL_URL)" TABULA_SOURCE_ALIAS_TABULA_DISTRIB="local:$(LOCAL_TABULA_DISTRIB)" TABULA_SOURCE_ALIAS_TABULA_BUNDLES="local:$(LOCAL_TABULA_BUNDLES)" \
 		"$(AGENT_HOME)/bin/tabula-agent" --home "$(AGENT_HOME)" install --distro "$(AGENT_DISTRO)" --tenant "$(AGENT_TENANT)" --bind "$(CURDIR)" --values "$(AGENT_VALUES)" --update --replace-binding --no-start --non-interactive; \
 	fi

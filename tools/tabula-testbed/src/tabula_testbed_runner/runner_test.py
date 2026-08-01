@@ -93,7 +93,7 @@ class RunnerProtocolMarkerTests(unittest.TestCase):
         self.assertEqual(selected, ["test-fixtures"])
         self.assertEqual(component_map, {"test-fixtures": ["testbed-cold-python"]})
 
-    def test_lint_selection_rejects_unselected_bundle_dependency(self) -> None:
+    def test_lint_selection_resolves_unselected_bundle_dependency(self) -> None:
         with TemporaryDirectory() as raw:
             root = Path(raw)
             extensions = root / "extensions"
@@ -112,25 +112,25 @@ class RunnerProtocolMarkerTests(unittest.TestCase):
             manifest = {
                 "sets": {"empty": []},
                 "bundles": {
-                    "extensions": {"source": "source:bundles#path=extensions"},
                     "security": {"source": "source:bundles#path=security"},
                 },
             }
 
-            with self.assertRaises(SystemExit) as ctx:
-                lint_selection(
-                    manifest,
-                    {"bundles": f"local:{root}"},
-                    "empty",
-                    False,
-                    [],
-                    [],
-                    ["security:hook-approvals"],
-                    [test_path],
-                )
+            selected, component_map, roots = lint_selection(
+                manifest,
+                {"bundles": f"local:{root}"},
+                "empty",
+                False,
+                [],
+                [],
+                ["security:hook-approvals"],
+                [test_path],
+            )
+            self.assertEqual(selected, ["security", "extensions"])
+            self.assertEqual(component_map, {"security": ["hook-approvals"], "extensions": []})
+            self.assertEqual(set(roots), {"extensions", "security"})
 
-            self.assertIn("bundle 'security' depends on unselected bundle 'extensions'", str(ctx.exception))
-
+            manifest["bundles"]["extensions"] = {"source": "source:bundles#path=extensions"}
             selected, component_map, roots = lint_selection(
                 manifest,
                 {"bundles": f"local:{root}"},

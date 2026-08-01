@@ -14,7 +14,7 @@ from tabula_distro import paths
 from . import __version__
 from . import tenant_bindings as bindmod
 from . import config as cfg
-from . import generations as gens
+from . import host_service as hostservicemod
 from . import install as installmod
 from . import links
 from . import lock as lockmod
@@ -65,7 +65,6 @@ def main(argv: list[str] | None = None, *, prog: str = "tabula-distro") -> int:
         p_tenant_install.add_argument("--display-name", default="", help="local tenant display name")
         p_tenant_install.add_argument("--frozen", action="store_true", help="require cached sources; no network access")
         p_tenant_install.add_argument("--update", action="store_true", help="resolve latest revisions")
-        p_tenant_install.add_argument("--keep-generations", type=int, default=5)
         p_tenant_install.add_argument("--replace-binding", action="store_true", help="replace a directory binding owned by another tenant")
         p_tenant_install.set_defaults(func=_cmd_tenant_install)
 
@@ -92,15 +91,53 @@ def main(argv: list[str] | None = None, *, prog: str = "tabula-distro") -> int:
         p_tenant_unbind.set_defaults(func=_cmd_tenant_unbind)
     else:
         _add_distro_commands(sub)
+        _add_host_service_commands(sub)
 
     args = parser.parse_args(argv)
     home = Path(args.home).expanduser().resolve() if args.home else _default_home()
     home.mkdir(parents=True, exist_ok=True)
     try:
         return args.func(args, home)
-    except (installmod.InstallError, cfg.ConfigError, lockmod.LockError, reqmod.RequirementsError, bindmod.BindingError, tenantmod.TenantMaterializationError) as exc:
+    except (installmod.InstallError, hostservicemod.HostServiceError, cfg.ConfigError, lockmod.LockError, reqmod.RequirementsError, bindmod.BindingError, tenantmod.TenantMaterializationError) as exc:
         print(f"{prog}: {exc}", file=sys.stderr)
         return 1
+
+
+def _add_host_service_commands(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    service = sub.add_parser("host-service", help="manage external bundle host services")
+    commands = service.add_subparsers(dest="host_service_cmd", required=True)
+
+    reconcile = commands.add_parser("reconcile", help="install or upgrade declared host services")
+    reconcile.add_argument("--distro", default="", help="installed distro name (default: active)")
+    reconcile.add_argument("--id", default="", help="reconcile one host-service id")
+    reconcile.add_argument("--no-start", action="store_true", help="install without starting a stopped service")
+    reconcile.add_argument("--adapter", choices=("auto", "launchd", "process"), default="auto")
+    reconcile.set_defaults(func=_cmd_host_service_reconcile)
+
+    list_cmd = commands.add_parser("list", help="list materialized host services")
+    list_cmd.add_argument("--json", action="store_true")
+    list_cmd.set_defaults(func=_cmd_host_service_list)
+
+    status_cmd = commands.add_parser("status", help="show host-service status")
+    status_cmd.add_argument("id")
+    status_cmd.add_argument("--json", action="store_true")
+    status_cmd.set_defaults(func=_cmd_host_service_status)
+
+    for name, func in (
+        ("start", _cmd_host_service_start),
+        ("stop", _cmd_host_service_stop),
+        ("restart", _cmd_host_service_restart),
+    ):
+        command = commands.add_parser(name, help=f"{name} a host service")
+        command.add_argument("id")
+        if name != "stop":
+            command.add_argument("--adapter", choices=("auto", "launchd", "process"), default="auto")
+        command.set_defaults(func=func)
+
+    remove = commands.add_parser("remove", help="stop and remove a host service")
+    remove.add_argument("id")
+    remove.add_argument("--purge", action="store_true", help="also remove service-owned config and state")
+    remove.set_defaults(func=_cmd_host_service_remove)
 
 
 def _add_distro_commands(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -115,7 +152,6 @@ def _add_distro_commands(sub: argparse._SubParsersAction[argparse.ArgumentParser
                            help="update only the named bundle/skill/plugin/component (repeatable)")
     p_install.add_argument("--tenant", default="",
                            help="refresh runtime surface only for the named tenant")
-    p_install.add_argument("--keep-generations", type=int, default=5)
     p_install.set_defaults(func=_cmd_install)
 
     p_update = sub.add_parser("update", help="update pinned sources (alias for install --update)")
@@ -134,17 +170,11 @@ def _add_distro_commands(sub: argparse._SubParsersAction[argparse.ArgumentParser
                              help="update only the named bundle/skill/plugin/component (repeatable)")
     p_reinstall.add_argument("--tenant", default="",
                              help="refresh runtime surface only for the named tenant")
-    p_reinstall.add_argument("--keep-generations", type=int, default=5)
     p_reinstall.set_defaults(func=_cmd_reinstall)
 
     _add_use_command(sub, help_text="switch to a distro by reinstalling saved source or a local checkout")
 
-    p_rollback = sub.add_parser("rollback", help="switch to a previous generation")
-    p_rollback.add_argument("name", nargs="?", default="", help="distro name (default: active)")
-    p_rollback.add_argument("--to", type=int, default=None, help="specific generation number")
-    p_rollback.set_defaults(func=_cmd_rollback)
-
-    p_list = sub.add_parser("list", help="list installed distros and generations")
+    p_list = sub.add_parser("list", help="list installed distros")
     p_list.set_defaults(func=_cmd_list)
 
     p_lock = sub.add_parser("lock", help="print the lockfile of an installed distro as JSON")
@@ -171,11 +201,10 @@ def _cmd_tenant_install(args: argparse.Namespace, home: Path) -> int:
         display_name=args.display_name,
         offline=bool(args.frozen),
         update=bool(args.update),
-        keep_generations=args.keep_generations,
         replace_binding=bool(args.replace_binding),
     )
     print(f"installed tenant {args.id}")
-    print(f"  distro: {result.distro.lock.distro} ({result.distro.generation.name})")
+    print(f"  distro: {result.distro.lock.distro}")
     print(f"  tenant: {result.tenant_dir}")
     print(f"  lock:   {result.tenant_dir / 'install.lock.json'}")
     if result.materialized:
@@ -191,11 +220,10 @@ def _cmd_install(args: argparse.Namespace, home: Path) -> int:
         update=args.update,
         update_only=tuple(args.update_only),
         tenant=args.tenant or None,
-        keep_generations=args.keep_generations,
     )
-    if not _sync_runtime_config_for_active_distro(home, result.generation.path):
+    if not _sync_runtime_config_for_active_distro(home, result.distro_path):
         return 1
-    _print_summary(home, result.lock.distro, result.generation, result.lock, changed=result.changed)
+    _print_summary(home, result.lock.distro, result.lock, changed=result.changed)
     return 0
 
 
@@ -215,9 +243,9 @@ def _cmd_update(args: argparse.Namespace, home: Path) -> int:
         update=True,
         update_only=tuple(args.only),
     )
-    if not _sync_runtime_config_for_active_distro(home, result.generation.path):
+    if not _sync_runtime_config_for_active_distro(home, result.distro_path):
         return 1
-    _print_summary(home, result.lock.distro, result.generation, result.lock, changed=result.changed)
+    _print_summary(home, result.lock.distro, result.lock, changed=result.changed)
     return 0
 
 
@@ -237,11 +265,10 @@ def _cmd_reinstall(args: argparse.Namespace, home: Path) -> int:
         update=bool(args.update),
         update_only=tuple(args.update_only),
         tenant=args.tenant or None,
-        keep_generations=args.keep_generations,
     )
-    if not _sync_runtime_config_for_active_distro(home, result.generation.path):
+    if not _sync_runtime_config_for_active_distro(home, result.distro_path):
         return 1
-    _print_summary(home, result.lock.distro, result.generation, result.lock, changed=result.changed)
+    _print_summary(home, result.lock.distro, result.lock, changed=result.changed)
     return 0
 
 
@@ -270,11 +297,10 @@ def _cmd_use(args: argparse.Namespace, home: Path) -> int:
         update=bool(args.update),
         update_only=tuple(args.update_only),
         tenant=args.tenant or None,
-        keep_generations=args.keep_generations,
     )
-    if not _sync_runtime_config_for_active_distro(home, result.generation.path):
+    if not _sync_runtime_config_for_active_distro(home, result.distro_path):
         return 1
-    _print_summary(home, result.lock.distro, result.generation, result.lock, changed=result.changed)
+    _print_summary(home, result.lock.distro, result.lock, changed=result.changed)
     return 0
 
 
@@ -289,18 +315,7 @@ def _add_use_command(sub: argparse._SubParsersAction[argparse.ArgumentParser], *
                        help="update only the named bundle/skill/plugin/component (repeatable)")
     p_use.add_argument("--tenant", default="",
                        help="refresh runtime surface only for the named tenant")
-    p_use.add_argument("--keep-generations", type=int, default=5)
     p_use.set_defaults(func=_cmd_use)
-
-
-def _cmd_rollback(args: argparse.Namespace, home: Path) -> int:
-    distro_name = args.name or _active_name(home)
-    if not distro_name:
-        print("tabula-distro: no active distro; pass a name", file=sys.stderr)
-        return 2
-    target = installmod.rollback(home, distro_name, to=args.to)
-    print(f"{distro_name}: switched to generation {target.number} ({target.name})")
-    return 0
 
 
 def _cmd_list(args: argparse.Namespace, home: Path) -> int:
@@ -313,11 +328,8 @@ def _cmd_list(args: argparse.Namespace, home: Path) -> int:
     for entry in sorted(distrib.iterdir()):
         if entry.name == "active" or not entry.is_dir():
             continue
-        gens_list = gens.list_generations(home, entry.name)
-        current = gens.current_generation(home, entry.name)
         marker = "*" if entry.name == active else " "
-        cur_label = f"gen {current.number} ({current.name})" if current else "(no current)"
-        rows.append(f"  {marker} {entry.name:24s} {cur_label}  [{len(gens_list)} generations]")
+        rows.append(f"  {marker} {entry.name}")
     if not rows:
         print("(no distros installed)")
     else:
@@ -331,7 +343,7 @@ def _cmd_lock(args: argparse.Namespace, home: Path) -> int:
     if not distro_name:
         print("tabula-distro: no active distro; pass a name", file=sys.stderr)
         return 2
-    path = gens.distro_root(home, distro_name) / "distro.lock.json"
+    path = home / "distrib" / distro_name / "distro.lock.json"
     lock = lockmod.load(path)
     if lock is None:
         print(f"tabula-distro: no lockfile at {path}", file=sys.stderr)
@@ -353,7 +365,14 @@ def _cmd_gc(args: argparse.Namespace, home: Path) -> int:
             lock = lockmod.load(lock_path)
             if lock is None:
                 continue
-            for lck in list(lock.bundles.values()) + list(lock.skills.values()) + list(lock.plugins.values()) + list(lock.apps.values()):
+            entries = (
+                list(lock.bundles.values())
+                + list(lock.skills.values())
+                + list(lock.plugins.values())
+                + list(lock.apps.values())
+                + list(lock.host_services.values())
+            )
+            for lck in entries:
                 if lck.resolved_sha:
                     keep.add(lck.resolved_sha)
     removed = cache.gc(keep)
@@ -400,6 +419,81 @@ def _cmd_tenant_unbind(args: argparse.Namespace, home: Path) -> int:
     return 0
 
 
+def _cmd_host_service_reconcile(args: argparse.Namespace, home: Path) -> int:
+    distro_name = args.distro or _active_name(home)
+    if not distro_name:
+        raise hostservicemod.HostServiceError("no active distro; pass --distro")
+    distro_path = home / "distrib" / distro_name
+    if not distro_path.is_dir():
+        raise hostservicemod.HostServiceError(f"installed distro not found: {distro_name}")
+    receipts = hostservicemod.reconcile(
+        home,
+        distro_path,
+        service_id=args.id or None,
+        start=not bool(args.no_start),
+        adapter=args.adapter,
+    )
+    if not receipts:
+        print(f"distro {distro_name} declares no host services")
+        return 0
+    for receipt in receipts:
+        print(f"{receipt.get('status')}: {receipt.get('release', '')}")
+    return 0
+
+
+def _cmd_host_service_list(args: argparse.Namespace, home: Path) -> int:
+    services = hostservicemod.list_services(home)
+    if args.json:
+        print(json.dumps(services, indent=2, sort_keys=True))
+        return 0
+    if not services:
+        print("(no host services)")
+        return 0
+    for service in services:
+        state = "running" if service["running"] else "stopped"
+        print(f"{service['id']}: {state} release={service['release'] or '-'} adapter={service['adapter'] or '-'}")
+    return 0
+
+
+def _cmd_host_service_status(args: argparse.Namespace, home: Path) -> int:
+    service = hostservicemod.status(home, args.id)
+    if args.json:
+        print(json.dumps(service, indent=2, sort_keys=True))
+    else:
+        print(f"{service['id']}: {'running' if service['running'] else 'stopped'}")
+        print(f"  installed: {str(service['installed']).lower()}")
+        print(f"  release:   {service['release'] or '-'}")
+        print(f"  adapter:   {service['adapter'] or '-'}")
+        print(f"  pid:       {service['pid'] or '-'}")
+        if service.get("ownership_mismatch"):
+            print("  warning:   recorded pid is live but does not match active release")
+    return 0 if service["installed"] else 1
+
+
+def _cmd_host_service_start(args: argparse.Namespace, home: Path) -> int:
+    receipt = hostservicemod.start(home, args.id, adapter=args.adapter)
+    print(f"{args.id}: {receipt['status']}")
+    return 0
+
+
+def _cmd_host_service_stop(args: argparse.Namespace, home: Path) -> int:
+    receipt = hostservicemod.stop(home, args.id)
+    print(f"{args.id}: {receipt['status']}")
+    return 0
+
+
+def _cmd_host_service_restart(args: argparse.Namespace, home: Path) -> int:
+    receipt = hostservicemod.restart(home, args.id, adapter=args.adapter)
+    print(f"{args.id}: {receipt['status']}")
+    return 0
+
+
+def _cmd_host_service_remove(args: argparse.Namespace, home: Path) -> int:
+    receipt = hostservicemod.remove(home, args.id, purge=bool(args.purge))
+    print(f"{args.id}: {receipt['status']}")
+    return 0
+
+
 def _active_name(home: Path) -> str:
     active = home / "distrib" / "active"
     target = links.resolve_reference(active)
@@ -414,7 +508,7 @@ def _active_source(home: Path, distro_name: str) -> str | None:
     Reads it back from the lockfile written by a previous ``install``. Returns
     ``None`` if no lockfile exists yet.
     """
-    lock_path = gens.distro_root(home, distro_name) / "distro.lock.json"
+    lock_path = home / "distrib" / distro_name / "distro.lock.json"
     lock = lockmod.load(lock_path)
     if lock is None:
         return None
@@ -505,11 +599,11 @@ def _sync_runtime_config_for_active_distro(home: Path, boot_path: Path) -> bool:
     return True
 
 
-def _print_summary(home: Path, distro_name: str, gen, lock: lockmod.Lock, *, changed: bool = True) -> None:
+def _print_summary(home: Path, distro_name: str, lock: lockmod.Lock, *, changed: bool = True) -> None:
     if changed:
-        print(f"installed distro {distro_name} as generation {gen.number} ({gen.name})")
+        print(f"installed distro {distro_name}")
     else:
-        print(f"distro {distro_name} unchanged at generation {gen.number} ({gen.name})")
+        print(f"distro {distro_name} unchanged")
     if lock.bundles:
         print("  bundles:")
         for name, entry in sorted(lock.bundles.items()):
@@ -526,7 +620,11 @@ def _print_summary(home: Path, distro_name: str, gen, lock: lockmod.Lock, *, cha
         print("  apps:")
         for name, entry in sorted(lock.apps.items()):
             print(f"    {name:20s} {_describe_lock(entry)}")
-    if not lock.bundles and not lock.skills and not lock.plugins and not lock.apps:
+    if lock.host_services:
+        print("  host services:")
+        for name, entry in sorted(lock.host_services.items()):
+            print(f"    {name:20s} {_describe_lock(entry)} sha256={entry.artifact_sha256 or '-'}")
+    if not lock.bundles and not lock.skills and not lock.plugins and not lock.apps and not lock.host_services:
         print("  (no external sources)")
 
 

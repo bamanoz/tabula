@@ -114,9 +114,12 @@ class TestbedClient:
         self.connect()
         return self.join(session, tenant_id=tenant_id)
 
-    def call_tool(self, name: str, input: dict[str, Any] | None = None, *, timeout: float = 10) -> ToolResult:
+    def call_tool(self, name: str, input: dict[str, Any] | None = None, *, timeout: float = 10, meta: dict[str, Any] | None = None) -> ToolResult:
         call_id = f"tb-{uuid.uuid4().hex}"
-        self._send({"type": "request", "topic": "tool.call", "id": call_id, "name": name, "input": input or {}})
+        message = {"type": "request", "topic": "tool.call", "id": call_id, "name": name, "input": input or {}}
+        if meta:
+            message["meta"] = meta
+        self._send(message)
         try:
             msg = self.wait_for(lambda m: m.get("type") == "reply" and m.get("topic") == "tool.result" and m.get("id") == call_id, timeout=timeout)
         except Exception as exc:

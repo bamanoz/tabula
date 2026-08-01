@@ -24,6 +24,7 @@ Schema:
 
     [[dependencies]]
     bundle = "extensions"
+    components = ["sessions"]
     python_packages = ["tabula_session_sdk"]
     typescript_packages = ["@tabula/skill-sdk"]
 
@@ -80,6 +81,7 @@ class TypeScriptPackageExport:
 @dataclass(frozen=True)
 class BundleDependency:
     bundle: str
+    components: tuple[str, ...] = ()
     python_packages: tuple[str, ...] = ()
     typescript_packages: tuple[str, ...] = ()
 
@@ -219,11 +221,27 @@ def _parse_dependencies(manifest_path: Path, raw: object) -> tuple[BundleDepende
         bundle = str(entry.get("bundle") or "").strip()
         if not bundle:
             raise ManifestError(f"{manifest_path}: dependency entry missing bundle")
+        components = entry.get("components") or []
+        if not isinstance(components, list) or not all(isinstance(item, str) and item.strip() for item in components):
+            raise ManifestError(f"{manifest_path}: dependency {bundle!r} components must be list[str]")
+        normalized_components: list[str] = []
+        for component in components:
+            rel = Path(component.strip())
+            if rel.is_absolute() or ".." in rel.parts:
+                raise ManifestError(
+                    f"{manifest_path}: dependency {bundle!r} component must be relative and stay inside bundle: {component!r}"
+                )
+            normalized_components.append(rel.as_posix())
         pkgs = entry.get("python_packages") or []
         if not isinstance(pkgs, list) or not all(isinstance(item, str) and item.strip() for item in pkgs):
             raise ManifestError(f"{manifest_path}: dependency {bundle!r} python_packages must be list[str]")
         ts_pkgs = entry.get("typescript_packages") or []
         if not isinstance(ts_pkgs, list) or not all(isinstance(item, str) and item.strip() for item in ts_pkgs):
             raise ManifestError(f"{manifest_path}: dependency {bundle!r} typescript_packages must be list[str]")
-        deps.append(BundleDependency(bundle=bundle, python_packages=tuple(str(item).strip() for item in pkgs), typescript_packages=tuple(str(item).strip() for item in ts_pkgs)))
+        deps.append(BundleDependency(
+            bundle=bundle,
+            components=tuple(normalized_components),
+            python_packages=tuple(str(item).strip() for item in pkgs),
+            typescript_packages=tuple(str(item).strip() for item in ts_pkgs),
+        ))
     return tuple(deps)

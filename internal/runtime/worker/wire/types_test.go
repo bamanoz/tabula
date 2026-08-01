@@ -14,7 +14,7 @@ func TestWorkerFrameRoundTripEveryType(t *testing.T) {
 	frames := []any{
 		&WorkerInit{Op: OpInit, KernelID: "main", TenantID: "default", TargetID: "timer", Env: map[string]string{"TABULA_TENANT_ID": "default"}},
 		&WorkerInitAck{Op: OpInitAck, Ready: true, Tools: []runtimewire.ToolSpec{{Name: "run"}}, Subscriptions: []runtimewire.HookSpec{{Event: "before_tool_call"}}},
-		&WorkerCall{Op: OpCall, CallID: "call-1", Tool: "run", Args: []byte(`{"x":1}`)},
+		&WorkerCall{Op: OpCall, CallID: "call-1", Tool: "run", Args: []byte(`{"x":1}`), Meta: []byte(`{"actor":"agent/build"}`)},
 		&WorkerResult{Op: OpResult, CallID: "call-1", OK: true, Data: []byte(`{"ok":true}`)},
 		&WorkerEvent{Op: OpEvent, CallID: "hook-1", Event: "before_tool_call", ReplyMode: ReplyModeModifying, Data: []byte(`{"tool":"run"}`)},
 		&WorkerEventReply{Op: OpEventReply, CallID: "hook-1", Action: runtimewire.HookActionRewrite, Data: []byte(`{"tool":"safe_run"}`)},

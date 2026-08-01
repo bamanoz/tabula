@@ -66,6 +66,7 @@ type InvokeReq struct {
 	TenantID          string
 	SessionID         string
 	TurnCorrelationID string
+	Meta              json.RawMessage
 	Target            Target
 	Tool              string
 	Args              json.RawMessage

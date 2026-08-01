@@ -33,21 +33,20 @@ Optional additions (`install.sh`, docs) are fine. A distro never embeds
 bundle source — it declares dependencies in `distro.toml` and the installer
 fetches them.
 
-At install time, the distro is copied into:
+At install time, distro is transactionally replaced at:
 
 ```text
-$TABULA_HOME/distrib/<name>/<generation>/
+$TABULA_HOME/distrib/<name>/
 ```
 
-and `$TABULA_HOME/distrib/<name>/current` points at the latest generation. The
-active distro is selected via `$TABULA_HOME/distrib/active`, and Tabula fans out
-the flat runtime surface:
+`$TABULA_HOME/distrib/active` points at selected installed distro, and Tabula
+fans out flat runtime surface:
 
 ```text
 $TABULA_HOME/config/kernel.toml
-$TABULA_HOME/templates/ -> distrib/active/current/templates/*
-$TABULA_HOME/skills/    -> distrib/active/current/skills/* + bundle skills
-$TABULA_HOME/plugins/   -> distrib/active/current/plugins/* + bundle plugins
+$TABULA_HOME/templates/ -> distrib/active/templates/*
+$TABULA_HOME/skills/    -> distrib/active/skills/* + bundle skills
+$TABULA_HOME/plugins/   -> distrib/active/plugins/* + bundle plugins
 ```
 
 `$TABULA_HOME/skills` is distro-managed. Distros that want compatibility with
@@ -212,21 +211,25 @@ Smallest extension units.
 - **Plugin** (`plugin.toml`): runtime worker process; subscribes to events;
   owns executable tools; has state. Examples: `mcp`,
   `hook-permissions`, `drivers/driver`, `cron`, `mempalace`, `code/git`.
+- **Host service** (`service.toml`): host-global executable managed outside the
+  kernel/plugin/tenant process tree through trusted installer lifecycle code.
+  It has generic readiness and shutdown mechanics, not product policy.
 
 See [SKILL_AUTHORING.md](SKILL_AUTHORING.md) and
 [PLUGIN_AUTHORING.md](PLUGIN_AUTHORING.md).
 
 ### Bundle
 
-Reusable collection of skills and plugins, kept in
+Reusable collection of skills, plugins, apps, SDK exports, and host services, kept in
 [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles).
 
 - referenced from a distro via `distro.toml`
 - materialized into the flat runtime surface at install time
 - examples: `extensions`, `security`, `workspace`, `drivers`, `mempalace`, `caveman`, `codegraph`
 
-Bundles are capability packs — they may contain a mix of skills and plugins
-on the same level.
+Bundles are capability packs. Component manifests identify each top-level
+component; `service.toml` components are composed into the distro and activated
+separately by trusted host-service lifecycle commands.
 
 ### Distro
 
@@ -256,11 +259,11 @@ What this does:
    plugins
 3. resolve every bundle declared in `distro.toml` (`git+`, `local:`, or
    `source:<alias>` sources; pinned via lockfile)
-4. lay everything out under `$TABULA_HOME/distrib/<name>/<generation>/`
-5. update `$TABULA_HOME/distrib/<name>/current` and (if requested)
-   `$TABULA_HOME/distrib/active`
+4. compose and validate transaction staging under `$TABULA_HOME/run/install/<name>/`
+5. atomically replace `$TABULA_HOME/distrib/<name>/` and update
+   `$TABULA_HOME/distrib/active` when requested
 6. rebuild `config/kernel.toml`, `config/runtime.toml`, templates, skills, and
-   plugins surfaces
+   plugins surfaces; restore previous tree if replacement fails
 
 For development, clone `tabula-distrib` next to this repo and run
 `bash scripts/install-dev.sh` (installs `tabula` + `tabula-runtime`), then

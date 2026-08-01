@@ -56,7 +56,9 @@ mkdir -p "$TABULA_HOME" "$BIN_DIR"
 # Seed config only on a fresh install; an existing tree is entirely user-owned.
 if [ ! -e "$TABULA_HOME/config" ]; then
   mkdir -p "$TABULA_HOME/config"
-  cp "$REPO_ROOT/config/global.toml" "$TABULA_HOME/config/global.toml"
+  if [ -f "$REPO_ROOT/config/global.toml" ]; then
+    cp "$REPO_ROOT/config/global.toml" "$TABULA_HOME/config/global.toml"
+  fi
 fi
 
 # Optional service unit templates for host service managers. Agent/dev installs do

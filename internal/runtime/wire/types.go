@@ -431,6 +431,8 @@ type Invoke struct {
 	SessionID string `json:"session_id,omitempty"`
 	// TurnCorrelationID correlates all events within one logical agent turn.
 	TurnCorrelationID string `json:"turn_correlation_id,omitempty"`
+	// Meta carries opaque trusted call context separately from tool arguments.
+	Meta json.RawMessage `json:"meta,omitempty"`
 	// Target is the skill or plugin target object.
 	Target Target `json:"target"`
 	// Tool is the tool name within Target.

@@ -30,6 +30,11 @@ all = [
   "immune",
   "rtk",
   "subagents",
+  "continuity",
+  "activity",
+  "reflection",
+  "initiative",
+  "evolution",
   "test-fixtures",
 ]
 
@@ -87,13 +92,53 @@ source = "source:tabula-bundles#path=rtk"
 [bundles.subagents]
 source = "source:tabula-bundles#path=subagents"
 
+[bundles.continuity]
+source = "source:tabula-bundles#path=continuity"
+
+[bundles.activity]
+source = "source:tabula-bundles#path=activity"
+
+[bundles.reflection]
+source = "source:tabula-bundles#path=reflection"
+
+[bundles.initiative]
+source = "source:tabula-bundles#path=initiative"
+
+[bundles.evolution]
+source = "source:tabula-bundles#path=evolution"
+
+[bundles.subagent-sdk-fixture]
+source = "source:tabula-bundles#path=subagent-sdk-fixture"
+
+[bundles.task-scheduling-sdk-fixture]
+source = "source:tabula-bundles#path=task-scheduling-sdk-fixture"
+
+[bundles.artifact-sdk-fixture]
+source = "source:tabula-bundles#path=artifact-sdk-fixture"
+
 [bundles.test-fixtures]
 source = "source:tabula-bundles#path=test-fixtures"
+
+[bundles.dependency-fixture]
+source = "source:tabula-bundles#path=dependency-fixture"
+
+[bundles.host-service-fixture]
+source = "source:tabula-bundles#path=host-service-fixture"
 
 [suites.baseline]
 set = "baseline"
 tests = ["tests/smoke.py"]
 runtime_tenants = ["*"]
+
+[suites.bundle-dependency-closure]
+set = "empty"
+bundles = ["dependency-fixture"]
+tests = ["tests/test_bundle_dependency_closure.py"]
+
+[suites.host-service]
+set = "empty"
+bundles = ["host-service-fixture"]
+tests = ["tests/test_host_service.py"]
 
 [suites.plugin-fixture-execution]
 set = "extensions"
@@ -119,6 +164,32 @@ runtime_tenants = ["*"]
 [suites.multi-distro-tenants]
 set = "empty"
 tests = ["tests/test_multi_distro_tenants.py"]
+runtime_tenants = ["*"]
+
+[suites.continuity]
+set = "empty"
+bundles = ["continuity"]
+tests = ["tests/test_continuity.py"]
+
+[suites.activity]
+set = "empty"
+bundles = ["activity"]
+tests = ["tests/test_activity.py"]
+
+[suites.reflection]
+set = "empty"
+bundles = ["reflection"]
+tests = ["tests/test_reflection.py"]
+
+[suites.initiative]
+set = "empty"
+bundles = ["initiative"]
+tests = ["tests/test_initiative.py"]
+
+[suites.evolution]
+set = "empty"
+bundles = ["evolution"]
+tests = ["tests/test_evolution.py"]
 runtime_tenants = ["*"]
 
 [suites.tenant-installer-fanout]
@@ -161,6 +232,12 @@ runtime_tenants = ["*"]
 set = "workspace"
 components = ["workspace:exec"]
 tests = ["tests/test_exec_plugin.py"]
+runtime_tenants = ["*"]
+
+[suites.vcs]
+set = "workspace"
+components = ["security:hook-approvals", "security:hook-permissions", "workspace:vcs"]
+tests = ["tests/test_vcs.py"]
 runtime_tenants = ["*"]
 
 [suites.mcp]
@@ -233,7 +310,7 @@ tests = ["tests/test_deferred_tools.py"]
 [suites.tool-result-store]
 set = "empty"
 bundles = ["extensions"]
-components = ["async:tool-result-store"]
+components = ["async:tool-result-store", "test-fixtures:testbed-cold-python"]
 tests = ["tests/test_tool_result_store.py"]
 
 [suites.mempalace]
@@ -259,6 +336,21 @@ set = "empty"
 bundles = ["extensions", "async", "collaboration"]
 components = ["collaboration:sessions", "drivers:driver", "workspace:exec", "subagents:subagent", "subagents:subagent-acp", "subagents:subagents"]
 tests = ["tests/test_subagents.py"]
+
+[suites.subagents-sdk]
+set = "empty"
+bundles = ["subagent-sdk-fixture"]
+tests = ["tests/test_subagents_sdk.py"]
+
+[suites.task-scheduling-sdk]
+set = "empty"
+bundles = ["task-scheduling-sdk-fixture"]
+tests = ["tests/test_task_scheduling_sdk.py"]
+
+[suites.artifact-sdk]
+set = "empty"
+bundles = ["artifact-sdk-fixture"]
+tests = ["tests/test_artifact_sdk.py"]
 
 [suites.compaction]
 set = "empty"

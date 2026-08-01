@@ -103,6 +103,8 @@ type WorkerCall struct {
 	SessionID string `json:"session_id,omitempty"`
 	// TurnCorrelationID correlates all events within one logical agent turn.
 	TurnCorrelationID string `json:"turn_correlation_id,omitempty"`
+	// Meta carries opaque trusted call context separately from tool arguments.
+	Meta json.RawMessage `json:"meta,omitempty"`
 }
 
 // WorkerResult is the terminal worker response for one call.

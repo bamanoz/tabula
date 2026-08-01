@@ -2,92 +2,90 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
-import subprocess
-import sys
 import unittest
 
 from tabula_testbed import TestbedClient
 
 
-class CronPluginSmoke(unittest.TestCase):
+class SchedulePluginSmoke(unittest.TestCase):
     url = "ws://localhost:8089/ws"
     tabula_home = ""
 
-    def make_client(self, name: str, session: str = "testbed-cron") -> TestbedClient:
+    def make_client(self, name: str, session: str = "testbed-schedule") -> TestbedClient:
         client = TestbedClient(self.url, name=name)
         client.connect_join(session)
         return client
 
-    def test_cron_is_plugin_and_manages_jobs(self):
+    def test_schedule_is_plugin_and_manages_canonical_records(self) -> None:
         home = Path(self.tabula_home)
         self.assertFalse((home / "skills" / "cron").exists(), "cron must not be installed as a skill")
         self.assertTrue((home / "plugins" / "cron" / "plugin.toml").is_file(), "cron plugin manifest missing")
 
-        with self.make_client("testbed-cron-tools") as client:
-            client.wait_tools({"cron_add", "cron_list", "cron_remove", "cron_sync"}, session="testbed-cron")
-            add = client.call_tool("cron_add", {
-                "cron": "* * * * *",
-                "task": "hello cron",
-                "id": "testbed-cron-job",
-                "session": "testbed-cron",
-                "once": True,
+        tools = {"schedule_put", "schedule_list", "schedule_pause", "schedule_resume", "schedule_remove"}
+        with self.make_client("testbed-schedule-tools") as client:
+            client.wait_tools(tools, session="testbed-schedule")
+            created = client.call_tool("schedule_put", {
+                "id": "testbed-schedule-job",
+                "trigger": {"type": "cron", "expr": "0 9 * * *"},
+                "payload": {"message": "hello schedule"},
+                "timezone": "UTC",
             }).json()
-            self.assertTrue(add["ok"], add)
-            listed = client.call_tool("cron_list", {}).json()
-            ids = {job["id"] for job in listed.get("jobs", [])}
-            self.assertIn("testbed-cron-job", ids)
-            removed = client.call_tool("cron_remove", {"id": "testbed-cron-job"}).json()
+            self.assertTrue(created["ok"], created)
+            record = created["schedule"]
+            self.assertEqual(record["payload"]["session"], "testbed-schedule")
+            for legacy in ("cron", "task", "session", "once"):
+                self.assertNotIn(legacy, record)
+
+            listed = client.call_tool("schedule_list", {}).json()
+            self.assertIn("testbed-schedule-job", {job["id"] for job in listed.get("schedules", [])})
+            paused = client.call_tool("schedule_pause", {"id": "testbed-schedule-job"}).json()
+            self.assertTrue(paused["schedule"]["paused"])
+            resumed = client.call_tool("schedule_resume", {"id": "testbed-schedule-job"}).json()
+            self.assertFalse(resumed["schedule"]["paused"])
+            removed = client.call_tool("schedule_remove", {"id": "testbed-schedule-job"}).json()
             self.assertTrue(removed["ok"], removed)
 
-    def test_cron_plugin_scheduler_fires_messages(self):
-        receiver = self.make_client("testbed-cron-receiver")
-        sender = self.make_client("testbed-cron-sender")
+    def test_schedule_runner_delivers_due_one_shot(self) -> None:
+        receiver = self.make_client("testbed-schedule-receiver")
+        sender = self.make_client("testbed-schedule-sender")
+        schedule_id = "testbed-schedule-fire"
         try:
-            sender.wait_tools({"cron_add"}, session="testbed-cron")
-            add = sender.call_tool("cron_add", {
-                "cron": "* * * * *",
-                "task": "scheduled hello",
-                "id": "testbed-cron-fire",
-                "session": "testbed-cron",
-                "once": True,
+            sender.wait_tools({"schedule_put", "schedule_remove"}, session="testbed-schedule")
+            due = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+            created = sender.call_tool("schedule_put", {
+                "id": schedule_id,
+                "trigger": {"type": "at", "at": due},
+                "payload": {"message": "scheduled hello", "session": "testbed-schedule"},
+                "retry": {"max_attempts": 2, "backoff_seconds": 0},
             }).json()
-            self.assertTrue(add["ok"], add)
-            cron_runner = Path(self.tabula_home) / "plugins" / "cron" / "run.py"
-            python = Path(self.tabula_home) / ".venv" / "bin" / "python3"
-            if not python.is_file():
-                python = Path(sys.executable)
-            env = os.environ.copy()
-            env.update({"TABULA_HOME": self.tabula_home, "TABULA_URL": self.url})
-            subprocess.run(
-                [str(python), str(cron_runner), "fire", "--id", "testbed-cron-fire", "--task", "scheduled hello", "--session", "testbed-cron"],
-                env=env,
-                check=True,
-            )
-            msg = receiver.recv(type="message.user", timeout=10)
+            self.assertTrue(created["ok"], created)
+
+            msg = receiver.recv(type="message.user", timeout=15)
             data = msg.get("data") or {}
             meta = msg.get("meta") or data.get("meta") or {}
-            self.assertEqual(msg.get("id"), "testbed-cron-fire")
-            self.assertIn('<cron_job id="testbed-cron-fire"', data.get("text", ""))
+            self.assertIn('<schedule id="testbed-schedule-fire"', data.get("text", ""))
             self.assertIn("scheduled hello", data.get("text", ""))
-            self.assertEqual(meta.get("source"), "cron")
-            self.assertEqual(meta.get("job_id"), "testbed-cron-fire")
+            self.assertEqual(meta.get("source"), "schedule")
+            self.assertEqual(meta.get("schedule_id"), schedule_id)
+            self.assertTrue(meta.get("delivery_id"))
         finally:
-            sender.call_tool("cron_remove", {"id": "testbed-cron-fire"})
+            sender.call_tool("schedule_remove", {"id": schedule_id})
             sender.close()
             receiver.close()
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run cron testbed smoke tests")
+    parser = argparse.ArgumentParser(description="Run durable schedule testbed smoke tests")
     parser.add_argument("--url", default="ws://localhost:8089/ws")
     parser.add_argument("--observer-url", default="http://127.0.0.1:8091/metrics")
     parser.add_argument("--home", default=os.environ.get("TABULA_HOME", ""))
     args = parser.parse_args()
-    CronPluginSmoke.url = args.url
-    CronPluginSmoke.tabula_home = args.home
-    result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(CronPluginSmoke))
+    SchedulePluginSmoke.url = args.url
+    SchedulePluginSmoke.tabula_home = args.home
+    result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(SchedulePluginSmoke))
     return 0 if result.wasSuccessful() else 1
 
 

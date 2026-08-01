@@ -14,7 +14,7 @@ class RuntimeConfigError(RuntimeError):
 def sync_for_distro(home: Path, distro_path: Path) -> Path:
     distro_dir = _distro_dir(distro_path)
     if not distro_dir.is_dir():
-        raise RuntimeConfigError(f"distro generation does not exist at {distro_dir}")
+        raise RuntimeConfigError(f"installed distro does not exist at {distro_dir}")
     plugin_dirs = [str(distro_dir / "plugins")]
     distro = distro_metadata(home, distro_dir)
     write_kernel_config(home, url=os.environ.get("TABULA_URL", "ws://localhost:8089/ws"))
@@ -125,7 +125,7 @@ def write(home: Path, plugin_dirs: list[str], *, distro: dict[str, str] | None =
         # The trust check (kernel-side) reads these two keys. Active is a
         # human-readable id ("code-immune") and dir points at the distro
         # source tree the SHA is computed over. Both come from the
-        # installer because only it knows which generation is active.
+        # installer because only it knows which distro is active.
         distro_table = tomlkit.table()
         distro_table["active"] = distro["active"]
         distro_table["dir"] = distro["dir"]
@@ -151,20 +151,9 @@ def write_python_runtime(doc, *, executable: str | Path | None = None) -> None:
 
 
 def distro_metadata(home: Path, distro_dir: Path) -> dict[str, str]:
-    """Resolve distro id and source directory from a generation path.
-
-    The installer lays out generations at
-    ``$TABULA_HOME/distrib/<distro>/generations/<gen>``. We trust the
-    generation directory as the active distro tree and lift the distro id from
-    two levels up.
-    """
+    """Resolve distro id and source directory from an installed distro path."""
     distro_dir = distro_dir.expanduser().resolve()
-    parent = distro_dir.parent
-    if parent.name == "generations":
-        active = parent.parent.name
-    else:
-        active = parent.name
-    return {"active": active, "dir": str(distro_dir)}
+    return {"active": distro_dir.name, "dir": str(distro_dir)}
 
 
 def _string_array(values: list[str]):

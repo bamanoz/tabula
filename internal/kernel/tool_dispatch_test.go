@@ -69,13 +69,14 @@ func TestHandleDynamicTool_RuntimeSourceInvokesAttachedRuntime(t *testing.T) {
 	}
 	hub.sessions.GetOrCreate("s1", "alpha").AddClient(c.name)
 
-	hub.tools.handleDynamicTool("alpha", "s1", "tid-rt", "mcp__echo", json.RawMessage(`{}`), "")
+	meta := json.RawMessage(`{"actor":"agent/build"}`)
+	hub.tools.handleDynamicToolWithMeta("alpha", "s1", "tid-rt", "mcp__echo", json.RawMessage(`{}`), meta, "")
 	msg := waitForMessage(t, c.recvCh)
 	if !isToolResult(msg) || msg.Output != "ok" {
 		t.Fatalf("unexpected runtime tool result: %+v", msg)
 	}
 	recorded := rc.RecordedInvokes()
-	if len(recorded) != 1 || recorded[0].TenantID != "alpha" || recorded[0].Tool != "mcp__echo" || !sameRuntimeTarget(recorded[0].Target, target) {
+	if len(recorded) != 1 || recorded[0].TenantID != "alpha" || recorded[0].Tool != "mcp__echo" || string(recorded[0].Meta) != string(meta) || !sameRuntimeTarget(recorded[0].Target, target) {
 		t.Fatalf("unexpected runtime invoke record: %+v", recorded)
 	}
 }

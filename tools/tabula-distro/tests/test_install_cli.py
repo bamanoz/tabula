@@ -75,7 +75,7 @@ class InstallCliTests(unittest.TestCase):
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 code = install_cli.main(["--home", str(home), "distro", "reinstall", "demo"])
             self.assertEqual(code, 0, stderr.getvalue())
-            installed_template = (home / "distrib" / "demo" / "current" / "templates" / "SYSTEM.md").read_text(encoding="utf-8")
+            installed_template = (home / "distrib" / "demo" / "templates" / "SYSTEM.md").read_text(encoding="utf-8")
             self.assertEqual(installed_template, "system v2\n")
 
     def test_tabula_install_distro_reinstall_defaults_to_active(self):
@@ -95,7 +95,7 @@ class InstallCliTests(unittest.TestCase):
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 code = install_cli.main(["--home", str(home), "distro", "reinstall"])
             self.assertEqual(code, 0, stderr.getvalue())
-            installed_template = (home / "distrib" / "demo" / "current" / "templates" / "SYSTEM.md").read_text(encoding="utf-8")
+            installed_template = (home / "distrib" / "demo" / "templates" / "SYSTEM.md").read_text(encoding="utf-8")
             self.assertEqual(installed_template, "system v2\n")
 
     def test_tabula_install_distro_use_discovers_sibling_checkout(self):

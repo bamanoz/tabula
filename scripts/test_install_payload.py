@@ -30,7 +30,7 @@ def _snapshot(root: Path) -> dict[str, bytes]:
 
 
 class InstallPayloadTests(unittest.TestCase):
-    def test_release_installer_preserves_installed_generations(self) -> None:
+    def test_release_installer_preserves_installed_distros(self) -> None:
         installer = (ROOT / "scripts" / "install.sh").read_text(encoding="utf-8")
 
         self.assertNotIn('"$TABULA_HOME/distrib"', installer)

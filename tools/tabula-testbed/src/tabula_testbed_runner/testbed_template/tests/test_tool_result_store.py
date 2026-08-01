@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 from pathlib import Path
+import re
 import unittest
 
 from tabula_testbed import TestbedClient
@@ -14,51 +14,39 @@ class ToolResultStorePluginSmoke(unittest.TestCase):
     url = "ws://localhost:8089/ws"
     tabula_home = ""
 
-    def make_client(self, name: str, session: str) -> TestbedClient:
-        client = TestbedClient(self.url, name=name)
-        client.connect_join(session)
-        return client
-
-    def test_tool_result_store_plugin_is_installed_and_reads_bounded_chunks(self):
+    def test_installed_hook_materializes_and_reads_large_tool_result(self) -> None:
         home = Path(self.tabula_home)
-        self.assertFalse((home / "skills" / "tool-result-store").exists(), "tool-result-store must not be installed as a skill")
-        self.assertTrue((home / "plugins" / "tool-result-store" / "plugin.toml").is_file(), "tool-result-store plugin manifest missing")
+        self.assertFalse((home / "skills" / "tool-result-store").exists())
+        self.assertTrue((home / "plugins" / "tool-result-store" / "plugin.toml").is_file())
         session = "testbed-tool-result-store"
-        ref = "artifact://exec_run-call-1-demo"
-        artifact_dir = home / "data" / "sessions" / session / "artifacts"
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        content = "full output\n" + ("x" * 20000)
-        (artifact_dir / "exec_run-call-1-demo.txt").write_text(content, encoding="utf-8")
-        (artifact_dir / "index.json").write_text(json.dumps({
-            "version": 1,
-            "artifacts": {
-                "exec_run-call-1-demo": {
-                    "id": "exec_run-call-1-demo",
-                    "ref": ref,
-                    "session": session,
-                    "tenant_id": "default",
-                    "tool_id": "call-1",
-                    "tool_name": "exec_run",
-                    "filename": "exec_run-call-1-demo.txt",
-                    "mime_type": "text/plain; charset=utf-8",
-                    "chars": len(content),
-                    "bytes": len(content.encode("utf-8")),
-                    "sha256": "testbed",
-                    "preview_chars": 12,
-                    "created_at": 123.0,
-                },
-            },
-        }), encoding="utf-8")
-        with self.make_client("testbed-tool-result-store-client", session) as client:
-            client.wait_tools({"tool_result_read"}, session=session)
-            result = client.call_tool("tool_result_read", {"session": session, "ref": ref, "limit_chars": 64}, timeout=10).json()
-            next_result = client.call_tool("tool_result_read", {"session": session, "ref": ref, "offset": result["next_offset"], "limit_chars": 32}, timeout=10).json()
-        self.assertTrue(result["ok"], result)
-        self.assertEqual(result["content"], content[:64])
-        self.assertEqual(result["returned_chars"], 64)
-        self.assertTrue(result["truncated"])
-        self.assertEqual(result["artifact"]["ref"], ref)
-        self.assertEqual(next_result["content"], content[64:96])
+        requested = 20000
+        with TestbedClient(self.url, name="testbed-tool-result-store") as client:
+            client.connect_join(session)
+            client.wait_tools({"tool_result_read", "testbed_cold_python_large"}, session=session)
+            output = client.call_tool("testbed_cold_python_large", {"bytes": requested}, timeout=30).output
+            match = re.search(r"artifact://[A-Za-z0-9_.-]+", output)
+            self.assertIsNotNone(match, output)
+            ref = match.group(0).rstrip(".")
+            first = client.call_tool(
+                "tool_result_read",
+                {"session": session, "ref": ref, "limit_chars": 64},
+                timeout=10,
+            ).json()
+            second = client.call_tool(
+                "tool_result_read",
+                {"session": session, "ref": ref, "offset": first["next_offset"], "limit_chars": 32},
+                timeout=10,
+            ).json()
+
+        self.assertTrue(first["ok"], first)
+        self.assertTrue(first["artifact"]["ref"].startswith("artifact://"))
+        self.assertEqual(first["artifact"]["tenant_id"], "default")
+        self.assertEqual(first["artifact"]["owner_plugin"], "tool-result-store")
+        self.assertEqual(first["artifact"]["correlations"]["session"], session)
+        self.assertEqual(first["returned_chars"], 64)
+        self.assertTrue(first["truncated"])
+        self.assertEqual(second["offset"], 64)
+        self.assertEqual(second["returned_chars"], 32)
 
 
 def main() -> int:

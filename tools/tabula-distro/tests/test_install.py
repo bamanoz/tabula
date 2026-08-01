@@ -7,13 +7,13 @@ import os
 import tempfile
 import tomllib
 import unittest
+from unittest import mock
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 
 from tabula_distro import config as cfg
 from tabula_distro import cli as climod
-from tabula_distro import generations as gens
 from tabula_distro import install as installmod
 from tabula_distro import lock as lockmod
 from tabula_distro import sources as srcmod
@@ -292,12 +292,13 @@ class InstallTests(unittest.TestCase):
             )
 
             result = installmod.install(distro, home)
-            gen, lock = result
-            self.assertEqual(gen.number, 1)
+            lock = result.lock
+            self.assertEqual(result.distro_path, home / "distrib" / "demo")
             self.assertTrue(result.changed)
 
-            cur = home / "distrib" / "demo" / "current"
-            self.assertTrue(cur.is_symlink())
+            cur = home / "distrib" / "demo"
+            self.assertTrue(cur.is_dir())
+            self.assertFalse(cur.is_symlink())
 
             for p in (
                 home / "distrib" / "demo" / "skills" / "mempalace" / "marker.txt",
@@ -422,7 +423,7 @@ class InstallTests(unittest.TestCase):
             for tenant_name in ("alpha", "beta"):
                 self.assertFalse((home / "tenants" / tenant_name / "skills").exists())
 
-    def test_install_update_retargets_pinned_tenants_to_new_generation(self):
+    def test_install_update_retargets_pinned_tenants_to_stable_distro_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
@@ -437,21 +438,21 @@ class InstallTests(unittest.TestCase):
             )
 
             (home / "tenants" / "beta").mkdir(parents=True, exist_ok=True)
-            first = installmod.install(distro, home, tenant="alpha")
+            installmod.install(distro, home, tenant="alpha")
             first_lock = json.loads((home / "tenants" / "alpha" / "install.lock.json").read_text(encoding="utf-8"))
-            self.assertEqual(first_lock["generation"]["name"], first.generation.name)
-            self.assertEqual((home / "tenants" / "alpha" / "skills" / "mempalace" / "marker.txt").read_text(encoding="utf-8"), "save-v1")
+            self.assertEqual(first_lock["version"], 2)
+            self.assertEqual(first_lock["path"], "distrib/demo")
 
             _touch(bundle / "mempalace" / "marker.txt", "save-v2")
-            second = installmod.install(distro, home, update=True)
+            result = installmod.install(distro, home, update=True)
 
+            self.assertTrue(result.changed)
             second_lock = json.loads((home / "tenants" / "alpha" / "install.lock.json").read_text(encoding="utf-8"))
-            self.assertEqual(second_lock["generation"]["name"], second.generation.name)
-            self.assertNotEqual(first.generation.name, second.generation.name)
+            self.assertEqual(second_lock["path"], "distrib/demo")
             self.assertEqual((home / "tenants" / "alpha" / "skills" / "mempalace" / "marker.txt").read_text(encoding="utf-8"), "save-v2")
             self.assertFalse((home / "tenants" / "beta" / "skills").exists())
 
-    def test_install_for_one_tenant_retargets_other_pinned_tenants_to_new_generation(self):
+    def test_install_for_one_tenant_retargets_other_pinned_tenants(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
@@ -465,48 +466,16 @@ class InstallTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            first = installmod.install(distro, home, tenant="alpha")
+            installmod.install(distro, home, tenant="alpha")
             _touch(bundle / "mempalace" / "marker.txt", "save-v2")
-            second = installmod.install(distro, home, update=True, tenant="beta")
+            installmod.install(distro, home, update=True, tenant="beta")
 
             alpha_lock = json.loads((home / "tenants" / "alpha" / "install.lock.json").read_text(encoding="utf-8"))
             beta_lock = json.loads((home / "tenants" / "beta" / "install.lock.json").read_text(encoding="utf-8"))
-            self.assertNotEqual(first.generation.name, second.generation.name)
-            self.assertEqual(alpha_lock["generation"]["name"], second.generation.name)
-            self.assertEqual(beta_lock["generation"]["name"], second.generation.name)
+            self.assertEqual(alpha_lock["path"], "distrib/demo")
+            self.assertEqual(beta_lock["path"], "distrib/demo")
             self.assertEqual((home / "tenants" / "alpha" / "skills" / "mempalace" / "marker.txt").read_text(encoding="utf-8"), "save-v2")
             self.assertEqual((home / "tenants" / "beta" / "skills" / "mempalace" / "marker.txt").read_text(encoding="utf-8"), "save-v2")
-
-    def test_install_noop_retargets_stale_pinned_tenants_to_current_generation(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            home = root / "home"
-            distro = _make_minimal_distro(root, "demo")
-
-            bundle = root / "ext" / "bundles" / "mempalace"
-            _make_skill(bundle, "mempalace", "save-v1")
-            (distro / "distro.toml").write_text(
-                '[distro]\nid="tabula.demo"\nname="demo"\n\n'
-                '[[bundles]]\nname="mempalace"\nsource="local:../ext/bundles/mempalace"\n',
-                encoding="utf-8",
-            )
-
-            first = installmod.install(distro, home, tenant="alpha")
-            _touch(bundle / "mempalace" / "marker.txt", "save-v2")
-            current = installmod.install(distro, home, update=True, tenant="beta")
-            installmod._write_tenant_install_lock(home, "alpha", first.generation, current.lock)
-            installmod._refresh_tenant_runtime_surface(home / "tenants" / "alpha", first.generation.path)
-            stale_lock = json.loads((home / "tenants" / "alpha" / "install.lock.json").read_text(encoding="utf-8"))
-            self.assertEqual(stale_lock["generation"]["name"], first.generation.name)
-            self.assertEqual((home / "tenants" / "alpha" / "skills" / "mempalace" / "marker.txt").read_text(encoding="utf-8"), "save-v1")
-
-            noop = installmod.install(distro, home, update=True)
-
-            self.assertFalse(noop.changed)
-            self.assertEqual(noop.generation.name, current.generation.name)
-            refreshed_lock = json.loads((home / "tenants" / "alpha" / "install.lock.json").read_text(encoding="utf-8"))
-            self.assertEqual(refreshed_lock["generation"]["name"], current.generation.name)
-            self.assertEqual((home / "tenants" / "alpha" / "skills" / "mempalace" / "marker.txt").read_text(encoding="utf-8"), "save-v2")
 
     def test_parallel_tenant_runtime_refresh_does_not_corrupt_surfaces(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -524,17 +493,15 @@ class InstallTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            installmod.install(distro, home)
+            result = installmod.install(distro, home)
             tenant_roots = []
             for tenant_name in ("alpha", "beta"):
                 tenant_root = home / "tenants" / tenant_name
                 tenant_root.mkdir(parents=True, exist_ok=True)
                 tenant_roots.append(tenant_root)
 
-            generation = gens.current_generation(home, "demo")
-            self.assertIsNotNone(generation)
             with ThreadPoolExecutor(max_workers=2) as pool:
-                futures = [pool.submit(installmod._refresh_tenant_runtime_surface, tenant_root, generation.path) for tenant_root in tenant_roots]
+                futures = [pool.submit(installmod._refresh_tenant_runtime_surface, tenant_root, result.distro_path) for tenant_root in tenant_roots]
                 for future in futures:
                     future.result()
 
@@ -565,7 +532,7 @@ class InstallTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            _gen, lock = installmod.install(distro, home)
+            lock = installmod.install(distro, home).lock
             self.assertTrue((home / "skills" / "shell" / "marker.txt").exists())
             self.assertTrue((home / "skills" / "caveman-compress" / "marker.txt").exists())
             self.assertFalse((home / "_lib").exists())
@@ -638,7 +605,7 @@ class InstallTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            _gen, lock = installmod.install(distro, home)
+            lock = installmod.install(distro, home).lock
             self.assertTrue((home / "distrib" / "demo" / "skills" / "base-shell" / "SKILL.md").exists())
             self.assertTrue((home / "distrib" / "demo" / "plugins" / "hook-permissions" / "plugin.toml").exists())
             self.assertTrue((home / "plugins" / "hook-permissions" / "plugin.toml").exists())
@@ -661,7 +628,7 @@ class InstallTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            _gen, lock = installmod.install(distro, home)
+            lock = installmod.install(distro, home).lock
             self.assertTrue((home / "distrib" / "demo" / "apps" / "driver" / "app.toml").exists())
             self.assertTrue((home / "apps" / "driver" / "run.py").exists())
             self.assertFalse((home / "skills" / "driver").exists())
@@ -718,7 +685,7 @@ class InstallTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            _gen, lock = installmod.install(distro, home)
+            lock = installmod.install(distro, home).lock
             self.assertTrue((home / "distrib" / "demo" / "plugins" / "hello" / "plugin.toml").exists())
             self.assertTrue((home / "plugins" / "hello" / "plugin.toml").exists())
             self.assertIn("hello", lock.plugins)
@@ -743,7 +710,7 @@ class InstallTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            _gen, lock = installmod.install(distro, home)
+            lock = installmod.install(distro, home).lock
             self.assertTrue((home / "distrib" / "demo" / "plugins" / "plugin-a" / "plugin.toml").exists())
             self.assertTrue((home / "distrib" / "demo" / "skills" / "skill-b" / "SKILL.md").exists())
             self.assertFalse((home / "distrib" / "demo" / "skills" / "skill-c").exists())
@@ -768,7 +735,7 @@ class InstallTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            _gen, lock = installmod.install(distro, home)
+            lock = installmod.install(distro, home).lock
             self.assertTrue((home / "distrib" / "demo" / "skills" / "skill-a" / "SKILL.md").exists())
             self.assertTrue((home / "distrib" / "demo" / "plugins" / "plugin-a" / "plugin.toml").exists())
             self.assertIn("skill-a", lock.skills)
@@ -881,27 +848,176 @@ class InstallTests(unittest.TestCase):
             with self.assertRaisesRegex(installmod.InstallError, "exported python package 'shared_sdk' conflicts"):
                 installmod.install(distro, home)
 
-    def test_bundle_dependency_requires_selected_bundle(self):
+    def test_bundle_dependencies_resolve_transitively_from_sibling_bundles(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
             distro = _make_minimal_distro(root, "demo")
+            bundles = root / "ext" / "bundles"
 
-            gateways = root / "ext" / "bundles" / "gateways"
-            _make_plugin(gateways, "gateway-web")
-            _touch(gateways / "bundle.toml", (
-                '[bundle]\nname="gateways"\ncomponents=["gateway-web"]\n'
+            extensions = bundles / "extensions"
+            _make_plugin(extensions, "plugin-sdk")
+            _touch(extensions / "bundle.toml", '[bundle]\nname="extensions"\ncomponents=["plugin-sdk"]\n')
+
+            collaboration = bundles / "collaboration"
+            _make_plugin(collaboration, "sessions")
+            _touch(collaboration / "bundle.toml", (
+                '[bundle]\nname="collaboration"\ncomponents=["sessions"]\n'
                 '[[dependencies]]\n'
                 'bundle="extensions"\n'
-                'python_packages=["tabula_session_sdk"]\n'
+                'components=["plugin-sdk"]\n'
+            ))
+
+            evolution = bundles / "evolution"
+            _make_plugin(evolution, "evolution")
+            _touch(evolution / "bundle.toml", (
+                '[bundle]\nname="evolution"\ncomponents=["evolution"]\n'
+                '[[dependencies]]\n'
+                'bundle="collaboration"\n'
+                'components=["sessions"]\n'
             ))
             (distro / "distro.toml").write_text(
                 '[distro]\nid="tabula.demo"\nname="demo"\n'
-                '[[bundles]]\nname="gateways"\nsource="local:../ext/bundles/gateways"\n',
+                '[[bundles]]\nname="evolution"\nsource="local:../ext/bundles/evolution"\ncomponents=["evolution"]\n',
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(installmod.InstallError, "depends on bundle 'extensions'"):
+            result = installmod.install(distro, home)
+
+            self.assertEqual(list(result.lock.bundles), ["extensions", "collaboration", "evolution"])
+            self.assertEqual(result.lock.bundles["extensions"].components, ("plugin-sdk",))
+            self.assertEqual(result.lock.bundles["collaboration"].components, ("sessions",))
+            self.assertEqual(result.lock.bundles["evolution"].components, ("evolution",))
+            for plugin in ("plugin-sdk", "sessions", "evolution"):
+                self.assertTrue((home / "plugins" / plugin / "plugin.toml").is_file())
+
+    def test_auto_resolved_bundle_unions_components_required_by_multiple_parents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+            bundles = root / "ext" / "bundles"
+
+            shared = bundles / "shared"
+            _make_plugin(shared, "first")
+            _make_plugin(shared, "second")
+            _touch(shared / "bundle.toml", '[bundle]\nname="shared"\ncomponents=["first", "second"]\n')
+
+            for name, component in (("alpha", "first"), ("beta", "second")):
+                bundle = bundles / name
+                _make_plugin(bundle, name)
+                _touch(bundle / "bundle.toml", (
+                    f'[bundle]\nname="{name}"\ncomponents=["{name}"]\n'
+                    '[[dependencies]]\n'
+                    'bundle="shared"\n'
+                    f'components=["{component}"]\n'
+                ))
+
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
+                '[[bundles]]\nname="alpha"\nsource="local:../ext/bundles/alpha"\ncomponents=["alpha"]\n'
+                '[[bundles]]\nname="beta"\nsource="local:../ext/bundles/beta"\ncomponents=["beta"]\n',
+                encoding="utf-8",
+            )
+
+            result = installmod.install(distro, home)
+
+            self.assertEqual(result.lock.bundles["shared"].components, ("first", "second"))
+            self.assertTrue((home / "plugins" / "first" / "plugin.toml").is_file())
+            self.assertTrue((home / "plugins" / "second" / "plugin.toml").is_file())
+
+    def test_explicit_bundle_component_restriction_cannot_be_widened_by_dependency(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+            bundles = root / "ext" / "bundles"
+
+            extensions = bundles / "extensions"
+            _make_plugin(extensions, "plugin-sdk")
+            _make_plugin(extensions, "review-sdk")
+            _touch(extensions / "bundle.toml", '[bundle]\nname="extensions"\ncomponents=["plugin-sdk", "review-sdk"]\n')
+
+            evolution = bundles / "evolution"
+            _make_plugin(evolution, "evolution")
+            _touch(evolution / "bundle.toml", (
+                '[bundle]\nname="evolution"\ncomponents=["evolution"]\n'
+                '[[dependencies]]\n'
+                'bundle="extensions"\n'
+                'components=["review-sdk"]\n'
+            ))
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
+                '[[bundles]]\nname="extensions"\nsource="local:../ext/bundles/extensions"\ncomponents=["plugin-sdk"]\n'
+                '[[bundles]]\nname="evolution"\nsource="local:../ext/bundles/evolution"\ncomponents=["evolution"]\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(installmod.InstallError, "explicitly allows components plugin-sdk.*requires review-sdk"):
+                installmod.install(distro, home)
+
+    def test_transitive_git_dependencies_use_root_bundle_revision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+            checkout = root / "checkout"
+
+            extensions = checkout / "extensions"
+            _make_plugin(extensions, "plugin-sdk")
+            _touch(extensions / "bundle.toml", '[bundle]\nname="extensions"\ncomponents=["plugin-sdk"]\n')
+
+            evolution = checkout / "evolution"
+            _make_plugin(evolution, "evolution")
+            _touch(evolution / "bundle.toml", (
+                '[bundle]\nname="evolution"\ncomponents=["evolution"]\n'
+                '[[dependencies]]\n'
+                'bundle="extensions"\n'
+                'components=["plugin-sdk"]\n'
+            ))
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
+                '[sources.bundles]\nsource="git+https://example.invalid/bundles.git@main"\n'
+                '[[bundles]]\nname="evolution"\nsource="source:bundles#path=evolution"\ncomponents=["evolution"]\n',
+                encoding="utf-8",
+            )
+
+            sha = "a" * 40
+
+            def run(_fake_cache):
+                result = installmod.install(distro, home)
+                self.assertEqual(result.lock.bundles["evolution"].resolved_sha, sha)
+                self.assertEqual(result.lock.bundles["extensions"].resolved_sha, sha)
+                self.assertEqual(result.lock.bundles["extensions"].resolved_ref, "main")
+
+            self._with_fake_git_cache({sha: checkout}, run)
+
+    def test_transitive_bundle_dependency_cycle_fails_install(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root, "demo")
+            bundles = root / "ext" / "bundles"
+
+            alpha = bundles / "alpha"
+            _make_plugin(alpha, "a")
+            _touch(alpha / "bundle.toml", (
+                '[bundle]\nname="alpha"\ncomponents=["a"]\n'
+                '[[dependencies]]\nbundle="beta"\ncomponents=["b"]\n'
+            ))
+            beta = bundles / "beta"
+            _make_plugin(beta, "b")
+            _touch(beta / "bundle.toml", (
+                '[bundle]\nname="beta"\ncomponents=["b"]\n'
+                '[[dependencies]]\nbundle="alpha"\ncomponents=["a"]\n'
+            ))
+            (distro / "distro.toml").write_text(
+                '[distro]\nid="tabula.demo"\nname="demo"\n'
+                '[[bundles]]\nname="alpha"\nsource="local:../ext/bundles/alpha"\ncomponents=["a"]\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(installmod.InstallError, 'bundle dependency cycle: alpha -> beta -> alpha'):
                 installmod.install(distro, home)
 
     def test_bundle_dependency_requires_exported_python_package(self):
@@ -1038,7 +1154,7 @@ class InstallTests(unittest.TestCase):
 
             def run(fake_cache):
                 fake_cache.current_sha = sha_v1
-                _gen, lock1 = installmod.install(distro, home)
+                lock1 = installmod.install(distro, home).lock
                 self.assertEqual(lock1.plugins["hello"].resolved_sha, sha_v1)
                 self.assertEqual(
                     (home / "plugins" / "hello" / "marker.txt").read_text(encoding="utf-8"),
@@ -1046,7 +1162,7 @@ class InstallTests(unittest.TestCase):
                 )
 
                 fake_cache.current_sha = sha_v2
-                _gen, lock2 = installmod.install(distro, home, update=True, update_only=("hello",))
+                lock2 = installmod.install(distro, home, update=True, update_only=("hello",)).lock
                 self.assertEqual(lock2.plugins["hello"].resolved_sha, sha_v2)
                 self.assertEqual(
                     (home / "plugins" / "hello" / "marker.txt").read_text(encoding="utf-8"),
@@ -1077,14 +1193,14 @@ class InstallTests(unittest.TestCase):
 
             def run(fake_cache):
                 fake_cache.current_sha = sha_v1
-                _gen, lock1 = installmod.install(distro, home)
+                lock1 = installmod.install(distro, home).lock
                 self.assertEqual(lock1.bundles["mixed"].resolved_sha, sha_v1)
                 self.assertIn("hook-permissions", lock1.plugins)
 
                 fake_cache.current_sha = sha_v2
-                _gen, lock2 = installmod.install(
+                lock2 = installmod.install(
                     distro, home, update=True, update_only=("hook-permissions",)
-                )
+                ).lock
                 self.assertEqual(lock2.bundles["mixed"].resolved_sha, sha_v2)
                 self.assertEqual(lock2.plugins["hook-permissions"].resolved_sha, sha_v2)
                 self.assertEqual(
@@ -1134,7 +1250,7 @@ class InstallTests(unittest.TestCase):
             )
 
             installmod.install(distro, home)
-            self.assertTrue((home / "distrib" / "demo" / "current").exists())
+            self.assertTrue((home / "distrib" / "demo").exists())
 
     def test_skill_manifest_tools_blank_exec_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1153,7 +1269,7 @@ class InstallTests(unittest.TestCase):
             )
 
             installmod.install(distro, home)
-            self.assertTrue((home / "distrib" / "demo" / "current").exists())
+            self.assertTrue((home / "distrib" / "demo").exists())
 
     def test_skill_manifest_tools_missing_name_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1172,7 +1288,7 @@ class InstallTests(unittest.TestCase):
             )
 
             installmod.install(distro, home)
-            self.assertTrue((home / "distrib" / "demo" / "current").exists())
+            self.assertTrue((home / "distrib" / "demo").exists())
 
     def test_skill_manifest_tools_blank_name_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1191,7 +1307,7 @@ class InstallTests(unittest.TestCase):
             )
 
             installmod.install(distro, home)
-            self.assertTrue((home / "distrib" / "demo" / "current").exists())
+            self.assertTrue((home / "distrib" / "demo").exists())
 
     def test_skill_manifest_tools_invalid_shape_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1210,7 +1326,7 @@ class InstallTests(unittest.TestCase):
             )
 
             installmod.install(distro, home)
-            self.assertTrue((home / "distrib" / "demo" / "current").exists())
+            self.assertTrue((home / "distrib" / "demo").exists())
 
     def test_bundle_skill_manifest_tool_shape_no_longer_blocks_install(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1227,7 +1343,6 @@ class InstallTests(unittest.TestCase):
                 encoding="utf-8",
             )
             installmod.install(distro, home)
-            current_before = (home / "distrib" / "demo" / "current").resolve()
             lock_before = (home / "distrib" / "demo" / "distro.lock.json").read_text(encoding="utf-8")
 
             _make_skill_with_manifest(
@@ -1235,9 +1350,9 @@ class InstallTests(unittest.TestCase):
                 "bad-skill",
                 "---\nname: bad-skill\ntools:\n  - name: broken\n---\n# bad\n",
             )
-            installmod.install(distro, home)
+            result = installmod.install(distro, home)
 
-            self.assertNotEqual((home / "distrib" / "demo" / "current").resolve(), current_before)
+            self.assertTrue(result.changed)
             self.assertNotEqual((home / "distrib" / "demo" / "distro.lock.json").read_text(encoding="utf-8"), lock_before)
             self.assertTrue((home / "distrib" / "demo" / "skills" / "bad-skill").exists())
             self.assertTrue((home / "skills" / "bad-skill").exists())
@@ -1292,6 +1407,21 @@ class InstallTests(unittest.TestCase):
         self.assertIsNone(lock.plugin_protocol_version)
         self.assertEqual(lock.sdk_versions, {})
         self.assertEqual(lock.to_json()["version"], lockmod.LOCK_VERSION)
+
+    def test_lock_v5_migrates_to_current_with_empty_host_services(self):
+        data = {
+            "version": 5,
+            "distro": "demo",
+            "generated_at": "2026-04-21T14:30:00Z",
+            "bundles": {},
+            "skills": {},
+            "plugins": {},
+            "apps": {},
+        }
+        lock = lockmod.Lock.from_json(data)
+        self.assertEqual(lock.host_services, {})
+        self.assertEqual(lock.to_json()["version"], lockmod.LOCK_VERSION)
+        self.assertEqual(lock.to_json()["host_services"], {})
 
     def test_bundle_skips_directories_without_skill_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1379,49 +1509,166 @@ class InstallTests(unittest.TestCase):
             marker = home / "distrib" / "demo" / "skills" / "files" / "marker.txt"
             self.assertEqual(marker.read_text(encoding="utf-8"), "ext")
 
-    def test_second_install_creates_new_generation(self):
+    def test_second_install_replaces_same_installed_tree(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
             distro = _make_minimal_distro(root)
-            installmod.install(distro, home)
-            # Mutate the distro tree so the second install is not a no-op.
-            (distro / "skills" / "extra").mkdir()
-            (distro / "skills" / "extra" / "SKILL.md").write_text("# extra\n", encoding="utf-8")
-            installmod.install(distro, home)
-            gs = gens.list_generations(home, "demo")
-            self.assertEqual([g.number for g in gs], [1, 2])
-            self.assertEqual(gens.current_generation(home, "demo").number, 2)
+            first = installmod.install(distro, home)
+            _touch(distro / "skills" / "extra" / "SKILL.md", "# extra\n")
 
-    def test_prune_removes_old_generation_after_tenant_retarget(self):
+            second = installmod.install(distro, home)
+
+            self.assertEqual(first.distro_path, second.distro_path)
+            self.assertTrue(second.changed)
+            self.assertTrue((second.distro_path / "skills" / "extra" / "SKILL.md").is_file())
+            self.assertFalse((second.distro_path / "generations").exists())
+            self.assertFalse((second.distro_path / "current").exists())
+            transaction_root = home / "run" / "install" / "demo"
+            self.assertFalse((transaction_root / "previous").exists())
+            self.assertFalse((transaction_root / "transaction.json").exists())
+
+    def test_install_failure_restores_previous_active_and_tenant_lock(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
-            distro = _make_minimal_distro(root)
-            first = installmod.install(distro, home, keep_generations=1)
-            tenant = home / "tenants" / "project-a"
-            tenant.mkdir(parents=True)
-            (tenant / "install.lock.json").write_text(
-                json.dumps({
-                    "version": 1,
-                    "generation": {
-                        "distro": "demo",
-                        "name": first.generation.name,
-                        "path": f"distrib/demo/generations/{first.generation.name}",
-                    }
-                }),
-                encoding="utf-8",
+            alpha = _make_minimal_distro(root, "alpha")
+            demo = _make_minimal_distro(root, "demo")
+            installmod.install(alpha, home)
+
+            with mock.patch.object(installmod, "_write_kernel_config", side_effect=OSError("write failed")):
+                with self.assertRaisesRegex(OSError, "write failed"):
+                    installmod.install(demo, home, tenant="beta")
+
+            self.assertFalse((home / "distrib" / "demo").exists())
+            self.assertEqual(
+                installmod.links.resolve_reference(home / "distrib" / "active"),
+                (home / "distrib" / "alpha").resolve(),
             )
+            self.assertFalse((home / "tenants" / "beta" / "install.lock.json").exists())
+            self.assertFalse((home / "run" / "install" / "demo").exists())
 
-            for version in ("v2", "v3"):
-                _touch(distro / "skills" / "version" / "SKILL.md", f"# {version}\n")
-                installmod.install(distro, home, keep_generations=1)
+    def test_unchanged_install_failure_restores_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            demo = _make_minimal_distro(root, "demo")
+            alpha = _make_minimal_distro(root, "alpha")
+            installmod.install(demo, home, tenant="beta")
+            lock_path = home / "distrib" / "demo" / "distro.lock.json"
+            lock_snapshot = lock_path.read_bytes()
+            installmod.install(alpha, home)
 
-            generations = gens.list_generations(home, "demo")
-            self.assertEqual([g.number for g in generations], [3])
-            self.assertFalse(first.generation.path.is_dir())
-            lock = json.loads((tenant / "install.lock.json").read_text(encoding="utf-8"))
-            self.assertEqual(lock["generation"]["name"], gens.current_generation(home, "demo").name)
+            with mock.patch.object(installmod, "_write_kernel_config", side_effect=OSError("write failed")):
+                with self.assertRaisesRegex(OSError, "write failed"):
+                    installmod.install(demo, home, tenant="gamma")
+
+            self.assertEqual(lock_path.read_bytes(), lock_snapshot)
+            self.assertEqual(
+                installmod.links.resolve_reference(home / "distrib" / "active"),
+                (home / "distrib" / "alpha").resolve(),
+            )
+            self.assertFalse((home / "tenants" / "gamma" / "install.lock.json").exists())
+            self.assertFalse((home / "run" / "install" / "demo").exists())
+
+    def test_first_install_recovers_prepared_journal_after_tree_swap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root)
+            original_write_journal = installmod._write_install_journal
+
+            def interrupt_before_installed_phase(path: Path, phase: str) -> None:
+                if phase == "installed":
+                    raise KeyboardInterrupt
+                original_write_journal(path, phase)
+
+            with mock.patch.object(installmod, "_write_install_journal", side_effect=interrupt_before_installed_phase):
+                with self.assertRaises(KeyboardInterrupt):
+                    installmod.install(distro, home, tenant="alpha")
+
+            journal = home / "run" / "install" / "demo" / "transaction.json"
+            self.assertEqual(json.loads(journal.read_text(encoding="utf-8"))["phase"], "prepared")
+
+            result = installmod.install(distro, home, tenant="alpha")
+
+            self.assertFalse(result.changed)
+            self.assertTrue((home / "tenants" / "alpha" / "skills").is_dir())
+            self.assertFalse((home / "run" / "install" / "demo").exists())
+
+    def test_install_recovers_installed_transaction_and_refreshes_surfaces(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root)
+            _make_skill(distro / "skills", "files", "v1")
+            installmod.install(distro, home, tenant="alpha")
+
+            _touch(distro / "skills" / "files" / "marker.txt", "v2")
+            with mock.patch.object(installmod, "_set_active", side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    installmod.install(distro, home, update=True, tenant="alpha")
+
+            installed = home / "distrib" / "demo"
+            transaction_root = home / "run" / "install" / "demo"
+            previous = transaction_root / "previous"
+            self.assertTrue((transaction_root / "transaction.json").is_file())
+            self.assertEqual((installed / "skills" / "files" / "marker.txt").read_text(encoding="utf-8"), "v2")
+            self.assertEqual((previous / "skills" / "files" / "marker.txt").read_text(encoding="utf-8"), "v1")
+
+            installmod.links.create_directory_reference(home / "distrib" / "active", Path("demo/current"))
+            installmod.links.create_directory_reference(home / "skills", previous / "skills")
+            installmod.links.create_directory_reference(home / "tenants" / "alpha" / "skills", previous / "skills")
+
+            result = installmod.install(distro, home, update=True, tenant="alpha")
+
+            self.assertFalse(result.changed)
+            self.assertEqual(installmod.links.resolve_reference(home / "distrib" / "active"), installed.resolve())
+            self.assertEqual((home / "skills" / "files" / "marker.txt").read_text(encoding="utf-8"), "v2")
+            self.assertEqual((home / "tenants" / "alpha" / "skills" / "files" / "marker.txt").read_text(encoding="utf-8"), "v2")
+            tenant_lock = json.loads((home / "tenants" / "alpha" / "install.lock.json").read_text(encoding="utf-8"))
+            self.assertEqual(tenant_lock["path"], "distrib/demo")
+            self.assertFalse(transaction_root.exists())
+
+    def test_install_recovery_refresh_failure_restores_previous_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root)
+            _make_skill(distro / "skills", "files", "v1")
+            installmod.install(distro, home, tenant="alpha")
+
+            _touch(distro / "skills" / "files" / "marker.txt", "v2")
+            with mock.patch.object(installmod, "_set_active", side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    installmod.install(distro, home, update=True, tenant="alpha")
+
+            with mock.patch.object(installmod, "_write_kernel_config", side_effect=OSError("write failed")):
+                with self.assertRaisesRegex(OSError, "write failed"):
+                    installmod.install(distro, home, update=True, tenant="alpha")
+
+            installed = home / "distrib" / "demo"
+            self.assertEqual((installed / "skills" / "files" / "marker.txt").read_text(encoding="utf-8"), "v1")
+            tenant_lock = json.loads((home / "tenants" / "alpha" / "install.lock.json").read_text(encoding="utf-8"))
+            self.assertEqual(tenant_lock["distro"]["distro"], "demo")
+            self.assertFalse((home / "run" / "install" / "demo").exists())
+
+    def test_install_rejects_invalid_transaction_journal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            distro = _make_minimal_distro(root)
+            installmod.install(distro, home)
+            installed_marker = home / "distrib" / "demo" / "templates" / "SYSTEM.md"
+
+            journal = home / "run" / "install" / "demo" / "transaction.json"
+            _touch(journal, '{"version": 99, "phase": "installed"}\n')
+
+            with self.assertRaisesRegex(installmod.InstallError, "invalid install transaction"):
+                installmod.install(distro, home)
+
+            self.assertEqual(installed_marker.read_text(encoding="utf-8"), "hello\n")
+            self.assertTrue(journal.is_file())
 
     def test_two_distros_pin_separate_tenant_surfaces(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1439,29 +1686,25 @@ class InstallTests(unittest.TestCase):
 
             alpha_lock = json.loads((home / "tenants" / "project-alpha" / "install.lock.json").read_text(encoding="utf-8"))
             beta_lock = json.loads((home / "tenants" / "project-beta" / "install.lock.json").read_text(encoding="utf-8"))
-            self.assertEqual(alpha_lock["generation"]["name"], alpha_result.generation.name)
-            self.assertEqual(beta_lock["generation"]["name"], beta_result.generation.name)
+            self.assertEqual(alpha_lock["path"], "distrib/alpha")
+            self.assertEqual(beta_lock["path"], "distrib/beta")
             alpha_marker = home / "tenants" / "project-alpha" / "skills" / "identity" / "SKILL.md"
             beta_marker = home / "tenants" / "project-beta" / "skills" / "identity" / "SKILL.md"
             self.assertEqual(alpha_marker.read_text(encoding="utf-8"), "alpha\n")
             self.assertEqual(beta_marker.read_text(encoding="utf-8"), "beta\n")
-            self.assertTrue(os.path.samefile(alpha_marker, alpha_result.generation.path / "skills" / "identity" / "SKILL.md"))
-            self.assertTrue(os.path.samefile(beta_marker, beta_result.generation.path / "skills" / "identity" / "SKILL.md"))
+            self.assertTrue(os.path.samefile(alpha_marker, alpha_result.distro_path / "skills" / "identity" / "SKILL.md"))
+            self.assertTrue(os.path.samefile(beta_marker, beta_result.distro_path / "skills" / "identity" / "SKILL.md"))
 
-    def test_identical_reinstall_reuses_generation(self):
+    def test_identical_reinstall_keeps_installed_tree(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             home = root / "home"
             distro = _make_minimal_distro(root)
             result1 = installmod.install(distro, home)
             result2 = installmod.install(distro, home)
-            gen1, _ = result1
-            gen2, _ = result2
-            self.assertEqual(gen1.number, gen2.number)
+            self.assertEqual(result1.distro_path, result2.distro_path)
             self.assertTrue(result1.changed)
             self.assertFalse(result2.changed)
-            gs = gens.list_generations(home, "demo")
-            self.assertEqual([g.number for g in gs], [1])
 
     def test_cli_reports_unchanged_for_identical_reinstall(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1473,30 +1716,13 @@ class InstallTests(unittest.TestCase):
             with redirect_stdout(first):
                 rc = climod.main(["--home", str(home), "install", str(distro)])
             self.assertEqual(rc, 0)
-            self.assertIn("installed distro demo as generation 1", first.getvalue())
+            self.assertIn("installed distro demo", first.getvalue())
 
             second = StringIO()
             with redirect_stdout(second):
                 rc = climod.main(["--home", str(home), "install", str(distro)])
             self.assertEqual(rc, 0)
-            self.assertIn("distro demo unchanged at generation 1", second.getvalue())
-            self.assertNotIn("installed distro demo as generation 2", second.getvalue())
-
-            gs = gens.list_generations(home, "demo")
-            self.assertEqual([g.number for g in gs], [1])
-
-    def test_rollback(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            home = root / "home"
-            distro = _make_minimal_distro(root)
-            installmod.install(distro, home)
-            (distro / "skills" / "extra").mkdir()
-            (distro / "skills" / "extra" / "SKILL.md").write_text("# extra\n", encoding="utf-8")
-            installmod.install(distro, home)
-            target = installmod.rollback(home, "demo")
-            self.assertEqual(target.number, 1)
-            self.assertEqual(gens.current_generation(home, "demo").number, 1)
+            self.assertIn("distro demo unchanged", second.getvalue())
 
     def test_lockfile_written_and_readable(self):
         with tempfile.TemporaryDirectory() as tmp:
