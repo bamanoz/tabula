@@ -62,7 +62,7 @@ def _install_lock(home: Path, tenant_id: str) -> dict[str, object] | None:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    if not isinstance(payload, dict) or payload.get("version") != 2:
+    if not isinstance(payload, dict) or payload.get("version") not in {1, 2}:
         return None
     return payload
 

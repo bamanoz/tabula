@@ -250,6 +250,65 @@ class AgentCliTests(unittest.TestCase):
                 update=True,
             )
 
+    def test_install_update_migrates_existing_v1_tenant_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            home = root / "home"
+            project = root / "project"
+            project.mkdir()
+            distro = _make_distro(root)
+            source = str(distro.resolve())
+            initial = installmod.install(
+                distro, home, tenant="agent-explicit", expose_global_boot=False
+            )
+
+            installed = home / "distrib" / "demo"
+            legacy_tree = home / "legacy-demo"
+            installed.rename(legacy_tree)
+            generation = installed / "generations" / "0001-old"
+            generation.parent.mkdir(parents=True)
+            legacy_tree.rename(generation)
+            _write(
+                installed / "distro.lock.json",
+                (generation / "distro.lock.json").read_text(encoding="utf-8"),
+            )
+            installmod.links.create_directory_reference(
+                installed / "current", Path("generations/0001-old")
+            )
+
+            tenant_dir = home / "tenants" / "agent-explicit"
+            _write(tenant_dir / "values.toml", "")
+            legacy_lock = initial.lock.to_json()
+            legacy_lock["distro_source"] = source
+            _write(
+                tenant_dir / "install.lock.json",
+                json.dumps({
+                    "version": 1,
+                    "distro": legacy_lock,
+                    "generation": {
+                        "distro": "demo",
+                        "name": "0001-old",
+                        "path": "distrib/demo/generations/0001-old",
+                    },
+                }) + "\n",
+            )
+
+            code, out, err = self._run([
+                "--home", str(home), "install", "--distro", source,
+                "--tenant", "agent-explicit", "--bind", str(project),
+                "--update", "--no-start",
+            ])
+
+            self.assertEqual(code, 0, err)
+            self.assertIn("updated existing tenant agent-explicit", out)
+            migrated = json.loads(
+                (tenant_dir / "install.lock.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(migrated["version"], 2)
+            self.assertEqual(migrated["path"], "distrib/demo")
+            self.assertFalse((installed / "generations").exists())
+            self.assertFalse((installed / "current").exists())
+
     def test_install_no_start_does_not_read_kernel_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
