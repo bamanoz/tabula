@@ -20,7 +20,7 @@ class MultiDistroTenantsInstalled(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.home = Path(cls.tabula_home)
+        cls.home = Path(cls.tabula_home).resolve()
         cls.generated = cls.home / "generated-testbed"
         with (cls.generated / "distro.toml").open("rb") as handle:
             manifest = tomllib.load(handle)
@@ -29,18 +29,23 @@ class MultiDistroTenantsInstalled(unittest.TestCase):
             for name, entry in manifest.get("sources", {}).items()
         }
         cls.code_source = cls._distro_source("code")
+        cls.code_immune_source = cls._distro_source("code-immune")
         cls.claw_source = cls._distro_source("claw")
         cls.code_workspace = cls.home / "workspaces" / "code"
+        cls.code_immune_workspace = cls.home / "workspaces" / "code-immune"
         cls.claw_workspace = cls.home / "workspaces" / "claw"
         cls.code_workspace.mkdir(parents=True)
+        cls.code_immune_workspace.mkdir(parents=True)
         cls.claw_workspace.mkdir(parents=True)
         (cls.code_workspace / "code-only.txt").write_text("code\n", encoding="utf-8")
         (cls.claw_workspace / "claw-only.txt").write_text("claw\n", encoding="utf-8")
 
         cls._install_tenant("code-project", cls.code_source, cls.code_workspace)
+        cls._install_tenant("code-immune-project", cls.code_immune_source, cls.code_immune_workspace)
         cls._install_tenant("claw-project", cls.claw_source, cls.claw_workspace)
         cls._wait_for_tenant_tools("code-project", {"fs_list", "todo_read", "codegraph_search"})
-        cls._wait_for_tenant_tools("claw-project", {"fs_list", "todo_read", "subagent_list"})
+        cls._wait_for_tenant_tools("code-immune-project", {"fs_read"})
+        cls._wait_for_tenant_tools("claw-project", {"fs_list", "fs_read", "todo_read", "subagent_list"})
 
     @classmethod
     def _distro_source(cls, distro: str) -> str:
@@ -127,6 +132,17 @@ class MultiDistroTenantsInstalled(unittest.TestCase):
         with self._client(tenant, session=f"catalog-{tenant}") as client:
             return {str(tool.get("name")) for tool in client.tools() if tool.get("name")}
 
+    def _stable_catalog(self, tenant: str) -> set[str]:
+        deadline = time.monotonic() + 15
+        previous: set[str] | None = None
+        while time.monotonic() < deadline:
+            current = self._catalog(tenant)
+            if current == previous:
+                return current
+            previous = current
+            time.sleep(0.5)
+        raise AssertionError(f"tenant {tenant} catalog did not stabilize")
+
     def _resolved_tenant(self, workspace: Path) -> str:
         script = (
             "from pathlib import Path; "
@@ -172,7 +188,7 @@ class MultiDistroTenantsInstalled(unittest.TestCase):
                 self.assertEqual(written["items"][0]["content"], tenant)
 
         for tenant in ("code-project", "claw-project"):
-            state = self.home / "tenants" / tenant / "state" / "plugins" / "todo" / "_default.json"
+            state = self.home / "tenants" / tenant / "state" / "plugins" / "todo" / "shared-session.json"
             self.assertTrue(state.is_file(), state)
             self.assertEqual(json.loads(state.read_text(encoding="utf-8"))["items"][0]["content"], tenant)
 
@@ -192,11 +208,18 @@ class MultiDistroTenantsInstalled(unittest.TestCase):
             self.assertEqual(code_items[0]["content"], "code-project")
             self.assertEqual(claw_items[0]["content"], "claw-project")
 
+    def test_runtime_skills_are_readable_through_tenant_surface(self) -> None:
+        for tenant in ("code-immune-project", "claw-project"):
+            with self._client(tenant) as client:
+                skill_path = self.home / "tenants" / tenant / "skills" / "tabula-guide" / "SKILL.md"
+                skill = client.call_tool("fs_read", {"path": str(skill_path)}, timeout=15).json()
+                self.assertIn("name: tabula-guide", skill["content"])
+
     def test_reinstalling_code_distro_does_not_change_claw_tenant(self) -> None:
         claw_root = self.home / "tenants" / "claw-project"
         claw_lock = (claw_root / "install.lock.json").read_bytes()
         claw_plugins = (claw_root / "plugins").resolve()
-        claw_state_path = claw_root / "state" / "plugins" / "todo" / "_default.json"
+        claw_state_path = claw_root / "state" / "plugins" / "todo" / "shared-session.json"
         if not claw_state_path.is_file():
             with self._client("claw-project") as client:
                 client.call_tool(
@@ -205,7 +228,7 @@ class MultiDistroTenantsInstalled(unittest.TestCase):
                     timeout=15,
                 )
         claw_state = claw_state_path.read_bytes()
-        before_catalog = self._catalog("claw-project")
+        before_catalog = self._stable_catalog("claw-project")
 
         script = (
             "from pathlib import Path; "
@@ -227,7 +250,8 @@ class MultiDistroTenantsInstalled(unittest.TestCase):
         self.assertEqual((claw_root / "install.lock.json").read_bytes(), claw_lock)
         self.assertEqual((claw_root / "plugins").resolve(), claw_plugins)
         self.assertEqual(claw_state_path.read_bytes(), claw_state)
-        self.assertEqual(self._catalog("claw-project"), before_catalog)
+        self._wait_for_tenant_tools("claw-project", before_catalog)
+        self.assertEqual(self._stable_catalog("claw-project"), before_catalog)
 
     def test_tenant_selection_follows_cwd_binding(self) -> None:
         self.assertEqual(self._resolved_tenant(self.code_workspace), "code-project")

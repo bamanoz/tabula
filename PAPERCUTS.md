@@ -151,3 +151,7 @@ Running package-level `pytest` from tool directories → repository-root pytest 
 ## 2026-08-01 21:12 — externcash
 
 Running bundle-owned `gateway-web-browser` suite with `--testbed-dir gateways/tests` → runner expected `generate.py` inside manifest directory and failed before runtime startup. Retried with canonical `tabula-distrib/testbed` directory while keeping bundle suite source. Possible fix: distinguish manifest roots from generator/testbed directory in CLI help or discover generator independently.
+
+## 2026-08-01 22:53 — externcash
+
+Rematerializing isolated dev tenant with `make agent dev prepare` → command stopped the running dev kernel despite `prepare` sounding like install-only, and immediate `make agent dev run` timed out even though kernel and gateway became ready seconds later. Possible fix: separate non-disruptive update from stop/install, or make readiness timeout match full multi-tenant cold-worker priming.
