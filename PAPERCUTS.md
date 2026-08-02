@@ -155,3 +155,11 @@ Running bundle-owned `gateway-web-browser` suite with `--testbed-dir gateways/te
 ## 2026-08-01 22:53 — externcash
 
 Rematerializing isolated dev tenant with `make agent dev prepare` → command stopped the running dev kernel despite `prepare` sounding like install-only, and immediate `make agent dev run` timed out even though kernel and gateway became ready seconds later. Possible fix: separate non-disruptive update from stop/install, or make readiness timeout match full multi-tenant cold-worker priming.
+
+## 2026-08-01 23:48 — externcash
+
+Running plugin SDK test discovery with only its own source on `PYTHONPATH` → `test_contract.py` could not import sibling `tabula_drivers`. Retried with driver SDK source added. Possible fix: provide canonical bundle test target that assembles exported SDK dependency paths.
+
+## 2026-08-02 12:21 — default
+
+Committing with `vcs_commit` using documented `repository` path → tool rejected call with `vcs.repositories is required`, despite path matching configured workspace. Used non-interactive `git add` and `git commit` instead; tool configuration or error should expose accepted repository IDs.

@@ -42,7 +42,17 @@ by `tabula-install distro install` or project-scoped `tabula-agent install/apply
 External Agent Skills installed by ecosystem tools such as `npx skills` should
 use `$TABULA_WORKSPACE/skills/`, `$TABULA_WORKSPACE/.agents/skills/`, or
 `${XDG_CONFIG_HOME:-~/.config}/agents/skills/`, not `$TABULA_HOME/skills/`.
-Claw discovers those roots as instruction-only skills.
+Configured `external_roots` are exact directories whose immediate children are
+skills. Workspace discovery registers the two workspace skill directories even
+before they exist, so an agent can create the first skill there.
+
+When the skills plugin is installed, use its self-contained `skill_read`,
+`skill_write`, `skill_edit`, and `skill_delete` tools. Runtime skills under
+`$TABULA_HOME/skills` are read-only; external roots are writable. The tools can
+manage all skill-local resources, including `references/`, `scripts/`, and
+assets, without requiring the generic filesystem plugin. `skill_write` and
+`skill_edit` validate `SKILL.md` frontmatter and require `name` to match the
+containing directory.
 
 ---
 
@@ -71,7 +81,7 @@ Explain what the skill does and how to use it.
 
 Required fields:
 
-- `name` — skill identifier, defaults to the directory name.
+- `name` — skill identifier; must match the directory name.
 - `description` — one-line summary; injected into the system prompt.
 
 Optional:

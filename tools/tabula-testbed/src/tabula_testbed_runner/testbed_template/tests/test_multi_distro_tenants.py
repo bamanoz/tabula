@@ -208,12 +208,79 @@ class MultiDistroTenantsInstalled(unittest.TestCase):
             self.assertEqual(code_items[0]["content"], "code-project")
             self.assertEqual(claw_items[0]["content"], "claw-project")
 
-    def test_runtime_skills_are_readable_through_tenant_surface(self) -> None:
-        for tenant in ("code-immune-project", "claw-project"):
-            with self._client(tenant) as client:
-                skill_path = self.home / "tenants" / tenant / "skills" / "tabula-guide" / "SKILL.md"
-                skill = client.call_tool("fs_read", {"path": str(skill_path)}, timeout=15).json()
-                self.assertIn("name: tabula-guide", skill["content"])
+    def test_skill_tools_manage_external_skills_and_protect_sandbox(self) -> None:
+        runtime_skill = self.home / "skills" / "tabula-guide" / "SKILL.md"
+        for tenant, workspace in (
+            ("code-immune-project", self.code_immune_workspace),
+            ("claw-project", self.claw_workspace),
+        ):
+            skill_root = workspace / ".agents" / "skills"
+            skill_dir = skill_root / "installed-test"
+            skill_md = skill_dir / "SKILL.md"
+            reference = skill_dir / "references" / "notes.md"
+            script = skill_dir / "scripts" / "check.sh"
+            content = "---\nname: installed-test\ndescription: Installed skill tool test\n---\n\nOriginal body.\n"
+            with self._client(tenant, session=f"skills-{tenant}") as client:
+                catalog = {str(tool.get("name")) for tool in client.tools() if tool.get("name")}
+                self.assertTrue({"skill_read", "skill_write", "skill_edit", "skill_delete"}.issubset(catalog), catalog)
+
+                runtime = client.call_tool("skill_read", {"path": str(runtime_skill)}, timeout=15)
+                self.assertTrue(runtime.ok, runtime.output)
+                self.assertIn("name: tabula-guide", runtime.json()["content"])
+
+                written = client.call_tool("skill_write", {"path": str(skill_md), "content": content}, timeout=15)
+                self.assertTrue(written.ok, written.output)
+                self.assertEqual(skill_md.read_text(encoding="utf-8"), content)
+
+                invalid = client.call_tool("skill_write", {
+                    "path": str(skill_root / "wrong-name" / "SKILL.md"),
+                    "content": "---\nname: other-name\ndescription: Invalid\n---\n",
+                }, timeout=15)
+                self.assertFalse(invalid.ok, invalid.output)
+                self.assertFalse((skill_root / "wrong-name" / "SKILL.md").exists())
+
+                for path, body, executable in (
+                    (reference, "reference body\n", False),
+                    (script, "#!/bin/sh\nexit 0\n", True),
+                ):
+                    result = client.call_tool("skill_write", {
+                        "path": str(path), "content": body, "executable": executable,
+                    }, timeout=15)
+                    self.assertTrue(result.ok, result.output)
+                self.assertTrue(script.stat().st_mode & 0o100)
+
+                listing = client.call_tool("skill_read", {"path": str(skill_dir)}, timeout=15)
+                self.assertTrue(listing.ok, listing.output)
+                self.assertEqual([entry["name"] for entry in listing.json()["entries"]], ["SKILL.md", "references", "scripts"])
+                resource = client.call_tool("skill_read", {"path": str(reference)}, timeout=15)
+                self.assertEqual(resource.json()["content"], "reference body\n")
+
+                edited = client.call_tool("skill_edit", {
+                    "path": str(skill_md), "old_string": "Original body.", "new_string": "Edited body.",
+                }, timeout=15)
+                self.assertTrue(edited.ok, edited.output)
+                self.assertIn("Edited body.", skill_md.read_text(encoding="utf-8"))
+
+                runtime_write = client.call_tool("skill_edit", {
+                    "path": str(runtime_skill), "old_string": "name: tabula-guide", "new_string": "name: changed",
+                }, timeout=15)
+                self.assertFalse(runtime_write.ok, runtime_write.output)
+                traversal = client.call_tool("skill_read", {"path": str(skill_dir / ".." / "installed-test" / "SKILL.md")}, timeout=15)
+                self.assertFalse(traversal.ok, traversal.output)
+
+                outside = workspace / "outside-skill-test.txt"
+                outside.write_text("outside\n", encoding="utf-8")
+                link = skill_dir / "outside-link"
+                link.symlink_to(outside)
+                escaped = client.call_tool("skill_read", {"path": str(link)}, timeout=15)
+                self.assertFalse(escaped.ok, escaped.output)
+
+                non_recursive = client.call_tool("skill_delete", {"path": str(skill_dir)}, timeout=15)
+                self.assertFalse(non_recursive.ok, non_recursive.output)
+                deleted = client.call_tool("skill_delete", {"path": str(skill_dir), "recursive": True}, timeout=15)
+                self.assertTrue(deleted.ok, deleted.output)
+                self.assertFalse(skill_dir.exists())
+                self.assertEqual(outside.read_text(encoding="utf-8"), "outside\n")
 
     def test_reinstalling_code_distro_does_not_change_claw_tenant(self) -> None:
         claw_root = self.home / "tenants" / "claw-project"
