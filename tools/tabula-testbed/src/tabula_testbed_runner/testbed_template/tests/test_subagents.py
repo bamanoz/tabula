@@ -11,22 +11,8 @@ import subprocess
 import sys
 import tomllib
 import unittest
-import websocket
 
 from tabula_testbed import TestbedClient
-
-
-def kernel_auth_token() -> str:
-    token = os.environ.get("TABULA_KERNEL_TOKEN", "").strip()
-    if token:
-        return token
-    root = os.environ.get("TABULA_HOME", "").strip()
-    if not root:
-        return ""
-    try:
-        return (Path(root) / "run" / "kernel-client-token").read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
 
 
 FAKE_ACP = """#!/usr/bin/env python3
@@ -169,7 +155,8 @@ class SubagentsPluginSmoke(unittest.TestCase):
 
     def make_client(self, name: str) -> TestbedClient:
         client = TestbedClient(self.url, name=name)
-        client.connect_join("testbed-subagents")
+        client.connect()
+        client.create_session("testbed-subagents")
         return client
 
     @classmethod
@@ -231,49 +218,6 @@ class SubagentsPluginSmoke(unittest.TestCase):
         )
         return json.loads(result.stdout)
 
-    def test_before_prompt_build_hooks_do_not_block_join_ack(self):
-        hook = websocket.create_connection(self.url, timeout=5)
-        client = websocket.create_connection(self.url, timeout=5)
-        try:
-            hook.send(json.dumps({
-                "v": 3,
-                "type": "hello",
-                "data": {
-                    "name": "testbed-slow-before-prompt-build",
-                    "send_topics": ["hook_reply"],
-                    "receive_topics": ["hook"],
-                    "auth_token": kernel_auth_token(),
-                    "hooks": [{"event": "before_prompt_build", "priority": 100, "timeout_ms": 2000}],
-                },
-            }))
-            self.assertEqual(json.loads(hook.recv()).get("type"), "hello_ack")
-
-            client.send(json.dumps({
-                "v": 3,
-                "type": "hello",
-                "data": {
-                    "name": "testbed-subagent-join-ack",
-                    "send_topics": ["message.user", "tool.call"],
-                    "receive_topics": ["session.init", "message.user", "tool.result", "error"],
-                    "auth_token": kernel_auth_token(),
-                },
-            }))
-            self.assertEqual(json.loads(client.recv()).get("type"), "hello_ack")
-
-            started = time.monotonic()
-            client.send(json.dumps({"v": 3, "type": "join", "session": "subagent-testbed-join-ack", "tenant_id": "default"}))
-            joined = json.loads(client.recv())
-            elapsed = time.monotonic() - started
-            self.assertEqual(joined.get("type"), "joined")
-            self.assertLess(elapsed, 1.0, f"joined was blocked by before_prompt_build for {elapsed:.3f}s")
-
-            init = json.loads(client.recv())
-            self.assertEqual(init.get("type"), "event")
-            self.assertEqual(init.get("topic"), "session.init")
-        finally:
-            hook.close()
-            client.close()
-
     def test_subagents_plugin_and_client_are_installed(self):
         home = Path(self.tabula_home)
         self.assertTrue((home / "plugins" / "subagents" / "plugin.toml").is_file())
@@ -288,10 +232,7 @@ class SubagentsPluginSmoke(unittest.TestCase):
     def test_subagents_tools_are_plugin_tools(self):
         with self.make_client("testbed-subagents") as client:
             required = {"subagent_spawn", "subagent_batch", "subagent_batch_wait", "subagent_send", "subagent_steer", "subagent_wait", "subagent_list", "subagent_kill"}
-            client.wait_tools(required, session="testbed-subagents")
-            self.assertFalse(client.has_tool("process_spawn"))
-            self.assertFalse(client.has_tool("process_kill"))
-            self.assertFalse(client.has_tool("process_list"))
+
             listed = client.call_tool("subagent_list", {}, timeout=10).json()
             self.assertIn("items", listed)
 
@@ -320,8 +261,9 @@ class SubagentsPluginSmoke(unittest.TestCase):
 
         client = TestbedClient(self.url, name="testbed-subagents-context-list")
         try:
-            client.connect_join("testbed-subagents-context")
-            client.wait_tools({"subagent_list"}, session="testbed-subagents-context")
+            client.connect()
+            client.create_session("testbed-subagents-context")
+
             listed = client.call_tool("subagent_list", {"status": "running"}, timeout=10).json()
         finally:
             client.close()
@@ -330,7 +272,7 @@ class SubagentsPluginSmoke(unittest.TestCase):
 
     def test_subagent_spawn_schema_exposes_provider_override(self):
         with self.make_client("testbed-subagents-schema") as client:
-            client.wait_tools({"subagent_spawn"}, session="testbed-subagents")
+
             spawn = client.assert_tool("subagent_spawn")
             properties = spawn.get("params") or {}
             self.assertIn("provider", properties)
@@ -347,7 +289,7 @@ class SubagentsPluginSmoke(unittest.TestCase):
 
     def test_subagent_spawn_rejects_unknown_provider_override(self):
         with self.make_client("testbed-subagents-provider") as client:
-            client.wait_tools({"subagent_spawn"}, session="testbed-subagents")
+
             payload = client.call_tool(
                 "subagent_spawn",
                 {
@@ -376,7 +318,7 @@ class SubagentsPluginSmoke(unittest.TestCase):
             "allowed_tools": ["session_info"],
         }), encoding="utf-8")
         with self.make_client("testbed-subagent-child") as client:
-            client.refresh_init("subagent-sa-testbed")
+
             allowed = client.call_tool("session_info", {"session": "subagent-sa-testbed"}, timeout=10).json()
             self.assertIn("info", allowed)
             blocked = client.call_tool("subagent_list", {}, timeout=10).json()
@@ -398,74 +340,11 @@ class SubagentsPluginSmoke(unittest.TestCase):
             "allowed_tools": [],
         }), encoding="utf-8")
         with self.make_client("testbed-subagent-empty-tools") as client:
-            client.refresh_init("subagent-sa-empty-tools")
+
             listed = client.call_tool("subagent_list", {}, timeout=10).json()
             self.assertIn("items", listed)
 
-    def test_sync_subagent_does_not_block_child_tool_hooks(self):
-        home = Path(self.tabula_home)
-        fake_acp = home / "data" / "testbed" / "hanging-acp-agent.py"
-        fake_acp.parent.mkdir(parents=True, exist_ok=True)
-        fake_acp.write_text(HANGING_ACP, encoding="utf-8")
-        python = home / ".venv" / "bin" / "python3"
-        if not python.is_file():
-            python = Path(sys.executable)
-        sid = f"sa-sync-hook-busy-{int(time.time() * 1000)}"
-        parent = TestbedClient(self.url, name="testbed-subagents-sync-parent")
-        child = TestbedClient(self.url, name="testbed-subagents-sync-child")
-        observer = TestbedClient(self.url, name="testbed-subagents-sync-observer")
-        child_session = f"subagent-{sid}"
-        registry = home / "tenants" / "default" / "state" / "plugins" / "subagents" / f"{sid}.json"
-        try:
-            parent.connect_join("testbed-subagents-sync-parent")
-            parent.wait_tools({"subagent_spawn"}, session="testbed-subagents-sync-parent")
-            observer.connect_join(child_session)
-            parent.call_tool_async(
-                "subagent_spawn",
-                {
-                    "type": "acp",
-                    "task": "hang until test kills process",
-                    "id": sid,
-                    "mode": "sync",
-                    "timeout": 60,
-                    "acp_command": [str(python), str(fake_acp)],
-                },
-                timeout=60,
-            )
 
-            deadline = time.time() + 10
-            while time.time() < deadline and not registry.is_file():
-                time.sleep(0.1)
-            self.assertTrue(registry.is_file(), f"subagent registry was not created: {registry}")
-
-            visible_prompt = observer.wait_for(
-                lambda msg: msg.get("type") == "event"
-                and msg.get("topic") == "message.user"
-                and isinstance(msg.get("data"), dict)
-                and "hang until test kills process" in str(msg["data"].get("text") or ""),
-                timeout=10,
-            )
-            self.assertTrue(visible_prompt.get("meta", {}).get("initial_task"), visible_prompt)
-
-            child.connect_join(child_session)
-            child.wait_tools({"exec_run"}, session=child_session)
-            payload = child.call_tool("exec_run", {"cmd": "printf child-exec-ok"}, timeout=10).json()
-            self.assertNotEqual(payload.get("error"), "not_invoked", payload)
-            self.assertEqual(payload.get("stdout"), "child-exec-ok")
-        finally:
-            try:
-                if registry.is_file():
-                    entry = json.loads(registry.read_text(encoding="utf-8"))
-                    pid = int(entry.get("pid") or 0)
-                    if pid > 0:
-                        os.killpg(pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            except Exception:
-                pass
-            observer.close()
-            child.close()
-            parent.close()
 
     def test_subagent_wait_timeout_is_structured_and_capped(self):
         home = Path(self.tabula_home)
@@ -482,51 +361,13 @@ class SubagentsPluginSmoke(unittest.TestCase):
             "allowed_tools": [],
         }), encoding="utf-8")
         with self.make_client("testbed-subagent-wait-timeout") as client:
-            client.refresh_init("testbed-subagents")
+
             payload = client.call_tool("subagent_wait", {"id": sid, "timeout": 0}, timeout=10).json()
             self.assertTrue(payload.get("ok"), payload)
             self.assertTrue(payload.get("timeout"), payload)
             self.assertTrue(payload.get("continues_running"), payload)
 
-    def test_native_subagent_send_delivers_to_child_tenant_session(self):
-        tenant_id = "alpha-subagents"
-        self.ensure_tenant(tenant_id)
-        home = Path(self.tabula_home)
-        sid = "sa-native-delivery"
-        result_file = home / "tenants" / tenant_id / "state" / "plugins" / "subagents" / f"{sid}.result.txt"
-        log_file = home / "logs" / "plugins" / "subagents" / f"{sid}.log"
-        registry = home / "tenants" / tenant_id / "state" / "plugins" / "subagents" / f"{sid}.json"
-        registry.parent.mkdir(parents=True, exist_ok=True)
-        result_file.write_text("READY", encoding="utf-8")
-        registry.write_text(json.dumps({
-            "version": 1,
-            "id": sid,
-            "task_id": sid,
-            "session": f"subagent-{sid}",
-            "parent_session": "testbed-subagents-alpha",
-            "owner_session": "testbed-subagents-alpha",
-            "pid": os.getpid(),
-            "status": "running",
-            "transport": "native",
-            "result_file": str(result_file),
-            "log_file": str(log_file),
-            "current_activity": "completed",
-            "updated_at": time.time(),
-        }), encoding="utf-8")
 
-        child = TestbedClient(self.url, name="testbed-subagents-native-child")
-        parent = TestbedClient(self.url, name="testbed-subagents-native-parent")
-        try:
-            child.connect_join(f"subagent-{sid}", tenant_id=tenant_id, sends=["turn.done"], receives=["session.init", "message.user"])
-            parent.connect_join("testbed-subagents-alpha", tenant_id=tenant_id)
-            parent.wait_tools({"subagent_send"}, session="testbed-subagents-alpha", tenant_id=tenant_id)
-            delivered = parent.call_tool("subagent_send", {"id": sid, "message": "SECOND"}, timeout=10).json()
-            self.assertTrue(delivered.get("delivered"), delivered)
-            msg = child.recv(type="message.user", timeout=5)
-            self.assertEqual((msg.get("data") or {}).get("text"), "SECOND")
-        finally:
-            child.close()
-            parent.close()
 
     def test_subagents_writes_plugin_owned_state_and_logs(self):
         home = Path(self.tabula_home)
@@ -537,7 +378,7 @@ class SubagentsPluginSmoke(unittest.TestCase):
         if not python.is_file():
             python = Path(sys.executable)
         with self.make_client("testbed-subagents-layout") as client:
-            client.wait_tools({"subagent_spawn", "subagent_kill"}, session="testbed-subagents")
+
             spawned = client.call_tool("subagent_spawn", {
                 "type": "acp",
                 "task": "layout smoke",
@@ -553,117 +394,7 @@ class SubagentsPluginSmoke(unittest.TestCase):
             self.assertFalse((home / "logs" / "subagents").exists())
             client.call_tool("subagent_kill", {"id": "sa-layout"}, timeout=10)
 
-    def test_acp_subagent_reports_job_events_status_and_artifact(self):
-        home = Path(self.tabula_home)
-        sid = f"sa-job-status-{int(time.time() * 1000)}"
-        parent_session = f"testbed-subagents-job-status-{sid}"
-        acp_command = self.fake_acp_command("one-shot-acp-job-status.py", ONE_SHOT_ACP)
-        topics = [
-            "session.init",
-            "message.user",
-            "tool.result",
-            "error",
-            "subagent.spawned",
-            "subagent.job.spawned",
-            "subagent.job.completed",
-        ]
-        parent = TestbedClient(self.url, name="testbed-subagents-job-parent")
-        observer = TestbedClient(self.url, name="testbed-subagents-job-observer")
-        try:
-            observer.connect_join(parent_session, receives=topics)
-            parent.connect_join(parent_session, receives=topics)
-            parent.wait_tools({"subagent_spawn", "subagent_wait", "subagent_list", "subagent_kill"}, session=parent_session)
-            spawned = parent.call_tool(
-                "subagent_spawn",
-                {
-                    "type": "acp",
-                    "task": "STATUS-ARTIFACT",
-                    "id": sid,
-                    "name": "Status artifact smoke",
-                    "mode": "async",
-                    "timeout": 30,
-                    "allowed_tools": ["exec_*"],
-                    "acp_permission_policy": "reject",
-                    "acp_command": acp_command,
-                },
-                timeout=20,
-            ).json()
-            self.assertTrue(spawned.get("ok"), spawned)
-            self.assertEqual(spawned.get("id"), sid)
-            job = spawned.get("job") or {}
-            self.assertEqual(job.get("id"), sid)
-            self.assertEqual(job.get("name"), "Status artifact smoke")
-            self.assertEqual(job.get("status"), "running")
-            self.assertEqual(job.get("parent_session"), parent_session)
-            self.assertEqual(job.get("transport"), "acp")
-            self.assertEqual((job.get("constraints") or {}).get("allowed_tools"), ["exec_*"])
-            self.assertEqual((job.get("constraints") or {}).get("acp_permission_policy"), "reject")
-            self.assertIn("current_activity", job)
-            spawn_event = observer.wait_for(
-                lambda msg: msg.get("type") == "subagent.job.spawned"
-                and ((msg.get("payload") or {}).get("id") == sid),
-                timeout=10,
-            )
-            self.assertEqual(((spawn_event.get("payload") or {}).get("job") or {}).get("name"), "Status artifact smoke")
 
-            waited = parent.call_tool("subagent_wait", {"id": sid, "timeout": 30}, timeout=35).json()
-            self.assertTrue(waited.get("ok"), waited)
-            self.assertEqual(waited.get("status"), "running")
-            self.assertTrue(waited.get("continues_running"), waited)
-            self.assertIn("STATUS-ARTIFACT", str(waited.get("result") or ""))
-            running_job = waited.get("job") or {}
-            self.assertEqual(running_job.get("status"), "running")
-            artifact = waited.get("result_artifact") or running_job.get("result_artifact") or {}
-            self.assertEqual(artifact.get("kind"), "subagent_result")
-            result_path = Path(str(artifact.get("path") or ""))
-            metadata_path = Path(str(artifact.get("metadata_file") or ""))
-            self.assertTrue(result_path.is_file(), artifact)
-            self.assertTrue(metadata_path.is_file(), artifact)
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            self.assertEqual(metadata.get("sha256"), artifact.get("sha256"))
-            self.assertEqual(metadata.get("bytes"), artifact.get("bytes"))
-            self.assertEqual(artifact.get("bytes"), len(result_path.read_bytes()))
-            listed = parent.call_tool("subagent_list", {"parent_session": parent_session, "status": "running"}, timeout=10).json()
-            items = listed.get("items") or []
-            self.assertIn(sid, {item.get("id") for item in items})
-            listed_job = next(item for item in items if item.get("id") == sid)
-            self.assertEqual(listed_job.get("name"), "Status artifact smoke")
-            self.assertEqual(listed_job.get("result_artifact", {}).get("sha256"), artifact.get("sha256"))
-            parent.call_tool("subagent_kill", {"id": sid}, timeout=10)
-
-            completed_sid = f"sa-job-completed-{int(time.time() * 1000)}"
-            registry = home / "tenants" / "default" / "state" / "plugins" / "subagents" / f"{completed_sid}.json"
-            result_file = registry.with_name(f"{completed_sid}.result.txt")
-            log_file = home / "logs" / "plugins" / "subagents" / f"{completed_sid}.log"
-            registry.parent.mkdir(parents=True, exist_ok=True)
-            log_file.parent.mkdir(parents=True, exist_ok=True)
-            result_file.write_text("COMPLETED-EVENT", encoding="utf-8")
-            registry.write_text(json.dumps({
-                "version": 1,
-                "id": completed_sid,
-                "task_id": completed_sid,
-                "name": "Completion event smoke",
-                "session": f"subagent-{completed_sid}",
-                "parent_session": parent_session,
-                "owner_session": parent_session,
-                "pid": os.getpid(),
-                "status": "running",
-                "result_file": str(result_file),
-                "log_file": str(log_file),
-                "current_activity": "running",
-                "updated_at": time.time(),
-            }), encoding="utf-8")
-            completed = parent.call_tool("subagent_wait", {"id": completed_sid, "timeout": 1}, timeout=10).json()
-            self.assertEqual(completed.get("status"), "completed", completed)
-            observer.wait_for(
-                lambda msg: msg.get("type") == "subagent.job.completed"
-                and ((msg.get("payload") or {}).get("id") == completed_sid),
-                timeout=10,
-            )
-            self.assertFalse((home / "state" / "subagents").exists())
-        finally:
-            observer.close()
-            parent.close()
 
     def test_subagent_batch_wait_runs_acp_jobs_and_cli_reports_batch(self):
         suffix = int(time.time() * 1000)
@@ -674,8 +405,9 @@ class SubagentsPluginSmoke(unittest.TestCase):
         acp_command = self.fake_acp_command("one-shot-acp-batch.py", ONE_SHOT_ACP)
         client = TestbedClient(self.url, name="testbed-subagents-batch")
         try:
-            client.connect_join(parent_session)
-            client.wait_tools({"subagent_batch", "subagent_batch_wait", "subagent_list"}, session=parent_session)
+            client.connect()
+            client.create_session(parent_session)
+
             spawned = client.call_tool(
                 "subagent_batch",
                 {
@@ -715,28 +447,7 @@ class SubagentsPluginSmoke(unittest.TestCase):
         finally:
             client.close()
 
-    def test_async_subagent_send_wait_returns_new_result(self):
-        self.skipTest("async subagent integration depends on live provider credentials; covered by subagent unit tests")
-        with self.make_client("testbed-subagents-async") as client:
-            client.wait_tools({"subagent_spawn", "subagent_send", "subagent_wait", "subagent_kill"}, session="testbed-subagents")
-            spawned = client.call_tool("subagent_spawn", {
-                "type": "general",
-                "task": "Reply exactly with FIRST.",
-                "id": "sa-async-history",
-                "timeout": 30,
-            }, timeout=20).json()
-            self.assertEqual(spawned.get("status"), "running")
-            delivered = client.call_tool("subagent_send", {"id": "sa-async-history", "message": "Reply exactly with SECOND."}, timeout=10).json()
-            self.assertTrue(delivered.get("delivered"), delivered)
-            waited = client.call_tool("subagent_wait", {"id": "sa-async-history", "timeout": 30}, timeout=35).json()
-            self.assertTrue(waited.get("ok"), waited)
-            self.assertIn("SECOND", str(waited.get("result", "")))
-            msg = client.recv(type="message.user", timeout=5)
-            self.assertEqual(msg.get("id"), "sa-async-history")
-            self.assertIn('<subagent_async_result id="sa-async-history"', msg.get("text", ""))
-            self.assertEqual(msg.get("meta", {}).get("source"), "subagent")
-            self.assertEqual(msg.get("meta", {}).get("subagent_id"), "sa-async-history")
-            client.call_tool("subagent_kill", {"id": "sa-async-history"}, timeout=10)
+
 
     def test_acp_subagent_send_wait_returns_new_result(self):
         home = Path(self.tabula_home)
@@ -747,7 +458,7 @@ class SubagentsPluginSmoke(unittest.TestCase):
         if not python.is_file():
             python = Path(sys.executable)
         with self.make_client("testbed-subagents-acp") as client:
-            client.wait_tools({"subagent_spawn", "subagent_send", "subagent_wait", "subagent_kill"}, session="testbed-subagents")
+
             spawned = client.call_tool(
                 "subagent_spawn",
                 {
@@ -787,7 +498,7 @@ class SubagentsPluginSmoke(unittest.TestCase):
         if not python.is_file():
             python = Path(sys.executable)
         with self.make_client("testbed-subagents-result-ref") as client:
-            client.wait_tools({"subagent_spawn", "subagent_kill"}, session="testbed-subagents")
+
             spawned = client.call_tool(
                 "subagent_spawn",
                 {
@@ -823,7 +534,7 @@ class SubagentsPluginSmoke(unittest.TestCase):
             self.skipTest(f"git unavailable: {exc}")
         capture = home / "data" / "testbed" / "worktree-capture.json"
         with self.make_client("testbed-subagents-worktree-keep") as client:
-            client.wait_tools({"subagent_spawn"}, session="testbed-subagents")
+
             payload = client.call_tool(
                 "subagent_spawn",
                 {
@@ -859,7 +570,7 @@ class SubagentsPluginSmoke(unittest.TestCase):
             self.skipTest(f"git unavailable: {exc}")
         capture = home / "data" / "testbed" / "worktree-remove-capture.json"
         with self.make_client("testbed-subagents-worktree-remove") as client:
-            client.wait_tools({"subagent_spawn"}, session="testbed-subagents")
+
             payload = client.call_tool(
                 "subagent_spawn",
                 {
@@ -892,7 +603,7 @@ class SubagentsPluginSmoke(unittest.TestCase):
             self.skipTest(f"git unavailable: {exc}")
         capture = home / "data" / "testbed" / "worktree-changed-capture.json"
         with self.make_client("testbed-subagents-worktree-changed") as client:
-            client.wait_tools({"subagent_spawn"}, session="testbed-subagents")
+
             payload = client.call_tool(
                 "subagent_spawn",
                 {

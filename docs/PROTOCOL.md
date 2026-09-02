@@ -12,7 +12,8 @@ fix one of them.
 
 Companion code:
 
-- WS message types and constants: `internal/kernel/protocol.go`
+- WS v4 envelopes and operations: `internal/kernel/client_v4.go`
+- Internal extension bus shapes and topics: `internal/kernel/message.go`, `internal/kernel/protocol.go`
 - Runtime API frames: `internal/runtime/wire/types.go`
 - Runtime worker frames: `internal/runtime/worker/wire/types.go`
 
@@ -20,76 +21,25 @@ Companion code:
 
 ## 1. WebSocket protocol (kernel ↔ client)
 
-### Versioning
+The kernel serves protocol v4 only. The authoritative contract, operation list,
+state machine, error codes, and examples are in `docs/KERNEL_PROTOCOL_V4.md`.
 
-Single integer `ProtocolVersion` (`internal/kernel/protocol.go`). Current
-version: `3`.
+Every frame is a strict JSON envelope with `v: 4`, `kind`, `op`, `id`, scoped
+`tenant_id`/`session_id`, and typed `data`. The first frame is the
+`connection.open` command. Authentication uses the local token from
+`$TABULA_HOME/run/kernel-client-token` or `TABULA_KERNEL_TOKEN`.
 
-Clients must send `v: 3` in every client->kernel frame. The first frame must be
-`hello`, and successful handshake returns `hello_ack`. Mismatch is rejected with
-an `error` frame.
+Clients use durable commands and queries such as:
 
-There is **no negotiation** on this channel. Any breaking change bumps the
-integer; any client that does not match exactly is rejected. This is
-intentional: the WS surface is small, the client population is in-tree
-(gateways, TUIs), and we control both sides.
+- `session.create`, `session.get`, `session.list`, `session.subscribe`;
+- `session.archive`, `session.unarchive`, `session.delete`;
+- `input.submit` and fenced turn recovery commands;
+- `tool.call` with streamed and terminal typed results.
 
-`ProtocolVersion` bumps:
-
-- Renaming or removing a field on an existing message → **bump**.
-- Adding a new optional field → **no bump** (clients must tolerate unknown fields).
-- Adding a new message type → **no bump** if old clients can ignore it; **bump**
-  otherwise.
-- Changing semantics of an existing field → **bump**.
-
-Canonical examples live in `docs/KERNEL_PROTOCOL_EXAMPLES.md`.
-
-### Message envelope
-
-JSON over WebSocket. Every message has a `type` field. Other fields depend
-on the type. See `internal/kernel/protocol.go` for the full enum and
-`validateMessage` for required-field rules.
-
-Unknown fields on incoming messages are tolerated (forward compatibility).
-Unknown `type` values are rejected with an error message but do not close
-the socket.
-
-### Kernel client `hello`
-
-Kernel WebSocket clients must authenticate in the first `hello` frame:
-
-```json
-{
-  "v": 3,
-  "type": "hello",
-  "data": {
-    "name": "gateway-cli-main",
-    "auth_token": "ktk_...",
-    "send_topics": ["message.user", "turn.cancel"],
-    "receive_topics": ["session.init", "stream.delta", "turn.done", "error"]
-  }
-}
-```
-
-`auth_token` is the local token from `$TABULA_HOME/run/kernel-client-token` or
-`TABULA_KERNEL_TOKEN`. The old `token` field is not a client auth field; non-empty
-values are rejected because kernel-managed spawn tokens were removed.
-
-After `hello_ack`, clients join with `join` and then exchange domain messages as
-`event`, `request`, and `reply` frames. Important topics include:
-
-- `message.user`
-- `session.init`
-- `session.member_joined`
-- `stream.start`, `stream.delta`, `stream.end`
-- `reasoning.start`, `reasoning.delta`, `reasoning.end`
-- `tool.call`, `tool.result`
-- `exchange.choose`, `exchange.approve`
-- `usage.update`
-- `turn.done`, `turn.cancel`
-
-`hook_reply` frames are valid only for the client or runtime subscriber that
-received the matching `hook` frame.
+Gateways are ordinary client actors. Drivers use the separate execution API and
+never receive turns through client topic capabilities. Extension traffic uses
+`extension.send` and `extension.event`; it cannot perform authoritative session,
+input, turn, attempt, lease, or output transitions.
 
 ---
 
@@ -120,11 +70,36 @@ See `internal/runtime/wire/types.go` for the authoritative Go structs.
 | `health` / `health_resp` | kernel ↔ runtime | runtime liveness |
 | `list_capabilities` / `list_capabilities_resp` | kernel ↔ runtime | current plugin capability catalog |
 | `reload` / `reload_ack` | kernel ↔ runtime | refresh manifests/workers |
+| `prepare_tenant` / `prepare_tenant_ack` | kernel ↔ runtime | synchronously initialize tenant-visible warm plugin workers and return their authoritative capabilities |
 | `hook_event` / `hook_event_reply` | kernel ↔ runtime | deliver and answer plugin hook events |
 | `catalog_update` | runtime → kernel | replace one plugin target capability |
 | `plugin_send` | runtime → kernel | emit a bus message |
 | `plugin_log` | runtime → kernel | emit structured diagnostics |
 | `lifecycle_notice` | runtime → kernel | report plugin target lifecycle state |
+| `driver.ensure` / `driver.ensure_ack` | kernel ↔ runtime | converge one pinned session driver worker |
+| `driver.stop` / `driver.stop_ack` | kernel ↔ runtime | stop one session driver worker |
+| `driver.lifecycle` | runtime → kernel | report session driver process lifecycle |
+| `driver.register` / `driver.lease_granted` | runtime ↔ kernel | register and fence one session driver |
+| `driver.ready` / `driver.heartbeat` / `driver.result` | runtime ↔ kernel | maintain readiness, lease, and correlated acknowledgements |
+| `turn.assign` / `turn.prepared` / `turn.prepare_failed` | kernel ↔ runtime | prepare one fenced attempt without external work |
+| `turn.permit` / `turn.cancel` | kernel → runtime | grant or revoke execution authority |
+| `turn.output` / terminal turn operations | runtime → kernel | commit ordered output and terminal attempt state |
+| `turn.tool_call` / `turn.tool_result` | runtime ↔ kernel | dispatch a provider tool request and return its terminal result |
+
+Driver components use `kind.name = "driver"`, `worker.mode = "warm"`, and
+`worker.scope = "session"`. They cannot publish plugin tools or hooks and are
+not invokable through the generic plugin API. `driver.ensure` is idempotent for
+the same tenant/session/component/spec/generation tuple; a newer desired
+generation stops the prior worker before replacement. Runtime restart and
+reattachment rebuild desired driver workers from durable session projections.
+Before every `driver.ensure`, the kernel sends `prepare_tenant` and waits for the
+runtime to initialize all warm tenant-visible plugin workers. The runtime reply
+contains the complete worker-authoritative capability snapshot for those warm
+targets. The kernel applies that snapshot before allowing the driver to start,
+so the driver's first prompt after startup or reload sees the same tool schemas
+as later prompts without timing sleeps. Failed optional targets remain failed in
+the snapshot and do not block unrelated ready targets; cancellation or transport
+failure aborts driver startup.
 
 Only plugin targets are invokable. Skills are instruction artifacts and do not
 publish executable Runtime API capabilities.
@@ -175,6 +150,14 @@ Direction reference:
 | `send`          | worker → runtime | none                 |
 | `log`           | worker → runtime | none                 |
 | `tools_updated` | worker → runtime | none                 |
+| `tool_call`     | driver worker → runtime | correlated `tool_result` after kernel tool completion |
+| `tool_result`   | runtime → driver worker | none                 |
+
+A `shutdown` frame may include diagnostic `reason` text and optional boolean
+`final`. `final = true` means the runtime process is exiting; absent or false
+means the runtime remains active and is replacing or evicting the worker. A
+worker that supervises detached child processes uses `final`, not `reason`, to
+decide whether those children must also stop.
 
 ### Restart contract
 

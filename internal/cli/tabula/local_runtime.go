@@ -1,6 +1,7 @@
 package tabula
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -18,7 +19,12 @@ import (
 	runtimehostconfig "github.com/bamanoz/tabula/internal/runtime/host/config"
 )
 
-const localRuntimeAttachTimeout = 10 * time.Second
+const (
+	localRuntimeAttachTimeout      = 10 * time.Second
+	localRuntimeRestartMinDelay    = 250 * time.Millisecond
+	localRuntimeRestartMaxDelay    = 5 * time.Second
+	localRuntimeDetachPollInterval = 25 * time.Millisecond
+)
 
 // ensureRuntimeConfigExists verifies that the installer has produced
 // $TABULA_HOME/config/runtime.toml. Plugin layout (plugin_dirs, skill_dirs,
@@ -206,6 +212,85 @@ func waitForLocalRuntimeAttachment(hub *kernel.Hub, runtimeProc *managedLocalRun
 	return runtimeProc.WaitForAttachment(func() bool {
 		return hub.RuntimeAttached(runtimeauth.LocalRuntimeID)
 	}, timeout)
+}
+
+func superviseManagedLocalRuntime(
+	ctx context.Context,
+	initial *managedLocalRuntime,
+	attached func() bool,
+	start func() (*managedLocalRuntime, error),
+	onExit func(pid int, err error),
+	onRestart func(pid int),
+	onRestartError func(error),
+) error {
+	if ctx == nil {
+		return fmt.Errorf("local runtime supervisor context is required")
+	}
+	if initial == nil {
+		return fmt.Errorf("initial local runtime process is required")
+	}
+	if attached == nil {
+		return fmt.Errorf("local runtime attachment check is required")
+	}
+	if start == nil {
+		return fmt.Errorf("local runtime start function is required")
+	}
+
+	current := initial
+	running := true
+	delay := localRuntimeRestartMinDelay
+	for {
+		if running {
+			select {
+			case <-ctx.Done():
+				_ = current.Shutdown(5 * time.Second)
+				return nil
+			case <-current.Done():
+				waitErr := current.Wait()
+				running = false
+				if onExit != nil {
+					onExit(current.PID(), waitErr)
+				}
+			}
+		}
+
+		detachTicker := time.NewTicker(localRuntimeDetachPollInterval)
+		for attached() {
+			select {
+			case <-ctx.Done():
+				detachTicker.Stop()
+				return nil
+			case <-detachTicker.C:
+			}
+		}
+		detachTicker.Stop()
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case <-timer.C:
+		}
+
+		next, err := start()
+		if err != nil {
+			if onRestartError != nil {
+				onRestartError(err)
+			}
+			delay *= 2
+			if delay > localRuntimeRestartMaxDelay {
+				delay = localRuntimeRestartMaxDelay
+			}
+			continue
+		}
+		current = next
+		running = true
+		delay = localRuntimeRestartMinDelay
+		if onRestart != nil {
+			onRestart(current.PID())
+		}
+	}
 }
 
 func (m *managedLocalRuntime) startWait() {

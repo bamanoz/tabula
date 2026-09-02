@@ -38,6 +38,9 @@ func TestConfigInspectCmdPrintsJSON(t *testing.T) {
 }
 
 func TestConfigInspectCmdRejectsUnsupportedFormat(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TABULA_HOME", home)
+	writeTabulaRuntimeConfig(t, home)
 	var stdout, stderr bytes.Buffer
 	if code := configInspectCmd([]string{"--format=yaml"}, &stdout, &stderr); code == 0 {
 		t.Fatal("expected failure")

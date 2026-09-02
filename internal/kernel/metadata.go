@@ -1,25 +1,18 @@
 package kernel
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
-	"github.com/bamanoz/tabula/internal/kernel/clientmeta"
 	"strconv"
 	"time"
 )
 
 const turnCorrelationMetaKey = "turn_correlation_id"
 const preferredRuntimeKernelMetaKey = "preferred_runtime_id"
-const turnContextKernelMetaKey = "turn_context"
 
-func (h *Hub) prepareRoutedMessage(sender *Client, session string, scope string, msg *Message) *Message {
+func (h *Hub) prepareRoutedMessage(sender *Client, session string, scope string, msg *BusMessage) *BusMessage {
 	routed := cloneMessage(msg)
 	if routed == nil {
 		return nil
-	}
-	if routed.V == 0 {
-		routed.V = ProtocolVersion
 	}
 	tenantID := routed.TenantID
 	if tenantID == "" && sender != nil {
@@ -97,34 +90,6 @@ func withKernelMeta(raw json.RawMessage, kernel map[string]any) json.RawMessage 
 	return encoded
 }
 
-func withKernelPreferredRuntime(raw json.RawMessage, runtimeID string) json.RawMessage {
-	return withKernelMetaString(raw, preferredRuntimeKernelMetaKey, runtimeID)
-}
-
-func withKernelTurnContext(raw json.RawMessage, context string) json.RawMessage {
-	return withKernelMetaString(raw, turnContextKernelMetaKey, context)
-}
-
-func withKernelMetaString(raw json.RawMessage, key, value string) json.RawMessage {
-	if value == "" {
-		return raw
-	}
-	meta := metaMap(raw)
-	kernel := map[string]any{}
-	if existing, ok := meta["kernel"].(map[string]any); ok {
-		for existingKey, existingValue := range existing {
-			kernel[existingKey] = existingValue
-		}
-	}
-	kernel[key] = value
-	meta["kernel"] = kernel
-	encoded, err := json.Marshal(meta)
-	if err != nil {
-		return raw
-	}
-	return encoded
-}
-
 func metaMap(raw json.RawMessage) map[string]any {
 	meta := map[string]any{}
 	if len(raw) > 0 {
@@ -150,32 +115,6 @@ func withMetaString(raw json.RawMessage, key, value string) json.RawMessage {
 		return raw
 	}
 	return encoded
-}
-
-func kernelPreferredRuntime(raw json.RawMessage) string {
-	meta := metaMap(raw)
-	kernel, ok := meta["kernel"].(map[string]any)
-	if !ok {
-		return ""
-	}
-	runtimeID, _ := kernel[preferredRuntimeKernelMetaKey].(string)
-	return clientmeta.NormalizeRuntimeID(runtimeID)
-}
-
-func ensureTurnCorrelationMeta(raw json.RawMessage) (json.RawMessage, string) {
-	if existing := metaString(raw, turnCorrelationMetaKey); existing != "" {
-		return raw, existing
-	}
-	generated := generateTurnCorrelationID()
-	return withMetaString(raw, turnCorrelationMetaKey, generated), generated
-}
-
-func generateTurnCorrelationID() string {
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		panic(err)
-	}
-	return "tc-" + hex.EncodeToString(b)
 }
 
 func (c *Client) clientID() string {

@@ -20,9 +20,13 @@ Do not assume prior conversation analysis is sufficient. Verify current source i
 - `activity`: curated cross-session work history.
 - `reflection`: post-work synthesis.
 - `initiative`: autonomous background work.
-- `evolution`: controlled self-modification and external release recovery. Scope modes are `light` (analysis/proposals, no source mutation), `advanced` (extension-layer mutation), and `pro` (core/installer mutation). Activation authority is separately `manual` or `automatic`. Recovery executable is `evolution-supervisor`; existing `tabula.guardian` test distro is unrelated.
+- `evolution`: controlled self-modification and external release recovery. Scope modes are `light` (analysis/proposals, no source mutation), `advanced` (extension-layer mutation), and `pro` (core/installer mutation). Activation authority is separately `manual` or `automatic`. Recovery executable is `evolution-supervisor`; existing test distros are unrelated.
 - `mempalace`: remains generalized memory.
-- Tabula kernel: remains a generic router, message bus, lifecycle coordinator, and persistence boundary.
+- Tabula kernel: remains a policy-free authoritative coordination layer for durable state, ordering, leases, fencing, permits, recovery, and tenant/runtime routing.
+
+## Kernel refactoring backlogs
+
+The completed agent-native protocol-v4 redesign and its protocol audit are tracked in [`issues/kernel-refactoring/`](kernel-refactoring/README.md). The follow-up cleanup, correctness fixes, and policy-free boundary work are tracked in [`issues/kernel-refactoring-v2/`](kernel-refactoring-v2/README.md).
 
 ## Issues
 

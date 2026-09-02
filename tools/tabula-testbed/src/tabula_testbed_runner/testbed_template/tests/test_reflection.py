@@ -83,8 +83,9 @@ for raw in sys.stdin:
         self.configure_fake_acp()
 
         with TestbedClient(self.url, name="reflection-installed") as client:
-            client.connect_join("reflection-installed")
-            client.wait_tools({"reflection_run", "reflection_get", "reflection_list", "reflection_artifact_read"}, session="reflection-installed")
+            client.connect()
+            client.create_session("reflection-installed")
+
             request = {
                 "request_id": "installed-reflection",
                 "task_goal": "Complete installed reflection test",

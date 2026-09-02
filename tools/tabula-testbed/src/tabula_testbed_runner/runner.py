@@ -701,6 +701,12 @@ def process_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
+    try:
+        state = subprocess.check_output(["ps", "-o", "stat=", "-p", str(pid)], text=True).strip()
+        if state.startswith("Z"):
+            return False
+    except subprocess.SubprocessError:
+        return False
     return True
 
 
@@ -710,7 +716,39 @@ def wait_for_process_exit(pid: int, timeout: float) -> None:
         if not process_alive(pid):
             return
         time.sleep(0.1)
-    raise SystemExit(f"runtime child pid {pid} did not exit after kernel shutdown")
+    raise SystemExit(f"process pid {pid} did not exit after shutdown")
+
+
+def stop_process(pid: int, timeout: float = 5) -> None:
+    if pid <= 0 or not process_alive(pid):
+        return
+    shutdown_signal = signal.CTRL_BREAK_EVENT if os.name == "nt" else signal.SIGTERM
+    try:
+        os.kill(pid, shutdown_signal)
+    except ProcessLookupError:
+        return
+    try:
+        wait_for_process_exit(pid, timeout)
+        return
+    except SystemExit:
+        pass
+    try:
+        os.kill(pid, signal.SIGTERM if os.name == "nt" else signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    wait_for_process_exit(pid, 5)
+
+
+def stop_detached_plugin_processes(home: Path) -> None:
+    run_plugins = home / "run" / "plugins"
+    if not run_plugins.is_dir():
+        return
+    for pid_file in sorted(run_plugins.glob("*/*.pid")):
+        try:
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            continue
+        stop_process(pid)
 
 
 def verify_runtime_teardown(home: Path, runtime_pid: int) -> None:
@@ -776,10 +814,11 @@ last = None
 while time.time() < deadline:
     try:
         ws = websocket.create_connection(url, timeout=1)
-        ws.send(json.dumps({"v": 3, "type": "hello", "data": {"name": "testbed-isolated-ready", "send_topics": [], "receive_topics": [], "auth_token": kernel_token()}}))
+        request_id = "testbed-isolated-ready"
+        ws.send(json.dumps({"v": 4, "kind": "command", "op": "connection.open", "id": request_id, "data": {"name": "testbed-isolated-ready", "auth_token": kernel_token(), "meta": {}}}))
         msg = json.loads(ws.recv())
         ws.close()
-        if msg.get("type") == "hello_ack":
+        if msg.get("kind") == "result" and msg.get("op") == "connection.open" and msg.get("id") == request_id:
             sys.exit(0)
         last = RuntimeError(str(msg))
     except Exception as exc:
@@ -855,6 +894,7 @@ def main(argv: list[str] | None = None) -> int:
     bin_dir = home / "bin"
     logs_dir = home / "logs"
     kernel: subprocess.Popen | None = None
+    kernel_pid_file: Path | None = None
     runtime_pid = 0
     success = False
 
@@ -945,10 +985,10 @@ def main(argv: list[str] | None = None) -> int:
             "TABULA_OBSERVER_PORT": str(observer_port),
             "TABULA_CRON_DISABLE_OS_CRONTAB": "1",
             "TABULA_CRON_POLL_INTERVAL": "1",
-            "TABULA_PROVIDER": "anthropic",
             "TABULA_PATH": os.pathsep.join((str(venv_bin), str(bin_dir), env.get("PATH", ""))),
             "PYTHONPATH": os.pathsep.join(python_path),
         })
+        env.setdefault("TABULA_GATEWAY_API_PORT", str(free_port()))
         env.setdefault("TABULA_GATEWAY_WEB_PORT", str(free_port()))
         log(f"==> Installing generated testbed distro from {generated}")
         run([str(python), "-m", "tabula_distro.cli", "--home", str(home), "install", str(generated)], env=env)
@@ -958,16 +998,23 @@ def main(argv: list[str] | None = None) -> int:
         set_runtime_tenants(home / "config" / "runtime.toml", runtime_tenants)
         verify_kernel_config(home, kernel_url)
         log("==> Starting isolated kernel")
-        out = (logs_dir / "kernel.out.log").open("w", encoding="utf-8")
-        err = (logs_dir / "kernel.err.log").open("w", encoding="utf-8")
+        kernel_out = logs_dir / "kernel.out.log"
+        kernel_err = logs_dir / "kernel.err.log"
+        kernel_pid_file = home / "run" / "testbed-kernel.pid"
+        kernel_pid_file.parent.mkdir(parents=True, exist_ok=True)
+        kernel_command = [str(tabula_bin), "serve", "--runtime-mode", "managed"]
+        env.update({
+            "TABULA_TESTBED_KERNEL_COMMAND": json.dumps(kernel_command),
+            "TABULA_TESTBED_KERNEL_PID_FILE": str(kernel_pid_file),
+            "TABULA_TESTBED_KERNEL_OUT": str(kernel_out),
+            "TABULA_TESTBED_KERNEL_ERR": str(kernel_err),
+            "TABULA_TESTBED_TABULA_BIN": str(tabula_bin),
+        })
+        out = kernel_out.open("w", encoding="utf-8")
+        err = kernel_err.open("w", encoding="utf-8")
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-        kernel = subprocess.Popen(
-            [str(tabula_bin), "serve", "--runtime-mode", "managed"],
-            env=env,
-            stdout=out,
-            stderr=err,
-            creationflags=creationflags,
-        )
+        kernel = subprocess.Popen(kernel_command, env=env, stdout=out, stderr=err, creationflags=creationflags)
+        kernel_pid_file.write_text(f"{kernel.pid}\n", encoding="utf-8")
 
         log("==> Waiting for isolated kernel")
         wait_for_kernel(python, kernel_url, env)
@@ -1008,20 +1055,23 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     finally:
         teardown_error: str | None = None
-        if kernel is not None and kernel.poll() is None:
-            shutdown_signal = signal.CTRL_BREAK_EVENT if os.name == "nt" else signal.SIGTERM
-            kernel.send_signal(shutdown_signal)
+        current_kernel_pid = 0
+        if kernel_pid_file is not None and kernel_pid_file.is_file():
             try:
-                kernel.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                kernel.kill()
-                kernel.wait(timeout=5)
+                current_kernel_pid = int(kernel_pid_file.read_text(encoding="utf-8").strip())
+            except (OSError, ValueError):
+                current_kernel_pid = 0
+        if current_kernel_pid > 0:
+            stop_process(current_kernel_pid)
+        elif kernel is not None and kernel.poll() is None:
+            stop_process(kernel.pid)
         if runtime_pid > 0:
             try:
                 verify_runtime_teardown(home, runtime_pid)
             except SystemExit as exc:
                 success = False
                 teardown_error = str(exc)
+        stop_detached_plugin_processes(home)
         if not success:
             keep = True
             diagnostics = {

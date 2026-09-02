@@ -12,7 +12,7 @@ Bundle ADR: `../tabula-bundles/docs/adr/0008-reviewed-post-work-reflection.md`
 
 Ouroboros reflects after costly, failed, workspace, deep-review, or evolution work. It builds a bounded source projection from task goal, execution trace, tool usage, concrete errors, reviewer evidence, child work, and a frozen usage snapshot. Reflection output is persisted separately from raw task execution. Memory actions, backlog candidates, and self-evolution promotion are parsed as explicit downstream requests rather than treated as prose side effects.
 
-Tabula already owns session transcript/history and ledger, typed subagent orchestration, durable artifacts, todos, generalized memory, continuity, and curated activity. Reflection should consume explicit source projections and reuse subagent lifecycle/artifact storage without owning any of those domains.
+Tabula already owns canonical session projections and committed events, auxiliary session records, typed subagent orchestration, durable artifacts, todos, generalized memory, continuity, and curated activity. Reflection should consume explicit source projections and reuse subagent lifecycle/artifact storage without owning any of those domains.
 
 ## Decision
 
@@ -42,5 +42,5 @@ No behavioral bundle is a dependency. Reflection records proposals only. Other i
 
 - Automatic reflection trigger policy in the kernel.
 - Hidden memory, identity, todo, activity, initiative, or evolution mutation.
-- Raw tool-call logging or replacement of session ledger/reviewer evidence.
+- Raw tool-call logging or replacement of kernel committed-event, auxiliary-record, or reviewer evidence.
 - Direct provider/model invocation outside subagent orchestration.

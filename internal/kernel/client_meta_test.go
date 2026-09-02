@@ -10,8 +10,8 @@ import (
 )
 
 func TestDecodeClientMetaNormalizesRuntimeID(t *testing.T) {
-	meta := clientmeta.Decode(json.RawMessage(`{"tabula.client_role":"user","tabula.managed":true,"tabula.runtime_id":" remote "}`))
-	if meta.Role != "user" || !meta.Managed || meta.RuntimeID != "remote" {
+	meta := clientmeta.Decode(json.RawMessage(`{"tabula.client_role":"user","tabula.runtime_id":" remote "}`))
+	if meta.Role != "user" || meta.RuntimeID != "remote" {
 		t.Fatalf("unexpected client meta: %+v", meta)
 	}
 	if got := clientmeta.Decode(json.RawMessage(`{"tabula.runtime_id":"bad runtime"}`)).RuntimeID; got != "" {
@@ -23,8 +23,8 @@ func TestJoinBindsSessionPreferredRuntimeFromFirstClientMeta(t *testing.T) {
 	hub := NewHub(nil, nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
 
-	first := &Client{hub: hub, name: "ui-1", meta: json.RawMessage(`{"tabula.client_role":"user","tabula.managed":true,"tabula.runtime_id":"remote"}`), recvCh: make(chan *Message, 4), receives: map[string]bool{}, sends: map[string]bool{}, state: ClientProtocolReady, done: make(chan struct{})}
-	second := &Client{hub: hub, name: "ui-2", meta: json.RawMessage(`{"tabula.client_role":"user","tabula.managed":true,"tabula.runtime_id":"local"}`), recvCh: make(chan *Message, 4), receives: map[string]bool{}, sends: map[string]bool{}, state: ClientProtocolReady, done: make(chan struct{})}
+	first := &Client{hub: hub, name: "ui-1", meta: json.RawMessage(`{"tabula.client_role":"user","tabula.runtime_id":"remote"}`), recvCh: make(chan *BusMessage, 4), receives: map[string]bool{}, sends: map[string]bool{}, state: ClientProtocolReady, done: make(chan struct{})}
+	second := &Client{hub: hub, name: "ui-2", meta: json.RawMessage(`{"tabula.client_role":"user","tabula.runtime_id":"local"}`), recvCh: make(chan *BusMessage, 4), receives: map[string]bool{}, sends: map[string]bool{}, state: ClientProtocolReady, done: make(chan struct{})}
 	if !hub.addClient(first) || !hub.addClient(second) {
 		t.Fatal("addClient failed")
 	}
@@ -41,27 +41,29 @@ func TestJoinBindsSessionPreferredRuntimeFromFirstClientMeta(t *testing.T) {
 	}
 }
 
-func TestConnectPreservesRuntimeAffinityMeta(t *testing.T) {
+func TestConnectionOpenPreservesRuntimeAffinityMeta(t *testing.T) {
 	hub := NewHub(nil, nil)
 	hub.SetClientAuthToken("test-kernel-token")
-	client := &Client{hub: hub, recvCh: make(chan *Message, 1), done: make(chan struct{})}
+	client := &Client{hub: hub, recvCh: make(chan *BusMessage, 1), state: ClientSocketConnected, done: make(chan struct{})}
 	if !hub.addClient(client) {
 		t.Fatal("addClient failed")
 	}
 
-	plan := hub.buildConnectPlan(client, &Message{V: ProtocolVersion, Type: string(MsgHello), ID: "hello-1", Data: mustMarshalRaw(map[string]any{
-		"name":           "user",
-		"send_topics":    []string{TopicMessageUser},
-		"receive_topics": []string{TopicMessageUser},
-		"auth_token":     "test-kernel-token",
-		"meta": map[string]any{
-			"tabula.client_role": "user",
-			"tabula.runtime_id":  "remote",
-		},
-	})})
-	hub.applyConnectPlan(client, plan)
-	if plan.errorMsg != "" {
-		t.Fatalf("connect rejected: %s", plan.errorMsg)
+	_, err := hub.handleClientConnectionOpen(client, &ClientEnvelope{
+		V: ClientProtocolVersion, Kind: "command", Op: "connection.open", ID: "open-1",
+		Data: mustMarshalRaw(map[string]any{
+			"name":           "user",
+			"send_topics":    []string{testExtensionTopic},
+			"receive_topics": []string{testExtensionTopic},
+			"auth_token":     "test-kernel-token",
+			"meta": map[string]any{
+				"tabula.client_role": "user",
+				"tabula.runtime_id":  "remote",
+			},
+		}),
+	})
+	if err != nil {
+		t.Fatalf("connection.open rejected: %v", err)
 	}
 
 	meta := clientmeta.Decode(client.meta)

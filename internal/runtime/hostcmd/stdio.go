@@ -10,6 +10,7 @@ import (
 	runtimeconn "github.com/bamanoz/tabula/internal/runtime/conn"
 	"github.com/bamanoz/tabula/internal/runtime/host/daemon"
 	"github.com/bamanoz/tabula/internal/runtime/host/dialer"
+	"github.com/bamanoz/tabula/internal/runtime/host/driver"
 	"github.com/bamanoz/tabula/internal/runtime/host/pool"
 	"github.com/bamanoz/tabula/internal/runtime/transport/stdio"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
@@ -39,14 +40,16 @@ func stdioCmd(args []string, stderr io.Writer) int {
 	logger := runtimeLogger.Logger
 	workerPool := pool.New(cfg.Kernel.ID, cfg.ManifestStore, cfg.Policy, cfg.PoolOptions)
 	workerPool.SetLogger(logger)
+	driverSupervisor := driver.New(cfg.Kernel.ID, cfg.ManifestStore, cfg.Policy, driver.SpawnEnv(cfg.PoolOptions.TabulaHome, cfg.PoolOptions.KernelURL, cfg.PoolOptions.PythonPath))
 	defer workerPool.Close()
+	defer driverSupervisor.Close()
 	conn := stdio.NewConn(os.Stdin, os.Stdout)
 	token, err := dialer.ReadTokenFileForStdio(cfg.Kernel.TokenFile)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
-	handler := daemon.NewHandler(daemon.Options{Store: cfg.ManifestStore, Pool: workerPool})
+	handler := daemon.NewHandler(daemon.Options{Store: cfg.ManifestStore, Pool: workerPool, Driver: driverSupervisor})
 	capabilities := dialer.InitialCapabilitiesForStdio(context.Background(), handler)
 	ack, err := runtimeconn.Handshake(context.Background(), conn, wire.Hello{
 		Op:              wire.OpHello,

@@ -85,6 +85,7 @@ singleton = true
 [worker]
 command = ["python3", "run.py"]
 mode = "warm"
+scope = "session"
 
 [requires]
 kernel = ">=0.9.0,<1.0.0"
@@ -116,6 +117,7 @@ singleton = true
 [worker]
 command = ["python3", "run.py"]
 mode = "warm"
+scope = "session"
 
 [requires]
 kernel = ">=0.9.0,<1.0.0"
@@ -146,6 +148,7 @@ singleton = true
 [worker]
 command = ["python3", "run.py"]
 mode = "warm"
+scope = "session"
 
 [requires]
 kernel = ">=0.9.0,<1.0.0"
@@ -174,6 +177,7 @@ singleton = true
 [worker]
 command = ["python3", "run.py"]
 mode = "warm"
+scope = "session"
 
 [requires]
 kernel = ">=0.9.0,<1.0.0"

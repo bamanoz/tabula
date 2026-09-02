@@ -54,7 +54,8 @@ class FSPluginSmoke(unittest.TestCase):
 
     def make_client(self) -> TestbedClient:
         client = TestbedClient(self.url, name="testbed-fs")
-        client.connect_join("testbed-fs", tenant_id="default")
+        client.connect()
+        client.create_session("testbed-fs", tenant_id="default")
         return client
 
     def call_json(self, client: TestbedClient, tool: str, args: dict) -> dict:
@@ -62,7 +63,7 @@ class FSPluginSmoke(unittest.TestCase):
 
     def test_all_fs_tools_and_outside_root_denial(self) -> None:
         with self.make_client() as client:
-            client.wait_tools({"fs_read", "fs_write", "fs_edit", "fs_delete", "fs_glob", "fs_grep", "fs_list", "fs_stat", "session_edits"}, session="testbed-fs", tenant_id="default")
+
             note = self.workspace_root / "notes.txt"
             nested = self.workspace_root / "nested"
             nested.mkdir()
@@ -146,7 +147,7 @@ class FSPluginSmoke(unittest.TestCase):
 
     def test_project_root_config_change_applies_on_next_call(self) -> None:
         with self.make_client() as client:
-            client.wait_tools({"fs_read", "fs_write"}, session="testbed-fs", tenant_id="default")
+
             before = self.workspace_root / "before.txt"
             self.call_json(client, "fs_write", {"path": str(before), "content": "before"})
 
@@ -180,7 +181,7 @@ class FSPluginSmoke(unittest.TestCase):
 
     def test_global_plugin_roots_compose_with_tenant_workspace_root(self) -> None:
         with self.make_client() as client:
-            client.wait_tools({"fs_read", "fs_write"}, session="testbed-fs", tenant_id="default")
+
             relative = self.workspace_root / "relative.txt"
             self.call_json(client, "fs_write", {"path": "relative.txt", "content": "workspace default"})
             self.assertEqual(relative.read_text(encoding="utf-8"), "workspace default")

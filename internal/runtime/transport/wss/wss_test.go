@@ -371,6 +371,10 @@ func (wssHandler) Reload(context.Context, wire.Reload) (wire.ReloadAck, error) {
 	return wire.ReloadAck{Op: wire.OpReloadAck}, nil
 }
 
+func (wssHandler) PrepareTenant(_ context.Context, in wire.PrepareTenant) (wire.PrepareTenantAck, error) {
+	return wire.PrepareTenantAck{Op: wire.OpPrepareTenantAck, RequestID: in.RequestID}, nil
+}
+
 func (wssHandler) HookEvent(context.Context, wire.HookEvent) (wire.HookEventReply, error) {
 	return wire.HookEventReply{Op: wire.OpHookEventReply, Action: wire.HookActionOK}, nil
 }
@@ -403,6 +407,10 @@ func (h wssLongHandler) ListCapabilities(ctx context.Context, in wire.ListCapabi
 
 func (h wssLongHandler) Reload(ctx context.Context, in wire.Reload) (wire.ReloadAck, error) {
 	return wssHandler{}.Reload(ctx, in)
+}
+
+func (h wssLongHandler) PrepareTenant(ctx context.Context, in wire.PrepareTenant) (wire.PrepareTenantAck, error) {
+	return wssHandler{}.PrepareTenant(ctx, in)
 }
 
 func (h wssLongHandler) HookEvent(ctx context.Context, in wire.HookEvent) (wire.HookEventReply, error) {

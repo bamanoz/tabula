@@ -269,6 +269,97 @@ func TestManagedLocalRuntimeWaitForAttachmentFailsWhenProcessExits(t *testing.T)
 	}
 }
 
+func TestSuperviseManagedLocalRuntimeRestartsAfterExit(t *testing.T) {
+	cmd := helperLocalRuntimeCommand(t, "exit")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("helper start: %v", err)
+	}
+	initial := newManagedLocalRuntime(cmd)
+	var attached atomic.Bool
+	attached.Store(true)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	restarted := make(chan int, 1)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- superviseManagedLocalRuntime(
+			ctx,
+			initial,
+			attached.Load,
+			func() (*managedLocalRuntime, error) {
+				next := helperLocalRuntimeCommand(t, "sleep")
+				if err := next.Start(); err != nil {
+					return nil, err
+				}
+				attached.Store(true)
+				return newManagedLocalRuntime(next), nil
+			},
+			func(_ int, _ error) { attached.Store(false) },
+			func(pid int) {
+				restarted <- pid
+				cancel()
+			},
+			nil,
+		)
+	}()
+
+	select {
+	case pid := <-restarted:
+		if pid <= 0 {
+			t.Fatalf("restarted pid = %d", pid)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("managed runtime was not restarted")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("supervisor shutdown: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("managed runtime supervisor did not stop")
+	}
+}
+
+func TestSuperviseManagedLocalRuntimeStopsWithoutRestartOnCancellation(t *testing.T) {
+	cmd := helperLocalRuntimeCommand(t, "sleep")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("helper start: %v", err)
+	}
+	initial := newManagedLocalRuntime(cmd)
+	ctx, cancel := context.WithCancel(t.Context())
+	var starts atomic.Int64
+	done := make(chan error, 1)
+	go func() {
+		done <- superviseManagedLocalRuntime(
+			ctx,
+			initial,
+			func() bool { return true },
+			func() (*managedLocalRuntime, error) {
+				starts.Add(1)
+				return nil, errors.New("unexpected restart")
+			},
+			nil,
+			nil,
+			nil,
+		)
+	}()
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("supervisor shutdown: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("managed runtime supervisor did not stop")
+	}
+	if got := starts.Load(); got != 0 {
+		t.Fatalf("restart attempts = %d, want 0", got)
+	}
+}
+
 func helperLocalRuntimeCommand(t *testing.T, mode string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=TestHelperLocalRuntimeProcess", "--")

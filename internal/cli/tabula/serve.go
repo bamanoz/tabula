@@ -10,9 +10,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"time"
 
+	"github.com/bamanoz/tabula/internal/agent"
 	"github.com/bamanoz/tabula/internal/kernel"
 	"github.com/bamanoz/tabula/internal/kernel/clientauth"
 	runtimeauth "github.com/bamanoz/tabula/internal/runtime/auth"
@@ -20,8 +20,64 @@ import (
 	runtimeconfig "github.com/bamanoz/tabula/internal/runtime/registryconfig"
 	"github.com/bamanoz/tabula/internal/runtime/transport/unixsock"
 	"github.com/bamanoz/tabula/internal/runtime/transport/wss"
+	"github.com/bamanoz/tabula/internal/sessionrecord"
 	"github.com/bamanoz/tabula/internal/tenant"
 )
+
+// kernelSessionDatabaseRelativePath is kernel-owned durable runtime state under TABULA_HOME.
+const kernelSessionDatabaseRelativePath = "state/kernel/sessions.db"
+
+type agentSessionRepositorySetter interface {
+	SetAgentSessionRepository(agent.SessionRepository)
+}
+
+func kernelSessionDatabasePath(tabulaHome string) string {
+	return filepath.Join(tabulaHome, filepath.FromSlash(kernelSessionDatabaseRelativePath))
+}
+
+func prepareKernelSessionDatabasePath(tabulaHome string) (string, error) {
+	path := kernelSessionDatabasePath(tabulaHome)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", fmt.Errorf("create kernel session state directory %s: %w", filepath.Dir(path), err)
+	}
+	return path, nil
+}
+
+func openSessionRecordStore(ctx context.Context, tabulaHome string) (*sessionrecord.SQLiteStore, error) {
+	path, err := prepareKernelSessionDatabasePath(tabulaHome)
+	if err != nil {
+		return nil, err
+	}
+	store, err := sessionrecord.OpenSQLiteStore(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("open session record store %s: %w", path, err)
+	}
+	return store, nil
+}
+
+func openAgentSessionRepository(ctx context.Context, tabulaHome string) (*agent.SQLiteRepository, error) {
+	path, err := prepareKernelSessionDatabasePath(tabulaHome)
+	if err != nil {
+		return nil, err
+	}
+	repository, err := agent.OpenSQLiteRepository(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("open agent session repository %s: %w", path, err)
+	}
+	return repository, nil
+}
+
+func configureAgentSessionRepository(ctx context.Context, tabulaHome string, hub agentSessionRepositorySetter) (*agent.SQLiteRepository, error) {
+	if hub == nil {
+		return nil, fmt.Errorf("configure agent session repository: kernel hub is required")
+	}
+	repository, err := openAgentSessionRepository(ctx, tabulaHome)
+	if err != nil {
+		return nil, err
+	}
+	hub.SetAgentSessionRepository(repository)
+	return repository, nil
+}
 
 func serveCmd(build BuildInfo, opts serveOptions) int {
 	cfg, err := loadKernelServiceConfig()
@@ -84,7 +140,28 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 	tenantStore := tenant.NewFSStore(tabulaHome)
 	hub.SetTenantStore(tenantStore)
 	hub.SetSessionStore(kernel.NewDiskSessionStore(tabulaHome))
-	if err := configureKernelRuntimeRegistry(tabulaHome, hub, tenantStore); err != nil {
+	sessionRecordStore, err := openSessionRecordStore(context.Background(), tabulaHome)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: session record store setup failed: %v\n", err)
+		return 1
+	}
+	hub.SetSessionRecordStore(sessionRecordStore)
+	defer func() {
+		if err := sessionRecordStore.Close(); err != nil {
+			slog.Warn("session record store close failed", "error", err)
+		}
+	}()
+	agentSessionRepository, err := configureAgentSessionRepository(context.Background(), tabulaHome, hub)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: agent session repository setup failed: %v\n", err)
+		return 1
+	}
+	defer func() {
+		if err := agentSessionRepository.Close(); err != nil {
+			slog.Warn("agent session repository close failed", "error", err)
+		}
+	}()
+	if err := configureKernelRuntimeRegistry(tabulaHome, hub, tenantStore, opts.runtimeMode == localRuntimeModeManaged); err != nil {
 		fmt.Fprintf(os.Stderr, "error: runtime registry config failed: %v\n", err)
 		return 1
 	}
@@ -116,7 +193,7 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 	}
 	// Start HTTP/WebSocket server
 	mux := http.NewServeMux()
-	registerKernelHTTPHandlers(mux, hub, listenAddr, build)
+	registerKernelHTTPHandlers(mux, hub, listenAddr, build, opts.runtimeMode == localRuntimeModeManaged)
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -153,7 +230,7 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 			serveMainTLS = runtimeWSSTLSConfig != nil
 		} else {
 			runtimeMux := http.NewServeMux()
-			registerKernelHTTPHandlers(runtimeMux, hub, endpoint.Listen, build)
+			registerKernelHTTPHandlers(runtimeMux, hub, endpoint.Listen, build, opts.runtimeMode == localRuntimeModeManaged)
 			wss.Listener{Path: endpoint.Path, Origins: endpoint.Origins, Logger: logger.Logger, ClientCertValidator: validator}.Mount(runtimeMux, runtimeHandler)
 			runtimeWSSListener, err = net.Listen("tcp", endpoint.Listen)
 			if err != nil {
@@ -197,7 +274,6 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 	}
 	slog.Info("runtime listener ready", "path", runtimeListener.Path())
 	runtimeStop := make(chan struct{})
-	var managedRuntimePID atomic.Int64
 	go func() {
 		serveErr := runtimeListener.Serve(runtimeHandler)
 		select {
@@ -225,9 +301,7 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 	case localRuntimeModeExternal:
 		slog.Info("local runtime external mode enabled", "config", filepath.Join(tabulaHome, "config", "runtime.toml"))
 	case localRuntimeModeManaged:
-		runtimeProc, err = startAttachedLocalRuntime(hub, tabulaHome, os.Stderr, nil, func(pid int) {
-			managedRuntimePID.Store(int64(pid))
-		})
+		runtimeProc, err = startAttachedLocalRuntime(hub, tabulaHome, os.Stderr, nil, nil)
 		if err != nil {
 			close(runtimeStop)
 			runtimeListener.Close()
@@ -286,25 +360,61 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 	}
 	defer removeKernelStatusFiles(tabulaHome)
 
+	var runtimeSupervisorCancel context.CancelFunc
+	var runtimeSupervisorDone chan error
+	if runtimeProc != nil {
+		runtimeSupervisorCtx, cancel := context.WithCancel(context.Background())
+		runtimeSupervisorCancel = cancel
+		runtimeSupervisorDone = make(chan error, 1)
+		go func(initial *managedLocalRuntime) {
+			runtimeSupervisorDone <- superviseManagedLocalRuntime(
+				runtimeSupervisorCtx,
+				initial,
+				func() bool { return hub.RuntimeAttached(runtimeauth.LocalRuntimeID) },
+				func() (*managedLocalRuntime, error) {
+					return startAttachedLocalRuntime(hub, tabulaHome, os.Stderr, nil, nil)
+				},
+				func(pid int, err error) {
+					if err != nil {
+						slog.Warn("managed local runtime exited; restarting", "pid", pid, "error", err)
+					} else {
+						slog.Warn("managed local runtime exited; restarting", "pid", pid)
+					}
+				},
+				func(pid int) {
+					slog.Info("managed local runtime restarted", "pid", pid)
+				},
+				func(err error) {
+					slog.Error("managed local runtime restart failed", "error", err)
+				},
+			)
+		}(runtimeProc)
+	}
+
 	// Watch for distro reinstall reload triggers.
 	stopReload := make(chan struct{})
-	go watchReloadTrigger(tabulaHome, hub, stopReload)
+	go watchReloadTrigger(tabulaHome, hub, opts.runtimeMode == localRuntimeModeManaged, stopReload)
 	stopRuntimeTokenRevokeWatch := make(chan struct{})
 	go watchRuntimeTokenRevocations(fileRuntimeStore, hub, stopRuntimeTokenRevokeWatch)
 	sshCtx, stopSSH := context.WithCancel(context.Background())
 	sshDone := startSSHRuntimeSupervisors(sshCtx, hub, runtimeDefinitions, runtimeauth.Authenticator{Store: runtimeStore, KernelID: runtimeauth.DefaultKernelID}, logger.Logger)
+	hub.StartAgentLifecycle(context.Background())
 
 	slog.Info("ready")
 
 	exitCode := 0
-	if runtimeProc != nil {
+	if runtimeSupervisorDone != nil {
 		select {
 		case <-shutdownSignalChan():
-		case <-runtimeProc.Done():
-			if err := runtimeProc.Wait(); err != nil {
-				slog.Error("managed local runtime exited", "error", err)
+			runtimeSupervisorCancel()
+			if err := <-runtimeSupervisorDone; err != nil {
+				slog.Warn("managed local runtime shutdown failed", "error", err)
+			}
+		case err := <-runtimeSupervisorDone:
+			if err != nil {
+				slog.Error("managed local runtime supervisor stopped", "error", err)
 			} else {
-				slog.Error("managed local runtime exited")
+				slog.Error("managed local runtime supervisor stopped")
 			}
 			exitCode = 1
 		}
@@ -329,11 +439,6 @@ func serveCmd(build BuildInfo, opts serveOptions) int {
 		<-ch
 	}
 	server.Close()
-	if runtimeProc != nil {
-		if err := runtimeProc.Shutdown(5 * time.Second); err != nil {
-			slog.Warn("local runtime shutdown failed", "error", err)
-		}
-	}
 	return exitCode
 }
 

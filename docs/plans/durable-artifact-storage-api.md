@@ -11,13 +11,12 @@
 - `ouroboros/supervisor/state.py:91-104` preserves recoverable state rather than accepting malformed current state.
 - Ouroboros-specific campaign, review-obligation, model-budget, and self-modification schemas remain outside the generic artifact owner.
 
-### Current Tabula behavior
+### Implemented Tabula behavior
 
-- `async/tool-result-store` already owns `artifact://` references, oversized-result previews, bounded `tool_result_read`, checksum metadata, atomic index replacement, and cross-process index locking.
-- Current storage is session-global under `$TABULA_HOME/data/sessions/<session>/artifacts`, so metadata tenant IDs do not enforce tenant isolation.
-- `tabula_artifacts` is private and specialized around tool results. It lacks generic write/get/list/query/delete operations, plugin ownership, correlation links, media-generic content, atomic content writes, and explicit retention ownership.
-- `tabula_session_sdk` re-exports the private artifact helpers, creating a second public-looking ownership surface.
-- Kernel treats artifact metadata as opaque and requires no change.
+- `async/tool-result-store` owns public `tabula_artifacts`, `artifact://` references, oversized-result previews, bounded `tool_result_read`, checksums, atomic writes, and cross-process locking.
+- Storage is tenant-local under `$TABULA_TENANT_DIR/state/plugins/tool-result-store/` and ownership is bound to active plugin identity.
+- Session committed events and auxiliary records may carry opaque artifact references but do not own or read artifact bytes.
+- Kernel treats artifact metadata as opaque.
 
 ## Design
 

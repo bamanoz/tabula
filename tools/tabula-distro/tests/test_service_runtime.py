@@ -18,7 +18,7 @@ class ServiceRuntimeTests(unittest.TestCase):
                 self.sent.append(payload)
 
             def recv(self) -> str:
-                return '{"type":"hello_ack"}'
+                return '{"v":4,"kind":"result","op":"connection.open","id":"connection.open","data":{"authenticated":true}}'
 
             def close(self) -> None:
                 pass
@@ -26,6 +26,9 @@ class ServiceRuntimeTests(unittest.TestCase):
         with mock.patch.object(service_runtime, "_urlopen", side_effect=OSError("http unavailable")):
             with mock.patch.dict("sys.modules", {"websocket": mock.Mock(create_connection=mock.Mock(return_value=FakeWS()))}):
                 self.assertTrue(service_runtime.kernel_healthy("ws://127.0.0.1:65530/ws", timeout_seconds=0.1))
+        request = json.loads(FakeWS.sent[-1])
+        self.assertEqual((request["v"], request["kind"], request["op"], request["id"]), (4, "command", "connection.open", "connection.open"))
+        self.assertEqual(request["data"]["name"], "tabula-install-ready")
 
     def test_runtime_ready_requires_matching_tenant_capability(self):
         class FakeResponse:

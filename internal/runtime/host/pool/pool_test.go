@@ -22,6 +22,64 @@ import (
 	workerwire "github.com/bamanoz/tabula/internal/runtime/worker/wire"
 )
 
+func TestPoolPrepareTenantReturnsWorkerAuthoritativeCapabilities(t *testing.T) {
+	p, fake := testPool(t)
+	t.Cleanup(p.Close)
+	worker := newFakeWorker()
+	worker.initAck = workerwire.WorkerInitAck{
+		Op: workerwire.OpInitAck, Ready: true,
+		Tools:         []wire.ToolSpec{{Name: "echo", Schema: json.RawMessage(`{"type":"object","required":["text"]}`)}},
+		Subscriptions: []wire.HookSpec{{Event: "before_prompt_build", Priority: 10}},
+	}
+	fake.setNextWorker(worker)
+
+	capabilities, err := p.PrepareTenant(context.Background(), "tenant-a")
+	if err != nil {
+		t.Fatalf("PrepareTenant: %v", err)
+	}
+	if len(capabilities) != 1 {
+		t.Fatalf("capabilities = %#v", capabilities)
+	}
+	capability := capabilities[0]
+	if capability.State != wire.CapabilityStateReady || capability.Source != wire.CapabilitySourceWorker {
+		t.Fatalf("capability = %#v", capability)
+	}
+	if len(capability.Tools) != 1 || string(capability.Tools[0].Schema) == "" || len(capability.Hooks) != 1 {
+		t.Fatalf("capability is not worker-authoritative: %#v", capability)
+	}
+}
+
+func TestPoolPrepareTenantReturnsFailedCapabilityWithoutBlockingOtherPlugins(t *testing.T) {
+	dir := t.TempDir()
+	writePoolPlugin(t, filepath.Join(dir, "broken", "plugin.toml"), "broken", "broken_tool")
+	writePoolPlugin(t, filepath.Join(dir, "healthy", "plugin.toml"), "healthy", "healthy_tool")
+	store, err := manifest.NewStore([]string{dir})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), workerFactory: func(req policy.SpawnReq) *fakeWorker {
+		worker := newFakeWorker()
+		if req.TargetID == "broken" {
+			worker.initErr = errors.New("init failed")
+		}
+		return worker
+	}}
+	p := New("main", store, fake, Options{})
+	t.Cleanup(p.Close)
+
+	capabilities, err := p.PrepareTenant(context.Background(), "tenant-a")
+	if err != nil {
+		t.Fatalf("PrepareTenant: %v", err)
+	}
+	states := map[string]wire.CapabilityState{}
+	for _, capability := range capabilities {
+		states[capability.Target.ID] = capability.State
+	}
+	if states["broken"] != wire.CapabilityStateFailed || states["healthy"] != wire.CapabilityStateReady {
+		t.Fatalf("states = %v", states)
+	}
+}
+
 func TestPoolInvokesWarmWorkerAndReusesByTenantTarget(t *testing.T) {
 	p, fake := testPool(t)
 	for _, callID := range []string{"call-1", "call-2"} {
@@ -130,7 +188,7 @@ sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 	if len(evicted) != 0 {
 		t.Fatalf("tenant reload evicted runtime-scoped target: %#v", evicted)
 	}
-	if worker.shutdown.Load() {
+	if worker.stopped.Load() {
 		t.Fatal("tenant reload shut down shared runtime-scoped worker")
 	}
 
@@ -272,13 +330,12 @@ kernel = ">=0.9.0,<1.0.0"
 protocol_version = 1
 sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 `)
-	writePoolPluginBody(t, filepath.Join(dir, "driver", "plugin.toml"), `id = "driver"
-name = "Driver"
+	writePoolPluginBody(t, filepath.Join(dir, "foundation", "plugin.toml"), `id = "foundation"
+name = "Foundation"
 version = "0.1.0"
 
 [kind]
-name = "driver"
-singleton = true
+name = "foundation"
 
 [worker]
 command = ["python3", "run.py"]
@@ -295,13 +352,13 @@ sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 		t.Fatalf("NewTenantStore: %v", err)
 	}
 	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), nextWorker: newFakeWorker()}
-	p := New("main", store, fake, Options{AllowedTenants: []string{"alpha"}, PluginKindDependsOn: map[string][]string{"gateway": {"driver"}}})
+	p := New("main", store, fake, Options{AllowedTenants: []string{"alpha"}, PluginKindDependsOn: map[string][]string{"gateway": {"foundation"}}})
 	t.Cleanup(p.Close)
 
 	p.PrimeRuntimeTargets(context.Background(), nil)
 	reqs := fake.spawnRequests()
-	if len(reqs) != 2 || reqs[0].TargetID != "driver" || reqs[1].TargetID != "gateway" {
-		t.Fatalf("spawn order = %#v, want driver then gateway", reqs)
+	if len(reqs) != 2 || reqs[0].TargetID != "foundation" || reqs[1].TargetID != "gateway" {
+		t.Fatalf("spawn order = %#v, want foundation then gateway", reqs)
 	}
 }
 
@@ -335,6 +392,57 @@ sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
 	p.PrimeRuntimeTargets(context.Background(), nil)
 	if got := fake.spawnCount.Load(); got != 0 {
 		t.Fatalf("spawn count = %d, want gateway blocked by missing driver kind", got)
+	}
+}
+
+func TestPoolPrimeRuntimeTargetsAcceptsInstalledSessionScopedDriverDependency(t *testing.T) {
+	dir := t.TempDir()
+	writePoolPluginBody(t, filepath.Join(dir, "driver", "plugin.toml"), `id = "driver"
+name = "Driver"
+version = "0.1.0"
+
+[kind]
+name = "driver"
+singleton = true
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+scope = "session"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+`)
+	writePoolPluginBody(t, filepath.Join(dir, "gateway", "plugin.toml"), `id = "gateway"
+name = "Gateway"
+version = "0.1.0"
+
+[kind]
+name = "gateway"
+
+[worker]
+command = ["python3", "run.py"]
+mode = "warm"
+scope = "runtime"
+
+[requires]
+kernel = ">=0.9.0,<1.0.0"
+protocol_version = 1
+sdk = "tabula-plugin-sdk>=1.0.0,<2.0.0"
+`)
+	store, err := manifest.NewTenantStore(map[string]manifest.SearchDirs{"alpha": {PluginDirs: []string{dir}}})
+	if err != nil {
+		t.Fatalf("NewTenantStore: %v", err)
+	}
+	fake := &fakePolicy{spawned: make(chan *fakeWorker, 10), nextWorker: newFakeWorker()}
+	p := New("main", store, fake, Options{AllowedTenants: []string{"alpha"}, PluginKindDependsOn: map[string][]string{"gateway": {"driver"}}})
+	t.Cleanup(p.Close)
+
+	p.PrimeRuntimeTargets(context.Background(), nil)
+	reqs := fake.spawnRequests()
+	if len(reqs) != 1 || reqs[0].TargetID != "gateway" {
+		t.Fatalf("spawn requests = %#v, want gateway after installed session-scoped driver", reqs)
 	}
 }
 
@@ -1787,12 +1895,17 @@ func TestPoolReloadEvictsTarget(t *testing.T) {
 	if resp, err := p.Invoke(context.Background(), invoke("call-1", "tenant-a", "echo")); err != nil || !resp.OK {
 		t.Fatalf("Invoke = %#v, %v", resp, err)
 	}
+	worker := fake.lastSpawnedWorker()
 	evicted := p.Reload(&wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"})
 	if len(evicted) != 1 || evicted[0].ID != "fs" {
 		t.Fatalf("evicted = %#v", evicted)
 	}
-	if !fake.lastSpawnedWorker().shutdown.Load() {
+	if !worker.stopped.Load() {
 		t.Fatal("reload should shut down worker")
+	}
+	shutdown := worker.shutdownRequest()
+	if shutdown.Final || shutdown.Reason != "runtime reload" {
+		t.Fatalf("shutdown = %#v, want non-final runtime reload", shutdown)
 	}
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
@@ -1805,6 +1918,19 @@ func TestPoolReloadEvictsTarget(t *testing.T) {
 		}
 	}
 	t.Fatal("reload did not publish stopping lifecycle notice")
+}
+
+func TestPoolCloseUsesRuntimeStopReason(t *testing.T) {
+	p, fake := testPool(t)
+	if resp, err := p.Invoke(context.Background(), invoke("call-1", "tenant-a", "echo")); err != nil || !resp.OK {
+		t.Fatalf("Invoke = %#v, %v", resp, err)
+	}
+	worker := fake.lastSpawnedWorker()
+	p.Close()
+	shutdown := worker.shutdownRequest()
+	if !shutdown.Final || shutdown.Reason != "runtime stopping" {
+		t.Fatalf("shutdown = %#v, want final runtime stop", shutdown)
+	}
 }
 
 func TestPoolRejectsSkillInvokes(t *testing.T) {
@@ -2092,6 +2218,7 @@ type fakeWorker struct {
 	mu         sync.Mutex
 	alive      bool
 	init       bool
+	initAck    workerwire.WorkerInitAck
 	initErr    error
 	initEvents []policy.WorkerAsyncEvent
 	callErr    error
@@ -2100,7 +2227,8 @@ type fakeWorker struct {
 	hookErr    error
 	waiters    map[string]chan workerwire.WorkerResult
 	events     chan policy.WorkerAsyncEvent
-	shutdown   atomic.Bool
+	stopped    atomic.Bool
+	shutdown   policy.Shutdown
 }
 
 func newFakeWorker() *fakeWorker {
@@ -2110,6 +2238,7 @@ func newFakeWorker() *fakeWorker {
 func (w *fakeWorker) Init(context.Context, workerwire.WorkerInit) (workerwire.WorkerInitAck, error) {
 	w.mu.Lock()
 	w.init = true
+	initAck := w.initAck
 	initErr := w.initErr
 	initEvents := append([]policy.WorkerAsyncEvent(nil), w.initEvents...)
 	w.mu.Unlock()
@@ -2121,6 +2250,9 @@ func (w *fakeWorker) Init(context.Context, workerwire.WorkerInit) (workerwire.Wo
 	}
 	for _, event := range initEvents {
 		w.emit(event)
+	}
+	if initAck.Op != "" {
+		return initAck, nil
 	}
 	return workerwire.WorkerInitAck{Op: workerwire.OpInitAck, Ready: true, Tools: []wire.ToolSpec{{Name: "echo"}, {Name: "slow"}}, Subscriptions: []wire.HookSpec{{Event: "before_tool_call", Priority: 100}}}, nil
 }
@@ -2177,6 +2309,20 @@ func (w *fakeWorker) HookEvent(ctx context.Context, event workerwire.WorkerEvent
 	return &workerwire.WorkerEventReply{Op: workerwire.OpEventReply, CallID: event.CallID, Action: wire.HookActionRewrite, Data: json.RawMessage(`{"tool":"safe_echo"}`), Reason: "rewritten"}, nil
 }
 
+func (w *fakeWorker) RegisterAck(context.Context, workerwire.WorkerRegisterAck) error { return nil }
+func (w *fakeWorker) ReadyAck(context.Context, workerwire.WorkerReadyAck) error       { return nil }
+func (w *fakeWorker) HeartbeatAck(context.Context, workerwire.WorkerHeartbeatAck) error {
+	return nil
+}
+func (w *fakeWorker) Assign(context.Context, workerwire.WorkerAssign) error         { return nil }
+func (w *fakeWorker) Permit(context.Context, workerwire.WorkerPermit) error         { return nil }
+func (w *fakeWorker) OutputAck(context.Context, workerwire.WorkerOutputAck) error   { return nil }
+func (w *fakeWorker) ToolResult(context.Context, workerwire.WorkerToolResult) error { return nil }
+func (w *fakeWorker) Cancel(context.Context, workerwire.WorkerCancel) (workerwire.WorkerCancelAck, error) {
+	return workerwire.WorkerCancelAck{}, nil
+}
+func (w *fakeWorker) CancelAck(context.Context, workerwire.WorkerCancelAck) error { return nil }
+
 func (w *fakeWorker) Events() <-chan policy.WorkerAsyncEvent {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -2192,10 +2338,11 @@ func (w *fakeWorker) finish(callID string, result workerwire.WorkerResult) {
 	}
 }
 
-func (w *fakeWorker) Shutdown(context.Context) error {
+func (w *fakeWorker) Shutdown(_ context.Context, shutdown policy.Shutdown) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.shutdown.Store(true)
+	w.stopped.Store(true)
+	w.shutdown = shutdown
 	w.alive = false
 	if w.events != nil {
 		close(w.events)
@@ -2205,6 +2352,12 @@ func (w *fakeWorker) Shutdown(context.Context) error {
 }
 
 func (w *fakeWorker) Wait() (policy.ExitInfo, error) { return policy.ExitInfo{}, nil }
+
+func (w *fakeWorker) shutdownRequest() policy.Shutdown {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.shutdown
+}
 
 func (w *fakeWorker) IsAlive() bool {
 	w.mu.Lock()

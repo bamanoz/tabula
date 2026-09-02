@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tomllib
 import unittest
 
 
@@ -72,6 +73,47 @@ print(json.dumps({
         self.assertEqual(payload["settings"]["api"], "responses")
         self.assertEqual(payload["settings"]["reasoning_effort"], "xhigh")
         self.assertEqual(payload["settings"]["reasoning_summary"], "auto")
+
+    def test_installed_driver_worker_protocol_lifecycle(self):
+        home = Path(self.tabula_home)
+        plugin_dir = home / "plugins" / "driver"
+        manifest = tomllib.loads((plugin_dir / "plugin.toml").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["kind"], {"name": "driver", "singleton": True})
+        self.assertEqual(manifest["worker"], {"command": ["python3", "run.py"], "mode": "warm", "scope": "session"})
+
+        python = home / ".venv" / "bin" / "python3"
+        if not python.is_file():
+            python = Path(sys.executable)
+        init = {
+            "op": "init",
+            "kernel_id": "testbed-kernel",
+            "tenant_id": "testbed",
+            "session_id": "test-session",
+            "target_id": "driver",
+            "agent_spec_revision": "sha256:testbed-agent",
+            "desired_generation": 1,
+            "driver_instance_id": "testbed-driver-instance",
+            "manifest": manifest,
+            "env": {},
+        }
+        frames = "".join(json.dumps(frame, separators=(",", ":")) + "\n" for frame in (init, {"op": "shutdown", "reason": "test complete"}))
+        env = os.environ.copy()
+        env["TABULA_HOME"] = str(home)
+        result = subprocess.run(
+            [str(python), "run.py"],
+            cwd=plugin_dir,
+            env=env,
+            input=frames,
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual([frame["op"] for frame in output], ["init_ack", "register"])
+        self.assertTrue(output[0]["ready"])
+        self.assertEqual(output[1]["session_id"], "test-session")
+        self.assertEqual(output[1]["desired_generation"], 1)
 
     def test_installed_driver_loop_repair_helpers(self):
         home = Path(self.tabula_home)

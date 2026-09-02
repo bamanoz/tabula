@@ -56,7 +56,8 @@ class MCPPluginSmoke(unittest.TestCase):
 
     def make_client(self, name: str) -> TestbedClient:
         client = TestbedClient(self.url, name=name)
-        client.connect_join("testbed-mcp")
+        client.connect()
+        client.create_session("testbed-mcp")
         return client
 
     def write_fake_server(self) -> Path:
@@ -81,16 +82,15 @@ class MCPPluginSmoke(unittest.TestCase):
         self.assertTrue((home / "plugins" / "mcp" / "plugin.toml").is_file(), "MCP plugin manifest missing")
 
         with self.make_client("testbed-mcp") as client:
-            client.wait_tools({"mcp_list_servers", "mcp_discover", "mcp_reload"}, session="testbed-mcp")
-            self.assertFalse(client.has_tool("mcp__fake__echo"))
+
 
             self.write_fake_server()
             reload_result = client.call_tool("mcp_reload", {}, timeout=20).json()
             self.assertTrue(reload_result["ok"], reload_result)
             self.assertIn("mcp__fake__echo", reload_result.get("published", []))
 
-            client.refresh_init("testbed-mcp-refresh")
-            client.wait_tools({"mcp__fake__echo"}, session="testbed-mcp-refresh")
+
+
             echo = client.call_tool("mcp__fake__echo", {"message": "hello mcp"}, timeout=20).json()
             self.assertEqual(echo.get("text"), "hello mcp")
 

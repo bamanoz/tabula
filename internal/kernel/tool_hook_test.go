@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -30,7 +29,7 @@ func TestBeforeToolCallHookCanModifyToolInput(t *testing.T) {
 	)
 
 	go func() {
-		writeJSON(t, drv, Message{
+		writeJSON(t, drv, BusMessage{
 			Type:  string(MsgRequest),
 			Topic: TopicToolCall,
 			Name:  "echo_tool",
@@ -44,7 +43,7 @@ func TestBeforeToolCallHookCanModifyToolInput(t *testing.T) {
 		t.Fatalf("expected hook/before_tool_call, got %s/%s", hookMsg.Type, hookMsg.Name)
 	}
 
-	writeJSON(t, hook, Message{
+	writeJSON(t, hook, BusMessage{
 		Type:   "hook_reply",
 		ID:     hookMsg.ID,
 		Action: "modify",
@@ -74,7 +73,7 @@ func TestBeforeToolCallHookReceivesToolMeta(t *testing.T) {
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
 
 	go func() {
-		writeJSON(t, drv, Message{
+		writeJSON(t, drv, BusMessage{
 			Type:  string(MsgRequest),
 			Topic: TopicToolCall,
 			Name:  "echo_tool",
@@ -94,7 +93,7 @@ func TestBeforeToolCallHookReceivesToolMeta(t *testing.T) {
 	if payload.Meta["actor"] != "agent/immune-plan" {
 		t.Fatalf("expected actor meta in hook payload, got %+v", payload.Meta)
 	}
-	writeJSON(t, hook, Message{Type: "hook_reply", ID: hookMsg.ID, Action: "pass"})
+	writeJSON(t, hook, BusMessage{Type: "hook_reply", ID: hookMsg.ID, Action: "pass"})
 	result := readMsg(t, drv)
 	if !isToolResult(&result) {
 		t.Fatalf("expected tool_result, got %s", result.Type)
@@ -113,14 +112,14 @@ func TestBeforeToolCallHookCanSuspendForApprovalAndResume(t *testing.T) {
 	ui2 := env.connectAndJoin("telegram-ui", "main", []string{TopicExchangeApprove}, []string{TopicExchangeApprove, string(MsgError)})
 
 	go func() {
-		writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-suspend", Input: json.RawMessage(`{"text":"needs approval"}`)})
+		writeJSON(t, drv, BusMessage{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-suspend", Input: json.RawMessage(`{"text":"needs approval"}`)})
 	}()
 
 	hookMsg := readMsg(t, hook)
 	if hookMsg.Type != "hook" || hookMsg.Name != "before_tool_call" {
 		t.Fatalf("expected hook/before_tool_call, got %+v", hookMsg)
 	}
-	writeJSON(t, hook, Message{
+	writeJSON(t, hook, BusMessage{
 		Type:    string(MsgHookReply),
 		ID:      hookMsg.ID,
 		Action:  string(khooks.ActionSuspend),
@@ -140,17 +139,17 @@ func TestBeforeToolCallHookCanSuspendForApprovalAndResume(t *testing.T) {
 		t.Fatalf("tool result should not be emitted while approval is pending: %+v", msg)
 	}
 
-	writeJSON(t, ui, Message{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: approvalReq.ID, Data: json.RawMessage(`{"choice":"allow once","approved":true}`)})
+	writeJSON(t, ui, BusMessage{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: approvalReq.ID, Data: json.RawMessage(`{"choice":"allow once","approved":true}`)})
 	resumedHook := readMsg(t, hook)
 	if resumedHook.Type != "hook" || resumedHook.Name != "before_tool_call" || !strings.Contains(string(resumedHook.Payload), "__tabula_exchange_reply") {
 		t.Fatalf("expected resumed before_tool_call hook with exchange reply, got %+v", resumedHook)
 	}
-	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: resumedHook.ID, Action: string(khooks.ActionPass)})
+	writeJSON(t, hook, BusMessage{Type: string(MsgHookReply), ID: resumedHook.ID, Action: string(khooks.ActionPass)})
 	resolvedEvent := readMsg(t, ui2)
 	if resolvedEvent.Type != string(MsgEvent) || resolvedEvent.Topic != TopicExchangeApprove || resolvedEvent.ID != approvalReq.ID || !strings.Contains(string(resolvedEvent.Data), "exchange.resolved") {
 		t.Fatalf("expected exchange resolved for second UI, got %+v", resolvedEvent)
 	}
-	writeJSON(t, ui2, Message{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: approvalReq.ID, Data: json.RawMessage(`{"choice":"deny once"}`)})
+	writeJSON(t, ui2, BusMessage{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: approvalReq.ID, Data: json.RawMessage(`{"choice":"deny once"}`)})
 	stale := readMsg(t, ui2)
 	if stale.Type != string(MsgError) || stale.Text != "client not allowed to answer exchange" {
 		t.Fatalf("expected stale approval reply rejection, got %+v", stale)
@@ -180,14 +179,14 @@ func TestBeforeToolCallHookCanSuspendForExchangeChooseAndResume(t *testing.T) {
 	ui := env.connectAndJoin("ui", "main", []string{TopicExchangeChoose}, []string{TopicExchangeChoose})
 
 	go func() {
-		writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-question", Input: json.RawMessage(`{"questions":[{"question":"Ready?","options":[{"label":"yes"}]}]}`)})
+		writeJSON(t, drv, BusMessage{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-question", Input: json.RawMessage(`{"questions":[{"question":"Ready?","options":[{"label":"yes"}]}]}`)})
 	}()
 
 	hookMsg := readMsg(t, hook)
 	if hookMsg.Type != "hook" || hookMsg.Name != "before_tool_call" {
 		t.Fatalf("expected hook/before_tool_call, got %+v", hookMsg)
 	}
-	writeJSON(t, hook, Message{
+	writeJSON(t, hook, BusMessage{
 		Type:   string(MsgHookReply),
 		ID:     hookMsg.ID,
 		Action: string(khooks.ActionSuspend),
@@ -225,12 +224,12 @@ func TestBeforeToolCallHookCanSuspendForExchangeChooseAndResume(t *testing.T) {
 		t.Fatalf("expected choose request to keep question options instead of approval defaults, got %s", string(chooseReq.Data))
 	}
 
-	writeJSON(t, ui, Message{Type: string(MsgReply), Topic: TopicExchangeChoose, ID: chooseReq.ID, Data: json.RawMessage(`{"answers":[["yes"]],"dismissed":false}`)})
+	writeJSON(t, ui, BusMessage{Type: string(MsgReply), Topic: TopicExchangeChoose, ID: chooseReq.ID, Data: json.RawMessage(`{"answers":[["yes"]],"dismissed":false}`)})
 	resumedHook := readMsg(t, hook)
 	if resumedHook.Type != "hook" || resumedHook.Name != "before_tool_call" || !strings.Contains(string(resumedHook.Payload), "__tabula_exchange_reply") {
 		t.Fatalf("expected resumed before_tool_call hook with exchange reply, got %+v", resumedHook)
 	}
-	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: resumedHook.ID, Action: string(khooks.ActionPass)})
+	writeJSON(t, hook, BusMessage{Type: string(MsgHookReply), ID: resumedHook.ID, Action: string(khooks.ActionPass)})
 
 	for i := 0; i < 4; i++ {
 		msg := readMsg(t, drv)
@@ -257,14 +256,14 @@ func TestSuspendedBeforeToolCallResumesLaterRewriteHookAfterApproval(t *testing.
 	ui := env.connectAndJoin("ui", "main", []string{TopicExchangeApprove}, []string{TopicExchangeApprove})
 
 	go func() {
-		writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-suspend-rewrite", Input: json.RawMessage(`{"text":"original"}`)})
+		writeJSON(t, drv, BusMessage{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-suspend-rewrite", Input: json.RawMessage(`{"text":"original"}`)})
 	}()
 
 	approvalMsg := readMsg(t, approval)
 	if approvalMsg.Type != "hook" || approvalMsg.Name != "before_tool_call" {
 		t.Fatalf("expected approval before_tool_call, got %+v", approvalMsg)
 	}
-	writeJSON(t, approval, Message{Type: string(MsgHookReply), ID: approvalMsg.ID, Action: string(khooks.ActionSuspend), Reason: "approve rewritten"})
+	writeJSON(t, approval, BusMessage{Type: string(MsgHookReply), ID: approvalMsg.ID, Action: string(khooks.ActionSuspend), Reason: "approve rewritten"})
 
 	approvalReq := readMsg(t, ui)
 	if approvalReq.Type != string(MsgRequest) || approvalReq.Topic != TopicExchangeApprove {
@@ -278,20 +277,20 @@ func TestSuspendedBeforeToolCallResumesLaterRewriteHookAfterApproval(t *testing.
 		t.Fatalf("expected kernel to send only exchange_id when hook provides no UI payload, got %s", string(approvalReq.Data))
 	}
 
-	writeJSON(t, ui, Message{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: approvalReq.ID, Data: json.RawMessage(`{"choice":"allow once","approved":true}`)})
+	writeJSON(t, ui, BusMessage{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: approvalReq.ID, Data: json.RawMessage(`{"choice":"allow once","approved":true}`)})
 	resumedApprovalMsg := readMsg(t, approval)
 	if resumedApprovalMsg.Type != "hook" || resumedApprovalMsg.Name != "before_tool_call" || !strings.Contains(string(resumedApprovalMsg.Payload), "__tabula_exchange_reply") {
 		t.Fatalf("expected resumed approval before_tool_call with exchange reply, got %+v", resumedApprovalMsg)
 	}
-	writeJSON(t, approval, Message{Type: string(MsgHookReply), ID: resumedApprovalMsg.ID, Action: string(khooks.ActionPass)})
+	writeJSON(t, approval, BusMessage{Type: string(MsgHookReply), ID: resumedApprovalMsg.ID, Action: string(khooks.ActionPass)})
 
 	rewriteMsg := readMsg(t, rewriter)
 	if rewriteMsg.Type != "hook" || rewriteMsg.Name != "before_tool_call" {
 		t.Fatalf("expected rewrite before_tool_call after approval, got %+v", rewriteMsg)
 	}
-	env.Hub.hooks.HandleRuntimeResult("", hookMessageFromKernel(&Message{ID: rewriteMsg.ID, Action: string(khooks.ActionModify), Data: json.RawMessage(`{"input":{"text":"rewritten"}}`)}))
+	env.Hub.hooks.HandleRuntimeResult("", hookMessageFromKernel(&BusMessage{ID: rewriteMsg.ID, Action: string(khooks.ActionModify), Data: json.RawMessage(`{"input":{"text":"rewritten"}}`)}))
 
-	var called Message
+	var called BusMessage
 	for i := 0; i < 4; i++ {
 		called = readMsg(t, drv)
 		if called.Topic == TopicToolCall {
@@ -328,10 +327,10 @@ func TestSuspendedApprovalResendsWhenUIRejoins(t *testing.T) {
 	ui := env.connectAndJoin("ui", "main", []string{TopicExchangeApprove}, []string{TopicExchangeApprove})
 
 	go func() {
-		writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-resend", Input: json.RawMessage(`{"text":"needs approval"}`)})
+		writeJSON(t, drv, BusMessage{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-resend", Input: json.RawMessage(`{"text":"needs approval"}`)})
 	}()
 	hookMsg := readMsg(t, hook)
-	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: hookMsg.ID, Action: string(khooks.ActionSuspend), Reason: "approve exec", Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve again?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`)})
+	writeJSON(t, hook, BusMessage{Type: string(MsgHookReply), ID: hookMsg.ID, Action: string(khooks.ActionSuspend), Reason: "approve exec", Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve again?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`)})
 	firstReq := readMsg(t, ui)
 	if firstReq.Topic != TopicExchangeApprove || firstReq.ID == "" {
 		t.Fatalf("expected initial approval request, got %+v", firstReq)
@@ -358,31 +357,24 @@ func TestSuspendedExchangeBroadcastsPendingToGlobalListeners(t *testing.T) {
 	drv := env.connectAndJoinTenant("driver", tenant.DefaultID, "subagent-sa-test", []string{TopicToolCall}, []string{TopicToolResult})
 	targetUI := env.connectAndJoinTenant("target-ui", tenant.DefaultID, "subagent-sa-test", []string{TopicExchangeApprove}, []string{TopicExchangeApprove})
 
-	globalUI := env.dial()
-	writeJSON(t, globalUI, Message{
-		V:    ProtocolVersion,
-		Type: string(MsgHello),
-		Data: mustMarshalRaw(map[string]any{
-			"name":           "web-404b9",
-			"send_topics":    []string{TopicExchangeApprove},
-			"receive_topics": []string{TopicExchangeApprove},
-			"global_topics":  []string{TopicExchangeApprove},
-			"auth_token":     env.Token,
-		}),
-	})
-	if msg := readMsg(t, globalUI); msg.Type != string(MsgHelloAck) {
-		t.Fatalf("expected hello_ack, got %+v", msg)
-	}
-	writeJSON(t, globalUI, Message{Type: string(MsgJoin), TenantID: tenant.DefaultID, Session: "web-404b9"})
+	globalUI, _ := env.connectOpen(
+		"web-404b9",
+		[]string{TopicExchangeApprove},
+		[]string{TopicExchangeApprove},
+		[]string{TopicExchangeApprove},
+		nil,
+		map[string]any{},
+	)
+	writeJSON(t, globalUI, BusMessage{Type: string(MsgJoin), TenantID: tenant.DefaultID, Session: "web-404b9"})
 	if msg := readMsg(t, globalUI); msg.Type != string(MsgJoined) {
 		t.Fatalf("expected joined, got %+v", msg)
 	}
 
 	go func() {
-		writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-global-pending", Input: json.RawMessage(`{"text":"needs approval"}`)})
+		writeJSON(t, drv, BusMessage{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-global-pending", Input: json.RawMessage(`{"text":"needs approval"}`)})
 	}()
 	hookMsg := readMsg(t, hook)
-	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: hookMsg.ID, Action: string(khooks.ActionSuspend), Reason: "approve exec", Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve from another session?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`)})
+	writeJSON(t, hook, BusMessage{Type: string(MsgHookReply), ID: hookMsg.ID, Action: string(khooks.ActionSuspend), Reason: "approve exec", Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve from another session?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`)})
 
 	request := readMsg(t, targetUI)
 	if request.Type != string(MsgRequest) || request.Topic != TopicExchangeApprove || request.ID == "" {
@@ -408,11 +400,11 @@ func TestSuspendedExchangeWithoutResponderStaysPendingUntilUIJoins(t *testing.T)
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult, "tool.suspended"})
 
 	go func() {
-		writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-no-responder", Input: json.RawMessage(`{"text":"needs exchange"}`)})
+		writeJSON(t, drv, BusMessage{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-no-responder", Input: json.RawMessage(`{"text":"needs exchange"}`)})
 	}()
 
 	hookMsg := readMsg(t, hook)
-	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: hookMsg.ID, Action: string(khooks.ActionSuspend), Reason: "needs exchange", Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve later?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`)})
+	writeJSON(t, hook, BusMessage{Type: string(MsgHookReply), ID: hookMsg.ID, Action: string(khooks.ActionSuspend), Reason: "needs exchange", Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve later?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`)})
 
 	suspended := readMsg(t, drv)
 	if suspended.Topic != "tool.suspended" {
@@ -447,28 +439,28 @@ func TestSuspendedExchangeRedeliversAfterUIProjectSwitch(t *testing.T) {
 	ui := env.connectAndJoinTenant("ui", "corex", "main", []string{TopicExchangeApprove}, []string{TopicExchangeApprove})
 
 	go func() {
-		writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-switch", Input: json.RawMessage(`{"text":"needs exchange"}`)})
+		writeJSON(t, drv, BusMessage{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-switch", Input: json.RawMessage(`{"text":"needs exchange"}`)})
 	}()
 
 	hookMsg := readMsg(t, hook)
-	writeJSON(t, hook, Message{Type: string(MsgHookReply), ID: hookMsg.ID, Action: string(khooks.ActionSuspend), Reason: "needs exchange", Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve after switch?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`)})
+	writeJSON(t, hook, BusMessage{Type: string(MsgHookReply), ID: hookMsg.ID, Action: string(khooks.ActionSuspend), Reason: "needs exchange", Payload: json.RawMessage(`{"kind":"approval_required","question":"Approve after switch?","details":{"tool":"echo_tool"},"options":["allow once","deny once"]}`)})
 
 	first := readMsg(t, ui)
 	if first.Type != string(MsgRequest) || first.Topic != TopicExchangeApprove || first.ID == "" {
 		t.Fatalf("expected first exchange request, got %+v", first)
 	}
-	writeJSON(t, ui, Message{Type: string(MsgJoin), TenantID: "fujin", Session: "main"})
+	writeJSON(t, ui, BusMessage{Type: string(MsgJoin), TenantID: "fujin", Session: "main"})
 	_ = readMsg(t, ui)
 	if msg := readMsgTimeout(t, drv, 150*time.Millisecond); msg != nil && msg.Topic == TopicToolResult {
 		t.Fatalf("project switch must not deny suspended exchange, got %+v", msg)
 	}
-	writeJSON(t, ui, Message{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: first.ID, Data: json.RawMessage(`{"choice":"allow once","approved":true}`)})
+	writeJSON(t, ui, BusMessage{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: first.ID, Data: json.RawMessage(`{"choice":"allow once","approved":true}`)})
 	staleReply := readMsg(t, ui)
 	if staleReply.Type != string(MsgError) {
 		t.Fatalf("switched-away UI must not answer old exchange, got %+v", staleReply)
 	}
 
-	writeJSON(t, ui, Message{Type: string(MsgJoin), TenantID: "corex", Session: "main"})
+	writeJSON(t, ui, BusMessage{Type: string(MsgJoin), TenantID: "corex", Session: "main"})
 	for i := 0; i < 4; i++ {
 		resent := readMsg(t, ui)
 		if resent.Topic == TopicExchangeApprove {
@@ -504,7 +496,7 @@ func TestBeforeToolCallHook_InfiniteTimeout_RepliesAfterDelay(t *testing.T) {
 	)
 
 	go func() {
-		writeJSON(t, drv, Message{
+		writeJSON(t, drv, BusMessage{
 			Type:  string(MsgRequest),
 			Topic: TopicToolCall,
 			Name:  "echo_tool",
@@ -521,7 +513,7 @@ func TestBeforeToolCallHook_InfiniteTimeout_RepliesAfterDelay(t *testing.T) {
 	// Simulate user pondering well past the legacy 5s default.
 	time.Sleep(6 * time.Second)
 
-	writeJSON(t, hook, Message{
+	writeJSON(t, hook, BusMessage{
 		Type:   "hook_reply",
 		ID:     hookMsg.ID,
 		Action: "pass",
@@ -557,7 +549,7 @@ func TestBeforeToolCallHook_InfiniteTimeout_DisconnectBlocks(t *testing.T) {
 	)
 
 	go func() {
-		writeJSON(t, drv, Message{
+		writeJSON(t, drv, BusMessage{
 			Type:  string(MsgRequest),
 			Topic: TopicToolCall,
 			Name:  "echo_tool",
@@ -610,7 +602,7 @@ func TestBeforeToolCallHookTimeoutThenNextSubscriberDisconnect(t *testing.T) {
 	})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
 
-	writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-timeout", Input: json.RawMessage(`{"text":"blocked-by-timeout"}`)})
+	writeJSON(t, drv, BusMessage{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-timeout", Input: json.RawMessage(`{"text":"blocked-by-timeout"}`)})
 	if hookMsg := readMsg(t, perm); hookMsg.Type != "hook" || hookMsg.ID == "" {
 		t.Fatalf("expected permissions hook request, got %+v", hookMsg)
 	}
@@ -631,12 +623,12 @@ func TestBeforeToolCallHookTimeoutThenNextSubscriberDisconnect(t *testing.T) {
 	if firstBlocked.Error != "not_invoked" || firstBlocked.Hook.Status != "timeout" || !strings.Contains(firstBlocked.Hook.Target, "hook-permissions") {
 		t.Fatalf("unexpected first blocked result: %+v", firstBlocked)
 	}
-	writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-disconnect", Input: json.RawMessage(`{"text":"blocked-by-disconnect"}`)})
+	writeJSON(t, drv, BusMessage{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-disconnect", Input: json.RawMessage(`{"text":"blocked-by-disconnect"}`)})
 	permMsg := readMsg(t, perm)
 	if permMsg.Type != "hook" || permMsg.ID == "" {
 		t.Fatalf("expected second permissions hook request, got %+v", permMsg)
 	}
-	writeJSON(t, perm, Message{Type: "hook_reply", ID: permMsg.ID, Action: "pass"})
+	writeJSON(t, perm, BusMessage{Type: "hook_reply", ID: permMsg.ID, Action: "pass"})
 	approvalMsg := readMsg(t, approval)
 	if approvalMsg.Type != "hook" || approvalMsg.ID == "" {
 		t.Fatalf("expected approval hook request, got %+v", approvalMsg)
@@ -667,9 +659,9 @@ func TestBeforeToolCallHookBlockCarriesGenericRetryableDetails(t *testing.T) {
 	hook := env.connectHook("policy", []khooks.Subscription{{Event: "before_tool_call", Priority: 100}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
 
-	writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-retryable", Input: json.RawMessage(`{"text":"blocked"}`)})
+	writeJSON(t, drv, BusMessage{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-retryable", Input: json.RawMessage(`{"text":"blocked"}`)})
 	hookMsg := readMsg(t, hook)
-	writeJSON(t, hook, Message{
+	writeJSON(t, hook, BusMessage{
 		Type:    string(MsgHookReply),
 		ID:      hookMsg.ID,
 		Action:  string(khooks.ActionBlock),
@@ -712,27 +704,20 @@ func TestBeforeToolCallHookSkipsSenderHookSubscription(t *testing.T) {
 	// The same client both subscribes to before_tool_call and sends a tool.call.
 	// Dispatching a synchronous hook back to it would deadlock because its
 	// readPump is currently handling this tool.call.
-	client := env.dial()
-	writeJSON(t, client, Message{
-		V:    ProtocolVersion,
-		Type: string(MsgHello),
-		Data: mustMarshalRaw(map[string]any{
-			"name":           "gateway-self-hook",
-			"send_topics":    []string{TopicToolCall, "hook_reply"},
-			"receive_topics": []string{TopicToolResult, "hook"},
-			"hooks":          []khooks.Subscription{{Event: "before_tool_call", Priority: 10, TimeoutMs: &infinite}},
-			"auth_token":     env.Token,
-		}),
-	})
-	if msg := readMsg(t, client); msg.Type != string(MsgHelloAck) {
-		t.Fatalf("expected hello_ack, got %s", msg.Type)
-	}
-	writeJSON(t, client, Message{Type: "join", Session: "main"})
+	client, _ := env.connectOpen(
+		"gateway-self-hook",
+		[]string{TopicToolCall, "hook_reply"},
+		[]string{TopicToolResult, "hook"},
+		nil,
+		[]khooks.Subscription{{Event: "before_tool_call", Priority: 10, TimeoutMs: &infinite}},
+		map[string]any{},
+	)
+	writeJSON(t, client, BusMessage{Type: "join", Session: "main"})
 	if msg := readMsg(t, client); msg.Type != "joined" {
 		t.Fatalf("expected joined, got %s", msg.Type)
 	}
 
-	writeJSON(t, client, Message{
+	writeJSON(t, client, BusMessage{
 		Type:  string(MsgRequest),
 		Topic: TopicToolCall,
 		Name:  "echo_tool",
@@ -763,7 +748,7 @@ func TestBeforeToolResultHookTimeoutFailsOpenForSmallResult(t *testing.T) {
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
 
 	go func() {
-		writeJSON(t, drv, Message{
+		writeJSON(t, drv, BusMessage{
 			Type:  string(MsgRequest),
 			Topic: TopicToolCall,
 			Name:  "echo_tool",
@@ -793,7 +778,7 @@ func TestBeforeToolResultHookCanRewriteLargeResultFromSpool(t *testing.T) {
 	large := strings.Repeat("x", 13000)
 
 	go func() {
-		writeJSON(t, drv, Message{
+		writeJSON(t, drv, BusMessage{
 			Type:  string(MsgRequest),
 			Topic: TopicToolCall,
 			Name:  "echo_tool",
@@ -831,7 +816,7 @@ func TestBeforeToolResultHookCanRewriteLargeResultFromSpool(t *testing.T) {
 	if !strings.Contains(string(content), large[:128]) {
 		t.Fatalf("expected spool to contain large result prefix, got %q", string(content[:previewLen]))
 	}
-	writeJSON(t, hook, Message{
+	writeJSON(t, hook, BusMessage{
 		Type:   "hook_reply",
 		ID:     hookMsg.ID,
 		Action: "modify",
@@ -865,41 +850,34 @@ func TestBeforeToolCallHookWritesDispatchAuditEvents(t *testing.T) {
 
 	home := t.TempDir()
 	env := newTestEnvWithPluginToolHome(t, home)
+	records := &memorySessionRecordStore{}
+	env.Hub.SetSessionRecordStore(records)
 	hook := env.connectHook("perm", []khooks.Subscription{{Event: "before_tool_call", Priority: 100}})
 	drv := env.connectAndJoin("driver", "main", []string{TopicToolCall}, []string{TopicToolResult})
 
 	go func() {
-		writeJSON(t, drv, Message{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-audit", Input: json.RawMessage(`{"text":"ok"}`), Meta: mustMarshalRaw(map[string]any{turnCorrelationMetaKey: "tc-audit-1"})})
+		writeJSON(t, drv, BusMessage{Type: string(MsgRequest), Topic: TopicToolCall, Name: "echo_tool", ID: "t-audit", Input: json.RawMessage(`{"text":"ok"}`), Meta: mustMarshalRaw(map[string]any{turnCorrelationMetaKey: "tc-audit-1"})})
 	}()
 
 	hookMsg := readMsg(t, hook)
-	writeJSON(t, hook, Message{Type: "hook_reply", ID: hookMsg.ID, Action: "pass"})
+	writeJSON(t, hook, BusMessage{Type: "hook_reply", ID: hookMsg.ID, Action: "pass"})
 	result := readMsgTimeout(t, drv, 2*time.Second)
 	if result == nil || !isToolResult(result) {
 		t.Fatalf("expected tool_result, got %+v", result)
 	}
 
-	ledger := filepath.Join(home, "data", "sessions", "main", "ledger.jsonl")
-	data, err := os.ReadFile(ledger)
-	if err != nil {
-		t.Fatalf("read ledger: %v", err)
-	}
-	text := string(data)
-	if !strings.Contains(text, "hook.dispatch.audit") || !strings.Contains(text, "echo_tool") || !strings.Contains(text, "continued") || !strings.Contains(text, "tc-audit-1") {
+	text := sessionRecordText(t, records, hookDispatchAuditKind)
+	if len(records.snapshot(hookDispatchAuditKind)) == 0 || !strings.Contains(text, "echo_tool") || !strings.Contains(text, "continued") || !strings.Contains(text, "tc-audit-1") {
 		t.Fatalf("expected hook dispatch audit event, got %q", text)
 	}
 }
 
 func TestDispatchHookWritesMissingAuditEvent(t *testing.T) {
-	home := t.TempDir()
 	hub := NewHub(json.RawMessage(`[]`), nil)
-	hub.SetSessionStore(NewDiskSessionStore(home))
+	records := &memorySessionRecordStore{}
+	hub.SetSessionRecordStore(records)
 	hub.dispatchHook("before_tool_call", json.RawMessage(`{"tool":"echo_tool","id":"t-missing","input":{"text":"ok"}}`), "default", "main")
-	data, err := os.ReadFile(filepath.Join(home, "data", "sessions", "main", "ledger.jsonl"))
-	if err != nil {
-		t.Fatalf("read ledger: %v", err)
-	}
-	text := string(data)
+	text := sessionRecordText(t, records, hookDispatchAuditKind)
 	if !strings.Contains(text, `"status":"missing"`) || !strings.Contains(text, `"dispatch_effect":"continued"`) {
 		t.Fatalf("expected missing audit event, got %q", text)
 	}
@@ -908,29 +886,23 @@ func TestDispatchHookWritesMissingAuditEvent(t *testing.T) {
 func TestDispatchHookWritesTimeoutAuditEvent(t *testing.T) {
 	home := t.TempDir()
 	env := newTestEnvWithPluginToolHome(t, home)
+	records := &memorySessionRecordStore{}
+	env.Hub.SetSessionRecordStore(records)
 	hook := env.connectHook("perm", []khooks.Subscription{{Event: "before_tool_call", Priority: 100}})
 	defer hook.Close()
 	env.Hub.dispatchHook("before_tool_call", json.RawMessage(`{"tool":"echo_tool","id":"t-timeout","input":{"text":"ok"}}`), "default", "main")
-	data, err := os.ReadFile(filepath.Join(home, "data", "sessions", "main", "ledger.jsonl"))
-	if err != nil {
-		t.Fatalf("read ledger: %v", err)
-	}
-	text := string(data)
+	text := sessionRecordText(t, records, hookDispatchAuditKind)
 	if !strings.Contains(text, `"status":"timeout"`) || !strings.Contains(text, `"dispatch_effect":"failed_closed"`) {
 		t.Fatalf("expected timeout audit event, got %q", text)
 	}
 }
 
 func TestHookDispatchAuditRedactsExecCommandInput(t *testing.T) {
-	home := t.TempDir()
 	hub := NewHub(json.RawMessage(`[]`), nil)
-	hub.SetSessionStore(NewDiskSessionStore(home))
+	records := &memorySessionRecordStore{}
+	hub.SetSessionRecordStore(records)
 	hub.dispatchHook("before_tool_call", json.RawMessage(`{"tool":"exec_run","id":"t-exec","input":{"cmd":"echo super-secret-token","timeout_seconds":30}}`), "default", "main")
-	data, err := os.ReadFile(filepath.Join(home, "data", "sessions", "main", "ledger.jsonl"))
-	if err != nil {
-		t.Fatalf("read ledger: %v", err)
-	}
-	text := string(data)
+	text := sessionRecordText(t, records, hookDispatchAuditKind)
 	if strings.Contains(text, "super-secret-token") {
 		t.Fatalf("expected exec command to be redacted from audit, got %q", text)
 	}

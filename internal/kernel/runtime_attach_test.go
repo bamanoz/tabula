@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
 	"net"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/bamanoz/tabula/internal/agent"
 	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
 	runtimeauth "github.com/bamanoz/tabula/internal/runtime/auth"
 	"github.com/bamanoz/tabula/internal/runtime/codec"
@@ -62,6 +64,231 @@ func TestServeAuthenticatedRuntimeRegistersAndDetachesRuntime(t *testing.T) {
 	_ = client.Close(websocket.StatusNormalClosure, "test close")
 	<-done
 	assertRuntimeSnapshot(t, hub.SnapshotRuntimes(), false)
+}
+
+func TestServeAuthenticatedRuntimeStaleDisconnectDoesNotDetachReplacement(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), nil)
+	store := runtimeauth.NewMemoryStore()
+	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good"}); err != nil {
+		t.Fatalf("store token: %v", err)
+	}
+	capabilities := []wire.Capability{{Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Tools: []wire.ToolSpec{{Name: "read"}, {Name: "write"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}}
+	attach := func() (*codec.Conn, <-chan error) {
+		clientWS, serverWS := runtimeConnWebsocketNetPipe(t)
+		client := codec.New(clientWS)
+		server := codec.New(serverWS)
+		done := make(chan error, 1)
+		go func() {
+			done <- hub.ServeAuthenticatedRuntime(context.Background(), server, RuntimeAttachOptions{
+				Auth: runtimeauth.Authenticator{Store: store, KernelID: "main"},
+			})
+		}()
+		if _, err := runtimeconn.Handshake(context.Background(), client, wire.Hello{
+			Op: wire.OpHello, RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good", ProtocolVersion: "1", Capabilities: capabilities,
+		}); err != nil {
+			t.Fatalf("Handshake: %v", err)
+		}
+		return client, done
+	}
+
+	firstClient, firstDone := attach()
+	defer func() { _ = firstClient.CloseNow() }()
+	waitForRuntimeSnapshot(t, hub, true)
+	firstConn := hub.runtimes.RuntimeConn(runtimeauth.LocalRuntimeID)
+	if firstConn == nil {
+		t.Fatal("first runtime connection was not registered")
+	}
+
+	secondClient, secondDone := attach()
+	defer func() { _ = secondClient.CloseNow() }()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		current := hub.runtimes.RuntimeConn(runtimeauth.LocalRuntimeID)
+		if current != nil && current != firstConn {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	secondConn := hub.runtimes.RuntimeConn(runtimeauth.LocalRuntimeID)
+	if secondConn == nil || secondConn == firstConn {
+		t.Fatal("replacement runtime connection was not registered")
+	}
+
+	_ = firstClient.Close(websocket.StatusNormalClosure, "replace connection")
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first ServeAuthenticatedRuntime returned error: %v", err)
+	}
+	if current := hub.runtimes.RuntimeConn(runtimeauth.LocalRuntimeID); current != secondConn {
+		t.Fatalf("stale disconnect replaced current runtime: current=%p replacement=%p", current, secondConn)
+	}
+	assertRuntimeSnapshot(t, hub.SnapshotRuntimes(), true)
+
+	_ = secondClient.Close(websocket.StatusNormalClosure, "test close")
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second ServeAuthenticatedRuntime returned error: %v", err)
+	}
+	assertRuntimeSnapshot(t, hub.SnapshotRuntimes(), false)
+}
+
+func TestServeAuthenticatedRuntimeReconciliationFailureDoesNotDetachRuntime(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), nil)
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "tenant", CreatedAt: time.Now()}))
+	hub.SetAgentSessionRepository(failingListSessionRepository{
+		SessionRepository: agent.NewMemoryRepository(),
+		err:               errors.New("reconciliation unavailable"),
+	})
+	store := runtimeauth.NewMemoryStore()
+	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good"}); err != nil {
+		t.Fatalf("store token: %v", err)
+	}
+	clientWS, serverWS := runtimeConnWebsocketNetPipe(t)
+	client := codec.New(clientWS)
+	server := codec.New(serverWS)
+	done := make(chan error, 1)
+	go func() {
+		done <- hub.ServeAuthenticatedRuntime(context.Background(), server, RuntimeAttachOptions{
+			Auth: runtimeauth.Authenticator{Store: store, KernelID: "main"},
+		})
+	}()
+	if _, err := runtimeconn.Handshake(context.Background(), client, wire.Hello{
+		Op: wire.OpHello, RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good", ProtocolVersion: "1", TenantsServed: []string{"tenant"},
+		Capabilities: []wire.Capability{{Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Tools: []wire.ToolSpec{{Name: "read"}, {Name: "write"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}},
+	}); err != nil {
+		t.Fatalf("Handshake: %v", err)
+	}
+	waitForRuntimeSnapshot(t, hub, true)
+	select {
+	case err := <-done:
+		t.Fatalf("runtime detached after reconciliation failure: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	assertRuntimeSnapshot(t, hub.SnapshotRuntimes(), true)
+
+	_ = client.Close(websocket.StatusNormalClosure, "test close")
+	if err := <-done; err != nil {
+		t.Fatalf("ServeAuthenticatedRuntime returned error: %v", err)
+	}
+	assertRuntimeSnapshot(t, hub.SnapshotRuntimes(), false)
+}
+
+type failingListSessionRepository struct {
+	agent.SessionRepository
+	err error
+}
+
+func (r failingListSessionRepository) List(context.Context, agent.SessionQuery) (agent.SessionPage, error) {
+	return agent.SessionPage{}, r.err
+}
+
+func TestServeAuthenticatedRuntimeReconciliationDoesNotBlockAttachmentLifecycle(t *testing.T) {
+	repository := &blockingListSessionRepository{
+		SessionRepository: agent.NewMemoryRepository(),
+		entered:           make(chan struct{}),
+		cancelled:         make(chan struct{}),
+	}
+	hub := NewHub(json.RawMessage(`[]`), nil)
+	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "tenant", CreatedAt: time.Now()}))
+	hub.SetAgentSessionRepository(repository)
+	hub.driverLeases = nil
+	store := runtimeauth.NewMemoryStore()
+	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good"}); err != nil {
+		t.Fatalf("store token: %v", err)
+	}
+	clientWS, serverWS := runtimeConnWebsocketNetPipe(t)
+	client := codec.New(clientWS)
+	server := codec.New(serverWS)
+	done := make(chan error, 1)
+	go func() {
+		done <- hub.ServeAuthenticatedRuntime(context.Background(), server, RuntimeAttachOptions{
+			Auth: runtimeauth.Authenticator{Store: store, KernelID: "main"},
+		})
+	}()
+	if _, err := runtimeconn.Handshake(context.Background(), client, wire.Hello{
+		Op: wire.OpHello, RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good", ProtocolVersion: "1", TenantsServed: []string{"tenant"},
+		Capabilities: []wire.Capability{{Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Tenants: []string{"tenant"}, Tools: []wire.ToolSpec{{Name: "read"}, {Name: "write"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}},
+	}); err != nil {
+		t.Fatalf("Handshake: %v", err)
+	}
+	waitForRuntimeTest(t, repository.entered, "runtime reconciliation")
+	waitForRuntimeSnapshot(t, hub, true)
+
+	_ = client.CloseNow()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ServeAuthenticatedRuntime returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime attachment remained blocked by reconciliation after disconnect")
+	}
+	waitForRuntimeTest(t, repository.cancelled, "runtime reconciliation cancellation")
+	assertRuntimeSnapshot(t, hub.SnapshotRuntimes(), false)
+}
+
+type blockingListSessionRepository struct {
+	agent.SessionRepository
+	enteredOnce   sync.Once
+	cancelledOnce sync.Once
+	entered       chan struct{}
+	cancelled     chan struct{}
+}
+
+func (r *blockingListSessionRepository) List(ctx context.Context, _ agent.SessionQuery) (agent.SessionPage, error) {
+	r.enteredOnce.Do(func() { close(r.entered) })
+	<-ctx.Done()
+	r.cancelledOnce.Do(func() { close(r.cancelled) })
+	return agent.SessionPage{}, ctx.Err()
+}
+
+func TestServeAuthenticatedRuntimeDisconnectMarksDurableDriverSuspect(t *testing.T) {
+	hub := NewHub(json.RawMessage(`[]`), nil)
+	repository := agent.NewMemoryRepository()
+	commitDriverSinkSession(t, repository)
+	hub.SetAgentSessionRepository(repository)
+	grant, err := hub.driverLeases.Register(context.Background(), agent.DriverIdentity{
+		RuntimeID: runtimeauth.LocalRuntimeID, TenantID: "tenant", SessionID: "session",
+		ComponentID: "driver", AgentSpecRevision: "sha256:spec", DriverInstanceID: "driver-1",
+	})
+	if err != nil {
+		t.Fatalf("Register driver: %v", err)
+	}
+	if _, err := hub.driverLeases.Ready(context.Background(), agent.SessionKey{TenantID: "tenant", SessionID: "session"}, runtimeauth.LocalRuntimeID, grant.Fence); err != nil {
+		t.Fatalf("Ready driver: %v", err)
+	}
+	// This test isolates detach handling from attach-time worker reconciliation.
+	hub.driverSupervisor = nil
+	hub.execution = nil
+
+	store := runtimeauth.NewMemoryStore()
+	if err := store.Set(runtimeauth.TokenRecord{RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good"}); err != nil {
+		t.Fatalf("store token: %v", err)
+	}
+	clientWS, serverWS := runtimeConnWebsocketNetPipe(t)
+	client := codec.New(clientWS)
+	server := codec.New(serverWS)
+	done := make(chan error, 1)
+	go func() {
+		done <- hub.ServeAuthenticatedRuntime(context.Background(), server, RuntimeAttachOptions{
+			Auth: runtimeauth.Authenticator{Store: store, KernelID: "main"},
+		})
+	}()
+	if _, err := runtimeconn.Handshake(context.Background(), client, wire.Hello{
+		Op: wire.OpHello, RuntimeID: runtimeauth.LocalRuntimeID, Token: "rtk_good", ProtocolVersion: "1", TenantsServed: []string{"tenant"},
+		Capabilities: []wire.Capability{{Target: wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}, Tools: []wire.ToolSpec{{Name: "read"}, {Name: "write"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}},
+	}); err != nil {
+		t.Fatalf("Handshake: %v", err)
+	}
+	waitForRuntimeSnapshot(t, hub, true)
+	_ = client.Close(websocket.StatusNormalClosure, "test close")
+	<-done
+
+	record, err := repository.Load(context.Background(), agent.SessionKey{TenantID: "tenant", SessionID: "session"})
+	if err != nil {
+		t.Fatalf("Load session: %v", err)
+	}
+	if record.State.Driver.Status != agent.DriverSuspect || record.State.Driver.Fence != grant.Fence {
+		t.Fatalf("driver after detach = %+v", record.State.Driver)
+	}
 }
 
 func TestServeAuthenticatedRuntimeRejectsWrongTokenWithoutRegistering(t *testing.T) {
@@ -371,26 +598,15 @@ func TestManagedUIJoinDispatchesRuntimeSessionJoinHook(t *testing.T) {
 	env.Hub.syncRuntimeCapability(runtimeauth.LocalRuntimeID, capability)
 	env.Hub.rebuildHookIndex()
 
-	ui := env.dial()
-	writeJSON(t, ui, Message{
-		V:    ProtocolVersion,
-		Type: string(MsgHello),
-		Data: mustMarshalRaw(map[string]any{
-			"name":           "gateway-web",
-			"send_topics":    []string{TopicMessageUser},
-			"receive_topics": []string{TopicSessionInit, TopicSessionStatus},
-			"auth_token":     env.Token,
-			"meta": map[string]any{
-				"tabula.client_role": "user",
-				"tabula.managed":     true,
-			},
-		}),
-	})
-	ack := readMsg(t, ui)
-	if ack.Type != string(MsgHelloAck) {
-		t.Fatalf("expected hello_ack, got %+v", ack)
-	}
-	writeJSON(t, ui, Message{Type: "join", TenantID: "code-immune-tabula-dev", Session: "web-fresh"})
+	ui, _ := env.connectOpen(
+		"gateway-web",
+		[]string{testExtensionTopic},
+		[]string{TopicSessionInit, TopicSessionStatus},
+		nil,
+		nil,
+		map[string]any{"tabula.client_role": "user"},
+	)
+	writeJSON(t, ui, BusMessage{Type: "join", TenantID: "code-immune-tabula-dev", Session: "web-fresh"})
 	joined := readMsg(t, ui)
 	if joined.Type != string(MsgJoined) {
 		t.Fatalf("expected joined, got %+v", joined)
@@ -553,7 +769,7 @@ func TestServeAuthenticatedRuntimeAsyncFramesRouteHookRepliesAndBusMessages(t *t
 		t.Fatalf("hook_event_reply: %v", err)
 	}
 
-	for name, ch := range map[string]<-chan *Message{
+	for name, ch := range map[string]<-chan *BusMessage{
 		"session": sessionRecv.recvCh,
 		"global":  globalRecv.recvCh,
 	} {

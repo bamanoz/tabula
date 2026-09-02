@@ -569,7 +569,7 @@ func invokeHealthTool(ctx context.Context, home, tenantID string, plugin manifes
 		return PluginHealth{PluginID: plugin.ID, Status: "error", Messages: []HealthMessage{{Level: "error", Text: err.Error()}}}
 	}
 	defer func() {
-		_ = worker.Shutdown(context.Background())
+		_ = worker.Shutdown(context.Background(), policy.Shutdown{Reason: "worker stopped"})
 		_, _ = worker.Wait()
 	}()
 	if _, err := worker.Init(callCtx, workerwire.WorkerInit{Op: workerwire.OpInit, KernelID: "inspect", TenantID: tenantID, TargetID: plugin.ID, Manifest: plugin.RawJSON()}); err != nil {

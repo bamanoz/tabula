@@ -11,7 +11,7 @@ Bundle ADR: `../tabula-bundles/docs/adr/0007-curated-cross-session-activity.md`
 
 Ouroboros separates product activity projections from raw execution logs. Its Activity dashboard presents scheduled, queued, running, and background work, while task event APIs project progress, messages, tool records, supervisor records, artifacts, and terminal results into correlated task timelines. Durable task results remain authoritative after restart and gateway projections synthesize missing terminal presentation without changing raw logs.
 
-Tabula already owns technical session history and `ledger.jsonl` in the sessions domain, raw hook audit in `observability:hook-logger`, tenant-local artifacts in `async:tool-result-store`, and project/workspace semantics in workspace components. The kernel exposes generic `after_turn` observations and turn correlation metadata; no kernel event or ledger change is needed.
+Tabula already owns canonical session aggregates and committed events in the kernel SQLite repository, auxiliary session records for bounded technical evidence, raw hook logs in `observability:hook-logger`, tenant-local artifacts in `async:tool-result-store`, and project/workspace semantics in workspace components. The kernel exposes generic `after_turn` observations and turn correlation metadata; no new kernel event type is needed.
 
 ## Decision
 

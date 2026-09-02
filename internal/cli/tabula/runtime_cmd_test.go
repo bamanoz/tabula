@@ -98,7 +98,7 @@ func TestWatchRuntimeTokenRevocationsDetachesRuntime(t *testing.T) {
 id = "remote"
 backend = "wss"
 `)
-	if err := configureKernelRuntimeRegistry(home, hub, nil); err != nil {
+	if err := configureKernelRuntimeRegistry(home, hub, nil, false); err != nil {
 		t.Fatalf("ConfigureRuntimeRegistry: %v", err)
 	}
 	clientConn, serverConn := net.Pipe()

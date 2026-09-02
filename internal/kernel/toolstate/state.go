@@ -8,22 +8,34 @@ import (
 const Kind = "tool.lifecycle"
 
 type Event struct {
-	State         string
-	ToolID        string
-	ToolName      string
-	RunID         string
-	Status        string
-	ExchangeID    string
-	Reason        string
-	PreviousRunID string
+	State             string
+	ToolID            string
+	ToolName          string
+	RunID             string
+	Status            string
+	ExchangeID        string
+	Reason            string
+	PreviousRunID     string
+	TurnID            string
+	AttemptID         string
+	DriverInstanceID  string
+	LeaseID           string
+	DriverGeneration  uint64
+	TurnCorrelationID string
 }
 
 type State struct {
-	ToolID    string
-	ToolName  string
-	RunID     string
-	Terminal  bool
-	Suspended bool
+	ToolID            string
+	ToolName          string
+	RunID             string
+	TurnID            string
+	AttemptID         string
+	DriverInstanceID  string
+	LeaseID           string
+	DriverGeneration  uint64
+	TurnCorrelationID string
+	Terminal          bool
+	Suspended         bool
 }
 
 type Store interface {
@@ -45,6 +57,24 @@ func States(events []Event) map[string]State {
 		state.ToolID = event.ToolID
 		if event.ToolName != "" {
 			state.ToolName = event.ToolName
+		}
+		if event.TurnID != "" {
+			state.TurnID = event.TurnID
+		}
+		if event.AttemptID != "" {
+			state.AttemptID = event.AttemptID
+		}
+		if event.DriverInstanceID != "" {
+			state.DriverInstanceID = event.DriverInstanceID
+		}
+		if event.LeaseID != "" {
+			state.LeaseID = event.LeaseID
+		}
+		if event.DriverGeneration != 0 {
+			state.DriverGeneration = event.DriverGeneration
+		}
+		if event.TurnCorrelationID != "" {
+			state.TurnCorrelationID = event.TurnCorrelationID
 		}
 		switch event.State {
 		case "started":

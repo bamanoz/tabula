@@ -25,8 +25,9 @@ class CodeBundleSmoke(unittest.TestCase):
             "review_plan",
         }
         with TestbedClient(self.url, name="testbed-code-tools") as client:
-            client.connect_join("testbed-code-tools")
-            client.wait_tools(expected_tools, session="testbed-code-tools")
+            client.connect()
+            client.create_session("testbed-code-tools")
+
 
 
 def main() -> int:

@@ -14,7 +14,7 @@ replaces the others.
 ## Kernel Client Token
 
 Kernel WebSocket clients connect to `/ws` and must authenticate in their first
-`hello` frame with `data.auth_token`. On startup, `tabula serve` writes a fresh
+protocol-v4 `connection.open` command with `data.auth_token`. On startup, `tabula serve` writes a fresh
 local token to `$TABULA_HOME/run/kernel-client-token` with mode `0600`, exports
 it to child processes as `TABULA_KERNEL_TOKEN`, and stores only the in-memory
 expected value in the running hub.

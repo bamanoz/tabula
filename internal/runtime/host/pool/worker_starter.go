@@ -55,7 +55,7 @@ func (s *workerStarter) ensure(ctx context.Context, e *entry, plugin manifest.Pl
 		}
 		e.noteWarmWorkerFailureLocked(time.Now())
 		s.markFailed(tenantID, plugin)
-		_ = worker.Shutdown(context.Background())
+		_ = worker.Shutdown(context.Background(), policy.Shutdown{Reason: "worker stopped"})
 		return nil, false, err
 	}
 	e.noteWarmWorkerStartedLocked()

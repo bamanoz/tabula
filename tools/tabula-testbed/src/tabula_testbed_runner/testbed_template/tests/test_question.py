@@ -17,26 +17,29 @@ class QuestionInstalled(unittest.TestCase):
         home = Path(self.tabula_home)
         self.assertTrue((home / "plugins" / "question" / "plugin.toml").is_file(), "question plugin missing")
         with TestbedClient(self.url, name="testbed-question-caller") as caller, TestbedClient(self.url, name="testbed-question-observer") as observer:
-            caller.connect_join("testbed-question")
-            observer.connect_join(
-                "testbed-question",
-                sends=["message.user", "tool.call", "exchange.choose"],
-                receives=["session.init", "message.user", "tool.result", "error", "exchange.choose"],
-            )
-            caller.wait_tools({"question"}, session="testbed-question")
+            caller.connect(sends=["exchange.choose"], receives=["exchange.choose"])
+            caller.create_session("testbed-question")
+            observer.connect(sends=["exchange.choose"], receives=["exchange.choose"])
+            observer.get_session("testbed-question")
+            snapshot = observer.get_session("testbed-question")
+            observer.subscribe("testbed-question", after_cursor=snapshot["data"]["cursor"])
+            observer.send_extension({"type": "join"})
+            joined = observer.recv(op="extension.event", timeout=10)
+            self.assertEqual(joined.get("data", {}).get("type"), "joined")
+
             pending = caller.call_tool_async(
                 "question",
                 {"questions": [{"question": "Continue?", "options": [{"label": "yes"}, {"label": "no"}]}]},
                 timeout=15,
             )
-            msg = observer.wait_for(
-                lambda m: m.get("type") == "request" and m.get("topic") == "exchange.choose",
-                timeout=10,
-            )
-            request = {"id": msg.get("id", ""), **(msg.get("data") if isinstance(msg.get("data"), dict) else {})}
+            msg = observer.recv(op="extension.event", timeout=10)
+            extension = msg.get("data") if isinstance(msg.get("data"), dict) else {}
+            self.assertEqual(extension.get("type"), "request")
+            self.assertEqual(extension.get("topic"), "exchange.choose")
+            request = {"id": extension.get("id") or msg.get("id", ""), **(extension.get("data") if isinstance(extension.get("data"), dict) else {})}
             self.assertEqual(request["questions"][0]["question"], "Continue?")
             self.assertEqual(request["questions"][0]["options"], [{"label": "yes", "description": ""}, {"label": "no", "description": ""}])
-            observer._send(
+            observer.send_extension(
                 {
                     "type": "reply",
                     "topic": "exchange.choose",

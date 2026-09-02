@@ -39,11 +39,22 @@ type Worker interface {
 	// HookEvent performs one runtime-originated hook dispatch to the worker. A nil
 	// reply means the event was fire-and-forget and did not expect a response.
 	HookEvent(ctx context.Context, event workerwire.WorkerEvent) (*workerwire.WorkerEventReply, error)
+	// Driver execution delivery methods send runtime-originated v4 frames. Cancel
+	// waits for the worker's correlated CancelAck; other methods only deliver.
+	RegisterAck(ctx context.Context, ack workerwire.WorkerRegisterAck) error
+	ReadyAck(ctx context.Context, ack workerwire.WorkerReadyAck) error
+	HeartbeatAck(ctx context.Context, ack workerwire.WorkerHeartbeatAck) error
+	Assign(ctx context.Context, assign workerwire.WorkerAssign) error
+	Permit(ctx context.Context, permit workerwire.WorkerPermit) error
+	OutputAck(ctx context.Context, ack workerwire.WorkerOutputAck) error
+	ToolResult(ctx context.Context, result workerwire.WorkerToolResult) error
+	Cancel(ctx context.Context, cancel workerwire.WorkerCancel) (workerwire.WorkerCancelAck, error)
+	CancelAck(ctx context.Context, ack workerwire.WorkerCancelAck) error
 	// Events exposes async worker frames and transport/protocol failures observed
 	// by the single-reader router owned by the concrete policy implementation.
 	Events() <-chan WorkerAsyncEvent
 	// Shutdown requests cooperative shutdown and escalates according to policy.
-	Shutdown(ctx context.Context) error
+	Shutdown(ctx context.Context, shutdown Shutdown) error
 	// Wait blocks until process exit and returns exit details.
 	Wait() (ExitInfo, error)
 	// IsAlive reports whether the worker process is believed to still be running.
@@ -60,11 +71,19 @@ const (
 	SpawnModeWarm SpawnMode = "warm"
 )
 
+// Shutdown describes why the runtime is stopping a worker and whether the
+// runtime process is exiting rather than replacing the worker in-place.
+type Shutdown struct {
+	Reason string
+	Final  bool
+}
+
 // SpawnReq contains all policy input needed to create a worker.
 type SpawnReq struct {
 	KernelID    string
 	TenantID    string
 	TargetID    string
+	SessionID   string
 	TargetKind  runtimewire.TargetKind
 	HarnessKind runtimewire.HarnessKind
 	Command     []string

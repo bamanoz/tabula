@@ -63,30 +63,29 @@ class ManagedDriverSessionInstalled(unittest.TestCase):
             meta={"tabula.client_role": "user", "tabula.managed": True},
         )
         try:
-            init = client.connect_join(
+            client.connect()
+            created = client.create_session(
                 session,
-                sends=["message.user"],
-                receives=["session.init", "session.status", "stream.start", "stream.delta", "stream.end", "turn.done"],
+                driver_component_id="driver",
+                agent_spec_revision="testbed:managed-driver-v4",
             )
-            context = str(init.get("context") or "")
-            if "## Agent Skills" not in context:
-                refreshed = client.wait_for(
-                    lambda message: message.get("type") == "event"
-                    and message.get("topic") == "session.init"
-                    and "## Agent Skills" in str(message.get("context") or ""),
-                    timeout=20,
-                )
-                context = str(refreshed.get("context") or "")
-            self.assertIn("## Agent Skills", context)
-            self.assertIn("tabula-guide", context)
+            self.assertEqual(created.get("kind"), "result", created)
+            self.assertEqual(created.get("op"), "session.create", created)
 
-            client.send_message("test managed driver startup")
-            delta = client.wait_for(
-                lambda message: message.get("type") == "event" and message.get("topic") == "stream.delta",
+            accepted = client.submit_input(
+                f"input-{session}",
+                {"text": "test managed driver startup"},
                 timeout=20,
             )
-            data = delta.get("data") if isinstance(delta.get("data"), dict) else {}
-            self.assertEqual(data.get("text"), "managed-driver-ok")
+            self.assertEqual(accepted.get("op"), "input.accepted", accepted)
+
+            delta = client.recv(op="stream.delta", timeout=20)
+            committed = delta.get("data") if isinstance(delta.get("data"), dict) else {}
+            data = committed.get("data") if isinstance(committed.get("data"), dict) else {}
+            payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+            self.assertTrue(committed.get("event_id"), committed)
+            self.assertTrue(committed.get("cursor"), committed)
+            self.assertEqual(payload.get("text"), "managed-driver-ok")
 
             prompt = self.wait_for_prompt(home)
             self.assertIn("## Agent Skills", prompt)

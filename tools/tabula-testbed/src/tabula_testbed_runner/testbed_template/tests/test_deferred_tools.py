@@ -36,14 +36,15 @@ class DeferredToolsSmoke(unittest.TestCase):
 
     def make_client(self, name: str, session: str = "testbed-deferred-tools") -> TestbedClient:
         client = TestbedClient(self.url, name=name)
-        client.connect_join(session, tenant_id="default")
+        client.connect()
+        client.create_session(session, tenant_id="default")
         return client
 
     def test_deferred_tool_search_and_status_round_trip(self):
         originals = self.write_policy()
         try:
             with self.make_client("testbed-deferred-tools-client") as client:
-                client.wait_tools({"deferred_tool_search", "deferred_tool_discovery_status"}, session="testbed-deferred-tools")
+
                 search = client.call_tool("deferred_tool_search", {"query": "shell"}, timeout=10).json()
                 self.assertEqual(search.get("matches"), ["exec_run"])
                 self.assertEqual(search.get("discovered"), ["exec_run"])

@@ -51,22 +51,23 @@ type beforeToolResultPayload struct {
 }
 
 type invokeResultSpool struct {
-	mu       sync.Mutex
-	file     *os.File
-	path     string
-	bytes    int64
-	preview  []byte
-	started  bool
-	state    invokeResultSpoolState
-	activity chan struct{}
-	hub      *Hub
-	tenantID string
-	session  string
-	toolID   string
-	toolName string
+	mu          sync.Mutex
+	file        *os.File
+	path        string
+	bytes       int64
+	preview     []byte
+	started     bool
+	state       invokeResultSpoolState
+	activity    chan struct{}
+	hub         *Hub
+	tenantID    string
+	session     string
+	toolID      string
+	toolName    string
+	correlation toolAttemptContext
 }
 
-func newInvokeResultSpool(h *Hub, tenantID, session, toolID string) (*invokeResultSpool, error) {
+func newInvokeResultSpool(h *Hub, tenantID, session, toolID string, correlations ...toolAttemptContext) (*invokeResultSpool, error) {
 	root := os.TempDir()
 	if h != nil {
 		if store, ok := h.sessionStore.(ToolResultSpoolStore); ok {
@@ -90,7 +91,7 @@ func newInvokeResultSpool(h *Hub, tenantID, session, toolID string) (*invokeResu
 	if err != nil {
 		return nil, err
 	}
-	return &invokeResultSpool{file: file, path: file.Name(), state: invokeResultSpoolOpen, activity: make(chan struct{}, 1), hub: h, tenantID: tenantID, session: session, toolID: toolID}, nil
+	return &invokeResultSpool{file: file, path: file.Name(), state: invokeResultSpoolOpen, activity: make(chan struct{}, 1), hub: h, tenantID: tenantID, session: session, toolID: toolID, correlation: toolCorrelation(correlations)}, nil
 }
 
 func (s *invokeResultSpool) Start(string) error {
@@ -319,14 +320,36 @@ func (s *invokeResultSpool) sendEvent(topic, text, state string) {
 	if s == nil || s.hub == nil || s.session == "" || s.toolID == "" {
 		return
 	}
-	s.hub.broadcastToSession(s.tenantID, s.session, topic, &Message{
+	if err := s.hub.validateToolAttempt(s.tenantID, s.session, s.correlation); err != nil {
+		s.hub.Logger.Warn("stale tool result stream rejected", "tenant_id", s.tenantID, "session", s.session, "tool_call_id", s.toolID, "turn_id", s.correlation.TurnID, "attempt_id", s.correlation.AttemptID, "driver_generation", s.correlation.DriverGeneration, "err", err)
+		return
+	}
+	s.hub.tools.sendV4ToolResultEvent(s.tenantID, s.session, s.toolID, s.toolName, topic, text, state, s.correlation)
+	s.hub.broadcastToSession(s.tenantID, s.session, topic, &BusMessage{
 		Type:  string(MsgEvent),
 		Topic: topic,
 		ID:    s.toolID,
 		Name:  s.toolName,
 		Text:  text,
 		State: state,
+		Meta:  s.correlation.meta(),
 	}, nil)
+}
+
+func cleanupInvokeResultSpools(root string) {
+	if root == "" {
+		return
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		_ = os.Remove(filepath.Join(root, entry.Name()))
+	}
 }
 
 func cleanupStaleInvokeResultSpools(root string, maxAge time.Duration) {

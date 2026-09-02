@@ -26,20 +26,37 @@ def sync_tenant(home: Path, tenant_id: str, tenant_dir: Path, *, distro_dir: Pat
     path = home / "config" / "runtime.toml"
     doc = toml_io.load(path)
     tomlkit = toml_io.require_tomlkit()
-    doc["plugin_dirs"] = _string_array([])
-    doc["skill_dirs"] = _string_array([])
-
-    tenants: dict[str, tuple[list[str], list[str]]] = {}
+    global_dirs = (
+        [str(value) for value in doc.get("plugin_dirs") or []],
+        [str(value) for value in doc.get("skill_dirs") or []],
+    )
+    configured_tenants: dict[str, tuple[list[str], list[str]]] = {}
     for item in doc.get("tenant") or []:
         if not hasattr(item, "get"):
             continue
         item_id = str(item.get("id") or "").strip()
         if not item_id:
             continue
-        tenants[item_id] = (
+        configured_tenants[item_id] = (
             [str(value) for value in item.get("plugin_dirs") or []],
             [str(value) for value in item.get("skill_dirs") or []],
         )
+    doc["plugin_dirs"] = _string_array([])
+    doc["skill_dirs"] = _string_array([])
+
+    tenants: dict[str, tuple[list[str], list[str]]] = {}
+    tenants_dir = home / "tenants"
+    if tenants_dir.is_dir():
+        for installed_dir in sorted(tenants_dir.iterdir()):
+            if not installed_dir.is_dir() or installed_dir.name.startswith("."):
+                continue
+            plugin_dir = installed_dir / "plugins"
+            skill_dir = installed_dir / "skills"
+            if (installed_dir / "install.lock.json").is_file() or plugin_dir.is_dir() or skill_dir.is_dir():
+                dirs = ([str(plugin_dir)], [str(skill_dir)])
+            else:
+                dirs = configured_tenants.get(installed_dir.name, global_dirs)
+            tenants[installed_dir.name] = dirs
     tenants[tenant_id] = ([str(tenant_dir / "plugins")], [str(tenant_dir / "skills")])
 
     tenant_aot = tomlkit.aot()

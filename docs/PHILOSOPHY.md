@@ -27,7 +27,7 @@ Tabula is the same idea applied to AI agents.
 | `init.lua`             | `IDENTITY.md`, `SOUL.md`, `AGENTS.md` |
 | Plugin manager         | `tabula-distro` + bundles             |
 | `:help`                | `SKILL.md` / `README.md` per component |
-| Distro (LazyVim, etc.) | Distro (`code`, `claw`, `guardian`) |
+| Distro (LazyVim, etc.) | Distro (`code`, `claw`) |
 
 ## What Tabula is not
 
@@ -104,17 +104,16 @@ Features can move fast inside the kernel. Contracts cannot.
 The kernel keeps its contracts small. Distros are free to define
 conventions above them. In the built-in `claw` distro, if a directory
 sits in `skills/` and has a `SKILL.md`, it is discovered as a skill;
-if it has a `plugin.toml`, it is launched as a plugin; if a skill is named
-`gateway-cli`, it is treated as a UI gateway by convention. No central
-registry, no manual wiring.
+if it has a `plugin.toml`, it is launched as a plugin; gateway apps are
+explicitly selected by distro configuration. No central registry, no manual
+wiring.
 
 For claw, the directory layout *is* the configuration.
 
 ### 7. Distros are products
 
-A kernel + a curated bundle set + a personality = a product. `code`,
-`claw`, and `guardian` are three products on the same kernel. Anyone
-can build their own.
+A kernel + a curated bundle set + a personality = a product. `code` and
+`claw` are products on the same kernel. Anyone can build their own.
 
 This is how we expect the ecosystem to grow: not "everyone builds the
 same agent", but "everyone builds their own distro".

@@ -25,35 +25,35 @@ class ContinuityInstalled(unittest.TestCase):
 
     def connect(self, session: str) -> TestbedClient:
         deadline = time.monotonic() + 20
-        advertised: set[str] = set()
+        last_error: Exception | None = None
         while time.monotonic() < deadline:
             client = TestbedClient(self.url, name=f"continuity-{session}-{time.time_ns()}")
-            client.connect_join(
-                session,
-                sends=["message.user", "tool.call", "exchange.approve"],
-                receives=["session.init", "message.user", "tool.result", "error", "exchange.approve"],
-            )
-            advertised = {str(tool.get("name")) for tool in client.tools() if tool.get("name")}
-            if self.tools <= advertised:
+            try:
+                client.connect()
+                client.create_session(session)
+                client.call_tool("continuity_current", {}, timeout=5)
                 return client
-            client.close()
-            time.sleep(0.25)
-        raise AssertionError(f"continuity tools not advertised: {sorted(advertised)}")
+            except Exception as exc:
+                last_error = exc
+                client.close()
+                time.sleep(0.25)
+        raise AssertionError(f"continuity tools unavailable: {last_error}")
 
     def approved_call(self, client: TestbedClient, tool: str, payload: dict) -> dict:
         pending = client.call_tool_async(tool, payload, timeout=15)
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
-            msg = client.recv(timeout=max(0.1, deadline - time.monotonic()))
-            if msg.get("type") == "request" and msg.get("topic") == "exchange.approve":
-                data = msg.get("data") if isinstance(msg.get("data"), dict) else {}
+            msg = client.recv(op="extension.event", timeout=max(0.1, deadline - time.monotonic()))
+            extension = msg.get("data") if isinstance(msg.get("data"), dict) else {}
+            if extension.get("type") == "request" and extension.get("topic") == "exchange.approve":
+                data = extension.get("data") if isinstance(extension.get("data"), dict) else {}
                 options = data.get("options") if isinstance(data.get("options"), list) else []
                 self.assertIn("allow once", options)
-                client._send(
+                client.send_extension(
                     {
                         "type": "reply",
                         "topic": "exchange.approve",
-                        "id": msg.get("id", ""),
+                        "id": extension.get("id") or msg.get("id", ""),
                         "data": {
                             "choice": "allow once",
                             "index": options.index("allow once"),
@@ -83,11 +83,8 @@ class ContinuityInstalled(unittest.TestCase):
         while time.monotonic() < deadline:
             client = TestbedClient(self.url, name=f"continuity-{session}-{time.time_ns()}")
             try:
-                client.connect_join(
-                    session,
-                    sends=["message.user", "tool.call", "exchange.approve"],
-                    receives=["session.init", "message.user", "tool.result", "error", "exchange.approve"],
-                )
+                client.connect()
+                client.create_session(session)
                 current = client.call_tool("continuity_current", {}, timeout=5).json()
                 if current.get("initialized"):
                     return client
@@ -110,7 +107,6 @@ class ContinuityInstalled(unittest.TestCase):
         state = home / "tenants" / "default" / "state" / "plugins" / "continuity"
 
         with self.connect("continuity-initial") as client:
-            self.assertNotIn("<continuity_profile ", client.init.get("context", ""))
             first = self.approved_call(
                 client,
                 "continuity_update",
@@ -135,10 +131,9 @@ class ContinuityInstalled(unittest.TestCase):
         biography_bytes = (state / "biography.jsonl").read_bytes()
 
         with self.connect("continuity-fresh") as fresh:
-            context = fresh.init.get("context", "")
-            self.assertIn("<continuity_profile ", context)
-            self.assertIn("name: Aster", context)
-            self.assertIn("Installed continuity", context)
+            current = fresh.call_tool("continuity_current", {}, timeout=10).json()
+            self.assertEqual(current["profile"]["name"], "Aster")
+            self.assertEqual(current["milestones"][0]["summary"], "Installed continuity")
             second = self.approved_call(
                 fresh,
                 "continuity_update",
@@ -159,7 +154,6 @@ class ContinuityInstalled(unittest.TestCase):
             self.assertEqual(current["milestones"][0]["id"], milestone["id"])
 
         with self.connect("continuity-restarted") as restarted:
-            self.assertIn(second["revision"], restarted.init.get("context", ""))
             restored = self.approved_call(
                 restarted,
                 "continuity_restore",
@@ -179,9 +173,8 @@ class ContinuityInstalled(unittest.TestCase):
             self.assertIn("immutable distro policy", rejected["error"])
 
         with self.connect("continuity-restored") as final:
-            context = final.init.get("context", "")
-            self.assertIn("purpose: Preserve durable context", context)
-            self.assertNotIn("purpose: Preserve verified durable context", context)
+            current = final.call_tool("continuity_current", {}, timeout=10).json()
+            self.assertEqual(current["profile"]["purpose"], "Preserve durable context")
 
 
 def main() -> int:

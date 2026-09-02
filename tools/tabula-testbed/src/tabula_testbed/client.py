@@ -13,12 +13,19 @@ from typing import Any, Callable
 import websocket
 from websocket import WebSocketTimeoutException
 
+PROTOCOL_VERSION = 4
+DEFAULT_DRIVER_COMPONENT_ID = "driver"
+DEFAULT_AGENT_SPEC_REVISION = "testbed:shared-client-v4"
+
 
 @dataclass(frozen=True)
 class ToolResult:
     name: str
     id: str
     output: str
+    artifact: Any | None = None
+    truncated: bool = False
+    meta: dict[str, Any] | None = None
 
     def json(self) -> Any:
         try:
@@ -37,14 +44,26 @@ class ToolResult:
         return not self.output.startswith("ERROR:")
 
 
+class ProtocolError(RuntimeError):
+    def __init__(self, envelope: dict[str, Any]):
+        data = envelope.get("data") if isinstance(envelope.get("data"), dict) else {}
+        self.envelope = envelope
+        self.code = str(data.get("code") or "unknown")
+        super().__init__(str(data.get("message") or f"protocol-v4 request failed: {envelope!r}"))
+
+
 class TestbedClient:
     def __init__(self, url: str = "ws://localhost:8089/ws", *, name: str | None = None, meta: dict[str, Any] | None = None):
         self.url = url
         self.name = name or f"testbed-{uuid.uuid4().hex[:8]}"
         self.meta = dict(meta or {})
         self.ws: websocket.WebSocket | None = None
-        self.init: dict[str, Any] = {}
+        self.session: str = ""
+        self.tenant_id: str = ""
         self.recent_messages: list[dict[str, Any]] = []
+        self._pending_messages: list[dict[str, Any]] = []
+        self._send_lock = threading.Lock()
+        self._recv_lock = threading.Lock()
 
     def __enter__(self) -> "TestbedClient":
         if self.ws is None:
@@ -55,76 +74,110 @@ class TestbedClient:
         self.close()
 
     def connect(self, *, sends: list[str] | None = None, receives: list[str] | None = None) -> dict[str, Any]:
-        sends = _normalize_capabilities(sends if sends is not None else ["message.user", "tool.call"])
-        receives = _normalize_capabilities(receives if receives is not None else ["session.init", "message.user", "tool.result", "error"])
+        send_topics = _normalize_capabilities(sends or [])
+        receive_topics = _normalize_capabilities(receives or [])
         self.ws = websocket.create_connection(self.url, timeout=30)
-        msg = {
-            "v": 3,
-            "type": "hello",
-            "data": {
+        self._pending_messages.clear()
+        response = self._request(
+            "command",
+            "connection.open",
+            {
                 "name": self.name,
-                "send_topics": sends,
-                "receive_topics": receives,
+                "send_topics": send_topics,
+                "receive_topics": receive_topics,
                 "auth_token": kernel_auth_token(),
                 "meta": self.meta,
             },
-        }
-        self.ws.send(json.dumps(msg))
-        return self.recv(type="hello_ack")
+            request_id=f"open-{uuid.uuid4().hex}",
+        )
+        return response
 
-    def join(self, session: str, *, tenant_id: str = "default") -> dict[str, Any]:
-        self._send({"type": "join", "session": session, "tenant_id": tenant_id})
-        self.recv(type="joined")
-        self.init = self.recv(type="session.init")
-        return self.init
+    def create_session(
+        self,
+        session: str,
+        *,
+        tenant_id: str = "default",
+        driver_component_id: str = DEFAULT_DRIVER_COMPONENT_ID,
+        agent_spec_revision: str = DEFAULT_AGENT_SPEC_REVISION,
+    ) -> dict[str, Any]:
+        response = self._request(
+            "command",
+            "session.create",
+            {
+                "driver_component_id": driver_component_id,
+                "agent_spec_revision": agent_spec_revision,
+            },
+            tenant_id=tenant_id,
+            session_id=session,
+        )
+        self._bind_scope(tenant_id, session)
+        return response
 
-    def connect_join(self, session: str, *, tenant_id: str = "default", sends: list[str] | None = None, receives: list[str] | None = None) -> dict[str, Any]:
-        self.connect(sends=sends, receives=receives)
-        return self.join(session, tenant_id=tenant_id)
+    def get_session(self, session: str, *, tenant_id: str = "default") -> dict[str, Any]:
+        response = self._request("query", "session.get", {}, tenant_id=tenant_id, session_id=session)
+        self._bind_scope(tenant_id, session)
+        return response
 
-    def tools(self) -> list[dict[str, Any]]:
-        tools = self.init.get("tools") or []
-        return tools if isinstance(tools, list) else []
+    def subscribe(self, session: str, *, tenant_id: str = "default", after_cursor: str = "cur_0", limit: int = 256) -> dict[str, Any]:
+        response = self._request(
+            "query",
+            "session.subscribe",
+            {"after_cursor": after_cursor, "limit": limit},
+            tenant_id=tenant_id,
+            session_id=session,
+        )
+        self._bind_scope(tenant_id, session)
+        return response
 
-    def has_tool(self, name: str) -> bool:
-        return any(tool.get("name") == name for tool in self.tools())
-
-    def assert_tool(self, name: str) -> dict[str, Any]:
-        for tool in self.tools():
-            if tool.get("name") == name:
-                return tool
-        raise AssertionError(f"tool not advertised: {name}")
-
-    def wait_tools(self, names: set[str] | list[str] | tuple[str, ...], *, timeout: float = 20, session: str = "testbed-tool-wait", tenant_id: str = "default") -> None:
-        required = set(names)
-        deadline = time.time() + timeout
-        missing = required
-        advertised: set[str] = set()
-        while time.time() < deadline:
-            self.refresh_init(session, tenant_id=tenant_id)
-            advertised = {tool.get("name") for tool in self.tools()}
-            missing = required - advertised
-            if not missing:
-                return
-            time.sleep(0.5)
-        raise AssertionError(f"missing required testbed tools: {sorted(missing)}; advertised: {sorted(str(name) for name in advertised if name)}")
-
-    def refresh_init(self, session: str, *, tenant_id: str = "default") -> dict[str, Any]:
-        self.close()
-        self.connect()
-        return self.join(session, tenant_id=tenant_id)
+    def submit_input(
+        self,
+        input_id: str,
+        content: dict[str, Any],
+        *,
+        expected_session_version: int | None = None,
+        timeout: float = 10,
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {"input_id": input_id, "content": content}
+        if expected_session_version is not None:
+            data["expected_session_version"] = expected_session_version
+        return self._request(
+            "command",
+            "input.submit",
+            data,
+            tenant_id=self._require_tenant(),
+            session_id=self._require_session(),
+            timeout=timeout,
+            expected_op="input.accepted",
+        )
 
     def call_tool(self, name: str, input: dict[str, Any] | None = None, *, timeout: float = 10, meta: dict[str, Any] | None = None) -> ToolResult:
         call_id = f"tb-{uuid.uuid4().hex}"
-        message = {"type": "request", "topic": "tool.call", "id": call_id, "name": name, "input": input or {}}
+        data: dict[str, Any] = {"name": name, "input": input or {}}
         if meta:
-            message["meta"] = meta
-        self._send(message)
+            data["meta"] = meta
         try:
-            msg = self.wait_for(lambda m: m.get("type") == "reply" and m.get("topic") == "tool.result" and m.get("id") == call_id, timeout=timeout)
-        except Exception as exc:
-            raise TimeoutError(f"timed out waiting for tool_result: tool={name!r} id={call_id!r} client={self.name!r} recent={self.recent_messages[-10:]!r}") from exc
-        return ToolResult(name=str(msg.get("name") or name), id=call_id, output=str(msg.get("output") or ""))
+            msg = self._request(
+                "command",
+                "tool.call",
+                data,
+                tenant_id=self._require_tenant(),
+                session_id=self._require_session(),
+                request_id=call_id,
+                timeout=timeout,
+                expected_op="tool.result",
+            )
+        except TimeoutError as exc:
+            raise TimeoutError(f"timed out waiting for tool.result: tool={name!r} id={call_id!r} client={self.name!r} recent={self.recent_messages[-10:]!r}") from exc
+        result = msg.get("data") if isinstance(msg.get("data"), dict) else {}
+        meta = result.get("meta") if isinstance(result.get("meta"), dict) else None
+        return ToolResult(
+            name=str(result.get("name") or name),
+            id=call_id,
+            output=str(result.get("output") or ""),
+            artifact=result.get("artifact"),
+            truncated=bool(result.get("truncated", False)),
+            meta=meta,
+        )
 
     def call_tool_async(self, name: str, input: dict[str, Any] | None = None, *, timeout: float = 10) -> "AsyncToolCall":
         result: dict[str, ToolResult | BaseException] = {}
@@ -139,13 +192,22 @@ class TestbedClient:
         thread.start()
         return AsyncToolCall(thread=thread, result=result, timeout=timeout)
 
-    def reset_fixtures(self) -> None:
-        for name in ("testbed_hook_mutator_reset", "testbed_hook_blocker_reset", "testbed_hook_recorder_clear"):
-            if self.has_tool(name):
-                self.call_tool(name, {})
-
-    def send_message(self, text: str) -> None:
-        self._send({"type": "event", "topic": "message.user", "data": {"text": text}})
+    def send_extension(
+        self,
+        message: dict[str, Any],
+        *,
+        tenant_id: str | None = None,
+        session_id: str | None = None,
+        timeout: float = 10,
+    ) -> dict[str, Any]:
+        return self._request(
+            "command",
+            "extension.send",
+            dict(message),
+            tenant_id=tenant_id or self._require_tenant(),
+            session_id=session_id or self._require_session(),
+            timeout=timeout,
+        )
 
     def wait_for(self, predicate: Callable[[dict[str, Any]], bool], *, timeout: float = 10) -> dict[str, Any]:
         deadline = time.time() + timeout
@@ -155,36 +217,118 @@ class TestbedClient:
                 return msg
         raise TimeoutError("timed out waiting for testbed message")
 
-    def recv(self, *, type: str | None = None, timeout: float = 10) -> dict[str, Any]:
+    def recv(self, *, op: str | None = None, timeout: float = 10) -> dict[str, Any]:
         if self.ws is None:
             raise RuntimeError("client is not connected")
-        old_timeout = self.ws.gettimeout()
-        self.ws.settimeout(timeout)
-        try:
-            while True:
-                raw = self.ws.recv()
-                msg = json.loads(raw)
-                self.recent_messages.append(msg)
-                if len(self.recent_messages) > 50:
-                    del self.recent_messages[: len(self.recent_messages) - 50]
-                if type is None or msg.get("type") == type or _matches_expected_type(msg, type):
+        deadline = time.time() + timeout
+        with self._recv_lock:
+            while time.time() < deadline:
+                if self._pending_messages:
+                    msg = self._pending_messages.pop(0)
+                else:
+                    msg = self._recv_wire(timeout=max(0.1, deadline - time.time()))
+                if op is None or msg.get("op") == op:
                     return msg
-        except (TimeoutError, socket.timeout, WebSocketTimeoutException) as exc:
-            wanted = f" type={type!r}" if type else ""
-            raise TimeoutError(f"timed out waiting for message{wanted} client={self.name!r}") from exc
-        finally:
-            self.ws.settimeout(old_timeout)
+        wanted = f" op={op!r}" if op else ""
+        raise TimeoutError(f"timed out waiting for message{wanted} client={self.name!r}")
 
     def close(self) -> None:
         if self.ws is not None:
             self.ws.close()
             self.ws = None
+        self.session = ""
+        self.tenant_id = ""
+        self._pending_messages.clear()
 
-    def _send(self, msg: dict[str, Any]) -> None:
+    def _request(
+        self,
+        kind: str,
+        op: str,
+        data: dict[str, Any],
+        *,
+        tenant_id: str | None = None,
+        session_id: str | None = None,
+        request_id: str | None = None,
+        timeout: float = 10,
+        expected_op: str | None = None,
+    ) -> dict[str, Any]:
+        request_id = request_id or f"request-{uuid.uuid4().hex}"
+        envelope: dict[str, Any] = {
+            "v": PROTOCOL_VERSION,
+            "kind": kind,
+            "op": op,
+            "id": request_id,
+            "data": data,
+        }
+        if tenant_id:
+            envelope["tenant_id"] = tenant_id
+        if session_id:
+            envelope["session_id"] = session_id
+        self._send_wire(envelope)
+
+        deadline = time.time() + timeout
+        with self._recv_lock:
+            while time.time() < deadline:
+                pending = self._pop_pending_response(request_id, expected_op or op)
+                if pending is not None:
+                    return self._checked_response(pending)
+                msg = self._recv_wire(timeout=max(0.1, deadline - time.time()))
+                if _is_response(msg, request_id, expected_op or op):
+                    return self._checked_response(msg)
+                self._pending_messages.append(msg)
+        raise TimeoutError(f"timed out waiting for protocol-v4 response op={expected_op or op!r} id={request_id!r} client={self.name!r}")
+
+    def _checked_response(self, msg: dict[str, Any]) -> dict[str, Any]:
+        if msg.get("kind") == "error":
+            raise ProtocolError(msg)
+        return msg
+
+    def _pop_pending_response(self, request_id: str, op: str) -> dict[str, Any] | None:
+        for index, msg in enumerate(self._pending_messages):
+            if _is_response(msg, request_id, op):
+                return self._pending_messages.pop(index)
+        return None
+
+    def _recv_wire(self, *, timeout: float) -> dict[str, Any]:
         if self.ws is None:
             raise RuntimeError("client is not connected")
-        msg.setdefault("v", 3)
-        self.ws.send(json.dumps(msg))
+        old_timeout = self.ws.gettimeout()
+        self.ws.settimeout(timeout)
+        try:
+            raw = self.ws.recv()
+            msg = _decode_wire_message(raw)
+            self.recent_messages.append(msg)
+            if len(self.recent_messages) > 50:
+                del self.recent_messages[: len(self.recent_messages) - 50]
+            return msg
+        except (TimeoutError, socket.timeout, WebSocketTimeoutException) as exc:
+            raise TimeoutError(f"timed out waiting for message client={self.name!r}") from exc
+        finally:
+            self.ws.settimeout(old_timeout)
+
+    def _send_wire(self, msg: dict[str, Any]) -> None:
+        if self.ws is None:
+            raise RuntimeError("client is not connected")
+        with self._send_lock:
+            self.ws.send(json.dumps(msg))
+
+    def _bind_scope(self, tenant_id: str, session: str) -> None:
+        if self.tenant_id and self.tenant_id != tenant_id:
+            raise RuntimeError(f"client already bound to tenant {self.tenant_id!r}")
+        if self.session and self.session != session:
+            raise RuntimeError(f"client already bound to session {self.session!r}")
+        self.tenant_id = tenant_id
+        self.session = session
+
+    def _require_session(self) -> str:
+        if not self.session:
+            raise RuntimeError("client is not bound to a session")
+        return self.session
+
+    def _require_tenant(self) -> str:
+        if not self.tenant_id:
+            raise RuntimeError("client is not bound to a tenant")
+        return self.tenant_id
 
 
 def kernel_auth_token() -> str:
@@ -218,13 +362,17 @@ class AsyncToolCall:
         return value
 
 
-def _matches_expected_type(msg: dict[str, Any], expected: str | None) -> bool:
-    if not expected:
+def _decode_wire_message(raw: str | bytes) -> dict[str, Any]:
+    return json.loads(raw)
+
+
+def _is_response(msg: dict[str, Any], request_id: str, op: str) -> bool:
+    if msg.get("id") != request_id:
+        return False
+    if msg.get("kind") == "error":
         return True
-    if msg.get("type") == "event":
-        return msg.get("topic") == expected
-    return False
+    return msg.get("op") == op and msg.get("kind") in {"result", "reply"}
 
 
 def _normalize_capabilities(items: list[str]) -> list[str]:
-    return list(items)
+    return list(dict.fromkeys(items))

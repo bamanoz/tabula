@@ -17,8 +17,9 @@ class TodoInstalled(unittest.TestCase):
         home = Path(self.tabula_home)
         self.assertTrue((home / "plugins" / "todo" / "plugin.toml").is_file(), "todo plugin missing")
         with TestbedClient(self.url, name="testbed-todo") as client:
-            client.connect_join("testbed-todo")
-            client.wait_tools({"todo_read", "todo_write"}, session="testbed-todo")
+            client.connect()
+            client.create_session("testbed-todo")
+
             initial = client.call_tool("todo_read", {}, timeout=10).json()
             self.assertEqual(initial.get("items"), [])
             written = client.call_tool(
@@ -50,8 +51,8 @@ class TodoInstalled(unittest.TestCase):
             self.assertEqual(cleared["items"], [])
 
             spaced_session = "tabula developer"
-            client.refresh_init(spaced_session)
-            client.wait_tools({"todo_read", "todo_write"}, session=spaced_session)
+
+
             spaced = client.call_tool("todo_write", {"items": [{"content": "space session", "status": "pending"}]}, timeout=10).json()
             self.assertEqual(spaced.get("session"), spaced_session)
             self.assertEqual(client.call_tool("todo_read", {}, timeout=10).json().get("items"), spaced.get("items"))

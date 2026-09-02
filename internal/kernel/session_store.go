@@ -17,6 +17,10 @@ type SessionStore interface {
 	Delete(sessionID, tenantID string) error
 }
 
+type ToolResultSpoolStore interface {
+	ToolResultSpoolDir() string
+}
+
 type sessionListStore interface {
 	LoadAll() ([]sessionFile, error)
 }
@@ -34,19 +38,23 @@ type sessionFile struct {
 	LastActiveAt        string       `json:"last_active_at"`
 	ArchivedAt          string       `json:"archived_at,omitempty"`
 	DeletedAt           string       `json:"deleted_at,omitempty"`
-	Busy                bool         `json:"busy"`
-	CancelRequested     bool         `json:"cancel_requested"`
-	PendingInputs       int          `json:"pending_inputs"`
 	ClientCount         int          `json:"client_count"`
 	ActiveToolCalls     int          `json:"active_tool_calls"`
 	RestartObservations int          `json:"restart_observations"`
 	StuckSuspended      bool         `json:"stuck_suspended"`
 }
 
-const stuckSessionRestartThreshold = 3
-
 func NewDiskSessionStore(tabulaHome string) *DiskSessionStore {
-	return &DiskSessionStore{home: filepath.Clean(tabulaHome)}
+	store := &DiskSessionStore{home: filepath.Clean(tabulaHome)}
+	cleanupInvokeResultSpools(store.ToolResultSpoolDir())
+	return store
+}
+
+func (s *DiskSessionStore) ToolResultSpoolDir() string {
+	if s == nil || strings.TrimSpace(s.home) == "" {
+		return ""
+	}
+	return filepath.Join(s.home, "run", "tool-results")
 }
 
 func (s *DiskSessionStore) Save(sess *Session) error {
@@ -63,9 +71,6 @@ func (s *DiskSessionStore) Save(sess *Session) error {
 		LastActiveAt:        formatSnapshotTime(sess.LastActiveAt),
 		ArchivedAt:          formatSnapshotTime(sess.ArchivedAt),
 		DeletedAt:           formatSnapshotTime(sess.DeletedAt),
-		Busy:                sess.inflightTurn,
-		CancelRequested:     sess.cancelRequested,
-		PendingInputs:       len(sess.pendingInputs),
 		ClientCount:         len(sess.clients),
 		ActiveToolCalls:     sess.activeToolCalls,
 		RestartObservations: sess.restartObservations,
@@ -215,15 +220,11 @@ func (s *Session) restorePersisted(record sessionFile) {
 		s.DeletedAt = deletedAt
 		s.State = SessionClosing
 	}
-	s.cancelRequested = record.CancelRequested
 	s.restartObservations = record.RestartObservations
 	s.stuckSuspended = record.StuckSuspended
 	// Live-only state is intentionally not restored. Clients and running tool calls
 	// are re-established through joins and runtime lifecycle after kernel restart.
-	s.inflightTurn = false
 	s.activeToolCalls = 0
-	s.pendingInputs = nil
-	s.pendingSteers = nil
 }
 
 func parseSessionTime(value string) time.Time {
@@ -248,23 +249,6 @@ func (h *Hub) persistSessionState(tenantID, session string) {
 	if err := h.sessionStore.Save(sess); err != nil {
 		h.Logger.Warn("persist session state failed", "session", session, "err", err)
 	}
-}
-
-func (h *Hub) observePersistedSessionRestart(sess *Session) {
-	if h == nil || h.sessionStore == nil || sess == nil {
-		return
-	}
-	record, err := h.sessionStore.Load(sess.ID, sess.TenantID)
-	if err != nil {
-		h.Logger.Warn("load session state failed", "session", sess.ID, "tenant_id", sess.TenantID, "err", err)
-		return
-	}
-	if record == nil {
-		return
-	}
-	sess.RestorePreferredRuntime(record.PreferredRuntimeID)
-	active := record.Busy || record.ActiveToolCalls > 0
-	sess.observeRestart(active, record.RestartObservations, stuckSessionRestartThreshold)
 }
 
 func (h *Hub) deleteSessionState(session, tenantID string) {

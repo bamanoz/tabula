@@ -13,8 +13,8 @@ class MyBundleSmoke(unittest.TestCase):
     def test_my_echo(self):
         client = TestbedClient(self.url, name="my-bundle-smoke")
         try:
-            client.connect_join("testbed-my-bundle")
-            client.wait_tools({"my_echo"}, session="testbed-my-bundle")
+            client.connect()
+            client.create_session("testbed-my-bundle")
             self.assertEqual(client.call_tool("my_echo", {"text": "hello"}).json(), {"ok": True, "text": "hello"})
         finally:
             client.close()

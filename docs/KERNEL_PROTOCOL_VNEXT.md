@@ -1,6 +1,7 @@
-# Kernel Protocol vNext Design Notes
+# Historical Kernel Protocol v3 Design Notes
 
-Status: completed and accepted as kernel WebSocket protocol `v: 3`.
+Status: superseded by `docs/KERNEL_PROTOCOL_V4.md` and ADR 0025. This file is
+historical design material and is not an active protocol reference.
 
 Implemented:
 
@@ -184,7 +185,7 @@ Example routed event:
     "kernel": {
       "sender": {
         "id": "c7",
-        "name": "gateway-cli-main",
+        "name": "gateway-web-main",
         "roles": ["gateway", "interactive"]
       },
       "route": {
@@ -195,7 +196,7 @@ Example routed event:
       "received_at": "2026-05-21T00:00:00Z"
     },
     "user": {
-      "source": "gateway-cli"
+      "source": "gateway-web"
     }
   }
 }
@@ -240,7 +241,7 @@ Client:
   "type": "hello",
   "id": "hello_01J...",
   "data": {
-    "name": "gateway-cli-main",
+    "name": "gateway-web-main",
     "auth_token": "ktk_...",
     "roles": ["gateway", "interactive"],
     "send_topics": [
@@ -798,7 +799,7 @@ the request to that one client:
         },
         "responder": {
           "id": "c7",
-          "name": "gateway-cli-main"
+          "name": "gateway-web-main"
         },
         "expires_at": "2026-05-21T00:05:00Z"
       }
@@ -853,7 +854,7 @@ Then kernel delivers the reply to the requester:
         },
         "responder": {
           "id": "c7",
-          "name": "gateway-cli-main"
+          "name": "gateway-web-main"
         }
       }
     }

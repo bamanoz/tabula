@@ -38,7 +38,7 @@ func newKernelHTTPServer(handler http.Handler, tlsConfig *tls.Config) *http.Serv
 	}
 }
 
-func registerKernelHTTPHandlers(mux *http.ServeMux, hub *kernel.Hub, listenerHost string, build BuildInfo) {
+func registerKernelHTTPHandlers(mux *http.ServeMux, hub *kernel.Hub, listenerHost string, build BuildInfo, managedLocal bool) {
 	build = normalizeBuildInfo(build)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -52,7 +52,7 @@ func registerKernelHTTPHandlers(mux *http.ServeMux, hub *kernel.Hub, listenerHos
 			"version":                     build.Version,
 			"kernel_version":              build.Version,
 			"commit":                      build.Commit,
-			"protocol_version":            kernel.ProtocolVersion,
+			"protocol_version":            kernel.ClientProtocolVersion,
 			"min_plugin_protocol_version": kernel.MinPluginProtocolVersion,
 			"max_plugin_protocol_version": kernel.MaxPluginProtocolVersion,
 		})
@@ -86,7 +86,7 @@ func registerKernelHTTPHandlers(mux *http.ServeMux, hub *kernel.Hub, listenerHos
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
-		if err := reloadRuntimeFromConfig(ctx, os.Getenv("TABULA_HOME"), hub); err != nil {
+		if err := reloadRuntimeFromConfig(ctx, os.Getenv("TABULA_HOME"), hub, managedLocal); err != nil {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}

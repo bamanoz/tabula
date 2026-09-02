@@ -309,7 +309,7 @@ func (f *fakeRuntimeReloader) ReloadAttachedRuntime(_ context.Context, runtimeID
 func TestHealthEndpoint(t *testing.T) {
 	hub := kernel.NewHub(json.RawMessage(`[]`), nil)
 	mux := http.NewServeMux()
-	registerKernelHTTPHandlers(mux, hub, "127.0.0.1:8089", BuildInfo{})
+	registerKernelHTTPHandlers(mux, hub, "127.0.0.1:8089", BuildInfo{}, false)
 
 	req := httptest.NewRequest(http.MethodGet, "http://tabula.local/health", nil)
 	rec := httptest.NewRecorder()
@@ -343,8 +343,8 @@ func TestHealthEndpoint(t *testing.T) {
 	if body.KernelVersion != body.Version {
 		t.Fatalf("expected kernel_version to mirror version, got %+v", body)
 	}
-	if body.ProtocolVersion != kernel.ProtocolVersion {
-		t.Fatalf("expected protocol version %d, got %d", kernel.ProtocolVersion, body.ProtocolVersion)
+	if body.ProtocolVersion != kernel.ClientProtocolVersion {
+		t.Fatalf("expected protocol version %d, got %d", kernel.ClientProtocolVersion, body.ProtocolVersion)
 	}
 	if body.MinPluginProtocolVersion != 1 || body.MaxPluginProtocolVersion != 1 {
 		t.Fatalf("expected plugin protocol range 1..1, got %+v", body)
@@ -354,7 +354,7 @@ func TestHealthEndpoint(t *testing.T) {
 func TestHealthEndpointRejectsNonGET(t *testing.T) {
 	hub := kernel.NewHub(json.RawMessage(`[]`), nil)
 	mux := http.NewServeMux()
-	registerKernelHTTPHandlers(mux, hub, "127.0.0.1:8089", BuildInfo{})
+	registerKernelHTTPHandlers(mux, hub, "127.0.0.1:8089", BuildInfo{}, false)
 
 	req := httptest.NewRequest(http.MethodPost, "http://tabula.local/health", nil)
 	rec := httptest.NewRecorder()
@@ -371,7 +371,7 @@ func TestHealthEndpointRejectsNonGET(t *testing.T) {
 func TestRuntimeSnapshotEndpointAllowsLoopbackRequest(t *testing.T) {
 	hub := kernel.NewHub(json.RawMessage(`[]`), nil)
 	mux := http.NewServeMux()
-	registerKernelHTTPHandlers(mux, hub, "127.0.0.1:8089", BuildInfo{})
+	registerKernelHTTPHandlers(mux, hub, "127.0.0.1:8089", BuildInfo{}, false)
 
 	req := httptest.NewRequest(http.MethodGet, "http://localhost:8089/internal/snapshot/runtimes", nil)
 	req.Host = "localhost:8089"
@@ -390,7 +390,7 @@ func TestRuntimeSnapshotEndpointAllowsLoopbackRequest(t *testing.T) {
 func TestRuntimeSnapshotEndpointAllowsIPv6LoopbackRequest(t *testing.T) {
 	hub := kernel.NewHub(json.RawMessage(`[]`), nil)
 	mux := http.NewServeMux()
-	registerKernelHTTPHandlers(mux, hub, "[::1]:8089", BuildInfo{})
+	registerKernelHTTPHandlers(mux, hub, "[::1]:8089", BuildInfo{}, false)
 
 	req := httptest.NewRequest(http.MethodGet, "http://[::1]:8089/internal/snapshot/runtimes", nil)
 	req.Host = "[::1]:8089"
@@ -406,7 +406,7 @@ func TestRuntimeSnapshotEndpointAllowsIPv6LoopbackRequest(t *testing.T) {
 func TestRuntimeSnapshotEndpointRejectsRemoteAddress(t *testing.T) {
 	hub := kernel.NewHub(json.RawMessage(`[]`), nil)
 	mux := http.NewServeMux()
-	registerKernelHTTPHandlers(mux, hub, "0.0.0.0:8089", BuildInfo{})
+	registerKernelHTTPHandlers(mux, hub, "0.0.0.0:8089", BuildInfo{}, false)
 
 	req := httptest.NewRequest(http.MethodGet, "http://localhost:8089/internal/snapshot/runtimes", nil)
 	req.Host = "localhost:8089"
@@ -422,7 +422,7 @@ func TestRuntimeSnapshotEndpointRejectsRemoteAddress(t *testing.T) {
 func TestRuntimeSnapshotEndpointRejectsRemoteHost(t *testing.T) {
 	hub := kernel.NewHub(json.RawMessage(`[]`), nil)
 	mux := http.NewServeMux()
-	registerKernelHTTPHandlers(mux, hub, "0.0.0.0:8089", BuildInfo{})
+	registerKernelHTTPHandlers(mux, hub, "0.0.0.0:8089", BuildInfo{}, false)
 
 	req := httptest.NewRequest(http.MethodGet, "http://example.com/internal/snapshot/runtimes", nil)
 	req.Host = "example.com"
@@ -438,7 +438,7 @@ func TestRuntimeSnapshotEndpointRejectsRemoteHost(t *testing.T) {
 func TestRuntimeSnapshotEndpointRejectsMalformedRemoteAddr(t *testing.T) {
 	hub := kernel.NewHub(json.RawMessage(`[]`), nil)
 	mux := http.NewServeMux()
-	registerKernelHTTPHandlers(mux, hub, "127.0.0.1:8089", BuildInfo{})
+	registerKernelHTTPHandlers(mux, hub, "127.0.0.1:8089", BuildInfo{}, false)
 
 	req := httptest.NewRequest(http.MethodGet, "http://localhost:8089/internal/snapshot/runtimes", nil)
 	req.Host = "localhost:8089"
@@ -454,7 +454,7 @@ func TestRuntimeSnapshotEndpointRejectsMalformedRemoteAddr(t *testing.T) {
 func TestRuntimeSnapshotEndpointRejectsForwardedLocalityHeaders(t *testing.T) {
 	hub := kernel.NewHub(json.RawMessage(`[]`), nil)
 	mux := http.NewServeMux()
-	registerKernelHTTPHandlers(mux, hub, "127.0.0.1:8089", BuildInfo{})
+	registerKernelHTTPHandlers(mux, hub, "127.0.0.1:8089", BuildInfo{}, false)
 
 	req := httptest.NewRequest(http.MethodGet, "http://localhost:8089/internal/snapshot/runtimes", nil)
 	req.Host = "localhost:8089"
@@ -472,7 +472,7 @@ func TestRuntimeSnapshotEndpointRejectsForwardedLocalityHeaders(t *testing.T) {
 func TestRuntimeSnapshotEndpointRejectsNonGETBeforeSnapshot(t *testing.T) {
 	hub := kernel.NewHub(json.RawMessage(`[]`), nil)
 	mux := http.NewServeMux()
-	registerKernelHTTPHandlers(mux, hub, "127.0.0.1:8089", BuildInfo{})
+	registerKernelHTTPHandlers(mux, hub, "127.0.0.1:8089", BuildInfo{}, false)
 
 	req := httptest.NewRequest(http.MethodPost, "http://localhost:8089/internal/snapshot/runtimes", nil)
 	req.Host = "localhost:8089"

@@ -60,7 +60,8 @@ class VCSInstalled(unittest.TestCase):
 
     def make_client(self) -> TestbedClient:
         client = TestbedClient(self.url, name="testbed-vcs")
-        client.connect_join("testbed-vcs", tenant_id="default")
+        client.connect()
+        client.create_session("testbed-vcs", tenant_id="default")
         return client
 
     @staticmethod
@@ -68,21 +69,7 @@ class VCSInstalled(unittest.TestCase):
         return client.call_tool(tool, args, timeout=30).json()
 
     def test_structured_read_worktree_commit_and_recovery(self) -> None:
-        tools = {
-            "vcs_status",
-            "vcs_diff",
-            "vcs_log",
-            "vcs_worktree_create",
-            "vcs_worktree_remove",
-            "vcs_rescue",
-            "vcs_commit",
-            "vcs_restore",
-            "vcs_revert",
-            "vcs_rollback",
-        }
         with self.make_client() as client:
-            client.wait_tools(tools, session="testbed-vcs", tenant_id="default")
-
             status = self.call(client, "vcs_status", {})
             self.assertTrue(status["clean"])
             self.assertEqual(Path(status["repository"]["configured_root"]).resolve(), self.repo.resolve())

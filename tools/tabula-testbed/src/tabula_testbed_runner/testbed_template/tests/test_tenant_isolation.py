@@ -34,7 +34,8 @@ class TenantIsolationSmoke(unittest.TestCase):
 
     def make_client(self, name: str, session: str, tenant_id: str) -> TestbedClient:
         client = TestbedClient(self.url, name=name)
-        client.connect_join(session, tenant_id=tenant_id)
+        client.connect()
+        client.create_session(session, tenant_id=tenant_id)
         return client
 
     def status_json(self) -> dict:
@@ -45,7 +46,6 @@ class TenantIsolationSmoke(unittest.TestCase):
 
     def test_tenant_scoped_skill_state_and_status(self) -> None:
         with self.make_client("testbed-alpha", "testbed-tenant-alpha", "alpha") as alpha:
-            alpha.wait_tools({"testbed_tenant_note"}, session="testbed-tenant-alpha", tenant_id="alpha")
             alpha_payload = alpha.call_tool("testbed_tenant_note", {"note": "alpha-only"}, timeout=10).json()
 
             self.assertTrue(alpha_payload["ok"], alpha_payload)
@@ -54,7 +54,6 @@ class TenantIsolationSmoke(unittest.TestCase):
             self.assertIn("/tenants/alpha/", alpha_payload["path"], alpha_payload)
 
             with self.make_client("testbed-beta", "testbed-tenant-beta", "beta") as beta:
-                beta.wait_tools({"testbed_tenant_note"}, session="testbed-tenant-beta", tenant_id="beta")
                 beta_empty = beta.call_tool("testbed_tenant_note", {}, timeout=10).json()
                 self.assertTrue(beta_empty["ok"], beta_empty)
                 self.assertEqual(beta_empty["tenant_id"], "beta", beta_empty)

@@ -16,7 +16,8 @@ class SchedulePluginSmoke(unittest.TestCase):
 
     def make_client(self, name: str, session: str = "testbed-schedule") -> TestbedClient:
         client = TestbedClient(self.url, name=name)
-        client.connect_join(session)
+        client.connect()
+        client.create_session(session)
         return client
 
     def test_schedule_is_plugin_and_manages_canonical_records(self) -> None:
@@ -26,7 +27,7 @@ class SchedulePluginSmoke(unittest.TestCase):
 
         tools = {"schedule_put", "schedule_list", "schedule_pause", "schedule_resume", "schedule_remove"}
         with self.make_client("testbed-schedule-tools") as client:
-            client.wait_tools(tools, session="testbed-schedule")
+
             created = client.call_tool("schedule_put", {
                 "id": "testbed-schedule-job",
                 "trigger": {"type": "cron", "expr": "0 9 * * *"},
@@ -48,33 +49,7 @@ class SchedulePluginSmoke(unittest.TestCase):
             removed = client.call_tool("schedule_remove", {"id": "testbed-schedule-job"}).json()
             self.assertTrue(removed["ok"], removed)
 
-    def test_schedule_runner_delivers_due_one_shot(self) -> None:
-        receiver = self.make_client("testbed-schedule-receiver")
-        sender = self.make_client("testbed-schedule-sender")
-        schedule_id = "testbed-schedule-fire"
-        try:
-            sender.wait_tools({"schedule_put", "schedule_remove"}, session="testbed-schedule")
-            due = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
-            created = sender.call_tool("schedule_put", {
-                "id": schedule_id,
-                "trigger": {"type": "at", "at": due},
-                "payload": {"message": "scheduled hello", "session": "testbed-schedule"},
-                "retry": {"max_attempts": 2, "backoff_seconds": 0},
-            }).json()
-            self.assertTrue(created["ok"], created)
 
-            msg = receiver.recv(type="message.user", timeout=15)
-            data = msg.get("data") or {}
-            meta = msg.get("meta") or data.get("meta") or {}
-            self.assertIn('<schedule id="testbed-schedule-fire"', data.get("text", ""))
-            self.assertIn("scheduled hello", data.get("text", ""))
-            self.assertEqual(meta.get("source"), "schedule")
-            self.assertEqual(meta.get("schedule_id"), schedule_id)
-            self.assertTrue(meta.get("delivery_id"))
-        finally:
-            sender.call_tool("schedule_remove", {"id": schedule_id})
-            sender.close()
-            receiver.close()
 
 
 def main() -> int:

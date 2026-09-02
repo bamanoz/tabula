@@ -231,4 +231,4 @@ most new executable capabilities, start with a plugin.
 
 - skill: `tabula-guide/` and plugin: `workspace/fs/` in
   [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles);
-- minimal fixed distro materialization: `guardian` in `tabula-distrib`.
+- distro materialization: `claw` and `code` in `tabula-distrib`.

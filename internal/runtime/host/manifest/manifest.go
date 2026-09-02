@@ -397,6 +397,11 @@ func normalizeKind(kind *Kind) *Kind {
 	return &Kind{Name: strings.TrimSpace(kind.Name), Singleton: kind.Singleton}
 }
 
+// IsDriver reports whether the component is a session-scoped driver implementation.
+func (p Plugin) IsDriver() bool {
+	return p.Kind != nil && p.Kind.Name == "driver"
+}
+
 // Validate checks runtime-owned invariants before a worker can be spawned.
 func (p Plugin) Validate() error {
 	if !pluginIDPattern.MatchString(p.ID) {
@@ -417,15 +422,25 @@ func (p Plugin) Validate() error {
 		return fmt.Errorf("worker_mode %q must be warm or cold", p.WorkerMode)
 	}
 	switch p.WorkerScope {
-	case "", wire.WorkerScopeTenant, wire.WorkerScopeRuntime:
+	case "", wire.WorkerScopeTenant, wire.WorkerScopeRuntime, wire.WorkerScopeSession:
 	default:
-		return fmt.Errorf("worker.scope %q must be tenant or runtime", p.WorkerScope)
+		return fmt.Errorf("worker.scope %q must be tenant, runtime, or session", p.WorkerScope)
 	}
-	if p.WorkerMode == wire.WorkerModeCold && p.WorkerScope == wire.WorkerScopeRuntime {
-		return fmt.Errorf("worker.scope runtime requires worker_mode warm")
+	if p.WorkerMode == wire.WorkerModeCold && p.WorkerScope != wire.WorkerScopeTenant {
+		return fmt.Errorf("worker.scope %s requires worker_mode warm", p.WorkerScope)
 	}
 	if p.Kind != nil && p.Kind.Name == "" {
 		return fmt.Errorf("kind.name is required")
+	}
+	isDriver := p.Kind != nil && p.Kind.Name == "driver"
+	if isDriver && (p.WorkerMode != wire.WorkerModeWarm || p.WorkerScope != wire.WorkerScopeSession) {
+		return fmt.Errorf("driver kind requires worker.mode warm and worker.scope session")
+	}
+	if !isDriver && p.WorkerScope == wire.WorkerScopeSession {
+		return fmt.Errorf("worker.scope session is reserved for driver kind")
+	}
+	if isDriver && (len(p.Tools) != 0 || len(p.Hooks) != 0) {
+		return fmt.Errorf("driver kind cannot publish plugin tools or hooks")
 	}
 	hasWorkerCommand := p.hasWorkerCommand()
 	if p.Worker != nil && hasWorkerCommand {
@@ -921,7 +936,7 @@ func (i *Index) Capabilities() []wire.Capability {
 	sort.Strings(ids)
 	out := make([]wire.Capability, 0, len(ids))
 	for _, id := range ids {
-		if plugin, ok := i.plugins[id]; ok {
+		if plugin, ok := i.plugins[id]; ok && !plugin.IsDriver() {
 			out = append(out, plugin.Capability())
 		}
 	}
@@ -940,7 +955,9 @@ func (i *Index) PluginCapabilities() []wire.Capability {
 	sort.Strings(ids)
 	out := make([]wire.Capability, 0, len(ids))
 	for _, id := range ids {
-		out = append(out, i.plugins[id].Capability())
+		if !i.plugins[id].IsDriver() {
+			out = append(out, i.plugins[id].Capability())
+		}
 	}
 	return out
 }

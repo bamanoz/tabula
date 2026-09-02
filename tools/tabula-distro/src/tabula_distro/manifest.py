@@ -11,10 +11,10 @@ Schema:
     kernel = ">=0.8.0,<1.0.0"
 
     [[exports.python_packages]]
-    name = "tabula_session_sdk"
-    path = "sessions/sdk/python/src/tabula_session_sdk"
+    name = "tabula_client_sdk"
+    path = "client-sdk/sdk/python/src/tabula_client_sdk"
     public = true
-    owner = "sessions"
+    owner = "client-sdk"
 
     [[exports.typescript_packages]]
     name = "@tabula/skill-sdk"
@@ -24,8 +24,7 @@ Schema:
 
     [[dependencies]]
     bundle = "extensions"
-    components = ["sessions"]
-    python_packages = ["tabula_session_sdk"]
+    python_packages = ["tabula_client_sdk"]
     typescript_packages = ["@tabula/skill-sdk"]
 
 A bundle without a ``bundle.toml`` is treated as an unversioned legacy bundle:

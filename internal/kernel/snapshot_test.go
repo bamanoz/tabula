@@ -79,10 +79,10 @@ func TestSnapshotSessionsIncludesClientMeta(t *testing.T) {
 
 func TestKernelSessionsSnapshotRequest(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), nil)
-	client := &Client{name: "requester", id: 1, sends: map[string]bool{string(MsgRequest): true}, receives: map[string]bool{string(MsgReply): true}, state: ClientJoined, recvCh: make(chan *Message, 1), done: make(chan struct{})}
+	client := &Client{name: "requester", id: 1, sends: map[string]bool{string(MsgRequest): true}, receives: map[string]bool{string(MsgReply): true}, state: ClientJoined, recvCh: make(chan *BusMessage, 1), done: make(chan struct{})}
 	hub.sessions.GetOrCreate("s1", "tenant")
 
-	hub.handleSessionMessage(client, &Message{Type: string(MsgRequest), Topic: TopicKernelSessions, ID: "sessions-1"})
+	hub.handleSessionMessage(client, &BusMessage{Type: string(MsgRequest), Topic: TopicKernelSessions, ID: "sessions-1"})
 
 	select {
 	case msg := <-client.recvCh:

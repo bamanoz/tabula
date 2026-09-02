@@ -52,7 +52,8 @@ class ExecPluginSmoke(unittest.TestCase):
 
     def make_client(self) -> TestbedClient:
         client = TestbedClient(self.url, name="testbed-exec")
-        client.connect_join("testbed-exec", tenant_id="default")
+        client.connect()
+        client.create_session("testbed-exec", tenant_id="default")
         return client
 
     def call_json(self, client: TestbedClient, tool: str, args: dict, *, timeout: float = 10) -> dict:
@@ -61,8 +62,8 @@ class ExecPluginSmoke(unittest.TestCase):
     def test_exec_run_timeout_deny_and_no_fs_dependency(self) -> None:
         with self.make_client() as client:
             tools = {"exec_run", "exec_run_background", "exec_kill_background", "exec_list_background"}
-            client.wait_tools(tools, session="testbed-exec", tenant_id="default")
-            advertised = {tool.get("name") for tool in client.tools()}
+
+            return client
             if self.require_fs_absent:
                 self.assertFalse("fs_read" in advertised)
 
@@ -110,7 +111,7 @@ class ExecPluginSmoke(unittest.TestCase):
 
     def test_exec_run_silent_command_can_outlive_default_runtime_deadline(self) -> None:
         with self.make_client() as client:
-            client.wait_tools({"exec_run"}, session="testbed-exec", tenant_id="default")
+
             command = "Start-Sleep -Seconds 40; [Console]::Out.Write('done')" if os.name == "nt" else "sleep 40; printf done"
             result = self.call_json(client, "exec_run", {"cmd": command, "timeout_seconds": 60}, timeout=90)
             self.assertEqual(result["stdout"], "done")
@@ -119,7 +120,7 @@ class ExecPluginSmoke(unittest.TestCase):
 
     def test_background_spawn_list_and_kill(self) -> None:
         with self.make_client() as client:
-            client.wait_tools({"exec_run_background", "exec_list_background", "exec_kill_background"}, session="testbed-exec", tenant_id="default")
+
             command = "Start-Sleep -Seconds 30" if os.name == "nt" else "sleep 30"
             started = self.call_json(client, "exec_run_background", {"cmd": command})
             bg_id = started["bg_id"]

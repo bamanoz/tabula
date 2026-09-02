@@ -13,8 +13,8 @@ class TaskSchedulingSDKTestbed(unittest.TestCase):
     def test_installed_controller_recovers_claims_and_records_completion(self) -> None:
         session = "testbed-task-scheduling-sdk"
         with TestbedClient(self.url, name="testbed-task-scheduling-sdk") as client:
-            client.connect_join(session)
-            client.wait_tools({"task_scheduling_sdk_fixture_run"}, session=session)
+            client.connect()
+            client.create_session(session)
             payload = client.call_tool(
                 "task_scheduling_sdk_fixture_run",
                 {"id": "installed-task-scheduling"},

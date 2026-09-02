@@ -17,10 +17,9 @@ class ArtifactSDKTestbed(unittest.TestCase):
         session = "testbed-artifact-sdk"
         artifact_id = "installed-artifact-sdk-restart"
         content = "durable installed artifact " + ("x" * 256)
-        tools = {"artifact_sdk_fixture_write_and_exit", "artifact_sdk_fixture_read"}
         with TestbedClient(self.url, name="testbed-artifact-sdk") as client:
-            client.connect_join(session)
-            client.wait_tools(tools, session=session)
+            client.connect()
+            client.create_session(session)
             try:
                 client.call_tool(
                     "artifact_sdk_fixture_write_and_exit",

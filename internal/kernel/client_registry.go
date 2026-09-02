@@ -111,3 +111,11 @@ func (r *ClientRegistry) NextID() int {
 	defer r.mu.RUnlock()
 	return r.nextClientID
 }
+
+func makeCapabilitySet(items []string) map[string]bool {
+	set := make(map[string]bool, len(items))
+	for _, item := range items {
+		set[item] = true
+	}
+	return set
+}

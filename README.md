@@ -18,9 +18,8 @@ building and living with an agent.
 - Your agent's utilities live as plain files under
   `$TABULA_HOME` (default `~/.tabula`). Like dotfiles, for an agent.
 - **Distros** package a runtime surface, tool policy, and personality into a
-  product. Current maintained distros are `claw` (general-purpose), `code`
-  (coding-focused), and `guardian` (sandboxed code execution). You can build
-  your own.
+  product. Current maintained distros are `claw` (general-purpose) and `code`
+  (coding-focused). You can build your own.
 
 A Tabula agent is something you own, can inspect, can break, can fix, and can
 grow over years. Not something you rent.
@@ -249,7 +248,7 @@ Pieces:
 - **Kernel config** — installer-written `config/kernel.toml` containing only
   kernel transport settings.
 - **Drivers** — one provider loop per process (Anthropic, OpenAI).
-- **Gateways** — the mouths and ears: CLI, HTTP API, Telegram.
+- **Gateways** — the mouths and ears: web and HTTP API.
 - **Plugins** — executable tools, hooks, integrations, memory, MCP, and gateway
   daemons.
 - **Skills** — prompt/instruction artifacts discovered by the active distro.
@@ -261,8 +260,7 @@ Pieces:
 ```text
 $TABULA_HOME/
 ├── distrib/
-│   ├── claw/current/
-│   ├── guardian/current/
+│   ├── code/current/
 │   └── active -> claw
 ├── templates/      -> distrib/active/templates
 ├── skills/         # distro skills + bundle skills
@@ -322,7 +320,7 @@ bundle dependencies against
 Default general-purpose agent.
 
 - providers: Anthropic and OpenAI (official SDKs, from the `drivers` bundle)
-- gateways: CLI and Telegram
+- gateways: web and API
 - tools: workspace `fs`/`exec`, `sessions`, `pair`, `mcp`, `timer`, `cron`, `todo`
 - hooks: `hook-logger`, `hook-permissions`
 - observability: `observer`
@@ -334,19 +332,10 @@ Default general-purpose agent.
 Focused coding-agent distro.
 
 - providers: Anthropic and OpenAI through the shared driver
-- gateway: CLI
+- gateways: web and API
 - tools: workspace `fs`/`exec`, MCP defaults for Context7, Playwright, and DuckDuckGo,
   mempalace, codegraph, todo, and approval hooks
 - runtime requirements: `npx` and `uvx` are required; `rg` is optional for faster grep
-
-### `guardian`
-
-Focused runtime for sandboxed Python execution.
-
-- single tool: `execute_code` (Python 3 in a Docker sandbox)
-- minimal CLI gateway
-- builds its sandbox image during install
-- no files / mcp / sessions / memory / telegram / hooks
 
 More about what each distro contains lives in the
 [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib) repo.

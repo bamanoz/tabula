@@ -43,6 +43,10 @@ const (
 	OpReload Operation = "reload"
 	// OpReloadAck returns the targets affected by a Reload request.
 	OpReloadAck Operation = "reload_ack"
+	// OpPrepareTenant asks the runtime to initialize one tenant's warm plugin workers.
+	OpPrepareTenant Operation = "prepare_tenant"
+	// OpPrepareTenantAck returns authoritative capabilities after tenant preparation.
+	OpPrepareTenantAck Operation = "prepare_tenant_ack"
 	// OpHookEvent delivers a kernel-originated hook event to a runtime target.
 	OpHookEvent Operation = "hook_event"
 	// OpCatalogUpdate carries an authoritative runtime-originated catalog update.
@@ -55,6 +59,34 @@ const (
 	OpPluginLog Operation = "plugin_log"
 	// OpLifecycleNotice carries runtime-originated target lifecycle diagnostics.
 	OpLifecycleNotice Operation = "lifecycle_notice"
+	// OpDriverEnsure asks a runtime to converge one session-scoped driver worker.
+	OpDriverEnsure Operation = "driver.ensure"
+	// OpDriverEnsureAck acknowledges that runtime accepted the desired worker state.
+	OpDriverEnsureAck Operation = "driver.ensure_ack"
+	// OpDriverStop asks a runtime to stop one session-scoped driver worker.
+	OpDriverStop Operation = "driver.stop"
+	// OpDriverStopAck acknowledges that runtime converged the worker to stopped.
+	OpDriverStopAck Operation = "driver.stop_ack"
+	// OpDriverLifecycle carries runtime-observed driver process lifecycle facts.
+	OpDriverLifecycle Operation = "driver.lifecycle"
+	// Driver execution v4 operations relay an attested worker channel.
+	OpDriverRegister     Operation = "driver.register"
+	OpDriverLeaseGranted Operation = "driver.lease_granted"
+	OpDriverReady        Operation = "driver.ready"
+	OpDriverHeartbeat    Operation = "driver.heartbeat"
+	OpDriverResult       Operation = "driver.result"
+	OpTurnAssign         Operation = "turn.assign"
+	OpTurnPrepared       Operation = "turn.prepared"
+	OpTurnPrepareFailed  Operation = "turn.prepare_failed"
+	OpTurnPermit         Operation = "turn.permit"
+	OpTurnCancel         Operation = "turn.cancel"
+	OpTurnOutput         Operation = "turn.output"
+	OpTurnToolCall       Operation = "turn.tool_call"
+	OpTurnToolResult     Operation = "turn.tool_result"
+	OpTurnCompleted      Operation = "turn.completed"
+	OpTurnFailed         Operation = "turn.failed"
+	OpTurnCancelled      Operation = "turn.cancelled"
+	OpTurnUncertain      Operation = "turn.uncertain"
 )
 
 // ErrorCode is a canonical Runtime API wire error code.
@@ -290,13 +322,13 @@ const (
 	WorkerModeCold WorkerMode = "cold"
 )
 
-// WorkerScope describes whether a warm target has one worker per tenant or one
-// worker shared by all tenants served by the runtime.
+// WorkerScope describes the ownership boundary of one warm worker.
 type WorkerScope string
 
 const (
 	WorkerScopeTenant  WorkerScope = "tenant"
 	WorkerScopeRuntime WorkerScope = "runtime"
+	WorkerScopeSession WorkerScope = "session"
 )
 
 // HarnessKind identifies which runtime-side harness/execution family serves a target.
@@ -619,6 +651,20 @@ const (
 	HookActionSuspend HookAction = "suspend"
 )
 
+// PrepareTenant asks the runtime to initialize warm plugin workers for one tenant.
+type PrepareTenant struct {
+	Op        Operation `json:"op"`
+	RequestID string    `json:"request_id"`
+	TenantID  string    `json:"tenant_id"`
+}
+
+// PrepareTenantAck returns authoritative warm-plugin capabilities for one tenant.
+type PrepareTenantAck struct {
+	Op           Operation    `json:"op"`
+	RequestID    string       `json:"request_id"`
+	Capabilities []Capability `json:"capabilities"`
+}
+
 // HookEventReply is the terminal result for one hook_event call_id.
 type HookEventReply struct {
 	Op Operation `json:"op"`
@@ -684,6 +730,240 @@ type LifecycleNotice struct {
 	PID int `json:"pid,omitempty"`
 	// Message is an optional sanitized diagnostic string.
 	Message string `json:"message,omitempty"`
+}
+
+// DriverLifecycleState is one runtime-observed driver process state.
+type DriverLifecycleState string
+
+const (
+	DriverLifecycleStarted    DriverLifecycleState = "started"
+	DriverLifecycleReady      DriverLifecycleState = "ready"
+	DriverLifecycleInitFailed DriverLifecycleState = "init_failed"
+	DriverLifecycleExited     DriverLifecycleState = "exited"
+	DriverLifecycleStopped    DriverLifecycleState = "stopped"
+)
+
+// DriverEnsure declares the authoritative desired driver process for a session.
+type DriverEnsure struct {
+	Op                Operation `json:"op"`
+	RequestID         string    `json:"request_id"`
+	TenantID          string    `json:"tenant_id"`
+	SessionID         string    `json:"session_id"`
+	ComponentID       string    `json:"component_id"`
+	AgentSpecRevision string    `json:"agent_spec_revision"`
+	DesiredGeneration uint64    `json:"desired_generation"`
+}
+
+// DriverEnsureAck confirms that a runtime accepted one desired state request.
+type DriverEnsureAck struct {
+	Op        Operation `json:"op"`
+	RequestID string    `json:"request_id"`
+}
+
+// DriverStop converges one session-scoped driver worker to absent.
+type DriverStop struct {
+	Op        Operation `json:"op"`
+	RequestID string    `json:"request_id"`
+	TenantID  string    `json:"tenant_id"`
+	SessionID string    `json:"session_id"`
+}
+
+// DriverStopAck confirms that a runtime stopped the matching worker, if any.
+type DriverStopAck struct {
+	Op        Operation `json:"op"`
+	RequestID string    `json:"request_id"`
+}
+
+// DriverLifecycle is a process fact reported by the authenticated runtime.
+type DriverLifecycle struct {
+	Op                Operation            `json:"op"`
+	TenantID          string               `json:"tenant_id"`
+	SessionID         string               `json:"session_id"`
+	ComponentID       string               `json:"component_id"`
+	AgentSpecRevision string               `json:"agent_spec_revision"`
+	DesiredGeneration uint64               `json:"desired_generation"`
+	DriverInstanceID  string               `json:"driver_instance_id"`
+	State             DriverLifecycleState `json:"state"`
+	ExitCode          int                  `json:"exit_code,omitempty"`
+	Message           string               `json:"message,omitempty"`
+}
+
+// DriverFence is complete authority tuple for one runtime-attested worker.
+type DriverFence struct {
+	DriverInstanceID string `json:"driver_instance_id"`
+	LeaseID          string `json:"lease_id"`
+	Generation       uint64 `json:"generation"`
+}
+
+type DriverRegister struct {
+	Op                Operation `json:"op"`
+	RequestID         string    `json:"request_id"`
+	TenantID          string    `json:"tenant_id"`
+	SessionID         string    `json:"session_id"`
+	ComponentID       string    `json:"component_id"`
+	AgentSpecRevision string    `json:"agent_spec_revision"`
+	DesiredGeneration uint64    `json:"desired_generation"`
+	DriverInstanceID  string    `json:"driver_instance_id"`
+}
+
+type DriverLeaseGranted struct {
+	Op                  Operation   `json:"op"`
+	RequestID           string      `json:"request_id"`
+	TenantID            string      `json:"tenant_id"`
+	SessionID           string      `json:"session_id"`
+	Accepted            bool        `json:"accepted"`
+	Fence               DriverFence `json:"fence,omitempty"`
+	ExpiresAt           time.Time   `json:"expires_at,omitempty"`
+	HeartbeatIntervalMS uint64      `json:"heartbeat_interval_ms,omitempty"`
+	SessionVersion      uint64      `json:"session_version,omitempty"`
+	Error               *Error      `json:"error,omitempty"`
+}
+
+type DriverReady struct {
+	Op        Operation   `json:"op"`
+	RequestID string      `json:"request_id"`
+	TenantID  string      `json:"tenant_id"`
+	SessionID string      `json:"session_id"`
+	Fence     DriverFence `json:"fence"`
+}
+
+type DriverHeartbeat struct {
+	Op        Operation   `json:"op"`
+	RequestID string      `json:"request_id"`
+	TenantID  string      `json:"tenant_id"`
+	SessionID string      `json:"session_id"`
+	Fence     DriverFence `json:"fence"`
+	Sequence  uint64      `json:"sequence"`
+}
+
+// DriverResult acknowledges or rejects one correlated driver mutation.
+type DriverResult struct {
+	Op               Operation `json:"op"`
+	RequestID        string    `json:"request_id"`
+	Accepted         bool      `json:"accepted"`
+	SessionVersion   uint64    `json:"session_version,omitempty"`
+	Cursor           uint64    `json:"cursor,omitempty"`
+	ExpectedSequence uint64    `json:"expected_sequence,omitempty"`
+	Error            *Error    `json:"error,omitempty"`
+}
+
+type AttemptRef struct {
+	TenantID      string      `json:"tenant_id"`
+	SessionID     string      `json:"session_id"`
+	TurnID        string      `json:"turn_id"`
+	AttemptID     string      `json:"attempt_id"`
+	CorrelationID string      `json:"correlation_id"`
+	Fence         DriverFence `json:"fence"`
+}
+
+type TurnAssign struct {
+	Op        Operation `json:"op"`
+	RequestID string    `json:"request_id"`
+	AttemptRef
+	Input           json.RawMessage `json:"input"`
+	PreparedContext json.RawMessage `json:"prepared_context,omitempty"`
+	SequenceContext uint64          `json:"sequence_context"`
+	SessionVersion  uint64          `json:"session_version"`
+}
+
+type TurnPrepared struct {
+	Op        Operation `json:"op"`
+	RequestID string    `json:"request_id"`
+	AttemptRef
+	Plan json.RawMessage `json:"plan,omitempty"`
+}
+
+type TurnPrepareFailed struct {
+	Op        Operation `json:"op"`
+	RequestID string    `json:"request_id"`
+	AttemptRef
+	Retryable bool   `json:"retryable"`
+	Reason    string `json:"reason"`
+}
+
+type TurnPermit struct {
+	Op        Operation `json:"op"`
+	RequestID string    `json:"request_id"`
+	AttemptRef
+	PermitID       string `json:"permit_id"`
+	SessionVersion uint64 `json:"session_version"`
+	Cursor         uint64 `json:"cursor"`
+}
+
+type TurnCancel struct {
+	Op        Operation `json:"op"`
+	RequestID string    `json:"request_id"`
+	AttemptRef
+	SessionVersion uint64 `json:"session_version"`
+}
+
+type OutputType string
+
+const (
+	OutputStreamDelta   OutputType = "stream.delta"
+	OutputReasoning     OutputType = "reasoning"
+	OutputUsage         OutputType = "usage"
+	OutputProviderRetry OutputType = "provider.retry"
+	OutputProviderError OutputType = "provider.error"
+	OutputCompaction    OutputType = "compaction"
+	OutputToolResult    OutputType = "tool.result"
+)
+
+type TurnOutput struct {
+	Op        Operation `json:"op"`
+	RequestID string    `json:"request_id"`
+	AttemptRef
+	Sequence   uint64          `json:"sequence"`
+	OutputType OutputType      `json:"output_type"`
+	Payload    json.RawMessage `json:"payload"`
+}
+
+type TurnToolCall struct {
+	Op        Operation `json:"op"`
+	RequestID string    `json:"request_id"`
+	AttemptRef
+	ToolCallID string          `json:"tool_call_id"`
+	Name       string          `json:"name"`
+	Input      json.RawMessage `json:"input"`
+}
+
+type TurnToolResult struct {
+	Op        Operation `json:"op"`
+	RequestID string    `json:"request_id"`
+	AttemptRef
+	ToolCallID       string          `json:"tool_call_id"`
+	Output           string          `json:"output"`
+	Artifact         json.RawMessage `json:"artifact,omitempty"`
+	Truncated        bool            `json:"truncated,omitempty"`
+	SyntheticFailure string          `json:"synthetic_failure,omitempty"`
+}
+
+type TurnCompleted struct {
+	Op        Operation `json:"op"`
+	RequestID string    `json:"request_id"`
+	AttemptRef
+	Sequence uint64 `json:"sequence"`
+}
+type TurnFailed struct {
+	Op        Operation `json:"op"`
+	RequestID string    `json:"request_id"`
+	AttemptRef
+	Sequence uint64 `json:"sequence"`
+	Reason   string `json:"reason"`
+}
+type TurnCancelled struct {
+	Op        Operation `json:"op"`
+	RequestID string    `json:"request_id"`
+	AttemptRef
+	Sequence uint64 `json:"sequence"`
+}
+type TurnUncertain struct {
+	Op        Operation `json:"op"`
+	RequestID string    `json:"request_id"`
+	AttemptRef
+	Sequence               uint64 `json:"sequence"`
+	Reason                 string `json:"reason"`
+	ReconciliationEvidence string `json:"reconciliation_evidence,omitempty"`
 }
 
 // ProtocolError reports a Runtime API protocol validation failure.

@@ -93,8 +93,8 @@ func TestWorkerStarterInitFailureClearsEntryAndShutsDownWorker(t *testing.T) {
 	if worker != nil || reused || entry.worker != nil {
 		t.Fatalf("worker=%#v reused=%v entry.worker=%#v", worker, reused, entry.worker)
 	}
-	if !failed || !w.shutdown.Load() {
-		t.Fatalf("failed callback=%v shutdown=%v", failed, w.shutdown.Load())
+	if !failed || !w.stopped.Load() {
+		t.Fatalf("failed callback=%v shutdown=%v", failed, w.stopped.Load())
 	}
 }
 

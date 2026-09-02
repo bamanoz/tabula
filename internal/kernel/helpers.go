@@ -2,25 +2,24 @@ package kernel
 
 import (
 	"encoding/json"
-	"github.com/bamanoz/tabula/internal/kernel/clientmeta"
-	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
 	"strconv"
 	"unicode/utf8"
 
+	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
 	"github.com/bamanoz/tabula/internal/kernel/process"
 	"github.com/bamanoz/tabula/internal/tenant"
 )
 
 const afterToolCallOutputPreviewBytes = 16 << 10
 
-func (h *Hub) targetSession(sender *Client, msg *Message) string {
+func (h *Hub) targetSession(sender *Client, msg *BusMessage) string {
 	if msg.Session != "" {
 		return msg.Session
 	}
 	return sender.session
 }
 
-func (h *Hub) targetTenant(sender *Client, msg *Message) string {
+func (h *Hub) targetTenant(sender *Client, msg *BusMessage) string {
 	if msg.TenantID != "" {
 		return msg.TenantID
 	}
@@ -74,55 +73,7 @@ func (h *Hub) sessionProcesses(session string) []*process.Spawned {
 	return processes
 }
 
-func (h *Hub) emitAfterMessage(tenantID, session string, sender *Client) {
-	payload, _ := json.Marshal(map[string]string{
-		"session":   session,
-		"tenant_id": tenantID,
-		"sender":    sender.name,
-		"type":      "done",
-	})
-	h.dispatchHook("after_message", payload, tenantID, session)
-}
-
-func (h *Hub) applyBeforeTurnContext(tenantID, session string, msg *Message) {
-	if msg == nil || session == "" {
-		return
-	}
-	context := h.policy.BeforeTurn(session, tenantID, msg)
-	if context == "" {
-		return
-	}
-	msg.Meta = withKernelTurnContext(msg.Meta, context)
-}
-
-func (h *Hub) emitAfterTurn(tenantID, session string, sender *Client, msg *Message) {
-	if msg == nil || session == "" {
-		return
-	}
-	payload := map[string]any{
-		"session":             session,
-		"tenant_id":           tenantID,
-		"sender":              kernelClientMeta(sender),
-		"message_id":          msg.ID,
-		"type":                msg.Type,
-		"topic":               msg.Topic,
-		"name":                msg.Name,
-		"text":                msg.Text,
-		"meta":                metaMap(msg.Meta),
-		"turn_correlation_id": metaString(msg.Meta, turnCorrelationMetaKey),
-	}
-	if msg.Type == string(MsgEvent) && msg.Topic == TopicTurnDone {
-		payload["status"] = "completed"
-	} else if MsgType(msg.Type) == MsgError {
-		payload["status"] = "error"
-	} else {
-		payload["status"] = "terminal"
-	}
-	hookPayload, _ := json.Marshal(payload)
-	h.dispatchHook("after_turn", hookPayload, tenantID, session)
-}
-
-func (h *Hub) emitBeforeCompaction(tenantID, session string, sender *Client, msg *Message) {
+func (h *Hub) emitBeforeCompaction(tenantID, session string, sender *Client, msg *BusMessage) {
 	if msg == nil || session == "" {
 		return
 	}
@@ -170,55 +121,6 @@ func truncateHookOutput(output string) (string, bool) {
 		cut--
 	}
 	return output[:cut], true
-}
-
-func clientPreferredRuntime(c *Client) string {
-	if c == nil {
-		return ""
-	}
-	return clientmeta.NormalizeRuntimeID(clientmeta.Decode(c.meta).RuntimeID)
-}
-
-func clientIsManagedUserInput(c *Client) bool {
-	if c == nil {
-		return false
-	}
-	meta := clientmeta.Decode(c.meta)
-	return meta.Managed && meta.Role == "user"
-}
-
-func (h *Hub) preferredRuntimeForMessage(sender *Client, tenantID, session string) string {
-	if runtimeID := clientPreferredRuntime(sender); runtimeID != "" {
-		return runtimeID
-	}
-	return h.sessionPreferredRuntime(tenantID, session)
-}
-
-func (h *Hub) stampMessagePreferredRuntime(sender *Client, tenantID, session string, msg *Message) {
-	if msg == nil {
-		return
-	}
-	if runtimeID := h.preferredRuntimeForMessage(sender, tenantID, session); runtimeID != "" {
-		msg.Meta = withKernelPreferredRuntime(msg.Meta, runtimeID)
-	}
-}
-
-func (h *Hub) applyMessagePreferredRuntime(tenantID, session string, msg *Message) {
-	if h == nil || h.sessions == nil || msg == nil || session == "" {
-		return
-	}
-	runtimeID := kernelPreferredRuntime(msg.Meta)
-	if runtimeID == "" {
-		return
-	}
-	sess, ok := h.sessions.Get(session, tenantID)
-	if !ok || sess == nil {
-		return
-	}
-	if sess.SetPreferredRuntime(runtimeID) {
-		h.persistSessionState(tenantID, session)
-	}
-	msg.Meta = withKernelPreferredRuntime(msg.Meta, runtimeID)
 }
 
 func (h *Hub) emitSessionEnd(tenantID, session string) {

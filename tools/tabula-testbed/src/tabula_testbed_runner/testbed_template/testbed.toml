@@ -358,6 +358,16 @@ bundles = ["extensions", "async", "collaboration"]
 components = ["drivers:driver"]
 tests = ["tests/test_compaction.py", "tests/test_driver_config.py"]
 
+[suites.crash-recovery]
+set = "extensions"
+components = ["test-fixtures:testbed-fail", "test-fixtures:testbed-hook-blocker", "test-fixtures:testbed-recovery-driver"]
+tests = ["tests/test_crash_recovery.py"]
+runtime_tenants = ["*"]
+
+[suites.client-v4-reconnect]
+set = "empty"
+tests = ["tests/test_client_v4_reconnect.py"]
+
 [suites.managed-driver-session]
 set = "empty"
 bundles = ["extensions", "async", "collaboration"]
@@ -365,17 +375,12 @@ components = ["drivers:driver"]
 tests = ["tests/test_managed_driver_session.py"]
 runtime_tenants = ["*"]
 
-[suites.acp]
+[suites.gateway-v4-recovery]
 set = "empty"
 bundles = ["extensions", "async", "collaboration"]
-components = ["interaction:question", "security:hook-approvals", "security:hook-permissions", "drivers:driver", "gateways:gateway-acp", "workspace:exec"]
-tests = ["tests/test_acp.py"]
-
-[suites.telegram-gateway]
-set = "extensions"
-bundles = ["async", "collaboration"]
-components = ["drivers:driver", "gateways:telegram-gateway"]
-tests = ["tests/test_telegram_gateway.py"]
+components = ["drivers:driver", "gateways:gateway-api", "gateways:gateway-web"]
+tests = ["tests/test_gateway_v4_recovery.py"]
+runtime_tenants = ["*"]
 
 [suites.runtime-wss-loopback]
 set = "empty"

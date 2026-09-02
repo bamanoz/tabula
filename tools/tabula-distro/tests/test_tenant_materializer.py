@@ -10,6 +10,7 @@ from pathlib import Path
 
 from tabula_distro import config as distro_config
 from tabula_distro import install_cli
+from tabula_distro import runtime_config
 
 
 def _write(path: Path, content: str) -> None:
@@ -131,6 +132,9 @@ class TenantMaterializerTests(unittest.TestCase):
             project_b = root / "project-b"
             project_a.mkdir()
             project_b.mkdir()
+            default = home / "tenants" / "default"
+            default.mkdir(parents=True)
+            runtime_config.write(home, [str(home / "plugins")])
             distro_a = _make_distro(root / "alpha")
             distro_b = _make_distro(root / "beta")
             args = ["--home", str(home), "tenant", "install"]
@@ -140,10 +144,12 @@ class TenantMaterializerTests(unittest.TestCase):
 
             runtime = tomllib.loads((home / "config" / "runtime.toml").read_text(encoding="utf-8"))
             tenants = {item["id"]: item for item in runtime["tenant"]}
-            self.assertEqual(set(tenants), {"project-a", "project-b"})
+            self.assertEqual(set(tenants), {"default", "project-a", "project-b"})
+            self.assertEqual([Path(path).resolve() for path in tenants["default"]["plugin_dirs"]], [(home / "plugins").resolve()])
+            self.assertEqual([Path(path).resolve() for path in tenants["default"]["skill_dirs"]], [(home / "skills").resolve()])
             self.assertEqual([Path(path).resolve() for path in tenants["project-a"]["plugin_dirs"]], [(home / "tenants" / "project-a" / "plugins").resolve()])
             self.assertEqual([Path(path).resolve() for path in tenants["project-b"]["plugin_dirs"]], [(home / "tenants" / "project-b" / "plugins").resolve()])
-            self.assertEqual(set(runtime["kernel"][0]["tenants"]), {"project-a", "project-b"})
+            self.assertEqual(set(runtime["kernel"][0]["tenants"]), {"default", "project-a", "project-b"})
             self.assertEqual(runtime["distro"]["active"], "demo")
             self.assertTrue(Path(runtime["distro"]["dir"]).resolve().is_dir())
 

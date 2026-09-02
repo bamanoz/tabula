@@ -51,6 +51,52 @@ type AsyncSink interface {
 	RuntimeProtocolError(runtimeID string, err error)
 }
 
+// DriverControlConn is implemented by Runtime API connections that prepare one
+// tenant's warm plugins before controlling its session-scoped driver process.
+type DriverControlConn interface {
+	PrepareTenant(ctx context.Context, req PrepareTenantReq) error
+	EnsureDriver(ctx context.Context, req DriverEnsureReq) error
+	StopDriver(ctx context.Context, req DriverStopReq) error
+}
+
+// DriverAsyncSink optionally receives runtime-attested driver lifecycle facts.
+type DriverAsyncSink interface {
+	DriverLifecycleNoticed(runtimeID string, lifecycle wire.DriverLifecycle) error
+}
+
+// DriverExecutionConn is implemented by Runtime API connections that support
+// driver execution v4 turn control. Every operation blocks for its correlated
+// DriverResult or until its context or connection fails.
+type DriverExecutionConn interface {
+	TurnAssign(ctx context.Context, req wire.TurnAssign) (wire.DriverResult, error)
+	TurnPermit(ctx context.Context, req wire.TurnPermit) (wire.DriverResult, error)
+	TurnToolResult(ctx context.Context, req wire.TurnToolResult) (wire.DriverResult, error)
+	TurnCancel(ctx context.Context, req wire.TurnCancel) (wire.DriverResult, error)
+}
+
+// DriverExecutionAsyncSink optionally handles authenticated runtime-originated
+// driver execution v4 requests. runtimeID comes from the authenticated
+// connection, never from request payloads.
+type DriverExecutionAsyncSink interface {
+	DriverRegister(ctx context.Context, runtimeID string, req wire.DriverRegister) (wire.DriverLeaseGranted, error)
+	DriverReady(ctx context.Context, runtimeID string, req wire.DriverReady) (wire.DriverResult, error)
+	DriverHeartbeat(ctx context.Context, runtimeID string, req wire.DriverHeartbeat) (wire.DriverResult, error)
+	TurnPrepared(ctx context.Context, runtimeID string, req wire.TurnPrepared) (wire.DriverResult, error)
+	TurnPrepareFailed(ctx context.Context, runtimeID string, req wire.TurnPrepareFailed) (wire.DriverResult, error)
+	TurnOutput(ctx context.Context, runtimeID string, req wire.TurnOutput) (wire.DriverResult, error)
+	TurnToolCall(ctx context.Context, runtimeID string, req wire.TurnToolCall) (wire.DriverResult, error)
+	TurnCompleted(ctx context.Context, runtimeID string, req wire.TurnCompleted) (wire.DriverResult, error)
+	TurnFailed(ctx context.Context, runtimeID string, req wire.TurnFailed) (wire.DriverResult, error)
+	TurnCancelled(ctx context.Context, runtimeID string, req wire.TurnCancelled) (wire.DriverResult, error)
+	TurnUncertain(ctx context.Context, runtimeID string, req wire.TurnUncertain) (wire.DriverResult, error)
+}
+
+// DriverReadyAcknowledgedSink optionally runs work that must occur only after
+// the accepted DriverReady response has been written to the runtime connection.
+type DriverReadyAcknowledgedSink interface {
+	DriverReadyAcknowledged(ctx context.Context, runtimeID string, req wire.DriverReady) error
+}
+
 // Backend produces RuntimeConn instances for a concrete transport/backend.
 type Backend interface {
 	// Connect establishes or attaches to a runtime connection.
@@ -113,6 +159,29 @@ type ReloadReq struct {
 // ReloadResp returns targets affected by reload.
 type ReloadResp = wire.ReloadAck
 
+// PrepareTenantReq identifies one tenant whose warm plugin catalog must be ready.
+type PrepareTenantReq struct {
+	RequestID string
+	TenantID  string
+}
+
+// DriverEnsureReq pins the desired driver implementation and AgentSpec revision.
+type DriverEnsureReq struct {
+	RequestID         string
+	TenantID          string
+	SessionID         string
+	ComponentID       string
+	AgentSpecRevision string
+	DesiredGeneration uint64
+}
+
+// DriverStopReq identifies one session-scoped driver worker to stop.
+type DriverStopReq struct {
+	RequestID string
+	TenantID  string
+	SessionID string
+}
+
 type notImplementedConn struct{}
 
 var _ RuntimeConn = (*notImplementedConn)(nil)
@@ -144,6 +213,18 @@ func (c *notImplementedConn) Reload(context.Context, ReloadReq) (ReloadResp, err
 }
 
 func (c *notImplementedConn) SendHookEvent(context.Context, HookEventReq) error {
+	return ErrNotImplemented
+}
+
+func (c *notImplementedConn) PrepareTenant(context.Context, PrepareTenantReq) error {
+	return ErrNotImplemented
+}
+
+func (c *notImplementedConn) EnsureDriver(context.Context, DriverEnsureReq) error {
+	return ErrNotImplemented
+}
+
+func (c *notImplementedConn) StopDriver(context.Context, DriverStopReq) error {
 	return ErrNotImplemented
 }
 

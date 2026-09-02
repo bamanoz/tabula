@@ -1,14 +1,10 @@
 package kernel
 
-import (
-	"encoding/json"
+import "encoding/json"
 
-	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
-)
-
-// Message is the generic JSON message exchanged over WebSocket.
-type Message struct {
-	V         int             `json:"v,omitempty"`
+// BusMessage is an internal adapter for topic-based extension routing. It is
+// encoded only inside protocol v4 extension.send/extension.event data.
+type BusMessage struct {
 	Type      string          `json:"type"`
 	Name      string          `json:"name,omitempty"`
 	Session   string          `json:"session,omitempty"`
@@ -24,20 +20,10 @@ type Message struct {
 	Truncated bool            `json:"truncated,omitempty"`
 	Context   string          `json:"context,omitempty"`
 	Tools     json.RawMessage `json:"tools,omitempty"`
-	Sends     []string        `json:"sends,omitempty"`
-	Receives  []string        `json:"receives,omitempty"`
-	// ReceivesGlobal lists message types this client wants to receive from ALL
-	// sessions, regardless of whether the client has joined a session. This is
-	// useful for global observers (e.g., hook-approvals) that need to receive
-	// certain messages (like rule_add commands) without joining every session.
-	ReceivesGlobal []string `json:"receives_global,omitempty"`
-	Token          string   `json:"token,omitempty"`
-	AuthToken      string   `json:"auth_token,omitempty"`
 	// Hook fields
-	Hooks   []khooks.Subscription `json:"hooks,omitempty"`
-	Payload json.RawMessage       `json:"payload,omitempty"`
-	Action  string                `json:"action,omitempty"`
-	Reason  string                `json:"reason,omitempty"`
+	Payload json.RawMessage `json:"payload,omitempty"`
+	Action  string          `json:"action,omitempty"`
+	Reason  string          `json:"reason,omitempty"`
 	// Meta is an optional opaque JSON object carried alongside the message.
 	// The kernel does not interpret its contents; it is forwarded as-is.
 	// Conventional uses:
@@ -47,7 +33,7 @@ type Message struct {
 	release func()
 }
 
-func cloneMessage(msg *Message) *Message {
+func cloneMessage(msg *BusMessage) *BusMessage {
 	if msg == nil {
 		return nil
 	}
@@ -70,18 +56,6 @@ func cloneMessage(msg *Message) *Message {
 	if msg.Data != nil {
 		clone.Data = append(json.RawMessage(nil), msg.Data...)
 	}
-	if msg.Sends != nil {
-		clone.Sends = append([]string(nil), msg.Sends...)
-	}
-	if msg.Receives != nil {
-		clone.Receives = append([]string(nil), msg.Receives...)
-	}
-	if msg.ReceivesGlobal != nil {
-		clone.ReceivesGlobal = append([]string(nil), msg.ReceivesGlobal...)
-	}
-	if msg.Hooks != nil {
-		clone.Hooks = append([]khooks.Subscription(nil), msg.Hooks...)
-	}
 	clone.release = nil
 	return &clone
 }
@@ -94,7 +68,7 @@ func mustMarshalRaw(value any) json.RawMessage {
 	return raw
 }
 
-func eventText(msg *Message) string {
+func eventText(msg *BusMessage) string {
 	if msg == nil || len(msg.Data) == 0 {
 		return ""
 	}
@@ -107,33 +81,18 @@ func eventText(msg *Message) string {
 	return data.Text
 }
 
-func messageText(msg *Message) string {
-	if msg == nil || (msg.Topic != TopicMessageUser && msg.Topic != TopicTurnSteer) {
+func messageText(msg *BusMessage) string {
+	if msg == nil || BusMessageType(msg.Type) != MsgEvent {
 		return ""
 	}
 	return eventText(msg)
 }
 
-func setMessageText(msg *Message, text string) {
-	if msg == nil {
-		return
-	}
-	var data map[string]any
-	if len(msg.Data) > 0 {
-		_ = json.Unmarshal(msg.Data, &data)
-	}
-	if data == nil {
-		data = map[string]any{}
-	}
-	data["text"] = text
-	msg.Data = mustMarshalRaw(data)
-}
-
-func messageCapability(msg *Message) string {
+func messageCapability(msg *BusMessage) string {
 	if msg == nil {
 		return ""
 	}
-	if (MsgType(msg.Type) == MsgEvent || MsgType(msg.Type) == MsgRequest || MsgType(msg.Type) == MsgReply) && msg.Topic != "" {
+	if (BusMessageType(msg.Type) == MsgEvent || BusMessageType(msg.Type) == MsgRequest || BusMessageType(msg.Type) == MsgReply) && msg.Topic != "" {
 		return msg.Topic
 	}
 	return msg.Type

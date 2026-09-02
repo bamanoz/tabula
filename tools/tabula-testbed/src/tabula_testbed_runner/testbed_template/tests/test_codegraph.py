@@ -16,7 +16,8 @@ class CodeGraphSmoke(unittest.TestCase):
 
     def make_client(self) -> TestbedClient:
         client = TestbedClient(self.url, name="testbed-codegraph")
-        client.connect_join("testbed-codegraph")
+        client.connect()
+        client.create_session("testbed-codegraph")
         return client
 
     def configure_fake_codegraph(self) -> Path:
@@ -58,7 +59,7 @@ class CodeGraphSmoke(unittest.TestCase):
     def test_codegraph_installed_wrappers_execute(self):
         project = self.configure_fake_codegraph()
         with self.make_client() as client:
-            client.wait_tools({"codegraph_explore", "codegraph_status", "codegraph_sync"}, session="testbed-codegraph")
+
             explored = client.call_tool("codegraph_explore", {"query": "AuthService login"}, timeout=30).json()
             self.assertTrue(explored.get("success"), explored)
             payload = json.loads(explored["content"][0]["text"])

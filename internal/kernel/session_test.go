@@ -42,58 +42,6 @@ func TestSessionLifecycle(t *testing.T) {
 	}
 }
 
-func TestSessionRestartObservationSuspendsAfterThreshold(t *testing.T) {
-	hub := NewHub(nil, slog.Default())
-	home := t.TempDir()
-	store := NewDiskSessionStore(home)
-	hub.SetSessionStore(store)
-
-	previous := newSession("stuck", "default")
-	previous.AddClient("driver")
-	if !previous.BeginTurn() {
-		t.Fatal("expected previous turn to begin")
-	}
-	previous.restartObservations = stuckSessionRestartThreshold - 1
-	if err := store.Save(previous); err != nil {
-		t.Fatalf("save previous session: %v", err)
-	}
-
-	next := newSession("stuck", "default")
-	hub.observePersistedSessionRestart(next)
-
-	if !next.IsStuckSuspended() {
-		t.Fatal("session should be stuck suspended at threshold")
-	}
-	if next.BeginTurn() {
-		t.Fatal("stuck suspended session must not start turns")
-	}
-	if next.RestartObservations() != stuckSessionRestartThreshold {
-		t.Fatalf("unexpected restart observations: %d", next.RestartObservations())
-	}
-}
-
-func TestSessionRestartObservationIgnoresIdleSnapshot(t *testing.T) {
-	hub := NewHub(nil, slog.Default())
-	store := NewDiskSessionStore(t.TempDir())
-	hub.SetSessionStore(store)
-
-	previous := newSession("idle", "default")
-	previous.restartObservations = stuckSessionRestartThreshold - 1
-	if err := store.Save(previous); err != nil {
-		t.Fatalf("save previous session: %v", err)
-	}
-
-	next := newSession("idle", "default")
-	hub.observePersistedSessionRestart(next)
-
-	if next.IsStuckSuspended() {
-		t.Fatal("idle snapshot must not suspend session")
-	}
-	if next.RestartObservations() != 0 {
-		t.Fatalf("idle snapshot should reset observations, got %d", next.RestartObservations())
-	}
-}
-
 func TestSetSessionStoreHydratesPersistedSessions(t *testing.T) {
 	home := t.TempDir()
 	store := NewDiskSessionStore(home)
@@ -133,7 +81,7 @@ func TestSessionArchiveLifecyclePersistsAndBroadcasts(t *testing.T) {
 	client := addTenantCaptureClient(t, hub, "tenant", "gateway", "main", []string{TopicSessionArchived}, nil)
 	client.sends[TopicSessionArchive] = true
 
-	hub.handleSessionMessage(client, &Message{Type: string(MsgEvent), Topic: TopicSessionArchive, Session: "main", TenantID: "tenant"})
+	hub.handleSessionMessage(client, &BusMessage{Type: string(MsgEvent), Topic: TopicSessionArchive, Session: "main", TenantID: "tenant"})
 
 	msg := waitForMessage(t, client.recvCh)
 	if msg.Topic != TopicSessionArchived {
@@ -145,15 +93,15 @@ func TestSessionArchiveLifecyclePersistsAndBroadcasts(t *testing.T) {
 	}
 }
 
-func TestSessionDeleteLifecycleTombstonesAndBlocksTurns(t *testing.T) {
+func TestSessionDeleteLifecycleTombstonesAndHidesSession(t *testing.T) {
 	hub := NewHub(nil, slog.Default())
 	home := t.TempDir()
 	hub.SetSessionStore(NewDiskSessionStore(home))
 	client := addTenantCaptureClient(t, hub, "tenant", "gateway", "main", []string{TopicSessionDeleted}, nil)
 	client.sends[TopicSessionDelete] = true
-	client.sends[TopicMessageUser] = true
+	client.sends[testExtensionTopic] = true
 
-	hub.handleSessionMessage(client, &Message{Type: string(MsgEvent), Topic: TopicSessionDelete, Session: "main", TenantID: "tenant"})
+	hub.handleSessionMessage(client, &BusMessage{Type: string(MsgEvent), Topic: TopicSessionDelete, Session: "main", TenantID: "tenant"})
 
 	msg := waitForMessage(t, client.recvCh)
 	if msg.Topic != TopicSessionDeleted {
@@ -170,12 +118,6 @@ func TestSessionDeleteLifecycleTombstonesAndBlocksTurns(t *testing.T) {
 	if _, ok := snapshot["tenant/main"]; ok {
 		t.Fatalf("deleted session should be hidden from snapshot: %s", string(hub.SnapshotSessions()))
 	}
-
-	hub.handleSessionMessage(client, &Message{Type: string(MsgEvent), Topic: TopicMessageUser, Session: "main", TenantID: "tenant", Data: mustMarshalRaw(map[string]any{"text": "hello"})})
-	errMsg := waitForMessage(t, client.recvCh)
-	if errMsg.Type != string(MsgError) || errMsg.Text != "session deleted" {
-		t.Fatalf("expected session deleted error, got %+v", errMsg)
-	}
 }
 
 func readSessionStateFile(t *testing.T, home, tenantID, session string) map[string]any {
@@ -189,23 +131,6 @@ func readSessionStateFile(t *testing.T, home, tenantID, session string) map[stri
 		t.Fatalf("decode session state: %v", err)
 	}
 	return record
-}
-
-func TestSessionCancelClearsStuckSuspension(t *testing.T) {
-	s := newSession("stuck", "default")
-	s.observeRestart(true, stuckSessionRestartThreshold-1, stuckSessionRestartThreshold)
-	if !s.IsStuckSuspended() {
-		t.Fatal("expected stuck suspended session")
-	}
-	if !s.RequestCancel() {
-		t.Fatal("cancel should clear stuck suspension")
-	}
-	if s.IsStuckSuspended() {
-		t.Fatal("stuck suspension should be cleared")
-	}
-	if s.RestartObservations() != 0 {
-		t.Fatalf("restart observations should reset, got %d", s.RestartObservations())
-	}
 }
 
 func TestSessionPreferredRuntimeBindsFirstValueOnly(t *testing.T) {
@@ -235,57 +160,6 @@ func TestSessionPreferredRuntimeCanBeUpdated(t *testing.T) {
 	}
 	if s.SetPreferredRuntime("local") {
 		t.Fatal("expected same preferred runtime update to be ignored")
-	}
-}
-
-func TestSessionRestartObservationRestoresPreferredRuntime(t *testing.T) {
-	hub := NewHub(nil, slog.Default())
-	store := NewDiskSessionStore(t.TempDir())
-	hub.SetSessionStore(store)
-
-	previous := newSession("preferred", "default")
-	previous.BindPreferredRuntime("remote")
-	if err := store.Save(previous); err != nil {
-		t.Fatalf("save previous session: %v", err)
-	}
-
-	next := newSession("preferred", "default")
-	hub.observePersistedSessionRestart(next)
-
-	if got := next.PreferredRuntime(); got != "remote" {
-		t.Fatalf("preferred runtime = %q, want remote", got)
-	}
-}
-
-func TestSessionTurnLifecycle(t *testing.T) {
-	s := newSession("turn-1", "")
-	s.AddClient("gateway")
-
-	if !s.BeginTurn() {
-		t.Fatal("expected first turn to start")
-	}
-	if !s.IsBusy() {
-		t.Fatal("session should be busy while turn is in flight")
-	}
-	if s.BeginTurn() {
-		t.Fatal("second turn should be rejected while busy")
-	}
-	if !s.RequestCancel() {
-		t.Fatal("cancel should be accepted for inflight turn")
-	}
-	if !s.CancelRequested() {
-		t.Fatal("session should record cancel request")
-	}
-	if s.RequestCancel() {
-		t.Fatal("duplicate cancel should be rejected")
-	}
-
-	s.EndTurn()
-	if s.IsBusy() {
-		t.Fatal("session should become idle after turn ends")
-	}
-	if s.CancelRequested() {
-		t.Fatal("cancel state should reset after turn ends")
 	}
 }
 
@@ -360,8 +234,8 @@ func TestSessionRegistryAll(t *testing.T) {
 func TestSessionEndEmittedOnLastClientLeave(t *testing.T) {
 	env := newTestEnv(t)
 
-	env.connectAndJoin("alice", "s1", []string{TopicMessageUser}, []string{})
-	env.connectAndJoin("bob", "s1", []string{TopicMessageUser}, []string{})
+	env.connectAndJoin("alice", "s1", []string{testExtensionTopic}, []string{})
+	env.connectAndJoin("bob", "s1", []string{testExtensionTopic}, []string{})
 
 	// Session should exist with 2 clients
 	sess, ok := env.Hub.sessions.Get("s1", "default")
@@ -392,9 +266,9 @@ func TestSessionEndEmittedOnLastClientLeave(t *testing.T) {
 
 func TestClientRejoinLeavesPreviousSession(t *testing.T) {
 	env := newTestEnv(t)
-	conn := env.connectAndJoin("alice", "s1", []string{TopicMessageUser}, []string{})
+	conn := env.connectAndJoin("alice", "s1", []string{testExtensionTopic}, []string{})
 
-	writeJSON(t, conn, Message{Type: "join", Session: "s2"})
+	writeJSON(t, conn, BusMessage{Type: "join", Session: "s2"})
 	msg := readMsg(t, conn)
 	if msg.Type != "joined" || msg.Session != "s2" {
 		t.Fatalf("expected joined s2, got %+v", msg)

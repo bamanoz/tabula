@@ -16,7 +16,7 @@ import (
 	"github.com/bamanoz/tabula/internal/tenant"
 )
 
-func watchReloadTrigger(tabulaHome string, hub *kernel.Hub, stop <-chan struct{}) {
+func watchReloadTrigger(tabulaHome string, hub *kernel.Hub, managedLocal bool, stop <-chan struct{}) {
 	triggerPath := filepath.Join(tabulaHome, "run", "reload.touch")
 	lastMtime := triggerMTime(triggerPath)
 	ticker := time.NewTicker(2 * time.Second)
@@ -35,7 +35,7 @@ func watchReloadTrigger(tabulaHome string, hub *kernel.Hub, stop <-chan struct{}
 		reloadTenant := reloadTriggerTenant(triggerPath)
 		slog.Info("reload trigger fired", "path", triggerPath, "tenant_hint", reloadTenant)
 		reloadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		err := reloadRuntimeFromConfig(reloadCtx, tabulaHome, hub)
+		err := reloadRuntimeFromConfig(reloadCtx, tabulaHome, hub, managedLocal)
 		cancel()
 		if err != nil {
 			slog.Error("runtime reload failed", "error", err)
@@ -45,10 +45,10 @@ func watchReloadTrigger(tabulaHome string, hub *kernel.Hub, stop <-chan struct{}
 	}
 }
 
-func reloadRuntimeFromConfig(ctx context.Context, tabulaHome string, hub *kernel.Hub) error {
+func reloadRuntimeFromConfig(ctx context.Context, tabulaHome string, hub *kernel.Hub, managedLocal bool) error {
 	tenantStore := tenant.NewFSStore(tabulaHome)
 	hub.SetTenantStore(tenantStore)
-	if err := configureKernelRuntimeRegistry(tabulaHome, hub, tenantStore); err != nil {
+	if err := configureKernelRuntimeRegistry(tabulaHome, hub, tenantStore, managedLocal); err != nil {
 		return fmt.Errorf("reload runtime registry config: %w", err)
 	}
 	if err := configureTenantInitMeta(tabulaHome, hub); err != nil {

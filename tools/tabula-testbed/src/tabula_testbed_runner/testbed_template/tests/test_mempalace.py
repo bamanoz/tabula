@@ -16,7 +16,8 @@ class MempalaceSmoke(unittest.TestCase):
 
     def make_client(self) -> TestbedClient:
         client = TestbedClient(self.url, name="testbed-mempalace")
-        client.connect_join("testbed-mempalace")
+        client.connect()
+        client.create_session("testbed-mempalace")
         return client
 
     def test_mempalace_manifest_advertises_recall_hooks(self):
@@ -27,16 +28,7 @@ class MempalaceSmoke(unittest.TestCase):
 
     def test_mempalace_validation_errors_execute_installed_scripts(self):
         with self.make_client() as client:
-            client.wait_tools({
-                "mempalace_add_drawer",
-                "mempalace_search",
-                "mempalace_list_drawers",
-                "mempalace_get_drawer",
-                "mempalace_delete_drawer",
-                "mempalace_list_wings",
-                "mempalace_list_rooms",
-                "mempalace_status",
-            }, session="testbed-mempalace")
+
             result = client.call_tool("mempalace_add_drawer", {"wing": "", "room": "", "content": "x"}).json()
             self.assertFalse(result.get("success"), result)
             result = client.call_tool("mempalace_add_drawer", {"wing": "people", "room": "facts", "content": ""}).json()
@@ -56,7 +48,7 @@ class MempalaceSmoke(unittest.TestCase):
 
     def test_mempalace_success_search_admin_delete_flow(self):
         with self.make_client() as client:
-            client.wait_tools({"mempalace_add_drawer", "mempalace_search", "mempalace_status"}, session="testbed-mempalace-flow")
+
             content = "Veniamin likes precise installed-layout tests for Tabula MemPalace."
             saved = client.call_tool("mempalace_add_drawer", {
                 "wing": "testbed",

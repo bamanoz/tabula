@@ -7,47 +7,63 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bamanoz/tabula/internal/agent"
 	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
 	"github.com/bamanoz/tabula/internal/kernel/process"
 	"github.com/bamanoz/tabula/internal/kernel/toolstate"
 	runtimeconfig "github.com/bamanoz/tabula/internal/runtime/registryconfig"
+	"github.com/bamanoz/tabula/internal/sessionrecord"
 	"github.com/bamanoz/tabula/internal/tenant"
 )
 
 // Hub manages all connected clients, sessions, and spawned processes.
 type Hub struct {
-	clients      *ClientRegistry
-	sessions     *SessionRegistry
-	processes    *process.Supervisor
-	hooks        *khooks.Engine
-	policy       *PolicyEngine
-	tools        *ToolService
-	runtimes     *RuntimeRegistry
-	tenants      tenant.Store
-	sessionStore SessionStore
+	clients           *ClientRegistry
+	sessions          *SessionRegistry
+	processes         *process.Supervisor
+	hooks             *khooks.Engine
+	policy            *PolicyEngine
+	tools             *ToolService
+	runtimes          *RuntimeRegistry
+	agentSessions     agent.SessionRepository
+	sessionRecords    sessionrecord.Store
+	inputProcessor    *agent.InputProcessor
+	driverLeases      *agent.DriverLeaseService
+	turnExecutions    *agent.TurnExecutionService
+	outputs           *agent.OutputService
+	recovery          *agent.RecoveryService
+	execution         *ExecutionCoordinator
+	driverSupervisor  *agent.DriverSupervisor
+	driverLeaseExpiry *driverLeaseExpiryScheduler
+	tenants           tenant.Store
+	sessionStore      SessionStore
 	// toolExec is the unified tool dispatch table per creative
 	// `creative-plugin-runtime.md` §4 (D1.7). Keyed by tool name, value
 	// carries the runtime routing payload. Entries are synchronized from
 	// attached Runtime API targets.
-	toolExec            map[string]toolDispatch
-	toolExecMu          sync.RWMutex
-	exchanges           map[string]pendingExchange
-	exchangesMu         sync.Mutex
-	suspendedExchanges  map[string]pendingSuspendedExchange
-	suspendedExchangeMu sync.Mutex
-	toolLifecycleMu     sync.Mutex
-	runtimeBusy         map[string]*runtimeBusyState
-	runtimeBusyMu       sync.RWMutex
-	catalogRefreshMu    sync.Mutex
-	catalogRefresh      catalogRefreshState
-	runID               string
-	toolsJSON           json.RawMessage
-	initMeta            json.RawMessage
-	tenantInitMeta      map[string]json.RawMessage
-	clientAuthToken     string
-	Logger              *slog.Logger
-	MaxClients          int           // max concurrent clients (default 100)
-	ShutdownTimeout     time.Duration // grace period before SIGKILL (default 3s)
+	toolExec             map[string]toolDispatch
+	toolExecMu           sync.RWMutex
+	exchanges            map[string]pendingExchange
+	exchangesMu          sync.Mutex
+	suspendedExchanges   map[string]pendingSuspendedExchange
+	suspendedExchangeMu  sync.Mutex
+	toolLifecycleMu      sync.Mutex
+	runtimeBusy          map[string]*runtimeBusyState
+	runtimeBusyMu        sync.RWMutex
+	runtimeLifecycleMu   sync.Mutex
+	runtimeLifecycleLock map[string]*sync.Mutex
+	runtimeReconcileMu   sync.Mutex
+	runtimeReconcile     map[string]*runtimeReconciliation
+	catalogRefreshMu     sync.Mutex
+	catalogRefresh       catalogRefreshState
+	runID                string
+	toolsJSON            json.RawMessage
+	initMeta             json.RawMessage
+	tenantInitMeta       map[string]json.RawMessage
+	clientAuthToken      string
+	Logger               *slog.Logger
+	MaxClients           int           // max concurrent clients (default 100)
+	ShutdownTimeout      time.Duration // grace period before SIGKILL (default 3s)
 }
 
 func (h *Hub) SetInitMeta(meta json.RawMessage) {
@@ -78,28 +94,102 @@ func NewHub(toolsJSON json.RawMessage, logger *slog.Logger) *Hub {
 		logger = slog.Default()
 	}
 	hub := &Hub{
-		clients:            NewClientRegistry(),
-		sessions:           NewSessionRegistry(),
-		processes:          process.NewSupervisor(logger, 3*time.Second),
-		hooks:              khooks.NewEngine(logger),
-		runtimes:           NewRuntimeRegistry(),
-		tenants:            tenant.NewMemoryStore(tenant.Tenant{ID: tenant.DefaultID, CreatedAt: time.Now().UTC()}),
-		toolExec:           make(map[string]toolDispatch),
-		exchanges:          make(map[string]pendingExchange),
-		suspendedExchanges: make(map[string]pendingSuspendedExchange),
-		runtimeBusy:        make(map[string]*runtimeBusyState),
-		tenantInitMeta:     map[string]json.RawMessage{},
-		runID:              toolstate.NewRunID(),
-		toolsJSON:          toolsJSON,
-		Logger:             logger,
-		MaxClients:         100,
-		ShutdownTimeout:    3 * time.Second,
+		clients:              NewClientRegistry(),
+		sessions:             NewSessionRegistry(),
+		processes:            process.NewSupervisor(logger, 3*time.Second),
+		hooks:                khooks.NewEngine(logger),
+		runtimes:             NewRuntimeRegistry(),
+		tenants:              tenant.NewMemoryStore(tenant.Tenant{ID: tenant.DefaultID, CreatedAt: time.Now().UTC()}),
+		toolExec:             make(map[string]toolDispatch),
+		exchanges:            make(map[string]pendingExchange),
+		suspendedExchanges:   make(map[string]pendingSuspendedExchange),
+		runtimeBusy:          make(map[string]*runtimeBusyState),
+		runtimeLifecycleLock: make(map[string]*sync.Mutex),
+		runtimeReconcile:     make(map[string]*runtimeReconciliation),
+		tenantInitMeta:       map[string]json.RawMessage{},
+		runID:                toolstate.NewRunID(),
+		toolsJSON:            toolsJSON,
+		Logger:               logger,
+		MaxClients:           100,
+		ShutdownTimeout:      3 * time.Second,
 	}
 	hub.hooks.SetSessionTenantResolver(hub.sessionTenantID)
 	hub.hooks.SetAuditRecorder(hub.recordHookDispatchAudit)
 	hub.policy = NewPolicyEngine(hub)
 	hub.tools = NewToolService(hub)
 	return hub
+}
+
+func (h *Hub) SetSessionRecordStore(store sessionrecord.Store) {
+	if h == nil {
+		return
+	}
+	h.sessionRecords = store
+}
+
+// SetAgentSessionRepository enables durable driver reconciliation and execution for v4 sessions.
+func (h *Hub) SetAgentSessionRepository(repository agent.SessionRepository) {
+	if h == nil {
+		return
+	}
+	h.StopAgentLifecycle()
+	h.agentSessions = repository
+	h.inputProcessor = nil
+	h.driverLeases = nil
+	h.turnExecutions = nil
+	h.outputs = nil
+	h.recovery = nil
+	h.execution = nil
+	h.driverSupervisor = nil
+	h.driverLeaseExpiry = nil
+	if repository == nil {
+		return
+	}
+
+	inputProcessor, err := agent.NewInputProcessor(repository)
+	if err != nil {
+		h.Logger.Error("configure input processor", "err", err)
+		return
+	}
+	driverLeases, err := agent.NewDriverLeaseService(repository, agent.LeaseOptions{
+		TTL:               30 * time.Second,
+		HeartbeatInterval: 10 * time.Second,
+	})
+	if err != nil {
+		h.Logger.Error("configure driver lease service", "err", err)
+		return
+	}
+	turnExecutions, err := agent.NewTurnExecutionService(repository)
+	if err != nil {
+		h.Logger.Error("configure turn execution service", "err", err)
+		return
+	}
+	outputs, err := agent.NewOutputService(repository)
+	if err != nil {
+		h.Logger.Error("configure output service", "err", err)
+		return
+	}
+	recovery, err := agent.NewRecoveryService(repository)
+	if err != nil {
+		h.Logger.Error("configure recovery service", "err", err)
+		return
+	}
+	execution, err := newExecutionCoordinator(repository, turnExecutions, recovery, h.runtimes)
+	if err != nil {
+		h.Logger.Error("configure execution coordinator", "err", err)
+		return
+	}
+	execution.prepareTurn = h.prepareTurnContext
+
+	h.inputProcessor = inputProcessor
+	h.driverLeases = driverLeases
+	h.turnExecutions = turnExecutions
+	h.outputs = outputs
+	h.recovery = recovery
+	h.execution = execution
+	h.driverSupervisor = agent.NewDriverSupervisor(repository, h.runtimes)
+	h.driverLeaseExpiry = newDriverLeaseExpiryScheduler(repository, driverLeases, h.driverSupervisor, h.agentTenantIDs, h.Logger, driverLeaseExpiryInterval)
+	h.driverLeaseExpiry.afterTurn = h.dispatchAfterTurn
 }
 
 func (h *Hub) ConfigureRuntimeRegistry(definitions []runtimeconfig.Definition, bindings map[string]runtimeconfig.Binding) error {
@@ -147,6 +237,9 @@ func (h *Hub) Unregister(c *Client) {
 		h.rebuildHookIndex()
 	}
 	h.cancelExchangesForClient(c)
+	if h.tools != nil {
+		h.tools.cancelV4ToolCallsForClient(c)
+	}
 	h.onClientDisconnect(c)
 	h.Logger.Info("client disconnected", "name", c.name, "id", c.id)
 }
@@ -160,12 +253,6 @@ func (h *Hub) onClientDisconnect(c *Client) {
 	if !ok {
 		return
 	}
-	if sess.IsBusy() && c.canSend(TopicTurnDone) {
-		input, hasInput := h.interruptSessionTurn(c.tenantID, c.session)
-		if hasInput && clientIsManagedUserInput(input.exclude) {
-			input.exclude.SendMsg(&Message{Type: string(MsgEvent), Topic: TopicSessionStatus, Session: c.session, TenantID: c.tenantID, Data: mustMarshalRaw(map[string]any{"state": "waiting_for_driver", "reason": "turn_receiver_unavailable"})})
-		}
-	}
 	sess.RemoveClient(c.name)
 	if sess.ClientCount() == 0 {
 		h.deleteSessionState(c.session, sess.TenantID)
@@ -176,17 +263,13 @@ func (h *Hub) onClientDisconnect(c *Client) {
 	h.persistSessionState(sess.TenantID, c.session)
 }
 
-// HandleMessage processes an incoming message from a client.
-// Called from the client's readPump goroutine.
-func (h *Hub) HandleMessage(sender *Client, msg *Message) {
-	switch MsgType(msg.Type) {
-	case MsgHello:
-		h.handleConnect(sender, msg)
-	case MsgJoin:
+// HandleBusMessage routes one internal extension message.
+func (h *Hub) HandleBusMessage(sender *Client, msg *BusMessage) {
+	if BusMessageType(msg.Type) == MsgJoin {
 		h.handleJoin(sender, msg)
-	default:
-		h.handleSessionMessage(sender, msg)
+		return
 	}
+	h.handleSessionMessage(sender, msg)
 }
 
 // RegisterSpawn registers an externally started process in the spawned map.
@@ -200,6 +283,7 @@ func (h *Hub) RegisterSpawn(cmd *exec.Cmd, command, session string) {
 // Shutdown gracefully stops all spawned processes.
 // Sends interrupt signal first, waits up to ShutdownTimeout, then force-kills remaining.
 func (h *Hub) Shutdown() {
+	h.StopAgentLifecycle()
 	h.processes.SetTimeout(h.ShutdownTimeout)
 	h.processes.Shutdown()
 }

@@ -145,6 +145,51 @@ class RuntimeConfigWriteTests(unittest.TestCase):
             kernel = tomllib.loads((home / "config" / "kernel.toml").read_text(encoding="utf-8"))
             self.assertEqual(kernel["kernel"], {"url": "ws://localhost:8089/ws"})
 
+    def test_sync_tenant_rebuilds_all_installed_tenant_surfaces(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            default = home / "tenants" / "default"
+            recovery = home / "tenants" / "recovery"
+            project = home / "tenants" / "project"
+            default.mkdir(parents=True)
+            recovery.mkdir(parents=True)
+            project.mkdir(parents=True)
+            runtime_config.write(home, [str(home / "plugins")])
+
+            runtime_config.sync_tenant(home, "recovery", recovery)
+            path = runtime_config.sync_tenant(home, "project", project)
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+
+            tenants = {item["id"]: item for item in data["tenant"]}
+            self.assertEqual(set(tenants), {"default", "project", "recovery"})
+            self.assertEqual(tenants["default"]["plugin_dirs"], [str(home / "plugins")])
+            self.assertEqual(tenants["default"]["skill_dirs"], [str(home / "skills")])
+            self.assertEqual(tenants["recovery"]["plugin_dirs"], [str(recovery / "plugins")])
+            self.assertEqual(tenants["project"]["plugin_dirs"], [str(project / "plugins")])
+            self.assertEqual(set(data["kernel"][0]["tenants"]), {"default", "project", "recovery"})
+
+    def test_sync_tenant_discovers_materialized_app_tenant_surfaces(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            installed = home / "tenants" / "installed"
+            app = home / "tenants" / "app"
+            later = home / "tenants" / "later"
+            for tenant in (installed, app, later):
+                tenant.mkdir(parents=True)
+            (installed / "install.lock.json").write_text("{}", encoding="utf-8")
+            (app / "app.lock.json").write_text("{}", encoding="utf-8")
+            (app / "plugins").mkdir()
+            (app / "skills").mkdir()
+            runtime_config.write(home, [str(home / "plugins")])
+
+            runtime_config.sync_tenant(home, "installed", installed)
+            path = runtime_config.sync_tenant(home, "later", later)
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+
+            tenants = {item["id"]: item for item in data["tenant"]}
+            self.assertEqual(tenants["app"]["plugin_dirs"], [str(app / "plugins")])
+            self.assertEqual(tenants["app"]["skill_dirs"], [str(app / "skills")])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -69,6 +69,69 @@ class InstallPayloadTests(unittest.TestCase):
             self.assertEqual((home / "config" / "global.toml.example").read_text(encoding="utf-8"), "[workspace]\n")
 
 
+class RuntimeEnvTests(unittest.TestCase):
+    def test_writer_replaces_stale_runtime_values_and_preserves_other_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / ".env"
+            _write(
+                env_file,
+                "CUSTOM_SETTING=keep\n"
+                "TABULA_VENV=/old/venv\n"
+                "TABULA_PATH=/old/bin:/usr/bin\n"
+                "TABULA_PATH=/duplicate/bin\n",
+            )
+
+            subprocess.run(
+                [
+                    "bash",
+                    (ROOT / "scripts" / "write-runtime-env.sh").as_posix(),
+                    env_file.as_posix(),
+                    "/new/venv",
+                    "/new/venv/bin:/new/home/bin:/usr/bin",
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            lines = env_file.read_text(encoding="utf-8").splitlines()
+            self.assertIn("CUSTOM_SETTING=keep", lines)
+            self.assertEqual(lines.count("TABULA_VENV=/new/venv"), 1)
+            self.assertEqual(lines.count("TABULA_PATH=/new/venv/bin:/new/home/bin:/usr/bin"), 1)
+            self.assertFalse(any(line.startswith("TABULA_VENV=/old") for line in lines))
+            self.assertFalse(any(line.startswith("TABULA_PATH=/old") for line in lines))
+            self.assertFalse(any(line.startswith("TABULA_PATH=/duplicate") for line in lines))
+
+    def test_writer_creates_fresh_runtime_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / "nested" / ".env"
+
+            subprocess.run(
+                [
+                    "bash",
+                    (ROOT / "scripts" / "write-runtime-env.sh").as_posix(),
+                    env_file.as_posix(),
+                    "/new/venv",
+                    "/new/venv/bin:/usr/bin",
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            self.assertEqual(
+                env_file.read_text(encoding="utf-8"),
+                "TABULA_VENV=/new/venv\nTABULA_PATH=/new/venv/bin:/usr/bin\n",
+            )
+
+    def test_dev_installer_persists_runtime_environment(self) -> None:
+        installer = (ROOT / "scripts" / "install-dev.sh").read_text(encoding="utf-8")
+
+        self.assertIn('"$SCRIPT_DIR/write-runtime-env.sh"', installer)
+
+
 class AgentGatewayConfigTests(unittest.TestCase):
     def test_make_target_does_not_replace_existing_gateway_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

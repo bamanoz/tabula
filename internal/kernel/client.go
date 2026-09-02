@@ -2,10 +2,12 @@ package kernel
 
 import (
 	"encoding/json"
+	"fmt"
 	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
 	"sync"
 	"time"
 
+	"github.com/bamanoz/tabula/internal/agent"
 	"github.com/gorilla/websocket"
 )
 
@@ -25,27 +27,30 @@ const (
 
 // Client represents a single WebSocket connection.
 type Client struct {
-	hub            *Hub
-	conn           *websocket.Conn
-	name           string
-	meta           json.RawMessage
-	tenantID       string
-	session        string
-	id             int
-	depth          int
-	sends          map[string]bool
-	receives       map[string]bool
-	receivesGlobal map[string]bool // message types to receive from all sessions
-	hooks          []khooks.Subscription
-	sendCh         chan []byte
-	sendMu         sync.Mutex
-	sendClosed     bool
-	unregisterOnce sync.Once
-	stateMu        sync.RWMutex
-	state          ClientState
-	recvCh         chan *Message // if set, messages go here instead of WebSocket
-	done           chan struct{} // closed when the client disconnects
-	doneOnce       sync.Once
+	hub                *Hub
+	conn               *websocket.Conn
+	name               string
+	meta               json.RawMessage
+	tenantID           string
+	session            string
+	id                 int
+	depth              int
+	sends              map[string]bool
+	receives           map[string]bool
+	receivesGlobal     map[string]bool // message types to receive from all sessions
+	hooks              []khooks.Subscription
+	sendCh             chan []byte
+	sendMu             sync.Mutex
+	sendClosed         bool
+	unregisterOnce     sync.Once
+	stateMu            sync.RWMutex
+	state              ClientState
+	recvCh             chan *BusMessage // if set, messages go here instead of WebSocket
+	recoveryAuthority  bool             // granted by authenticated transport configuration
+	agentSubsMu        sync.RWMutex
+	agentSubscriptions map[agent.SessionKey]struct{}
+	done               chan struct{} // closed when the client disconnects
+	doneOnce           sync.Once
 }
 
 func (c *Client) Close() error {
@@ -124,6 +129,12 @@ func (c *Client) IsConnected() bool {
 
 func (c *Client) IsBusy() bool { return false }
 
+func (c *Client) usesExplicitProtocolRoute() bool {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	return c.state == ClientProtocolReady
+}
+
 // Name returns the client's name. Implements khooks.Subscriber.
 func (c *Client) Name() string { return c.name }
 
@@ -132,6 +143,19 @@ func (c *Client) Name() string { return c.name }
 func (c *Client) Session() string { return c.session }
 
 func (c *Client) TenantID() string { return c.tenantID }
+
+// SetRecoveryAuthority grants recovery commands after transport authentication.
+func (c *Client) SetRecoveryAuthority(allowed bool) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	c.recoveryAuthority = allowed
+}
+
+func (c *Client) hasRecoveryAuthority() bool {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	return c.recoveryAuthority
+}
 
 func (c *Client) ServesTenant(tenantID string) bool {
 	return c.tenantID == "" || c.tenantID == tenantID
@@ -154,11 +178,27 @@ func (c *Client) canReceiveGlobal(msgType string) bool {
 	return c.receivesGlobal[msgType]
 }
 
+func (c *Client) subscribeAgentSession(key agent.SessionKey) {
+	c.agentSubsMu.Lock()
+	defer c.agentSubsMu.Unlock()
+	if c.agentSubscriptions == nil {
+		c.agentSubscriptions = make(map[agent.SessionKey]struct{})
+	}
+	c.agentSubscriptions[key] = struct{}{}
+}
+
+func (c *Client) subscribesAgentSession(key agent.SessionKey) bool {
+	c.agentSubsMu.RLock()
+	defer c.agentSubsMu.RUnlock()
+	_, ok := c.agentSubscriptions[key]
+	return ok
+}
+
 func (c *Client) SendHook(msg *khooks.Message) {
 	if msg == nil {
 		return
 	}
-	_ = c.queueMsg(&Message{
+	_ = c.queueMsg(&BusMessage{
 		Type:     msg.Type,
 		ID:       msg.ID,
 		Name:     msg.Name,
@@ -173,14 +213,11 @@ func (c *Client) SendHook(msg *khooks.Message) {
 }
 
 // SendMsg marshals and queues a message for sending.
-func (c *Client) SendMsg(msg *Message) {
+func (c *Client) SendMsg(msg *BusMessage) {
 	_ = c.queueMsg(msg)
 }
 
-func (c *Client) queueMsg(msg *Message) bool {
-	if msg != nil && msg.V == 0 {
-		msg.V = ProtocolVersion
-	}
+func (c *Client) queueMsg(msg *BusMessage) bool {
 	if c.recvCh != nil {
 		// Internal client: send directly to receive channel.
 		if isCriticalClientMessage(msg) {
@@ -206,11 +243,33 @@ func (c *Client) queueMsg(msg *Message) bool {
 	if err != nil {
 		return false
 	}
-	return c.SendRaw(data, isCriticalClientMessage(msg))
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return false
+	}
+	delete(payload, "v")
+	delete(payload, "tenant_id")
+	delete(payload, "session")
+	return c.SendEnvelope(&ClientEnvelope{
+		V: ClientProtocolVersion, Kind: "event", Op: "extension.event", ID: msg.ID,
+		TenantID: msg.TenantID, SessionID: msg.Session, Data: mustMarshalRaw(payload),
+	})
 }
 
-func isCriticalClientMessage(msg *Message) bool {
+func isCriticalClientMessage(msg *BusMessage) bool {
 	return msg != nil && msg.Type == string(MsgReply) && msg.Topic == TopicToolResult
+}
+
+// SendEnvelope marshals and queues a protocol v4 envelope.
+func (c *Client) SendEnvelope(envelope *ClientEnvelope) bool {
+	if envelope == nil {
+		return false
+	}
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		return false
+	}
+	return c.SendRaw(data, true)
 }
 
 // SendRaw queues raw JSON bytes for sending.
@@ -254,19 +313,14 @@ func (c *Client) readPump() {
 			break
 		}
 
-		var msg Message
-		if err := json.Unmarshal(data, &msg); err != nil {
-			c.hub.Logger.Warn("bad JSON from client", "client", c.name, "error", err)
+		envelope, err := DecodeClientEnvelope(data)
+		if err != nil {
+			var request ClientEnvelope
+			_ = json.Unmarshal(data, &request)
+			c.hub.sendClientError(c, &request, fmt.Errorf("%w: %v", agent.ErrInvalidArgument, err))
 			continue
 		}
-
-		if err := validateMessage(&msg); err != nil {
-			c.hub.Logger.Warn("invalid message from client", "client", c.name, "error", err)
-			c.SendMsg(&Message{Type: string(MsgError), Text: err.Error()})
-			continue
-		}
-
-		c.hub.HandleMessage(c, &msg)
+		c.hub.HandleClientEnvelope(c, envelope)
 	}
 }
 

@@ -23,9 +23,6 @@ type snapshotSessionInfo struct {
 	LastActiveAt        string                `json:"last_active_at"`
 	ArchivedAt          string                `json:"archived_at,omitempty"`
 	DeletedAt           string                `json:"deleted_at,omitempty"`
-	Busy                bool                  `json:"busy"`
-	CancelRequested     bool                  `json:"cancel_requested"`
-	PendingInputs       int                   `json:"pending_inputs"`
 	ActiveToolCalls     int                   `json:"active_tool_calls"`
 	RestartObservations int                   `json:"restart_observations"`
 	StuckSuspended      bool                  `json:"stuck_suspended"`
@@ -88,9 +85,6 @@ func (h *Hub) SnapshotSessions() []byte {
 			LastActiveAt:        sess.LastActiveAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
 			ArchivedAt:          formatSnapshotTime(sess.ArchivedAt),
 			DeletedAt:           formatSnapshotTime(sess.DeletedAt),
-			Busy:                sess.inflightTurn,
-			CancelRequested:     sess.cancelRequested,
-			PendingInputs:       len(sess.pendingInputs),
 			ActiveToolCalls:     sess.activeToolCalls,
 			RestartObservations: sess.restartObservations,
 			StuckSuspended:      sess.stuckSuspended,

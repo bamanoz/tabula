@@ -7,24 +7,8 @@ from pathlib import Path
 import subprocess
 import time
 import unittest
-import urllib.request
 
 from tabula_testbed import TestbedClient
-
-
-REQUIRED_TOOLS = {
-    "exec_run",
-    "fs_read",
-    "fs_write",
-    "testbed_echo",
-    "testbed_fail",
-    "testbed_hook_mutator_configure",
-    "testbed_hook_mutator_reset",
-    "testbed_hook_blocker_configure",
-    "testbed_hook_blocker_reset",
-    "testbed_dynamic_ping",
-    "testbed_dynamic_enable_extra",
-}
 
 
 class TestbedCase(unittest.TestCase):
@@ -60,20 +44,22 @@ class TestbedCase(unittest.TestCase):
 
     def make_client(self, name: str, session: str) -> TestbedClient:
         client = TestbedClient(self.url, name=name)
-        init = client.connect_join(session)
-        self.assertIsInstance(init.get("tools"), list)
+        client.connect()
+        client.create_session(session)
         return client
 
-    def wait_for_required_tools(self) -> None:
-        client = TestbedClient(self.url, name="testbed-tool-wait")
-        try:
-            client.connect_join("testbed-tool-wait")
-            client.wait_tools(REQUIRED_TOOLS, session="testbed-tool-wait")
-        finally:
-            client.close()
-
     def setUp(self) -> None:
-        self.wait_for_required_tools()
+        deadline = time.monotonic() + 20
+        last_error: Exception | None = None
+        with self.make_client("testbed-tool-wait", "testbed-tool-wait") as client:
+            while time.monotonic() < deadline:
+                try:
+                    client.call_tool("testbed_dynamic_ping", {"value": "ready"}, timeout=5)
+                    return
+                except Exception as exc:
+                    last_error = exc
+                    time.sleep(0.25)
+        raise AssertionError(f"testbed tools unavailable: {last_error}")
 
 
 class BaselineSmoke(TestbedCase):
@@ -120,9 +106,6 @@ class BaselineSmoke(TestbedCase):
             client.call_tool("testbed_dynamic_enable_extra", {})
             extra = client.call_tool("testbed_dynamic_extra", {}).json()
             self.assertEqual(extra, {"ok": True, "extra": True})
-
-            client.refresh_init("testbed-dynamic-refresh")
-            self.assertTrue(client.has_tool("testbed_dynamic_extra"))
 
 
 def main() -> int:

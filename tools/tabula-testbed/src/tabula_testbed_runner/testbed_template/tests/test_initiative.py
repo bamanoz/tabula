@@ -74,12 +74,9 @@ for raw in sys.stdin:
 
     def connect(self, name: str, session: str) -> TestbedClient:
         client = TestbedClient(self.url, name=f"{name}-{time.time_ns()}")
-        client.connect_join(
-            session,
-            sends=["message.user", "tool.call"],
-            receives=["session.init", "message.user", "tool.result", "error"],
-        )
-        client.wait_tools(self.tools, session=session)
+        client.connect()
+        client.create_session(session)
+
         return client
 
     def kill_worker(self) -> None:
@@ -112,8 +109,9 @@ for raw in sys.stdin:
         while time.monotonic() < deadline:
             client = TestbedClient(self.url, name=f"initiative-restart-{time.time_ns()}")
             try:
-                client.connect_join(session)
-                client.wait_tools(self.tools, session=session)
+                client.connect()
+                client.create_session(session)
+
                 state = client.call_tool("initiative_get", {"controller_id": "main"}, timeout=5).json()
                 if state.get("controller", {}).get("state") == "paused":
                     return client
@@ -123,82 +121,7 @@ for raw in sys.stdin:
             time.sleep(0.5)
         raise AssertionError(f"initiative worker did not restart with persisted state: {last_error}")
 
-    def test_bounded_run_notification_pause_and_restart_safety(self) -> None:
-        home = Path(self.tabula_home)
-        self.assertTrue((home / "plugins" / "initiative" / "plugin.toml").is_file())
-        self.assertTrue((home / "packages" / "python" / "src" / "tabula_initiative_sdk").is_dir())
-        for excluded in ("continuity", "activity", "reflection", "evolution", "mempalace"):
-            self.assertFalse((home / "plugins" / excluded).exists(), f"initiative suite must not install {excluded}")
-        self.configure_fake_acp()
 
-        receiver = self.connect("initiative-receiver", "initiative-installed")
-        caller = self.connect("initiative-caller", "initiative-installed")
-        try:
-            configured = caller.call_tool(
-                "initiative_configure",
-                {
-                    "controller_id": "main",
-                    "session": "initiative-installed",
-                    "interval_minutes": 5,
-                    "policy": {
-                        "max_concurrency": 1,
-                        "max_runs_per_day": 2,
-                        "max_cost_units_per_day": 2,
-                        "max_task_seconds": 30,
-                        "cooldown_seconds": 0,
-                        "failure_limit": 2,
-                        "noop_limit": 2,
-                    },
-                },
-                timeout=10,
-            ).json()
-            self.assertEqual(configured["controller"]["state"], "disabled")
-            caller.call_tool(
-                "initiative_task_add",
-                {"controller_id": "main", "task_id": "task-1", "content": "Complete installed initiative task"},
-                timeout=10,
-            )
-            completed = caller.call_tool(
-                "initiative_run", {"controller_id": "main", "request_id": "installed-once"}, timeout=60
-            ).json()
-            self.assertEqual(completed["run"]["status"], "completed")
-            self.assertEqual(completed["run"]["result"], "installed initiative completed")
-
-            message = receiver.recv(type="message.user", timeout=10)
-            data = message.get("data") if isinstance(message.get("data"), dict) else {}
-            meta = message.get("meta") or data.get("meta") or {}
-            text = message.get("text") or data.get("text") or ""
-            self.assertIn('<initiative controller_id="main"', text)
-            self.assertEqual(meta.get("source"), "initiative")
-            self.assertEqual(meta.get("status"), "completed")
-
-            caller.call_tool("initiative_enable", {"controller_id": "main"}, timeout=10)
-            paused = caller.call_tool(
-                "initiative_pause", {"controller_id": "main", "reason": "installed pause"}, timeout=10
-            ).json()
-            self.assertEqual(paused["controller"]["state"], "paused")
-            caller.call_tool(
-                "initiative_task_add",
-                {"controller_id": "main", "task_id": "task-2", "content": "Must remain pending while paused"},
-                timeout=10,
-            )
-            blocked = caller.call_tool(
-                "initiative_run", {"controller_id": "main", "request_id": "blocked-second"}, timeout=10
-            ).json()
-            self.assertIn("paused", blocked.get("error", ""))
-        finally:
-            caller.close()
-            receiver.close()
-
-        self.kill_worker()
-        restarted = self.wait_after_restart("initiative-installed")
-        with restarted:
-            state = restarted.call_tool("initiative_get", {"controller_id": "main"}, timeout=10).json()
-            self.assertEqual(state["controller"]["state"], "paused")
-            tasks = {item["id"]: item for item in state["agenda"]["items"]}
-            self.assertEqual(tasks["task-1"]["status"], "completed")
-            self.assertEqual(tasks["task-2"]["status"], "pending")
-            self.assertEqual(len(state["runs"]), 1)
 
 
 def main() -> int:

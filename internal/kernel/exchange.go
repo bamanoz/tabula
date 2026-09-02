@@ -23,16 +23,16 @@ type pendingSuspendedExchange struct {
 	exchangeID string
 }
 
-func (h *Hub) handleExchangeRequest(sender *Client, msg *Message) {
+func (h *Hub) handleExchangeRequest(sender *Client, msg *BusMessage) {
 	if msg.ID == "" {
-		sender.SendMsg(&Message{Type: string(MsgError), Text: "exchange request missing id"})
+		sender.SendMsg(&BusMessage{Type: string(MsgError), Text: "exchange request missing id"})
 		return
 	}
 	session := h.targetSession(sender, msg)
 	tenantID := h.targetTenant(sender, msg)
 	responders := h.pickExchangeResponders(sender, tenantID, session, msg.Topic)
 	if len(responders) == 0 {
-		sender.SendMsg(&Message{Type: string(MsgError), Text: fmt.Sprintf("no responder for %s", msg.Topic)})
+		sender.SendMsg(&BusMessage{Type: string(MsgError), Text: fmt.Sprintf("no responder for %s", msg.Topic)})
 		return
 	}
 	responderSet := clientSet(responders)
@@ -45,7 +45,7 @@ func (h *Hub) handleExchangeRequest(sender *Client, msg *Message) {
 	}
 }
 
-func (h *Hub) handleExchangeReply(sender *Client, msg *Message) {
+func (h *Hub) handleExchangeReply(sender *Client, msg *BusMessage) {
 	if h.handleSuspendedExchangeReply(sender, msg) {
 		return
 	}
@@ -56,7 +56,7 @@ func (h *Hub) handleExchangeReply(sender *Client, msg *Message) {
 	}
 	h.exchangesMu.Unlock()
 	if !ok || !pending.responders[sender] || pending.topic != msg.Topic {
-		sender.SendMsg(&Message{Type: string(MsgError), Text: "client not allowed to answer exchange"})
+		sender.SendMsg(&BusMessage{Type: string(MsgError), Text: "client not allowed to answer exchange"})
 		return
 	}
 	if pending.requester == nil || !pending.requester.IsConnected() {
@@ -87,7 +87,7 @@ func (h *Hub) requestExchangeForPendingTool(pending pendingToolCall, blocked *kh
 		return
 	}
 	for _, responder := range responders {
-		responder.SendMsg(h.prepareRoutedMessage(nil, pending.Session, "exchange", &Message{Type: string(MsgRequest), Topic: topic, ID: pending.ExchangeID, Session: pending.Session, TenantID: pending.TenantID, Data: data}))
+		responder.SendMsg(h.prepareRoutedMessage(nil, pending.Session, "exchange", &BusMessage{Type: string(MsgRequest), Topic: topic, ID: pending.ExchangeID, Session: pending.Session, TenantID: pending.TenantID, Data: data}))
 	}
 }
 
@@ -114,7 +114,7 @@ func (h *Hub) broadcastSuspendedExchangePending(pending pendingToolCall, topic s
 			}
 		}
 	}
-	msg := &Message{Type: string(MsgEvent), Topic: topic, ID: pending.ExchangeID, Session: pending.Session, TenantID: pending.TenantID, Data: mustMarshalRaw(payload)}
+	msg := &BusMessage{Type: string(MsgEvent), Topic: topic, ID: pending.ExchangeID, Session: pending.Session, TenantID: pending.TenantID, Data: mustMarshalRaw(payload)}
 	for _, client := range h.allClients() {
 		if client == nil || responders[client] || !client.IsConnected() || !client.canReceiveGlobal(topic) {
 			continue
@@ -160,11 +160,11 @@ func (h *Hub) resendPendingSuspendedExchanges(c *Client, tenantID, session strin
 		exchange.exchangeID = pending.ExchangeID
 		h.suspendedExchanges[pending.ExchangeID] = exchange
 		h.suspendedExchangeMu.Unlock()
-		c.SendMsg(h.prepareRoutedMessage(nil, session, "exchange", &Message{Type: string(MsgRequest), Topic: topic, ID: pending.ExchangeID, Session: session, TenantID: tenantID, Data: exchangeRequestData(pending, nil)}))
+		c.SendMsg(h.prepareRoutedMessage(nil, session, "exchange", &BusMessage{Type: string(MsgRequest), Topic: topic, ID: pending.ExchangeID, Session: session, TenantID: tenantID, Data: exchangeRequestData(pending, nil)}))
 	}
 }
 
-func (h *Hub) handleSuspendedExchangeReply(sender *Client, msg *Message) bool {
+func (h *Hub) handleSuspendedExchangeReply(sender *Client, msg *BusMessage) bool {
 	h.suspendedExchangeMu.Lock()
 	pending, ok := h.suspendedExchanges[msg.ID]
 	if ok && pending.responders[sender] {
@@ -175,7 +175,7 @@ func (h *Hub) handleSuspendedExchangeReply(sender *Client, msg *Message) bool {
 		return false
 	}
 	if !pending.responders[sender] {
-		sender.SendMsg(&Message{Type: string(MsgError), Text: "client not allowed to answer exchange"})
+		sender.SendMsg(&BusMessage{Type: string(MsgError), Text: "client not allowed to answer exchange"})
 		return true
 	}
 	toolPending, found := h.tools.pendingCall(msg.ID)
@@ -183,7 +183,7 @@ func (h *Hub) handleSuspendedExchangeReply(sender *Client, msg *Message) bool {
 		return true
 	}
 	if toolPending.ExchangeTopic != "" && msg.Topic != toolPending.ExchangeTopic {
-		sender.SendMsg(&Message{Type: string(MsgError), Text: "client answered suspended tool on wrong exchange topic"})
+		sender.SendMsg(&BusMessage{Type: string(MsgError), Text: "client answered suspended tool on wrong exchange topic"})
 		return true
 	}
 	h.tools.setPendingExchangeReply(pending.exchangeID, msg.Data)
@@ -281,7 +281,7 @@ func (h *Hub) broadcastExchangeResolved(responders map[*Client]bool, winner *Cli
 	if len(responders) == 0 {
 		return
 	}
-	resolved := &Message{
+	resolved := &BusMessage{
 		Type:     string(MsgEvent),
 		Topic:    topic,
 		ID:       id,
@@ -340,14 +340,10 @@ func exchangeResponderScore(c *Client) int {
 		return 0
 	}
 	meta := clientmeta.Decode(c.meta)
-	score := 0
 	if meta.Role == "user" {
-		score += 2
+		return 1
 	}
-	if meta.Managed {
-		score++
-	}
-	return score
+	return 0
 }
 
 // cancelExchangesForClient aborts any pending requester-owned exchange when the
@@ -384,7 +380,7 @@ func (h *Hub) cancelExchangesForClient(c *Client) {
 
 	for _, pending := range affected {
 		if pending.requester != c && pending.requester != nil && pending.requester.IsConnected() {
-			pending.requester.SendMsg(&Message{
+			pending.requester.SendMsg(&BusMessage{
 				Type:  string(MsgError),
 				Topic: pending.topic,
 				Text:  fmt.Sprintf("exchange %s aborted: responder disconnected", pending.topic),

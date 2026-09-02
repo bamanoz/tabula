@@ -86,6 +86,7 @@ func (p *Policy) Spawn(ctx context.Context, req policy.SpawnReq) (policy.Worker,
 		done:           make(chan struct{}),
 		pendingEvents:  map[string]chan eventResult{},
 		pendingCalls:   map[string]chan callResult{},
+		pendingACKs:    map[string]chan ackResult{},
 		ignoredEvents:  map[string]struct{}{},
 		ignoredResults: map[string]struct{}{},
 		events:         make(chan policy.WorkerAsyncEvent, 64),
@@ -208,6 +209,9 @@ func workerEnv(req policy.SpawnReq) []string {
 		}
 	}
 	env = setEnv(env, "TABULA_TARGET_ID", req.TargetID)
+	if req.SessionID != "" {
+		env = setEnv(env, "TABULA_SESSION_ID", req.SessionID)
+	}
 	return env
 }
 
@@ -262,6 +266,7 @@ type worker struct {
 	initResult     chan initResult
 	pendingCalls   map[string]chan callResult
 	pendingEvents  map[string]chan eventResult
+	pendingACKs    map[string]chan ackResult
 	ignoredResults map[string]struct{}
 	ignoredEvents  map[string]struct{}
 	events         chan policy.WorkerAsyncEvent
@@ -296,6 +301,11 @@ type callResult struct {
 type eventResult struct {
 	reply *workerwire.WorkerEventReply
 	err   error
+}
+
+type ackResult struct {
+	ack workerwire.WorkerCancelAck
+	err error
 }
 
 func (w *worker) Init(ctx context.Context, init workerwire.WorkerInit) (workerwire.WorkerInitAck, error) {
@@ -471,6 +481,114 @@ func (w *worker) HookEvent(ctx context.Context, event workerwire.WorkerEvent) (*
 	}
 }
 
+func (w *worker) RegisterAck(ctx context.Context, ack workerwire.WorkerRegisterAck) error {
+	ack.Op = workerwire.OpRegisterAck
+	return w.deliverDriverFrame(ctx, &ack, "register ack")
+}
+
+func (w *worker) ReadyAck(ctx context.Context, ack workerwire.WorkerReadyAck) error {
+	ack.Op = workerwire.OpReadyAck
+	return w.deliverDriverFrame(ctx, &ack, "ready ack")
+}
+
+func (w *worker) HeartbeatAck(ctx context.Context, ack workerwire.WorkerHeartbeatAck) error {
+	ack.Op = workerwire.OpHeartbeatAck
+	return w.deliverDriverFrame(ctx, &ack, "heartbeat ack")
+}
+
+func (w *worker) Assign(ctx context.Context, assign workerwire.WorkerAssign) error {
+	assign.Op = workerwire.OpAssign
+	return w.deliverDriverFrame(ctx, &assign, "assign")
+}
+
+func (w *worker) Permit(ctx context.Context, permit workerwire.WorkerPermit) error {
+	permit.Op = workerwire.OpPermit
+	return w.deliverDriverFrame(ctx, &permit, "permit")
+}
+
+func (w *worker) OutputAck(ctx context.Context, ack workerwire.WorkerOutputAck) error {
+	ack.Op = workerwire.OpOutputAck
+	return w.deliverDriverFrame(ctx, &ack, "output ack")
+}
+
+func (w *worker) ToolResult(ctx context.Context, result workerwire.WorkerToolResult) error {
+	result.Op = workerwire.OpToolResult
+	return w.deliverDriverFrame(ctx, &result, "tool result")
+}
+
+func (w *worker) CancelAck(ctx context.Context, ack workerwire.WorkerCancelAck) error {
+	ack.Op = workerwire.OpCancelAck
+	return w.deliverDriverFrame(ctx, &ack, "cancel ack")
+}
+
+func (w *worker) Cancel(ctx context.Context, cancel workerwire.WorkerCancel) (workerwire.WorkerCancelAck, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cancel.Op = workerwire.OpCancel
+	correlationID := cancel.CorrelationID
+	resultCh := make(chan ackResult, 1)
+
+	w.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		w.mu.Unlock()
+		return workerwire.WorkerCancelAck{}, err
+	}
+	if !w.isAliveLocked() {
+		w.mu.Unlock()
+		return workerwire.WorkerCancelAck{}, errors.New("bare policy: worker is not alive")
+	}
+	if _, exists := w.pendingACKs[correlationID]; exists {
+		w.mu.Unlock()
+		return workerwire.WorkerCancelAck{}, fmt.Errorf("bare policy: duplicate pending correlation_id %q", correlationID)
+	}
+	w.pendingACKs[correlationID] = resultCh
+	w.mu.Unlock()
+
+	if err := w.writeFrame(ctx, &cancel); err != nil {
+		w.removeACKWaiter(correlationID, resultCh)
+		return workerwire.WorkerCancelAck{}, fmt.Errorf("bare policy: send worker cancel: %w", err)
+	}
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			return workerwire.WorkerCancelAck{}, fmt.Errorf("bare policy: read worker cancel ack: %w", w.annotateErrWithStderr(result.err))
+		}
+		return result.ack, nil
+	case <-ctx.Done():
+		w.removeACKWaiter(correlationID, resultCh)
+		return workerwire.WorkerCancelAck{}, ctx.Err()
+	case <-w.done:
+		w.removeACKWaiter(correlationID, resultCh)
+		return workerwire.WorkerCancelAck{}, w.annotateErrWithStderr(errors.New("bare policy: worker exited before cancel ack"))
+	}
+}
+
+func (w *worker) deliverDriverFrame(ctx context.Context, frame any, name string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	w.mu.Lock()
+	alive := w.isAliveLocked()
+	w.mu.Unlock()
+	if !alive {
+		return errors.New("bare policy: worker is not alive")
+	}
+	if err := w.writeFrame(ctx, frame); err != nil {
+		return fmt.Errorf("bare policy: send worker %s: %w", name, err)
+	}
+	return nil
+}
+
+func (w *worker) removeACKWaiter(correlationID string, waiter chan ackResult) {
+	w.mu.Lock()
+	if w.pendingACKs[correlationID] == waiter {
+		delete(w.pendingACKs, correlationID)
+	}
+	w.mu.Unlock()
+}
+
 func (w *worker) captureStderr() {
 	defer close(w.stderrDone)
 	if w.stderr == nil {
@@ -584,7 +702,7 @@ func (d stderrDiagnostic) String() string {
 
 func (w *worker) Events() <-chan policy.WorkerAsyncEvent { return w.events }
 
-func (w *worker) Shutdown(ctx context.Context) error {
+func (w *worker) Shutdown(ctx context.Context, shutdown policy.Shutdown) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -593,7 +711,7 @@ func (w *worker) Shutdown(ctx context.Context) error {
 		w.mu.Unlock()
 		return nil
 	}
-	_ = workerwire.WriteFrame(w.stdin, &workerwire.WorkerShutdown{Op: workerwire.OpShutdown, Reason: "runtime shutdown"})
+	_ = workerwire.WriteFrame(w.stdin, &workerwire.WorkerShutdown{Op: workerwire.OpShutdown, Reason: shutdown.Reason, Final: shutdown.Final})
 	w.mu.Unlock()
 	if err := w.waitWithin(ctx, 5*time.Second); err == nil {
 		return nil
@@ -624,10 +742,22 @@ func (w *worker) isAliveLocked() bool {
 
 func (w *worker) wait() {
 	err := w.cmd.Wait()
+	info := exitInfo(err)
+	if diagnostic := w.stderrDiagnostic(); diagnostic.lineCount > 0 {
+		message := diagnostic.String()
+		if info.Message == "" {
+			info.Message = message
+		} else {
+			info.Message += " (" + message + ")"
+		}
+		if err != nil {
+			err = fmt.Errorf("%w (%s)", err, message)
+		}
+	}
 	w.mu.Lock()
 	w.alive = false
 	w.waitErr = err
-	w.exitInfo = exitInfo(err)
+	w.exitInfo = info
 	w.mu.Unlock()
 	w.closePipes()
 	close(w.done)
@@ -692,8 +822,8 @@ func (w *worker) readLoop() {
 		env, frame, err := workerwire.ReadFrame(w.stdout)
 		if err != nil {
 			err = w.annotateErrWithStderr(err)
-			err = w.annotateErrWithExitInfo(err)
 			w.failPending(err)
+			err = w.annotateErrWithExitInfo(err)
 			w.publishAsync(policy.WorkerAsyncEvent{Envelope: env, Err: err})
 			return
 		}
@@ -714,7 +844,14 @@ func (w *worker) readLoop() {
 				w.publishAsync(policy.WorkerAsyncEvent{Envelope: env, Err: err})
 				return
 			}
-		case *workerwire.WorkerToolsUpdated, *workerwire.WorkerSend, *workerwire.WorkerLog, *workerwire.WorkerError:
+		case *workerwire.WorkerCancelAck:
+			if !w.deliverACK(*msg) {
+				w.publishAsync(policy.WorkerAsyncEvent{Envelope: env, Frame: frame})
+			}
+		case *workerwire.WorkerRegister, *workerwire.WorkerReady, *workerwire.WorkerHeartbeat,
+			*workerwire.WorkerPrepared, *workerwire.WorkerPrepareFailed, *workerwire.WorkerOutput,
+			*workerwire.WorkerToolCall, *workerwire.WorkerTerminal, *workerwire.WorkerToolsUpdated, *workerwire.WorkerSend,
+			*workerwire.WorkerLog, *workerwire.WorkerError:
 			w.publishAsync(policy.WorkerAsyncEvent{Envelope: env, Frame: frame})
 		default:
 			err := fmt.Errorf("unexpected worker frame %T", frame)
@@ -778,20 +915,39 @@ func (w *worker) deliverEvent(reply workerwire.WorkerEventReply) bool {
 	return true
 }
 
+func (w *worker) deliverACK(ack workerwire.WorkerCancelAck) bool {
+	w.mu.Lock()
+	ch := w.pendingACKs[ack.CorrelationID]
+	if ch != nil {
+		delete(w.pendingACKs, ack.CorrelationID)
+	}
+	w.mu.Unlock()
+	if ch == nil {
+		return false
+	}
+	ch <- ackResult{ack: ack}
+	return true
+}
+
 func (w *worker) failPending(err error) {
 	w.mu.Lock()
 	initCh := w.initResult
 	w.initResult = nil
 	pending := make([]chan callResult, 0, len(w.pendingCalls))
 	pendingEvents := make([]chan eventResult, 0, len(w.pendingEvents))
+	pendingACKs := make([]chan ackResult, 0, len(w.pendingACKs))
 	for _, ch := range w.pendingCalls {
 		pending = append(pending, ch)
 	}
 	for _, ch := range w.pendingEvents {
 		pendingEvents = append(pendingEvents, ch)
 	}
+	for _, ch := range w.pendingACKs {
+		pendingACKs = append(pendingACKs, ch)
+	}
 	w.pendingCalls = map[string]chan callResult{}
 	w.pendingEvents = map[string]chan eventResult{}
+	w.pendingACKs = map[string]chan ackResult{}
 	w.mu.Unlock()
 	if initCh != nil {
 		initCh <- initResult{err: err}
@@ -801,6 +957,9 @@ func (w *worker) failPending(err error) {
 	}
 	for _, ch := range pendingEvents {
 		ch <- eventResult{err: err}
+	}
+	for _, ch := range pendingACKs {
+		ch <- ackResult{err: err}
 	}
 }
 

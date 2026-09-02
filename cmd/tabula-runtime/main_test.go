@@ -80,6 +80,10 @@ func (testRuntimeHandler) Reload(context.Context, wire.Reload) (wire.ReloadAck, 
 	return wire.ReloadAck{Op: wire.OpReloadAck}, nil
 }
 
+func (testRuntimeHandler) PrepareTenant(_ context.Context, in wire.PrepareTenant) (wire.PrepareTenantAck, error) {
+	return wire.PrepareTenantAck{Op: wire.OpPrepareTenantAck, RequestID: in.RequestID}, nil
+}
+
 func (testRuntimeHandler) HookEvent(context.Context, wire.HookEvent) (wire.HookEventReply, error) {
 	return wire.HookEventReply{Op: wire.OpHookEventReply, Action: wire.HookActionOK}, nil
 }
@@ -205,7 +209,7 @@ token_file = "`+tokenPath+`"
 		t.Fatalf("os.Executable: %v", err)
 	}
 	cmd := exec.Command(exe, "-test.run=TestRuntimeStartHelperProcess", "--", "start", "--config", configPath, "--runtime-id", "local")
-	cmd.Env = append(os.Environ(), "TABULA_RUNTIME_HELPER=1")
+	cmd.Env = append(os.Environ(), "TABULA_RUNTIME_HELPER=1", "TABULA_HOME="+dir)
 	var stderr lockedBuffer
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {

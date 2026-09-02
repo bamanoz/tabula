@@ -8,11 +8,42 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bamanoz/tabula/internal/runtime/host/driver"
 	"github.com/bamanoz/tabula/internal/runtime/host/manifest"
 	"github.com/bamanoz/tabula/internal/runtime/host/policy/bare"
 	"github.com/bamanoz/tabula/internal/runtime/host/pool"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
 )
+
+func TestHandlerTurnPermitMissingWorkerReturnsRejectedResult(t *testing.T) {
+	supervisor := driver.New("kernel", nil, nil, nil)
+	t.Cleanup(func() {
+		if err := supervisor.Close(); err != nil {
+			t.Fatalf("close driver supervisor: %v", err)
+		}
+	})
+	h := NewHandler(Options{Driver: supervisor})
+	result, err := h.TurnPermit(context.Background(), wire.TurnPermit{
+		Op:        wire.OpTurnPermit,
+		RequestID: "permit-1",
+		AttemptRef: wire.AttemptRef{
+			TenantID: "tenant", SessionID: "session", TurnID: "turn-1", AttemptID: "attempt-1",
+			Fence: wire.DriverFence{DriverInstanceID: "driver-1", LeaseID: "lease-1", Generation: 1},
+		},
+		PermitID:       "permit-1",
+		SessionVersion: 1,
+		Cursor:         1,
+	})
+	if err != nil {
+		t.Fatalf("TurnPermit: %v", err)
+	}
+	if result.Op != wire.OpDriverResult || result.RequestID != "permit-1" || result.Accepted {
+		t.Fatalf("result = %+v", result)
+	}
+	if result.Error == nil || result.Error.Code != wire.ErrorRuntimeUnavailable || !result.Error.Retryable {
+		t.Fatalf("error = %+v", result.Error)
+	}
+}
 
 func TestHandlerAdminOpsAndInvokePlaceholder(t *testing.T) {
 	h := NewHandler()
@@ -187,6 +218,37 @@ func TestHandlerRoutesHookEventToWorker(t *testing.T) {
 	}
 }
 
+func TestHandlerPrepareTenantReturnsAuthoritativeWorkerCatalog(t *testing.T) {
+	dir := t.TempDir()
+	writeRuntimePlugin(t, dir)
+	store, err := manifest.NewStore([]string{dir})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	workerPool := pool.New("kernel", store, bare.New(), pool.Options{AllowedTenants: []string{"tenant-a"}})
+	t.Cleanup(workerPool.Close)
+	h := NewHandler(Options{Store: store, Pool: workerPool})
+
+	ack, err := h.PrepareTenant(context.Background(), wire.PrepareTenant{Op: wire.OpPrepareTenant, RequestID: "prepare-1", TenantID: "tenant-a"})
+	if err != nil {
+		t.Fatalf("PrepareTenant: %v", err)
+	}
+	if ack.RequestID != "prepare-1" || len(ack.Capabilities) != 1 {
+		t.Fatalf("ack = %#v", ack)
+	}
+	capability := ack.Capabilities[0]
+	if capability.Target.ID != "fs" || capability.State != wire.CapabilityStateReady || capability.Source != wire.CapabilitySourceWorker {
+		t.Fatalf("capability = %#v", capability)
+	}
+	toolNames := map[string]bool{}
+	for _, tool := range capability.Tools {
+		toolNames[tool.Name] = true
+	}
+	if len(capability.Tools) != 2 || !toolNames["read_file"] || !toolNames["dynamic_extra"] {
+		t.Fatalf("tools = %#v", capability.Tools)
+	}
+}
+
 func TestHandlerAsyncFramesOnlyPrimeDynamicTargetsOnAttach(t *testing.T) {
 	dir := t.TempDir()
 	writeRuntimePlugin(t, dir)
@@ -202,6 +264,9 @@ func TestHandlerAsyncFramesOnlyPrimeDynamicTargetsOnAttach(t *testing.T) {
 	frames := h.AsyncFrames()
 	if frames == nil {
 		t.Fatal("AsyncFrames returned nil")
+	}
+	if again := h.AsyncFrames(); again != frames {
+		t.Fatal("AsyncFrames returned competing channel on second call")
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {

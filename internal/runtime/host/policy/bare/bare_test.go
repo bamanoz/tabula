@@ -36,7 +36,7 @@ func TestBarePolicySpawnInitCallAndShutdown(t *testing.T) {
 	if !result.OK || result.CallID != "call-1" || !strings.Contains(string(result.Data), `"tenant_id": "tenant-a"`) || !strings.Contains(string(result.Data), `"turn_correlation_id": "tc-1"`) {
 		t.Fatalf("unexpected result: %#v", result)
 	}
-	if err := worker.Shutdown(context.Background()); err != nil {
+	if err := worker.Shutdown(context.Background(), policy.Shutdown{Reason: "worker stopped"}); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
 	info, err := worker.Wait()
@@ -51,7 +51,7 @@ func TestWarmWorkerAcceptsMultipleSequentialCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	defer func() { _ = worker.Shutdown(context.Background()) }()
+	defer func() { _ = worker.Shutdown(context.Background(), policy.Shutdown{Reason: "worker stopped"}) }()
 	if _, err := worker.Init(context.Background(), workerwire.WorkerInit{KernelID: req.KernelID, TenantID: req.TenantID, TargetID: req.TargetID, Manifest: req.Manifest}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestWarmWorkerAcceptsConcurrentCallsWithOutOfOrderResults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	defer func() { _ = worker.Shutdown(context.Background()) }()
+	defer func() { _ = worker.Shutdown(context.Background(), policy.Shutdown{Reason: "worker stopped"}) }()
 	if _, err := worker.Init(context.Background(), workerwire.WorkerInit{KernelID: "main", TenantID: "tenant-a", TargetID: "fs", Manifest: json.RawMessage(`{"id":"fs"}`)}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestColdWorkerRejectsSecondCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	defer func() { _ = worker.Shutdown(context.Background()) }()
+	defer func() { _ = worker.Shutdown(context.Background(), policy.Shutdown{Reason: "worker stopped"}) }()
 	if _, err := worker.Init(context.Background(), workerwire.WorkerInit{KernelID: req.KernelID, TenantID: req.TenantID, TargetID: req.TargetID, Manifest: req.Manifest}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestSpawnInjectsTenantKernelAndTargetEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	defer func() { _ = worker.Shutdown(context.Background()) }()
+	defer func() { _ = worker.Shutdown(context.Background(), policy.Shutdown{Reason: "worker stopped"}) }()
 	if _, err := worker.Init(context.Background(), workerwire.WorkerInit{KernelID: req.KernelID, TenantID: req.TenantID, TargetID: req.TargetID, Manifest: req.Manifest}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestBarePolicySpawnSupportsCanonicalWorkerCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	defer func() { _ = worker.Shutdown(context.Background()) }()
+	defer func() { _ = worker.Shutdown(context.Background(), policy.Shutdown{Reason: "worker stopped"}) }()
 	if _, err := worker.Init(context.Background(), workerwire.WorkerInit{KernelID: req.KernelID, TenantID: req.TenantID, TargetID: req.TargetID, Manifest: req.Manifest}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestWorkerRoutesAsyncFramesWithoutBreakingCallResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	defer func() { _ = worker.Shutdown(context.Background()) }()
+	defer func() { _ = worker.Shutdown(context.Background(), policy.Shutdown{Reason: "worker stopped"}) }()
 	if _, err := worker.Init(context.Background(), workerwire.WorkerInit{KernelID: req.KernelID, TenantID: req.TenantID, TargetID: req.TargetID, Manifest: req.Manifest}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestWorkerRoutesHookEventAndReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	defer func() { _ = worker.Shutdown(context.Background()) }()
+	defer func() { _ = worker.Shutdown(context.Background(), policy.Shutdown{Reason: "worker stopped"}) }()
 	if _, err := worker.Init(context.Background(), workerwire.WorkerInit{KernelID: req.KernelID, TenantID: req.TenantID, TargetID: req.TargetID, Manifest: req.Manifest}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestWorkerIgnoresReplyForNoReplyHookEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	defer func() { _ = worker.Shutdown(context.Background()) }()
+	defer func() { _ = worker.Shutdown(context.Background(), policy.Shutdown{Reason: "worker stopped"}) }()
 	if _, err := worker.Init(context.Background(), workerwire.WorkerInit{KernelID: req.KernelID, TenantID: req.TenantID, TargetID: req.TargetID, Manifest: req.Manifest}); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -512,7 +512,15 @@ sys.exit(1)
 			if !strings.Contains(got, "worker stderr captured: 2 lines") || !strings.Contains(got, "RuntimeError: background supervisor failed") || !strings.Contains(got, "worker exit code=1") {
 				t.Fatalf("expected actionable stderr sample in async error, got %q", got)
 			}
-			_, _ = worker.Wait()
+			info, waitErr := worker.Wait()
+			if waitErr == nil || info.Code != 1 {
+				t.Fatalf("Wait = %#v, %v", info, waitErr)
+			}
+			for name, diagnostic := range map[string]string{"exit info": info.Message, "wait error": waitErr.Error()} {
+				if !strings.Contains(diagnostic, "worker stderr captured: 2 lines") || !strings.Contains(diagnostic, "RuntimeError: background supervisor failed") {
+					t.Fatalf("expected actionable stderr in %s, got %q", name, diagnostic)
+				}
+			}
 			return
 		case <-deadline:
 			t.Fatal("timed out waiting for async worker error")

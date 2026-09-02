@@ -7,7 +7,7 @@ import (
 
 func TestInitMessage_NoBootMeta_OmitsMeta(t *testing.T) {
 	env := newTestEnv(t)
-	conn := env.connectAndJoin("c", "main", []string{TopicMessageUser}, []string{TopicSessionInit})
+	conn := env.connectAndJoin("c", "main", []string{testExtensionTopic}, []string{TopicSessionInit})
 
 	msg := readMsg(t, conn)
 	if !isSessionInit(&msg) {
@@ -22,7 +22,7 @@ func TestInitMessage_ForwardsBootMeta(t *testing.T) {
 	env := newTestEnv(t)
 	env.Hub.SetInitMeta(json.RawMessage(`{"agents":[{"name":"build"}],"default_agent":"build"}`))
 
-	conn := env.connectAndJoin("c", "main", []string{TopicMessageUser}, []string{TopicSessionInit})
+	conn := env.connectAndJoin("c", "main", []string{testExtensionTopic}, []string{TopicSessionInit})
 
 	msg := readMsg(t, conn)
 	if !isSessionInit(&msg) {

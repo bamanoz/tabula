@@ -357,18 +357,16 @@ Claude Code uses append-only JSONL transcripts as a shared operational log:
   collapse state, todos, session agent/model, cwd, and worktree state.
 - `src/cost-tracker.ts` restores cost state per session.
 
-Tabula persistence is split:
+Tabula persistence is split by authority:
 
-- kernel session store is intentionally shallow;
-- driver writes `history.jsonl` under session state;
-- session SDK stores transcript/meta/labels;
-- subagents store registry/result/log files;
-- gateway-web merges durable transcript with transient replay.
+- kernel SQLite stores canonical session aggregates, committed events, and auxiliary session records;
+- plugins own their durable domain state under tenant plugin state;
+- subagents own registry/result/log files;
+- gateways reconstruct durable transcript from protocol-v4 committed events and merge only transient live display state.
 
-Gap: Tabula's split is architecturally clean, but a resumed agent has fewer
-standard harness states to restore. A generic "session ledger" schema for
-messages, tool artifacts, file history, task state, and compaction boundaries
-would give Tabula better resume semantics without bloating the kernel.
+Gap: a resumed agent may still have fewer standardized harness projections to
+restore. New projections should consume committed events, auxiliary records, and
+component-owned APIs rather than introduce another session persistence format.
 
 ### 13. Remote and IDE Integrations
 
@@ -487,22 +485,22 @@ Introduce a generic tool-search/deferred-tool mechanism for large tool catalogs:
 - compaction boundaries preserve selected/deferred tool state;
 - prompt-cache stability becomes an explicit design goal.
 
-### P2: Session Ledger Unification
+### P2: Session Projection Unification
 
-Define a shared session ledger schema that drivers/gateways/plugins can append
-to without kernel ownership of product behavior:
+Define shared projections over protocol-v4 committed events, auxiliary session
+records, and component-owned APIs without adding another persistence format:
 
 - messages and stream reconstruction;
 - compaction boundaries;
-- tool artifacts;
+- artifact references;
 - file edits;
 - task/subagent state;
 - titles/tags/labels;
 - provider usage and cost;
 - resume metadata.
 
-This would preserve Tabula's kernel boundary while giving products a common
-resume substrate.
+This preserves Tabula's kernel boundary while giving products a common resume
+substrate backed by canonical authority.
 
 ### P3: IDE Bridge
 
@@ -535,10 +533,10 @@ split like this:
 | Context accounting, compact summaries, result artifacts | `tabula-bundles/_lib/python/src/tabula_drivers` plus a reusable plugin |
 | Context visualizer tool | `tabula-bundles/code` or `base/context` plugin |
 | Large tool-result persistence | driver/runtime library, with plugin opt-in metadata |
-| Task model | `tabula-bundles/subagents` plus session SDK schema |
+| Task model | `tabula-bundles/subagents` plus auxiliary session records |
 | Worktree isolation | `tabula-bundles/workspace` plugin or subagents companion plugin |
-| Structured edit events | fs/edit plugin hooks and session ledger |
-| Per-turn diff UI | gateway-web plus session SDK transcript metadata |
+| Structured edit events | fs/edit plugin plus `edit.diff` session records |
+| Per-turn diff UI | gateway-web committed events plus `edit.diff` records |
 | Mandatory policy decision logging | hook-permissions + kernel/runtime dispatch metadata |
 | IDE bridge | new gateway/plugin, probably ACP-adjacent |
 

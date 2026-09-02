@@ -37,7 +37,7 @@ func (pe *PolicyEngine) CanConnect(spawnToken string, authToken string) (int, er
 	return 0, nil
 }
 
-func (pe *PolicyEngine) CanRespondHook(sender *Client, msg *Message) error {
+func (pe *PolicyEngine) CanRespondHook(sender *Client, msg *BusMessage) error {
 	if sender == nil || !sender.IsConnected() {
 		return &PolicyError{Reason: "client not connected"}
 	}
@@ -121,37 +121,9 @@ func (pe *PolicyEngine) BeforePromptBuild(session string, tenantID string, clien
 	return context, tools
 }
 
-// BeforeTurn lets plugins attach transient per-turn context without mutating
-// the persisted session init context or rewriting the user's text.
-func (pe *PolicyEngine) BeforeTurn(session string, tenantID string, msg *Message) string {
-	if msg == nil {
-		return ""
-	}
-	hookPayload, _ := json.Marshal(map[string]any{
-		"session":             session,
-		"tenant_id":           tenantID,
-		"message_id":          msg.ID,
-		"text":                messageText(msg),
-		"meta":                metaMap(msg.Meta),
-		"turn_correlation_id": metaString(msg.Meta, turnCorrelationMetaKey),
-	})
-	result, ok := pe.hub.dispatchHook("before_turn", hookPayload, tenantID, session)
-	if !ok {
-		return ""
-	}
-
-	var hookData struct {
-		Context string `json:"context"`
-	}
-	if json.Unmarshal(result, &hookData) != nil {
-		return ""
-	}
-	return hookData.Context
-}
-
 // CanSend checks whether a client is allowed to send a message.
 // Combines state, capability, and session membership checks.
-func (pe *PolicyEngine) CanSend(sender *Client, msg *Message) error {
+func (pe *PolicyEngine) CanSend(sender *Client, msg *BusMessage) error {
 	if !sender.IsConnected() {
 		return &PolicyError{Reason: "client not connected"}
 	}
@@ -162,7 +134,10 @@ func (pe *PolicyEngine) CanSend(sender *Client, msg *Message) error {
 	if !sender.canSend(capability) {
 		return &PolicyError{Reason: fmt.Sprintf("client not allowed to send %s", capability)}
 	}
-	if MsgType(msg.Type) == MsgRequest && isExchangeTopic(msg.Topic) && sender.session == "" && msg.Session != "" {
+	if sender.usesExplicitProtocolRoute() && msg.TenantID != "" && msg.Session != "" {
+		return nil
+	}
+	if BusMessageType(msg.Type) == MsgRequest && isExchangeTopic(msg.Topic) && sender.session == "" && msg.Session != "" {
 		return nil
 	}
 	if sender.session == "" {
@@ -171,33 +146,17 @@ func (pe *PolicyEngine) CanSend(sender *Client, msg *Message) error {
 	return nil
 }
 
-// BeforeMessage runs the before_message hook and returns (modifiedText, blocked).
-// Returns ("", true) if the hook blocks the message.
-func (pe *PolicyEngine) BeforeMessage(sender *Client, msg *Message) (string, bool) {
-	payload, _ := json.Marshal(map[string]string{
-		"text":   messageText(msg),
-		"sender": sender.name,
-	})
-	result, ok := pe.hub.dispatchHook("before_message", payload, sender.tenantID, sender.session)
-	if !ok {
-		return "", true
-	}
-
-	text := messageText(msg)
-	var modified struct{ Text string }
-	if json.Unmarshal(result, &modified) == nil && modified.Text != "" {
-		text = modified.Text
-	}
-	return text, false
-}
-
 // CanUseTool runs the before_tool_call hook and returns the effective input.
 // If a hook stops dispatch before invoke, blocked contains the generic hook facts.
 func (pe *PolicyEngine) CanUseTool(sender *Client, toolName string, toolID string, input json.RawMessage, meta json.RawMessage, session string) (json.RawMessage, *khooks.DispatchDecision) {
+	return pe.CanUseScopedTool(sender.tenantID, session, sender, toolName, toolID, input, meta)
+}
+
+func (pe *PolicyEngine) CanUseScopedTool(tenantID, session string, sender *Client, toolName string, toolID string, input json.RawMessage, meta json.RawMessage) (json.RawMessage, *khooks.DispatchDecision) {
 	hookPayload, _ := json.Marshal(map[string]any{
-		"tool": toolName, "id": toolID, "input": input, "meta": meta, "tenant_id": sender.tenantID,
+		"tool": toolName, "id": toolID, "input": input, "meta": meta, "tenant_id": tenantID,
 	})
-	result, ok, blocked := pe.hub.hooks.DispatchDetailedExcept("before_tool_call", hookPayload, sender.tenantID, session, sender)
+	result, ok, blocked := pe.hub.hooks.DispatchDetailedExcept("before_tool_call", hookPayload, tenantID, session, sender)
 
 	var modified struct {
 		Input json.RawMessage `json:"input"`

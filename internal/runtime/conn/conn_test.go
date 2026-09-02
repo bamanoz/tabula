@@ -45,6 +45,8 @@ func TestCodecNetPipeRoundTripEveryOp(t *testing.T) {
 		wire.ListCapabilitiesResp{Op: wire.OpListCapabilitiesResp, Targets: []wire.Capability{{Target: pluginTarget("fs"), Tools: []wire.ToolSpec{{Name: "read"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}}},
 		wire.Reload{Op: wire.OpReload, Target: ptr(pluginTarget("fs"))},
 		wire.ReloadAck{Op: wire.OpReloadAck, EvictedTargets: []wire.Target{pluginTarget("fs")}},
+		wire.PrepareTenant{Op: wire.OpPrepareTenant, RequestID: "prepare-1", TenantID: "default"},
+		wire.PrepareTenantAck{Op: wire.OpPrepareTenantAck, RequestID: "prepare-1", Capabilities: []wire.Capability{{Target: pluginTarget("fs"), Tools: []wire.ToolSpec{{Name: "read"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}}},
 		wire.HookEvent{Op: wire.OpHookEvent, CallID: "hook-1", Target: pluginTarget("fs"), Event: "before_tool_call", ReplyMode: wire.HookReplyModeModifying, Data: json.RawMessage(`{"tool":"echo"}`)},
 		wire.HookEventReply{Op: wire.OpHookEventReply, CallID: "hook-1", Action: wire.HookActionOK},
 		wire.CatalogUpdate{Op: wire.OpCatalogUpdate, Target: pluginTarget("fs"), Tools: []wire.ToolSpec{{Name: "read"}}, Revision: 2, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker},
@@ -647,6 +649,16 @@ func (testHandler) Reload(context.Context, wire.Reload) (wire.ReloadAck, error) 
 	return wire.ReloadAck{Op: wire.OpReloadAck}, nil
 }
 
+func (testHandler) PrepareTenant(_ context.Context, in wire.PrepareTenant) (wire.PrepareTenantAck, error) {
+	return wire.PrepareTenantAck{
+		Op:        wire.OpPrepareTenantAck,
+		RequestID: in.RequestID,
+		Capabilities: []wire.Capability{{
+			Target: pluginTarget("fs"), Tools: []wire.ToolSpec{{Name: "parallel"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker,
+		}},
+	}, nil
+}
+
 func (testHandler) HookEvent(_ context.Context, in wire.HookEvent) (wire.HookEventReply, error) {
 	return wire.HookEventReply{Op: wire.OpHookEventReply, CallID: in.CallID, Action: wire.HookActionOK}, nil
 }
@@ -833,6 +845,10 @@ func deref(v any) any {
 	case *wire.Reload:
 		return *f
 	case *wire.ReloadAck:
+		return *f
+	case *wire.PrepareTenant:
+		return *f
+	case *wire.PrepareTenantAck:
 		return *f
 	case *wire.HookEvent:
 		return *f

@@ -59,7 +59,6 @@ const (
 // Defined as a package-level var so tests can override it.
 var Events = map[string]EventDef{
 	"before_message":      {Strategy: strategyModifying, Type: Domain},
-	"after_message":       {Strategy: strategyVoid, Type: Observability},
 	"before_tool_call":    {Strategy: strategyModifying, Type: Security},
 	"before_tool_result":  {Strategy: strategyModifying, Type: Domain},
 	"after_tool_call":     {Strategy: strategyVoid, Type: Observability},

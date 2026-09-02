@@ -24,6 +24,8 @@ func TestEncodeDecodeRoundTripEveryOp(t *testing.T) {
 		&ListCapabilitiesResp{Op: OpListCapabilitiesResp, Targets: []Capability{{Target: Target{Kind: TargetKindPlugin, ID: "fs"}, Tools: []ToolSpec{{Name: "read"}}, Revision: 2, State: CapabilityStateReady, Source: CapabilitySourceWorker}}},
 		&Reload{Op: OpReload, Target: &Target{Kind: TargetKindPlugin, ID: "fs"}},
 		&ReloadAck{Op: OpReloadAck, EvictedTargets: []Target{{Kind: TargetKindPlugin, ID: "fs"}}},
+		&PrepareTenant{Op: OpPrepareTenant, RequestID: "prepare-1", TenantID: "default"},
+		&PrepareTenantAck{Op: OpPrepareTenantAck, RequestID: "prepare-1", Capabilities: []Capability{{Target: Target{Kind: TargetKindPlugin, ID: "fs"}, Tools: []ToolSpec{{Name: "read"}}, Revision: 2, State: CapabilityStateReady, Source: CapabilitySourceWorker}}},
 		&HookEvent{Op: OpHookEvent, CallID: "hook-1", Target: Target{Kind: TargetKindPlugin, ID: "fs"}, Event: "before_tool_call", ReplyMode: HookReplyModeModifying, Data: json.RawMessage(`{"tool":"read"}`)},
 		&CatalogUpdate{Op: OpCatalogUpdate, Target: Target{Kind: TargetKindPlugin, ID: "fs"}, Tools: []ToolSpec{{Name: "read", Description: "Read file"}}, Hooks: []HookSpec{{Event: "before_tool_call", Priority: 1}}, Revision: 3, State: CapabilityStateReady, Source: CapabilitySourceWorker, Diagnostic: "ready"},
 		&HookEventReply{Op: OpHookEventReply, CallID: "hook-1", Action: HookActionRewrite, Data: json.RawMessage(`{"tool":"read_file"}`), Reason: "renamed"},

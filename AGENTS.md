@@ -10,6 +10,10 @@ and shared development tooling. Distro-specific product policy belongs in
 - Keep kernel changes generic. The kernel should not know about concrete
   distros, bundles, skills, plugins, gateways, MCP servers, workspaces, or
   product-specific policy.
+- Apply the minimal-agent test before adding kernel behavior: would the
+  smallest useful agent cease to be an agent without it? Only a yes belongs in
+  the kernel. Everything else belongs in a plugin, gateway, client, bundle, or
+  distro.
 - Keep the kernel dumb: it is a router, message bus, lifecycle coordinator, and
   persistence boundary only. Do not add product semantics, UI text, default
   choices, policy decisions, tool-specific payload shaping, or gateway/client

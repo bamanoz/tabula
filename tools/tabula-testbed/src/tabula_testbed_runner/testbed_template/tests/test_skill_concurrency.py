@@ -14,13 +14,13 @@ class SkillConcurrencySmoke(unittest.TestCase):
 
     def make_client(self, name: str, session: str = "testbed-skill-concurrency") -> TestbedClient:
         client = TestbedClient(self.url, name=name)
-        client.connect_join(session)
+        client.connect()
+        client.create_session(session)
         return client
 
     def test_parallel_calls_use_parallel_cold_processes(self):
         clients = [self.make_client(f"testbed-skill-parallel-{i}") for i in range(8)]
         try:
-            clients[0].wait_tools({"testbed_cold_python"}, session="testbed-skill-concurrency")
             calls = [
                 client.call_tool_async("testbed_cold_python", {"text": str(i), "sleep_ms": 500}, timeout=15)
                 for i, client in enumerate(clients)

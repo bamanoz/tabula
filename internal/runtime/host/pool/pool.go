@@ -107,6 +107,50 @@ func (p *Pool) PrimeTargets(ctx context.Context, target *wire.Target) {
 	p.primeTargets(ctx, target, false)
 }
 
+// PrepareTenant initializes every warm plugin worker visible to one tenant and
+// returns the authoritative capability snapshot synchronously.
+func (p *Pool) PrepareTenant(ctx context.Context, tenantID string) ([]wire.Capability, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if p == nil || p.store == nil {
+		return nil, fmt.Errorf("worker pool is not configured")
+	}
+	plugins := p.orderedPrimePlugins(tenantID, nil)
+	readyKinds := map[string]bool{}
+	out := make([]wire.Capability, 0, len(plugins))
+	for _, plugin := range plugins {
+		if plugin.IsDriver() || plugin.WorkerMode == wire.WorkerModeCold {
+			if plugin.IsDriver() {
+				readyKinds[pluginKindName(plugin)] = true
+			}
+			continue
+		}
+		if !p.kindDependenciesReady(plugin, readyKinds) {
+			p.markTargetFailed(tenantID, plugin)
+		} else {
+			e := p.registry.entryFor(p.workerKey(tenantID, plugin))
+			e.mu.Lock()
+			_, _, err := p.ensureWorker(ctx, e, plugin, tenantID)
+			e.mu.Unlock()
+			if err != nil && ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+		}
+		capability, ok := p.capabilities.snapshot(tenantID, plugin.ID)
+		if !ok {
+			return nil, fmt.Errorf("prepare tenant %q target %q: capability snapshot is missing", tenantID, plugin.ID)
+		}
+		out = append(out, capability)
+		if capability.State == wire.CapabilityStateReady {
+			if kind := pluginKindName(plugin); kind != "" {
+				readyKinds[kind] = true
+			}
+		}
+	}
+	return out, nil
+}
+
 // PrimeRuntimeTargets proactively initializes runtime-scoped manifest-backed
 // targets. It is safe at runtime attach because these targets explicitly opted
 // into one shared worker per runtime instead of tenant fan-out.
@@ -132,6 +176,12 @@ func (p *Pool) primeTargets(ctx context.Context, target *wire.Target, runtimeSco
 		plugins := p.orderedPrimePlugins(tenantID, target)
 		readyKinds := map[string]bool{}
 		for _, plugin := range plugins {
+			if plugin.IsDriver() {
+				// Drivers are session-scoped, so their validated manifest is the
+				// only readiness signal available before a session is assigned.
+				readyKinds[pluginKindName(plugin)] = true
+				continue
+			}
 			if plugin.WorkerMode == wire.WorkerModeCold {
 				continue
 			}
@@ -184,7 +234,7 @@ func (p *Pool) primeDynamicTargets(ctx context.Context, target *wire.Target) {
 }
 
 func shouldPrimeDynamicTarget(plugin manifest.Plugin) bool {
-	return plugin.WorkerMode != wire.WorkerModeCold && len(plugin.Tools) == 0 && len(plugin.Hooks) == 0
+	return !plugin.IsDriver() && plugin.WorkerMode != wire.WorkerModeCold && len(plugin.Tools) == 0 && len(plugin.Hooks) == 0
 }
 
 func (p *Pool) orderedPrimePlugins(tenantID string, target *wire.Target) []manifest.Plugin {
@@ -280,6 +330,9 @@ func (p *Pool) Invoke(ctx context.Context, in wire.Invoke) (result wire.InvokeRe
 		if !ok {
 			return failed(in.CallID, wire.ErrorTargetUnknown, fmt.Sprintf("target %q not found", in.Target.ID)), nil
 		}
+		if plugin.IsDriver() {
+			return failed(in.CallID, wire.ErrorTargetForbidden, fmt.Sprintf("target %q is a driver component", in.Target.ID)), nil
+		}
 		if plugin.WorkerMode == wire.WorkerModeCold {
 			return p.invokeColdPlugin(ctx, plugin, in), nil
 		}
@@ -336,6 +389,9 @@ func (p *Pool) HookEvent(ctx context.Context, in wire.HookEvent) (*wire.HookEven
 	plugin, ok := p.store.GetForTenant(tenantID, in.Target.ID)
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", ErrTargetNotFound, in.Target.ID)
+	}
+	if plugin.IsDriver() {
+		return nil, fmt.Errorf("target %q is a driver component", in.Target.ID)
 	}
 	hook := pluginHook(plugin, in.Event)
 	e := p.registry.entryFor(p.workerKey(tenantID, plugin))
@@ -471,7 +527,7 @@ func (p *Pool) resetWarmWorker(e *entry, worker policy.Worker) {
 	}
 	e.notifyWaitersLocked()
 	e.mu.Unlock()
-	_ = worker.Shutdown(context.Background())
+	_ = worker.Shutdown(context.Background(), policy.Shutdown{Reason: "worker stopped"})
 }
 
 func (p *Pool) resetWarmWorkerAfterFailure(e *entry, worker policy.Worker) {
@@ -486,7 +542,7 @@ func (p *Pool) resetWarmWorkerAfterFailure(e *entry, worker policy.Worker) {
 		e.notifyWaitersLocked()
 	}
 	e.mu.Unlock()
-	_ = worker.Shutdown(context.Background())
+	_ = worker.Shutdown(context.Background(), policy.Shutdown{Reason: "worker stopped"})
 }
 
 func (p *Pool) shouldResetWarmWorkerAfterCallError(e *entry, worker policy.Worker) bool {
@@ -575,7 +631,7 @@ func (p *Pool) invokeColdPlugin(ctx context.Context, plugin manifest.Plugin, in 
 		return failed(in.CallID, wire.ErrorInternal, err.Error())
 	}
 	defer func() {
-		_ = worker.Shutdown(context.Background())
+		_ = worker.Shutdown(context.Background(), policy.Shutdown{Reason: "worker stopped"})
 		_, _ = worker.Wait()
 	}()
 	if _, err := worker.Init(ctx, workerwire.WorkerInit{Op: workerwire.OpInit, KernelID: p.kernelID, TenantID: in.TenantID, TargetID: in.Target.ID, Manifest: plugin.RawJSON()}); err != nil {
@@ -943,6 +999,10 @@ func pluginEntryPath(plugin manifest.Plugin) string {
 
 // Reload evicts matching workers and returns their Runtime API targets.
 func (p *Pool) Reload(target *wire.Target, tenants ...string) []wire.Target {
+	return p.reload(policy.Shutdown{Reason: "runtime reload"}, target, tenants...)
+}
+
+func (p *Pool) reload(shutdown policy.Shutdown, target *wire.Target, tenants ...string) []wire.Target {
 	if p == nil {
 		return nil
 	}
@@ -958,7 +1018,7 @@ func (p *Pool) Reload(target *wire.Target, tenants ...string) []wire.Target {
 			if _, seen := seenTargets[item.target.ID]; !seen {
 				p.publishCriticalFrame(wire.LifecycleNotice{Op: wire.OpLifecycleNotice, Target: item.target, State: wire.LifecycleStateStopping})
 			}
-			_ = worker.Shutdown(context.Background())
+			_ = worker.Shutdown(context.Background(), shutdown)
 		} else {
 			item.entry.mu.Unlock()
 		}
@@ -1007,7 +1067,7 @@ func (p *Pool) Close() {
 	if p == nil {
 		return
 	}
-	_ = p.Reload(nil)
+	_ = p.reload(policy.Shutdown{Reason: "runtime stopping", Final: true}, nil)
 	p.publisher.Close()
 }
 
@@ -1028,7 +1088,7 @@ func (p *Pool) watchWorker(tenantID string, plugin manifest.Plugin, entry *entry
 				if clearEntryWorkerAfterFailure(entry, worker) {
 					p.logWorkerFailure(plugin, event.Err)
 					p.markTargetCrashed(tenantID, plugin, event.Err)
-					_ = worker.Shutdown(context.Background())
+					_ = worker.Shutdown(context.Background(), policy.Shutdown{Reason: "worker stopped"})
 				}
 				continue
 			}
@@ -1049,7 +1109,7 @@ func (p *Pool) watchWorker(tenantID string, plugin manifest.Plugin, entry *entry
 					}
 					p.logWorkerFailure(plugin, errors.New(message))
 					p.markTargetCrashed(tenantID, plugin, errors.New(message))
-					_ = worker.Shutdown(context.Background())
+					_ = worker.Shutdown(context.Background(), policy.Shutdown{Reason: "worker stopped"})
 				}
 			}
 		}

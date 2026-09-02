@@ -40,19 +40,18 @@ class TenantConfigOverlaySmoke(unittest.TestCase):
 
     def make_client(self, name: str, session: str, tenant_id: str) -> TestbedClient:
         client = TestbedClient(self.url, name=name)
-        client.connect_join(session, tenant_id=tenant_id)
+        client.connect()
+        client.create_session(session, tenant_id=tenant_id)
         return client
 
     def test_default_and_alpha_see_different_plugin_config_values(self) -> None:
         with self.make_client("testbed-config-default", "testbed-config-default", "default") as default_client:
-            default_client.wait_tools({"testbed_tenant_config"}, session="testbed-config-default", tenant_id="default")
             default_payload = default_client.call_tool("testbed_tenant_config", {}, timeout=10).json()
             self.assertTrue(default_payload["ok"], default_payload)
             self.assertEqual(default_payload["tenant_id"], "default", default_payload)
             self.assertEqual(default_payload["value"], "from-global", default_payload)
 
         with self.make_client("testbed-config-alpha", "testbed-config-alpha", "alpha") as alpha_client:
-            alpha_client.wait_tools({"testbed_tenant_config"}, session="testbed-config-alpha", tenant_id="alpha")
             alpha_payload = alpha_client.call_tool("testbed_tenant_config", {}, timeout=10).json()
             self.assertTrue(alpha_payload["ok"], alpha_payload)
             self.assertEqual(alpha_payload["tenant_id"], "alpha", alpha_payload)

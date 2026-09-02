@@ -29,12 +29,9 @@ class ActivityInstalled(unittest.TestCase):
         advertised: set[str] = set()
         while time.monotonic() < deadline:
             client = TestbedClient(self.url, name=f"activity-{session}-{time.time_ns()}")
-            client.connect_join(
-                session,
-                sends=["message.user", "tool.call"],
-                receives=["session.init", "message.user", "tool.result", "error"],
-            )
-            advertised = {str(tool.get("name")) for tool in client.tools() if tool.get("name")}
+            client.connect()
+            client.create_session(session)
+            return client
             if self.tools <= advertised:
                 return client
             client.close()
@@ -76,11 +73,8 @@ class ActivityInstalled(unittest.TestCase):
         while time.monotonic() < deadline:
             client = TestbedClient(self.url, name=f"activity-{session}-{time.time_ns()}")
             try:
-                client.connect_join(
-                    session,
-                    sends=["message.user", "tool.call"],
-                    receives=["session.init", "message.user", "tool.result", "error"],
-                )
+                client.connect()
+                client.create_session(session)
                 timeline = client.call_tool(
                     "activity_timeline", {"correlation_id": "corr-installed"}, timeout=5
                 ).json()

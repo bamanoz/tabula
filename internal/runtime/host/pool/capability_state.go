@@ -179,17 +179,25 @@ func (s *capabilityState) setStateLocked(key string, capabilityTenants []string,
 	s.targets[key] = cloneCapability(capability)
 }
 
-func (s *capabilityState) readySnapshot(tenantID, targetID string) (wire.Capability, bool) {
+func (s *capabilityState) snapshot(tenantID, targetID string) (wire.Capability, bool) {
 	if s == nil {
 		return wire.Capability{}, false
 	}
 	s.mu.RLock()
 	capability, ok := s.targets[s.capabilityKeyForTarget(tenantID, targetID)]
 	s.mu.RUnlock()
-	if !ok || capability.State != wire.CapabilityStateReady {
+	if !ok {
 		return wire.Capability{}, false
 	}
 	return cloneCapability(capability), true
+}
+
+func (s *capabilityState) readySnapshot(tenantID, targetID string) (wire.Capability, bool) {
+	capability, ok := s.snapshot(tenantID, targetID)
+	if !ok || capability.State != wire.CapabilityStateReady {
+		return wire.Capability{}, false
+	}
+	return capability, true
 }
 
 func (s *capabilityState) markReady(tenantID string, plugin manifest.Plugin, ack workerwire.WorkerInitAck) []wire.Capability {

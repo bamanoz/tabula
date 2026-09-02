@@ -76,12 +76,11 @@ to `tabula-runtime` over the worker protocol.
 
 Protocol version:
 
-- Go side: `internal/kernel/protocol.go`
-- Python side: `tabula_plugin_sdk.protocol`
-- current version: `3`
-- Clients **must** declare `v: 3` on every client->kernel frame. The first
-  frame is `hello`. Mismatched or missing versions are rejected with an
-  `error` message — there is no legacy fallback.
+- Go side: `ClientProtocolVersion = 4` in `internal/kernel/client_v4.go`
+- current version: `4`
+- Clients **must** declare `v: 4` on every client→kernel frame. First frame is
+  `command` / `connection.open`. Mismatched or missing versions are rejected
+  with protocol-v4 error envelopes; there is no legacy fallback.
 
 ## Versioning
 
@@ -92,8 +91,8 @@ composing a distro.
 
 Wire compatibility is tracked separately:
 
-- kernel client protocol: `ProtocolVersion` in `internal/kernel/protocol.go`
-  and `tabula_plugin_sdk.protocol` for WebSocket clients;
+- kernel client protocol: `ClientProtocolVersion` and strict envelopes in
+  `internal/kernel/client_v4.go`;
 - runtime worker protocol: `internal/runtime/worker/wire` on the Go side and
   `tabula_plugin_sdk.protocol` on the Python side, exchanged as NDJSON `init`,
   `init_ack`, `call`, `result`, `event`, `event_reply`, `send`,
@@ -112,34 +111,23 @@ Distros and bundles declare their requirement against this number:
 Mismatches are hard errors at install time. Bundles without a `bundle.toml` are
 treated as legacy and skip the check.
 
-Important message types:
+Kernel clients use strict protocol-v4 envelopes and typed operations. The first
+command is `connection.open`; durable lifecycle operations include
+`session.create`, `session.get`, `session.list`, `session.subscribe`,
+`input.submit`, turn recovery commands, and `tool.call`. Arbitrary non-authority
+traffic is isolated behind `extension.send` and `extension.event`.
 
-- client -> kernel: `hello`, `join`, `event`, `request`, `reply`, `hook_reply`
-- common client topics: `message.user`, `tool.call`, `exchange.choose`,
-  `exchange.approve`, `turn.cancel`
-- common kernel topics: `session.init`, `session.member_joined`, `tool.result`,
-  `usage.update`, `turn.done`, `hook`, `error`
-- stream path: `stream.start`, `stream.delta`, `stream.end`
-
-Every kernel client uses the same basic lifecycle:
-
-1. open WebSocket to `TABULA_URL`
-2. send `hello` with `data.auth_token`
-3. receive `hello_ack`
-4. send `join`
-5. receive `joined`
-6. optionally receive `event topic=session.init`
-7. enter message loop
+Gateways use the client API. Drivers use the fenced execution API through an
+attached runtime; they are never inferred from client topic capabilities.
 
 `tabula serve` writes the kernel client token to
 `$TABULA_HOME/run/kernel-client-token` and exports it as `TABULA_KERNEL_TOKEN`
-for first-party drivers and gateways. `hook_reply` messages are tied to the
-subscriber identity that received the hook; another client cannot answer a hook
-by reusing its id.
+for first-party clients. Hook and exchange replies remain identity-bound to the
+recipient through extension traffic.
 
-The shared Python wrapper for low-level clients is
-`tabula_plugin_sdk.kernel_client`. Plugins should use the runtime worker
-protocol through `tabula-runtime` instead of opening kernel WebSockets directly.
+The shared Python wrapper for gateway clients is `tabula_client_sdk`. Plugins
+use the runtime worker protocol through `tabula-runtime` instead of opening
+kernel WebSockets directly. See `docs/KERNEL_PROTOCOL_V4.md`.
 
 ## Boot
 
@@ -209,7 +197,7 @@ Tabula is split across three repositories:
   plugins (`plugin.toml`) on the same level. Bundles are referenced from
   distros via `distro.toml`.
 - [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib) — the
-  ready-to-use distros: `code/`, `claw/`, `guardian/`. Each declares
+  ready-to-use distros: `code/`, `claw/`. Each declares
   its bundle dependencies in `distro.toml`.
 
 A distro never embeds bundle source. It declares dependencies and the
@@ -667,8 +655,9 @@ Those are the places where contracts matter.
 - `docs/SKILL_AUTHORING.md` — how to author skills and plugins
 - `docs/distro-config.md` — `distro.toml` reference
 - [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib) — `code/`,
-  `claw/`, `guardian/` distros
+  `claw/` distros
 - [`tabula-bundles`](https://github.com/bamanoz/tabula-bundles) — reusable
   bundles
-- `internal/kernel/protocol.go` — Go-side protocol constants
+- `internal/kernel/client_v4.go` — protocol-v4 client envelopes and routing
+- `internal/kernel/protocol.go` — internal extension bus topics and runtime worker version bounds
 - `internal/runtime/worker/wire` — runtime-owned worker protocol messages

@@ -16,7 +16,7 @@ import (
 	"github.com/bamanoz/tabula/internal/tenant"
 )
 
-func waitForMessage(t *testing.T, ch <-chan *Message) *Message {
+func waitForMessage(t *testing.T, ch <-chan *BusMessage) *BusMessage {
 	t.Helper()
 	select {
 	case msg := <-ch:
@@ -27,7 +27,7 @@ func waitForMessage(t *testing.T, ch <-chan *Message) *Message {
 	}
 }
 
-func readCaptureMessageTimeout(ch <-chan *Message, d time.Duration) *Message {
+func readCaptureMessageTimeout(ch <-chan *BusMessage, d time.Duration) *BusMessage {
 	select {
 	case msg := <-ch:
 		return msg
@@ -50,7 +50,7 @@ func addTenantCaptureClient(t *testing.T, hub *Hub, tenantID, name, session stri
 		name:           name,
 		tenantID:       tenantID,
 		session:        session,
-		recvCh:         make(chan *Message, 8),
+		recvCh:         make(chan *BusMessage, 8),
 		receives:       map[string]bool{},
 		receivesGlobal: map[string]bool{},
 		sends:          map[string]bool{},

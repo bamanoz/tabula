@@ -19,22 +19,41 @@ const maxExecOutput = 16 * 1024 // 16KB
 type ToolService struct {
 	hub *Hub
 
-	mu           sync.Mutex
-	activeCalls  map[sessionKey]map[string]activeRuntimeCall
-	pendingCalls map[string]pendingToolCall
+	mu                   sync.Mutex
+	activeCalls          map[sessionKey]map[string]*activeRuntimeCall
+	activeToolLifecycles map[toolLifecycleKey]struct{}
+	pendingCalls         map[string]pendingToolCall
+	v4PendingCalls       map[v4ToolCallKey]*pendingV4ToolCall
+	runtimePendingCalls  map[v4ToolCallKey]*pendingRuntimeToolCall
 }
 
 func NewToolService(hub *Hub) *ToolService {
-	return &ToolService{hub: hub, activeCalls: make(map[sessionKey]map[string]activeRuntimeCall), pendingCalls: make(map[string]pendingToolCall)}
+	return &ToolService{
+		hub:                  hub,
+		activeCalls:          make(map[sessionKey]map[string]*activeRuntimeCall),
+		activeToolLifecycles: make(map[toolLifecycleKey]struct{}),
+		pendingCalls:         make(map[string]pendingToolCall),
+		v4PendingCalls:       make(map[v4ToolCallKey]*pendingV4ToolCall),
+		runtimePendingCalls:  make(map[v4ToolCallKey]*pendingRuntimeToolCall),
+	}
 }
 
-func (h *Hub) handleToolUse(sender *Client, msg *Message) {
+func (h *Hub) handleToolUse(sender *Client, msg *BusMessage) {
 	h.tools.HandleToolUse(sender, msg)
 }
 
 type activeRuntimeCall struct {
-	callID string
-	conn   runtimeapi.RuntimeConn
+	callID      string
+	toolName    string
+	correlation toolAttemptContext
+	conn        runtimeapi.RuntimeConn
+	cancel      context.CancelFunc
+}
+
+type pendingRuntimeToolCall struct {
+	name        string
+	correlation toolAttemptContext
+	deliver     func(output string, artifact json.RawMessage, truncated bool) error
 }
 
 type pendingToolCall struct {
@@ -50,6 +69,7 @@ type pendingToolCall struct {
 	Input             json.RawMessage
 	Meta              json.RawMessage
 	TurnCorrelationID string
+	AttemptContext    toolAttemptContext
 }
 
 // HandleToolUse routes a tool.call request through the before_tool_call hook
@@ -57,36 +77,128 @@ type pendingToolCall struct {
 //
 // The kernel does not host builtin LLM tools. Runtime tools are dispatched
 // through the unified tool registry populated by attached runtime targets.
-func (s *ToolService) HandleToolUse(sender *Client, msg *Message) {
-	toolName := msg.Name
-	toolID := msg.ID
-	session := sender.session
-	tenantID := sender.tenantID
-
-	turnCorrelationID := metaString(msg.Meta, turnCorrelationMetaKey)
-	s.hub.Logger.Debug("tool.call", "tool", toolName, "tenant_id", tenantID, "session", session, "id", toolID, "turn_correlation_id", turnCorrelationID)
-	s.hub.recordToolStarted(tenantID, session, toolID, toolName)
-
-	effectiveInput, blocked := s.hub.policy.CanUseTool(sender, toolName, toolID, msg.Input, msg.Meta, session)
-	if blocked != nil {
-		if blocked.Pending {
-			s.suspendForExchange(tenantID, session, toolID, toolName, effectiveInput, msg.Meta, turnCorrelationID, blocked)
-			return
-		}
-		s.hub.Logger.Warn("tool call blocked by policy", "tool", toolName, "tool_call_id", toolID, "turn_correlation_id", turnCorrelationID, "tenant_id", tenantID, "session", session, "input_bytes", len(msg.Input))
-		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, buildNotInvokedToolResult(blocked), nil, false)
-		return
+func (s *ToolService) HandleToolUse(sender *Client, msg *BusMessage) {
+	if err := s.HandleToolCall(sender, msg); err != nil {
+		s.hub.Logger.Warn("tool call rejected", "err", err)
 	}
-	s.executeFinalizedToolCall(tenantID, session, toolID, toolName, effectiveInput, msg.Meta, turnCorrelationID, sender)
 }
 
-func (s *ToolService) executeFinalizedToolCall(tenantID, session, toolID, toolName string, input, meta json.RawMessage, turnCorrelationID string, sender *Client) {
+// HandleToolCall validates and dispatches one tool call while preserving the
+// existing runtime, hook, exchange, lifecycle, and attempt-fencing paths.
+func (s *ToolService) HandleToolCall(sender *Client, msg *BusMessage) error {
+	if sender == nil {
+		return fmt.Errorf("tool call sender is required")
+	}
+	return s.HandleScopedToolCall(sender, sender.tenantID, sender.session, msg)
+}
+
+// HandleScopedToolCall dispatches a call for an explicitly validated tenant and
+// session without mutating or copying the client connection.
+func (s *ToolService) HandleScopedToolCall(sender *Client, tenantID, session string, msg *BusMessage) error {
+	if sender == nil {
+		return fmt.Errorf("tool call sender is required")
+	}
+	return s.handleScopedToolCall(sender, tenantID, session, msg)
+}
+
+func (s *ToolService) HandleRuntimeToolCall(tenantID, session string, msg *BusMessage, deliver func(string, json.RawMessage, bool) error) error {
+	if s == nil || deliver == nil || msg == nil {
+		return fmt.Errorf("runtime tool call message and result delivery are required")
+	}
+	key := v4ToolCallKey{tenantID: tenantID, session: session, callID: strings.TrimSpace(msg.ID)}
+	correlation, err := toolAttemptContextFromMeta(msg.Meta)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if _, exists := s.runtimePendingCalls[key]; exists {
+		s.mu.Unlock()
+		return fmt.Errorf("runtime tool call id %q is already pending", key.callID)
+	}
+	s.runtimePendingCalls[key] = &pendingRuntimeToolCall{name: msg.Name, correlation: correlation, deliver: deliver}
+	s.mu.Unlock()
+	if err := s.handleScopedToolCall(nil, tenantID, session, msg); err != nil {
+		s.mu.Lock()
+		delete(s.runtimePendingCalls, key)
+		s.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+func (s *ToolService) handleScopedToolCall(sender *Client, tenantID, session string, msg *BusMessage) error {
+	if s == nil || s.hub == nil || msg == nil {
+		return fmt.Errorf("tool call message is required")
+	}
+	toolName := strings.TrimSpace(msg.Name)
+	toolID := strings.TrimSpace(msg.ID)
+	session = strings.TrimSpace(session)
+	tenantID = strings.TrimSpace(tenantID)
+	if toolName == "" || toolID == "" || tenantID == "" || session == "" {
+		return fmt.Errorf("tool call id, name, tenant, and session are required")
+	}
+
+	correlation, err := toolAttemptContextFromMeta(msg.Meta)
+	if err != nil {
+		return err
+	}
+	turnCorrelationID := correlation.TurnCorrelationID
+	if err := s.hub.validateToolAttempt(tenantID, session, correlation); err != nil {
+		return err
+	}
+	s.hub.Logger.Debug("tool.call", "tool", toolName, "tenant_id", tenantID, "session", session, "id", toolID, "turn_correlation_id", turnCorrelationID, "attempt_id", correlation.AttemptID)
+	s.hub.recordToolStarted(tenantID, session, toolID, toolName, correlation)
+
+	effectiveInput, blocked := s.hub.policy.CanUseScopedTool(tenantID, session, sender, toolName, toolID, msg.Input, msg.Meta)
+	if err := s.hub.validateToolAttempt(tenantID, session, correlation); err != nil {
+		s.hub.Logger.Warn("tool call fenced during before_tool_call", "tool", toolName, "tool_call_id", toolID, "turn_id", correlation.TurnID, "attempt_id", correlation.AttemptID, "driver_generation", correlation.DriverGeneration, "tenant_id", tenantID, "session", session, "err", err)
+		s.hub.recordToolTerminal(tenantID, session, toolID, toolName, "fenced", correlation)
+		return err
+	}
+	if blocked != nil {
+		if blocked.Pending {
+			s.suspendForExchange(tenantID, session, toolID, toolName, effectiveInput, msg.Meta, correlation, blocked)
+			return nil
+		}
+		s.hub.Logger.Warn("tool call blocked by policy", "tool", toolName, "tool_call_id", toolID, "turn_correlation_id", turnCorrelationID, "tenant_id", tenantID, "session", session, "input_bytes", len(msg.Input))
+		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, buildNotInvokedToolResult(blocked), nil, false, correlation)
+		return nil
+	}
+	s.executeFinalizedToolCall(tenantID, session, toolID, toolName, effectiveInput, msg.Meta, correlation, sender)
+	return nil
+}
+
+func (s *ToolService) sendRuntimeToolResult(tenantID, session, toolID, toolName, output string, artifact json.RawMessage, truncated bool, correlation toolAttemptContext) bool {
+	if s == nil {
+		return false
+	}
+	key := v4ToolCallKey{tenantID: tenantID, session: session, callID: toolID}
+	s.mu.Lock()
+	pending := s.runtimePendingCalls[key]
+	if pending == nil || pending.correlation != correlation {
+		s.mu.Unlock()
+		return false
+	}
+	delete(s.runtimePendingCalls, key)
+	deliver := pending.deliver
+	s.mu.Unlock()
+	if toolName == "" {
+		toolName = pending.name
+	}
+	if err := deliver(output, artifact, truncated); err != nil {
+		s.hub.Logger.Error("deliver driver tool result", "tenant_id", tenantID, "session", session, "tool_call_id", toolID, "tool", toolName, "err", err)
+		return false
+	}
+	return true
+}
+
+func (s *ToolService) executeFinalizedToolCall(tenantID, session, toolID, toolName string, input, meta json.RawMessage, correlation toolAttemptContext, sender *Client) {
 	s.broadcastFinalizedToolCall(tenantID, session, toolID, toolName, input, meta, sender)
-	s.handleDynamicToolWithMeta(tenantID, session, toolID, toolName, input, meta, turnCorrelationID)
+	s.handleDynamicToolWithAttempt(tenantID, session, toolID, toolName, input, meta, correlation)
 }
 
 func (s *ToolService) broadcastFinalizedToolCall(tenantID, session, toolID, toolName string, input, meta json.RawMessage, sender *Client) {
-	s.hub.broadcastToSessionFrom(tenantID, session, TopicToolCall, &Message{
+	s.hub.broadcastToSessionFrom(tenantID, session, TopicToolCall, &BusMessage{
 		Type:  string(MsgRequest),
 		Topic: TopicToolCall,
 		ID:    toolID,
@@ -97,16 +209,32 @@ func (s *ToolService) broadcastFinalizedToolCall(tenantID, session, toolID, tool
 }
 
 func (s *ToolService) handleDynamicTool(tenantID, session, toolID, toolName string, input json.RawMessage, turnCorrelationID string) {
-	s.handleDynamicToolWithMeta(tenantID, session, toolID, toolName, input, nil, turnCorrelationID)
+	correlation := toolAttemptContext{TurnCorrelationID: turnCorrelationID}
+	s.hub.recordToolStarted(tenantID, session, toolID, toolName, correlation)
+	s.handleDynamicToolWithAttempt(tenantID, session, toolID, toolName, input, nil, correlation)
 }
 
 func (s *ToolService) handleDynamicToolWithMeta(tenantID, session, toolID, toolName string, input, meta json.RawMessage, turnCorrelationID string) {
+	correlation, _ := toolAttemptContextFromMeta(meta)
+	if correlation.TurnCorrelationID == "" {
+		correlation.TurnCorrelationID = turnCorrelationID
+	}
+	s.hub.recordToolStarted(tenantID, session, toolID, toolName, correlation)
+	s.handleDynamicToolWithAttempt(tenantID, session, toolID, toolName, input, meta, correlation)
+}
+
+func (s *ToolService) handleDynamicToolWithAttempt(tenantID, session, toolID, toolName string, input, meta json.RawMessage, correlation toolAttemptContext) {
+	turnCorrelationID := correlation.TurnCorrelationID
 	s.hub.toolExecMu.RLock()
 	entry, ok := s.hub.toolExec[toolExecKey(tenantID, toolName)]
 	if !ok {
 		entry, ok = s.hub.toolExec[toolName]
 	}
 	s.hub.toolExecMu.RUnlock()
+	if err := s.hub.validateToolAttempt(tenantID, session, correlation); err != nil {
+		s.hub.Logger.Warn("tool dispatch rejected by attempt fence", "tool", toolName, "tool_call_id", toolID, "turn_id", correlation.TurnID, "attempt_id", correlation.AttemptID, "driver_generation", correlation.DriverGeneration, "tenant_id", tenantID, "session", session, "err", err)
+		return
+	}
 	if !ok {
 		count, visibleElsewhere := s.hub.toolDispatchDiagnostics(tenantID, toolName)
 		s.hub.Logger.Warn(
@@ -119,14 +247,14 @@ func (s *ToolService) handleDynamicToolWithMeta(tenantID, session, toolID, toolN
 			"tool_registry_entries", count,
 			"tool_visible_in_other_tenant", visibleElsewhere,
 		)
-		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: unknown tool %s", toolName), nil, false)
+		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: unknown tool %s", toolName), nil, false, correlation)
 		return
 	}
 	switch entry.Source {
 	case toolSourceRuntime:
-		s.handleRuntimeTool(tenantID, session, toolID, toolName, entry, input, meta, turnCorrelationID)
+		s.handleRuntimeTool(tenantID, session, toolID, toolName, entry, input, meta, correlation)
 	default:
-		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: tool %s has unknown dispatch source", toolName), nil, false)
+		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: tool %s has unknown dispatch source", toolName), nil, false, correlation)
 	}
 }
 
@@ -169,7 +297,8 @@ func buildNotInvokedToolResult(blocked *khooks.DispatchDecision) string {
 	return string(mustMarshalRaw(result))
 }
 
-func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName string, entry toolDispatch, input, meta json.RawMessage, turnCorrelationID string) {
+func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName string, entry toolDispatch, input, meta json.RawMessage, correlation toolAttemptContext) {
+	turnCorrelationID := correlation.TurnCorrelationID
 	go func() {
 		var conn runtimeapi.RuntimeConn
 		pickedRuntimeID := entry.RuntimeID
@@ -181,7 +310,7 @@ func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName stri
 			conn, code, pickErr = s.hub.runtimeForTenant(tenantID, pickedRuntimeID)
 		}
 		if pickErr != nil {
-			s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, "ERROR: "+pickErr.Error(), nil, false)
+			s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, "ERROR: "+pickErr.Error(), nil, false, correlation)
 			if code != "" {
 				s.hub.Logger.Warn("runtime pick failed", "tool", toolName, "tool_call_id", toolID, "turn_correlation_id", turnCorrelationID, "runtime_id", pickedRuntimeID, "tenant_id", tenantID, "session", session, "code", code, "err", pickErr)
 			}
@@ -189,17 +318,25 @@ func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName stri
 		}
 		if conn == nil {
 			s.hub.Logger.Warn("runtime tool unavailable", "tool", toolName, "tool_call_id", toolID, "turn_correlation_id", turnCorrelationID, "runtime_id", pickedRuntimeID, "tenant_id", tenantID, "session", session, "target_kind", string(entry.Target.Kind), "target", entry.Target.ID)
-			s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: runtime tool %s is unavailable", toolName), nil, false)
+			s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: runtime tool %s is unavailable", toolName), nil, false, correlation)
 			return
 		}
-		unregisterActiveCall := s.registerActiveRuntimeCall(tenantID, session, toolID, activeRuntimeCall{callID: toolID, conn: conn})
-		defer unregisterActiveCall()
 		deadline := resolveToolDeadline(entry.DeadlineMs)
 		ctx, cancel := context.WithTimeout(context.Background(), runtimeInvokeDeadline(deadline))
+		call := &activeRuntimeCall{
+			callID: toolID, toolName: toolName, correlation: correlation, conn: conn, cancel: cancel,
+		}
+		unregisterActiveCall := s.registerActiveRuntimeCall(tenantID, session, toolID, call)
+		defer unregisterActiveCall()
 		defer cancel()
-		spool, err := newInvokeResultSpool(s.hub, tenantID, session, toolID)
+		if err := s.hub.validateToolAttempt(tenantID, session, correlation); err != nil {
+			s.hub.Logger.Warn("runtime tool invoke fenced before dispatch", "tool", toolName, "tool_call_id", toolID, "turn_id", correlation.TurnID, "attempt_id", correlation.AttemptID, "driver_generation", correlation.DriverGeneration, "tenant_id", tenantID, "session", session, "err", err)
+			s.hub.recordToolTerminal(tenantID, session, toolID, toolName, "fenced", correlation)
+			return
+		}
+		spool, err := newInvokeResultSpool(s.hub, tenantID, session, toolID, correlation)
 		if err != nil {
-			s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: runtime tool %s failed: %v", toolName, err), nil, false)
+			s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: runtime tool %s failed: %v", toolName, err), nil, false, correlation)
 			return
 		}
 		spool.toolName = toolName
@@ -220,17 +357,17 @@ func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName stri
 		}, spool)
 		if err != nil {
 			if ctx.Err() == context.Canceled && spool.TerminalState() == invokeResultSpoolTimedOut {
-				s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, "ERROR: streamed tool result timed out", nil, false)
+				s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, "ERROR: streamed tool result timed out", nil, false, correlation)
 				return
 			}
 			spool.MarkTerminal(invokeResultSpoolFailed)
 			s.hub.Logger.Warn("runtime tool invoke failed", "tool", toolName, "tool_call_id", toolID, "turn_correlation_id", turnCorrelationID, "runtime_id", pickedRuntimeID, "tenant_id", tenantID, "session", session, "target_kind", string(entry.Target.Kind), "target", entry.Target.ID, "err", err)
 			if ctx.Err() != nil {
 				spool.MarkTerminal(invokeResultSpoolTimedOut)
-				s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, "ERROR: invoke timed out", nil, false)
+				s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, "ERROR: invoke timed out", nil, false, correlation)
 				return
 			}
-			s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: runtime tool %s failed: %v", toolName, err), nil, false)
+			s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, fmt.Sprintf("ERROR: runtime tool %s failed: %v", toolName, err), nil, false, correlation)
 			return
 		}
 		if resp.OK {
@@ -246,28 +383,30 @@ func (s *ToolService) handleRuntimeTool(tenantID, session, toolID, toolName stri
 		if resultErr != nil {
 			result = runtimeToolResult{Output: "ERROR: " + resultErr.Error()}
 		}
-		s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, result.Output, result.Artifact, result.Truncated)
+		if !s.hub.sendToolResultForTool(tenantID, session, toolID, toolName, result.Output, result.Artifact, result.Truncated, correlation) {
+			return
+		}
 		s.hub.emitAfterToolCall(tenantID, session, toolID, map[string]string{
 			"tool": toolName, "id": toolID, "output": result.Output,
 		})
 	}()
 }
 
-func (s *ToolService) registerActiveRuntimeCall(tenantID, session, toolID string, call activeRuntimeCall) func() {
-	if s == nil || session == "" || toolID == "" || call.conn == nil {
+func (s *ToolService) registerActiveRuntimeCall(tenantID, session, toolID string, call *activeRuntimeCall) func() {
+	if s == nil || session == "" || toolID == "" || call == nil || call.conn == nil {
 		return func() {}
 	}
 	key := sessionRegistryKey(session, tenantID)
 	s.mu.Lock()
 	if s.activeCalls[key] == nil {
-		s.activeCalls[key] = make(map[string]activeRuntimeCall)
+		s.activeCalls[key] = make(map[string]*activeRuntimeCall)
 	}
 	s.activeCalls[key][toolID] = call
 	s.mu.Unlock()
 	return func() {
 		s.mu.Lock()
 		calls := s.activeCalls[key]
-		if calls != nil {
+		if calls != nil && calls[toolID] == call {
 			delete(calls, toolID)
 			if len(calls) == 0 {
 				delete(s.activeCalls, key)
@@ -277,26 +416,48 @@ func (s *ToolService) registerActiveRuntimeCall(tenantID, session, toolID string
 	}
 }
 
-func (s *ToolService) CancelSession(tenantID, session string) {
-	if s == nil || session == "" {
+func (s *ToolService) CancelTurn(tenantID, session, turnID string) {
+	if s == nil || session == "" || turnID == "" {
 		return
 	}
 	key := sessionRegistryKey(session, tenantID)
 	s.mu.Lock()
 	calls := s.activeCalls[key]
-	active := make([]activeRuntimeCall, 0, len(calls))
-	for _, call := range calls {
-		active = append(active, call)
+	active := make([]*activeRuntimeCall, 0, len(calls))
+	for toolID, call := range calls {
+		if call.correlation.TurnID == turnID {
+			active = append(active, call)
+			delete(calls, toolID)
+		}
+	}
+	if len(calls) == 0 {
+		delete(s.activeCalls, key)
+	}
+	pending := make([]pendingToolCall, 0)
+	for exchangeID, call := range s.pendingCalls {
+		if call.TenantID == tenantID && call.Session == session && call.AttemptContext.TurnID == turnID {
+			pending = append(pending, call)
+			delete(s.pendingCalls, exchangeID)
+		}
 	}
 	s.mu.Unlock()
+
 	for _, call := range active {
-		go func(call activeRuntimeCall) {
+		call.cancel()
+		s.removeV4ToolCall(v4ToolCallKey{tenantID: tenantID, session: session, callID: call.callID}, nil)
+		s.hub.recordToolTerminal(tenantID, session, call.callID, call.toolName, "cancelled", call.correlation)
+		go func(call *activeRuntimeCall) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			if err := call.conn.Cancel(ctx, call.callID); err != nil {
-				s.hub.Logger.Warn("runtime tool cancel failed", "tool_call_id", call.callID, "tenant_id", tenantID, "session", session, "err", err)
+				s.hub.Logger.Warn("runtime tool cancel failed", "tool_call_id", call.callID, "turn_id", turnID, "tenant_id", tenantID, "session", session, "err", err)
 			}
 		}(call)
+	}
+	for _, call := range pending {
+		releaseBlockedHookDecision(call.BlockedDecision)
+		s.removeV4ToolCall(v4ToolCallKey{tenantID: tenantID, session: session, callID: call.ToolID}, nil)
+		s.hub.recordToolTerminal(tenantID, session, call.ToolID, call.ToolName, "cancelled", call.AttemptContext)
 	}
 }
 

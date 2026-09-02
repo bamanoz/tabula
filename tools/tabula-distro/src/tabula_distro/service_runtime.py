@@ -208,17 +208,25 @@ def _kernel_websocket_ready(kernel_url: str, *, timeout_seconds: float) -> bool:
                     except OSError:
                         token = ""
             ws.send(json.dumps({
-                "v": 3,
-                "type": "hello",
+                "v": 4,
+                "kind": "command",
+                "op": "connection.open",
+                "id": "connection.open",
                 "data": {
                     "name": "tabula-install-ready",
-                    "send_topics": [],
-                    "receive_topics": [],
                     "auth_token": token,
+                    "meta": {},
                 },
             }))
             msg = json.loads(ws.recv())
-            return msg.get("type") == "hello_ack"
+            return (
+                isinstance(msg, dict)
+                and msg.get("v") == 4
+                and msg.get("kind") == "result"
+                and msg.get("op") == "connection.open"
+                and msg.get("id") == "connection.open"
+                and isinstance(msg.get("data"), dict)
+            )
         finally:
             ws.close()
     except Exception:

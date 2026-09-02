@@ -749,12 +749,12 @@ class InstallTests(unittest.TestCase):
 
             bundle = root / "ext" / "bundles" / "extensions"
             _make_plugin(bundle, "sessions")
-            _make_python_package(bundle / "sessions" / "sdk" / "python" / "src", "tabula_session_sdk")
+            _make_python_package(bundle / "sessions" / "sdk" / "python" / "src", "sample_session_sdk")
             _touch(bundle / "bundle.toml", (
                 '[bundle]\nname="extensions"\ncomponents=["sessions"]\n'
                 '[[exports.python_packages]]\n'
-                'name="tabula_session_sdk"\n'
-                'path="sessions/sdk/python/src/tabula_session_sdk"\n'
+                'name="sample_session_sdk"\n'
+                'path="sessions/sdk/python/src/sample_session_sdk"\n'
             ))
             (distro / "distro.toml").write_text(
                 '[distro]\nid="tabula.demo"\nname="demo"\n'
@@ -763,7 +763,7 @@ class InstallTests(unittest.TestCase):
             )
 
             installmod.install(distro, home)
-            self.assertTrue((home / "packages" / "python" / "src" / "tabula_session_sdk" / "__init__.py").is_file())
+            self.assertTrue((home / "packages" / "python" / "src" / "sample_session_sdk" / "__init__.py").is_file())
 
     def test_distro_exported_python_package_is_installed_into_package_surface(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -792,12 +792,12 @@ class InstallTests(unittest.TestCase):
 
             extensions = root / "ext" / "bundles" / "extensions"
             _make_plugin(extensions, "sessions")
-            _make_python_package(extensions / "sessions" / "sdk" / "python" / "src", "tabula_session_sdk")
+            _make_python_package(extensions / "sessions" / "sdk" / "python" / "src", "sample_session_sdk")
             _touch(extensions / "bundle.toml", (
                 '[bundle]\nname="extensions"\ncomponents=["sessions"]\n'
                 '[[exports.python_packages]]\n'
-                'name="tabula_session_sdk"\n'
-                'path="sessions/sdk/python/src/tabula_session_sdk"\n'
+                'name="sample_session_sdk"\n'
+                'path="sessions/sdk/python/src/sample_session_sdk"\n'
             ))
 
             drivers = root / "ext" / "bundles" / "drivers"
@@ -818,7 +818,7 @@ class InstallTests(unittest.TestCase):
 
             installmod.install(distro, home)
 
-            self.assertTrue((home / "packages" / "python" / "src" / "tabula_session_sdk" / "__init__.py").is_file())
+            self.assertTrue((home / "packages" / "python" / "src" / "sample_session_sdk" / "__init__.py").is_file())
             self.assertTrue((home / "packages" / "python" / "src" / "tabula_driver_sdk" / "__init__.py").is_file())
 
     def test_bundle_exported_python_package_conflict_fails(self):
@@ -1036,7 +1036,7 @@ class InstallTests(unittest.TestCase):
                 '[bundle]\nname="gateways"\ncomponents=["gateway-web"]\n'
                 '[[dependencies]]\n'
                 'bundle="extensions"\n'
-                'python_packages=["tabula_session_sdk"]\n'
+                'python_packages=["sample_session_sdk"]\n'
             ))
             (distro / "distro.toml").write_text(
                 '[distro]\nid="tabula.demo"\nname="demo"\n'
@@ -1748,14 +1748,14 @@ class InstallTests(unittest.TestCase):
             root = Path(tmp)
             home = root / "home"
             distro = _make_minimal_distro(root)
-            client = distro / "apps" / "gateway-cli"
+            client = distro / "apps" / "gateway-api"
             client.mkdir(parents=True)
-            _touch(client / "app.toml", 'id="gateway-cli"\nruntime="python"\nentry="run.py"\n')
+            _touch(client / "app.toml", 'id="gateway-api"\nruntime="python"\nentry="run.py"\n')
             _touch(client / "run.py", "print('gateway')\n")
             installmod.install(distro, home)
-            self.assertTrue((home / "distrib" / "demo" / "apps" / "gateway-cli" / "run.py").exists())
-            self.assertTrue((home / "apps" / "gateway-cli").is_symlink())
-            self.assertTrue((home / "apps" / "gateway-cli" / "run.py").exists())
+            self.assertTrue((home / "distrib" / "demo" / "apps" / "gateway-api" / "run.py").exists())
+            self.assertTrue((home / "apps" / "gateway-api").is_symlink())
+            self.assertTrue((home / "apps" / "gateway-api" / "run.py").exists())
 
     def test_install_writes_reload_trigger(self):
         with tempfile.TemporaryDirectory() as tmp:

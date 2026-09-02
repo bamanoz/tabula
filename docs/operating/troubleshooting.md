@@ -15,9 +15,10 @@ Look at runtime `attached`, `last_error`, and target lifecycle diagnostics.
 
 ## Tracing One Turn
 
-When you need to trace one agent turn end-to-end, use the session history or any
-client transcript to find the `turn_correlation_id` attached to the relevant
-`message.user` entry. Then inspect the merged correlation trace:
+When you need to trace one agent turn end-to-end, query the durable session
+projection and committed events to find the accepted input and its `turn_id`.
+Use the attempt and generation identifiers from subsequent turn events to
+correlate kernel, runtime, driver, hook, and tool diagnostics.
 
 ```text
 turn_correlation_trace {"session":"SESSION_ID","turn_correlation_id":"tc-..."}
@@ -43,6 +44,31 @@ Logging policy is controlled by environment variables. Kernel processes use
 same names with `TABULA_RUNTIME_` prefix, for example
 `TABULA_RUNTIME_LOG_LEVEL=debug` and `TABULA_RUNTIME_LOG_TYPE=text`. Levels are
 `debug`, `info`, `warn`, `error`, or `silent`; formats are `json` or `text`.
+
+## Tool Result Spool Files Accumulate
+
+`$TABULA_HOME/run/tool-results/*.json` contains ephemeral in-flight tool output.
+Normal call completion removes its file, and kernel startup removes orphaned files
+left by crashes or forced termination. Do not delete files while calls are active:
+that can race result hooks and produce a missing-source error. Durable large tool
+results belong to an artifact-owning plugin, not this runtime spool.
+
+## Kernel SQLite Grows Rapidly
+
+`$TABULA_HOME/state/kernel/sessions.db` stores canonical session aggregates,
+events, outbox state, and compact command-deduplication boundaries. Current
+`commands.result` rows contain only `version` and `cursor`; they must not contain
+full session projections or outbox payloads.
+
+To inspect command-row size while kernel is stopped:
+
+```sh
+sqlite3 "$TABULA_HOME/state/kernel/sessions.db" \
+  'SELECT count(*), sum(length(result)), max(length(result)) FROM commands;'
+```
+
+Any other `commands.result` shape is corrupt state and fails closed. Tabula does
+not translate alternate representations.
 
 ## `tenant_forbidden`
 

@@ -206,7 +206,6 @@ Supported forms should include short names and source URIs:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- --distro code
 curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- --distro claw
-curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- --distro guardian
 curl -fsSL https://raw.githubusercontent.com/bamanoz/tabula/main/scripts/install.sh | bash -s -- --distro 'git+https://github.com/bamanoz/tabula-distrib.git@main#path=code'
 ```
 

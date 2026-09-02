@@ -1,12 +1,14 @@
 package kernel
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/bamanoz/tabula/internal/agent"
 	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
 	runtimeconfig "github.com/bamanoz/tabula/internal/runtime/registryconfig"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
@@ -114,6 +116,36 @@ func (r *RuntimeRegistry) MarkDetached(runtimeID string, err error) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.markDetachedLocked(runtimeID, err)
+}
+
+// MarkDetachedIfCurrent detaches only the attachment identified by done. A
+// reconnect may replace a runtime before the previous handler observes EOF.
+func (r *RuntimeRegistry) MarkDetachedIfCurrent(runtimeID string, done <-chan struct{}, err error) bool {
+	if r == nil || strings.TrimSpace(runtimeID) == "" || done == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	attachment := r.runtimes[runtimeID]
+	if attachment == nil || !attachment.Attached || attachment.done != done {
+		return false
+	}
+	r.markDetachedLocked(runtimeID, err)
+	return true
+}
+
+func (r *RuntimeRegistry) AttachmentCurrent(runtimeID string, done <-chan struct{}) bool {
+	if r == nil || strings.TrimSpace(runtimeID) == "" || done == nil {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	attachment := r.runtimes[runtimeID]
+	return attachment != nil && attachment.Attached && attachment.done == done
+}
+
+func (r *RuntimeRegistry) markDetachedLocked(runtimeID string, err error) {
 	attachment := r.runtimes[runtimeID]
 	if attachment == nil {
 		attachment = &RuntimeAttachment{ID: runtimeID}
@@ -164,6 +196,18 @@ func (r *RuntimeRegistry) Pick(tenantID string) (runtimeapi.RuntimeConn, string,
 	}
 	conn, code, err := r.runtimeForTenantLocked(tenantID, binding, runtimeID)
 	return conn, runtimeID, code, err
+}
+
+func (r *RuntimeRegistry) RuntimeForSession(_ context.Context, record agent.Record) (runtimeapi.DriverControlConn, string, error) {
+	conn, runtimeID, _, err := r.Pick(record.Key.TenantID)
+	if err != nil {
+		return nil, runtimeID, err
+	}
+	driverConn, ok := conn.(runtimeapi.DriverControlConn)
+	if !ok {
+		return nil, runtimeID, fmt.Errorf("runtime %q does not support driver control", runtimeID)
+	}
+	return driverConn, runtimeID, nil
 }
 
 func (r *RuntimeRegistry) RuntimeForTenant(tenantID, runtimeID string) (runtimeapi.RuntimeConn, wire.ErrorCode, error) {

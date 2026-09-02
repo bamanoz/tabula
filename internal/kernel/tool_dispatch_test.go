@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bamanoz/tabula/internal/agent"
 	runtimeapi "github.com/bamanoz/tabula/internal/runtime"
 	runtimemock "github.com/bamanoz/tabula/internal/runtime/mock"
 	runtimeconfig "github.com/bamanoz/tabula/internal/runtime/registryconfig"
@@ -58,7 +59,7 @@ func TestHandleDynamicTool_RuntimeSourceInvokesAttachedRuntime(t *testing.T) {
 		name:     "test",
 		tenantID: "alpha",
 		session:  "s1",
-		recvCh:   make(chan *Message, 4),
+		recvCh:   make(chan *BusMessage, 4),
 		receives: map[string]bool{TopicToolResult: true},
 		sends:    map[string]bool{},
 		state:    ClientJoined,
@@ -125,39 +126,142 @@ func TestRuntimeLifecycleCrashHidesToolFromPromptsButKeepsDispatchRoutable(t *te
 	}
 }
 
-func TestHandleCancelCancelsInFlightRuntimeTool(t *testing.T) {
-	hub := NewHub(json.RawMessage(`[]`), nil)
-	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
-	ensureRuntimeDefinitionsForTest(t, hub, runtimeconfig.Definition{ID: "local", Backend: "local"})
-	rc := runtimemock.New()
+func TestHandleClientTurnCancelCancelsAttemptScopedRuntimeTool(t *testing.T) {
+	hub, repository, sink := newDriverExecutionSinkTest(t)
+	lifecycle := &memorySessionRecordStore{}
+	hub.SetSessionRecordStore(lifecycle)
+	ctx := context.Background()
+	lease := registerDriverForSinkTest(t, sink)
+	ready, err := sink.DriverReady(ctx, "runtime-a", wire.DriverReady{
+		Op: wire.OpDriverReady, RequestID: "ready-cancel-tool", TenantID: "tenant", SessionID: "session", Fence: lease.Fence,
+	})
+	assertAcceptedDriverResult(t, ready, err)
+
+	conn, _, err := hub.runtimes.RuntimeForTenant("tenant", "runtime-a")
+	if err != nil {
+		t.Fatalf("RuntimeForTenant: %v", err)
+	}
+	rc := conn.(*executionRecordingConn)
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
-	rc.OnInvoke("alpha", target, "mcp__slow").Delay(30 * time.Second).Return([]byte(`"late"`))
+	rc.OnInvoke("tenant", target, "mcp__slow").Delay(30 * time.Second).Return([]byte(`"late"`))
 	capability := wire.Capability{Target: target, Tools: []wire.ToolSpec{{Name: "mcp__slow"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker}
-	if err := hub.runtimes.RegisterHello("local", rc, []wire.Capability{capability}, 0); err != nil {
-		t.Fatalf("RegisterHello: %v", err)
-	}
-	hub.syncRuntimeCapability("local", capability)
+	rc.WithCapabilities(capability)
+	hub.syncRuntimeCapability("runtime-a", capability)
 
-	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
-	if !hub.addClient(c) {
-		t.Fatal("addClient failed")
+	user := &Client{hub: hub, name: "user", tenantID: "tenant", session: "session", sendCh: make(chan []byte, 4), state: ClientJoined, done: make(chan struct{})}
+	accepted := handleClientV4(t, hub, user, requestEnvelope("command", "input.submit", "submit-cancel-tool", `{"input_id":"input-cancel-tool","content":{"text":"hello"}}`))
+	var acceptance clientInputAcceptance
+	decodeTestData(t, accepted.Data, &acceptance)
+	record, err := repository.Load(ctx, agent.SessionKey{TenantID: "tenant", SessionID: "session"})
+	if err != nil {
+		t.Fatalf("Load assigned turn: %v", err)
 	}
-	hub.sessions.GetOrCreate("s1", "alpha").AddClient(c.name)
+	turn := record.State.Turns[acceptance.TurnID]
+	prepared, err := sink.TurnPrepared(ctx, "runtime-a", wire.TurnPrepared{
+		Op: wire.OpTurnPrepared, RequestID: "prepared-cancel-tool",
+		AttemptRef: wire.AttemptRef{TenantID: "tenant", SessionID: "session", TurnID: turn.ID, AttemptID: turn.ActiveAttemptID, Fence: lease.Fence},
+	})
+	assertAcceptedDriverResult(t, prepared, err)
 
-	hub.tools.handleDynamicTool("alpha", "s1", "tid-cancel", "mcp__slow", json.RawMessage(`{}`), "")
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := rc.WaitForRecordedInvokes(ctx, 1); err != nil {
+	correlation := toolAttemptContext{
+		TurnID: turn.ID, AttemptID: turn.ActiveAttemptID, DriverInstanceID: lease.Fence.DriverInstanceID,
+		LeaseID: lease.Fence.LeaseID, DriverGeneration: lease.Fence.Generation, TurnCorrelationID: turn.ID,
+	}
+	driver := newV4ToolTestClient(hub, "tenant", "session", json.RawMessage(`{"tabula.client_role":"driver"}`))
+	if err := hub.HandleClientToolCall(driver, &ClientEnvelope{
+		V: ClientProtocolVersion, Kind: "command", Op: TopicToolCall, ID: "tool-cancel",
+		TenantID: "tenant", SessionID: "session",
+		Data: mustMarshalRaw(map[string]any{"name": "mcp__slow", "input": map[string]any{}, "meta": correlation.payload()}),
+	}); err != nil {
+		t.Fatalf("HandleClientToolCall: %v", err)
+	}
+	invokeCtx, invokeCancel := context.WithTimeout(ctx, time.Second)
+	defer invokeCancel()
+	if err := rc.WaitForRecordedInvokes(invokeCtx, 1); err != nil {
 		t.Fatalf("WaitForRecordedInvokes: %v", err)
 	}
 
-	hub.handleCancel("alpha", "s1")
-	msg := waitForMessage(t, c.recvCh)
-	if !isToolResult(msg) || !strings.Contains(msg.Output, "cancel") {
-		t.Fatalf("unexpected cancelled runtime tool result: %+v", msg)
+	cancelled := handleClientV4(t, hub, user, requestEnvelope("command", "turn.cancel", "cancel-tool", `{"turn_id":"`+turn.ID+`"}`))
+	if cancelled.Kind != "result" {
+		t.Fatalf("cancel response = %+v data=%s", cancelled, cancelled.Data)
 	}
-	if cancels := rc.RecordedCancels(); len(cancels) != 1 || cancels[0] != "tid-cancel" {
-		t.Fatalf("unexpected recorded cancels: %+v", cancels)
+	deadline := time.Now().Add(time.Second)
+	for len(rc.RecordedCancels()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if cancels := rc.RecordedCancels(); len(cancels) != 1 || cancels[0] != "tool-cancel" {
+		t.Fatalf("runtime tool cancels = %+v", cancels)
+	}
+	if got := hub.tools.pendingV4ToolCallCount(); got != 0 {
+		t.Fatalf("pending protocol-v4 tool calls after turn cancellation = %d", got)
+	}
+
+	duplicate := handleClientV4(t, hub, user, requestEnvelope("command", "turn.cancel", "cancel-tool", `{"turn_id":"`+turn.ID+`"}`))
+	if duplicate.Kind != "result" {
+		t.Fatalf("duplicate cancel response = %+v data=%s", duplicate, duplicate.Data)
+	}
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		hub.tools.mu.Lock()
+		remaining := len(hub.tools.activeCalls[sessionRegistryKey("session", "tenant")])
+		hub.tools.mu.Unlock()
+		if remaining == 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if cancels := rc.RecordedCancels(); len(cancels) != 1 {
+		t.Fatalf("duplicate turn cancellation repeated runtime cancel: %+v", cancels)
+	}
+	if got := len(driver.sendCh); got != 0 {
+		t.Fatalf("late runtime completion emitted %d protocol-v4 responses", got)
+	}
+	lifecycleEvents := readToolLifecycleEvents(t, lifecycle)
+	if len(lifecycleEvents) != 2 || lifecycleEvents[0].State != "started" || lifecycleEvents[1].State != "terminal" || lifecycleEvents[1].Status != "cancelled" {
+		t.Fatalf("tool lifecycle after cancellation = %+v", lifecycleEvents)
+	}
+	sess := hub.sessions.GetOrCreate("session", "tenant")
+	sess.mu.RLock()
+	activeToolCalls := sess.activeToolCalls
+	sess.mu.RUnlock()
+	if activeToolCalls != 0 {
+		t.Fatalf("active tool call count after cancellation = %d", activeToolCalls)
+	}
+}
+
+func TestCancelTurnTerminatesSuspendedAttemptScopedTool(t *testing.T) {
+	hub := NewHub(nil, nil)
+	lifecycle := &memorySessionRecordStore{}
+	hub.SetSessionRecordStore(lifecycle)
+	correlation := toolAttemptContext{
+		TurnID: "turn-1", AttemptID: "attempt-1", DriverInstanceID: "driver-1",
+		LeaseID: "lease-1", DriverGeneration: 1, TurnCorrelationID: "turn-1",
+	}
+	hub.recordToolStarted("tenant", "session", "tool-suspended", "mcp__slow", correlation)
+	hub.tools.mu.Lock()
+	hub.tools.pendingCalls["exchange-1"] = pendingToolCall{
+		ExchangeID: "exchange-1", TenantID: "tenant", Session: "session", ToolID: "tool-suspended",
+		ToolName: "mcp__slow", AttemptContext: correlation,
+	}
+	hub.tools.v4PendingCalls[v4ToolCallKey{tenantID: "tenant", session: "session", callID: "tool-suspended"}] = &pendingV4ToolCall{
+		client: &Client{}, name: "mcp__slow", correlation: correlation,
+	}
+	hub.tools.mu.Unlock()
+
+	hub.tools.CancelTurn("tenant", "session", "turn-1")
+	hub.tools.CancelTurn("tenant", "session", "turn-1")
+
+	hub.tools.mu.Lock()
+	pendingExchanges := len(hub.tools.pendingCalls)
+	pendingV4 := len(hub.tools.v4PendingCalls)
+	hub.tools.mu.Unlock()
+	if pendingExchanges != 0 || pendingV4 != 0 {
+		t.Fatalf("pending calls after suspended cancellation: exchanges=%d v4=%d", pendingExchanges, pendingV4)
+	}
+	lifecycleEvents := readToolLifecycleEvents(t, lifecycle)
+	if len(lifecycleEvents) != 2 || lifecycleEvents[1].State != "terminal" || lifecycleEvents[1].Status != "cancelled" {
+		t.Fatalf("suspended tool lifecycle after cancellation = %+v", lifecycleEvents)
 	}
 }
 
@@ -174,7 +278,7 @@ func TestHandleDynamicTool_LargeRuntimeResultWithoutRewriteFailsExplicitly(t *te
 	}
 	hub.syncRuntimeCapability("local", wire.Capability{Target: target, Tools: []wire.ToolSpec{{Name: "mcp__echo"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker})
 
-	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *BusMessage, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
 	if !hub.addClient(c) {
 		t.Fatal("addClient failed")
 	}
@@ -205,7 +309,7 @@ func TestHandleDynamicTool_InvokeStreamCleansKernelSpool(t *testing.T) {
 	}
 	hub.syncRuntimeCapability("local", capability)
 
-	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *BusMessage, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
 	if !hub.addClient(c) {
 		t.Fatal("addClient failed")
 	}
@@ -234,14 +338,14 @@ func TestHandleDynamicTool_BroadcastsBoundedToolResultStreamEvents(t *testing.T)
 		t.Fatalf("RegisterHello: %v", err)
 	}
 	hub.syncRuntimeCapability("local", capability)
-	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *Message, 8), receives: map[string]bool{TopicToolResult: true, TopicToolResultStart: true, TopicToolResultDelta: true, TopicToolResultEnd: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *BusMessage, 8), receives: map[string]bool{TopicToolResult: true, TopicToolResultStart: true, TopicToolResultDelta: true, TopicToolResultEnd: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
 	if !hub.addClient(c) {
 		t.Fatal("addClient failed")
 	}
 	hub.sessions.GetOrCreate("s1", "alpha").AddClient(c.name)
 
 	hub.tools.handleDynamicTool("alpha", "s1", "tid-stream-events", "mcp__echo", json.RawMessage(`{}`), "")
-	seen := map[string]*Message{}
+	seen := map[string]*BusMessage{}
 	for len(seen) < 4 {
 		msg := waitForMessage(t, c.recvCh)
 		seen[msg.Topic] = msg
@@ -270,7 +374,7 @@ func TestHandleDynamicTool_FailedRuntimeResultDoesNotBroadcastStreamEnd(t *testi
 		t.Fatalf("RegisterHello: %v", err)
 	}
 	hub.syncRuntimeCapability("local", capability)
-	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true, TopicToolResultEnd: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *BusMessage, 4), receives: map[string]bool{TopicToolResult: true, TopicToolResultEnd: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
 	if !hub.addClient(c) {
 		t.Fatal("addClient failed")
 	}
@@ -334,6 +438,24 @@ func TestInvokeResultSpoolTracksTerminalStateAndPreview(t *testing.T) {
 	}
 	if source := spool.Source(); source == nil || source.Kind != "spool_file" || source.Path == "" || source.Bytes != int64(len(`"hello world"`)) || source.Preview == "" {
 		t.Fatalf("unexpected source: %+v", source)
+	}
+}
+
+func TestDiskSessionStoreRemovesOrphanedInvokeResultSpoolsOnStartup(t *testing.T) {
+	home := t.TempDir()
+	spoolDir := filepath.Join(home, "run", "tool-results")
+	if err := os.MkdirAll(spoolDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll spool: %v", err)
+	}
+	orphan := filepath.Join(spoolDir, "orphan.json")
+	if err := os.WriteFile(orphan, []byte(`"orphan"`), 0o600); err != nil {
+		t.Fatalf("write orphan: %v", err)
+	}
+
+	NewDiskSessionStore(home)
+
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatalf("expected orphaned spool removed on startup, err=%v", err)
 	}
 }
 
@@ -496,7 +618,7 @@ func TestPendingRuntimeHookQueuesPromptBuildHooks(t *testing.T) {
 			if event.CallID == "" {
 				return
 			}
-			hub.hooks.HandleRuntimeResult("local", hookMessageFromKernel(&Message{Type: string(MsgHookReply), ID: event.CallID, Action: string(khooks.ActionPass)}))
+			hub.hooks.HandleRuntimeResult("local", hookMessageFromKernel(&BusMessage{Type: string(MsgHookReply), ID: event.CallID, Action: string(khooks.ActionPass)}))
 		}
 	}()
 
@@ -571,7 +693,7 @@ func TestConcurrentRuntimePromptBuildHooksSerializeTarget(t *testing.T) {
 			if event.CallID == "" {
 				return
 			}
-			hub.hooks.HandleRuntimeResult("local", hookMessageFromKernel(&Message{Type: string(MsgHookReply), ID: event.CallID, Action: string(khooks.ActionPass)}))
+			hub.hooks.HandleRuntimeResult("local", hookMessageFromKernel(&BusMessage{Type: string(MsgHookReply), ID: event.CallID, Action: string(khooks.ActionPass)}))
 		}
 	}()
 
@@ -715,7 +837,7 @@ func TestHandleToolUseSecurityHookTimeoutSendsTerminalResult(t *testing.T) {
 	hub.rebuildHookIndex()
 	c := addTenantCaptureClient(t, hub, "alpha", "driver", "s1", []string{TopicToolResult}, nil)
 
-	hub.tools.HandleToolUse(c, &Message{
+	hub.tools.HandleToolUse(c, &BusMessage{
 		Type:  string(MsgRequest),
 		Topic: TopicToolCall,
 		ID:    "call-timeout",
@@ -760,7 +882,7 @@ func (c *suspendingExchangeRuntimeConn) SendHookEvent(ctx context.Context, req r
 	}
 	if len(c.HookEvents()) == 1 {
 		go func() {
-			c.hub.hooks.HandleRuntimeResult("local", hookMessageFromKernel(&Message{
+			c.hub.hooks.HandleRuntimeResult("local", hookMessageFromKernel(&BusMessage{
 				Type:    string(MsgHookReply),
 				ID:      req.CallID,
 				Action:  string(khooks.ActionSuspend),
@@ -771,7 +893,7 @@ func (c *suspendingExchangeRuntimeConn) SendHookEvent(ctx context.Context, req r
 		}()
 		return nil
 	}
-	go c.hub.hooks.HandleRuntimeResult("local", hookMessageFromKernel(&Message{Type: string(MsgHookReply), ID: req.CallID, Action: string(khooks.ActionPass)}))
+	go c.hub.hooks.HandleRuntimeResult("local", hookMessageFromKernel(&BusMessage{Type: string(MsgHookReply), ID: req.CallID, Action: string(khooks.ActionPass)}))
 	return nil
 }
 
@@ -973,7 +1095,7 @@ func TestSuspendedSecurityHookReacquiresRemainingRuntimeHookOnResume(t *testing.
 	if len(firstEvents) != 1 || firstEvents[0].Target.ID != approvalTarget.ID {
 		t.Fatalf("expected only approval hook before resume, got %+v", firstEvents)
 	}
-	hub.hooks.HandleRuntimeResult("local", hookMessageFromKernel(&Message{ID: firstEvents[0].CallID, Action: string(khooks.ActionSuspend)}))
+	hub.hooks.HandleRuntimeResult("local", hookMessageFromKernel(&BusMessage{ID: firstEvents[0].CallID, Action: string(khooks.ActionSuspend)}))
 	var blocked *khooks.DispatchDecision
 	select {
 	case result := <-dispatchDone:
@@ -1008,7 +1130,7 @@ func TestSuspendedSecurityHookReacquiresRemainingRuntimeHookOnResume(t *testing.
 	if len(events) != 2 || events[1].Target.ID != policyTarget.ID {
 		t.Fatalf("expected policy hook after resume, got %+v", events)
 	}
-	hub.hooks.HandleRuntimeResult("local", hookMessageFromKernel(&Message{ID: events[1].CallID, Action: string(khooks.ActionPass)}))
+	hub.hooks.HandleRuntimeResult("local", hookMessageFromKernel(&BusMessage{ID: events[1].CallID, Action: string(khooks.ActionPass)}))
 	select {
 	case result := <-resumeDone:
 		if !result.ok || result.blocked != nil {
@@ -1066,7 +1188,7 @@ func TestRuntimeModifyingHookReplyReleasesBusyMarker(t *testing.T) {
 	if event.CallID == "" {
 		t.Fatal("expected runtime hook event")
 	}
-	hub.hooks.HandleRuntimeResult("local", hookMessageFromKernel(&Message{ID: event.CallID, Action: string(khooks.ActionPass)}))
+	hub.hooks.HandleRuntimeResult("local", hookMessageFromKernel(&BusMessage{ID: event.CallID, Action: string(khooks.ActionPass)}))
 	select {
 	case <-done:
 	case <-time.After(time.Second):
@@ -1230,7 +1352,7 @@ func TestRuntimeToolsAreScopedByTenant(t *testing.T) {
 		t.Fatalf("expected tenant init tools to expose fs_read once, alpha=%s beta=%s dispatch=%#v", alphaTools, betaTools, hub.toolExec)
 	}
 
-	alphaClient := &Client{hub: hub, name: "alpha-client", tenantID: "alpha", session: "s-alpha", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	alphaClient := &Client{hub: hub, name: "alpha-client", tenantID: "alpha", session: "s-alpha", recvCh: make(chan *BusMessage, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
 	if !hub.addClient(alphaClient) {
 		t.Fatal("add alpha client failed")
 	}
@@ -1355,7 +1477,7 @@ func TestHandleDynamicTool_FallsBackToTenantDefaultRuntimeForGlobalDispatch(t *t
 	}
 	hub.toolExec[toolExecKey("alpha", "mcp__echo")] = runtimeDispatch("", "alpha", target, nil, 0)
 
-	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *BusMessage, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
 	if !hub.addClient(c) {
 		t.Fatal("addClient failed")
 	}
@@ -1395,7 +1517,7 @@ func TestHandleDynamicTool_PrefersSessionRuntimeForGlobalDispatch(t *testing.T) 
 	}
 	hub.toolExec[toolExecKey("alpha", "mcp__echo")] = runtimeDispatch("", "alpha", target, nil, 0)
 
-	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *BusMessage, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
 	if !hub.addClient(c) {
 		t.Fatal("addClient failed")
 	}
@@ -1434,7 +1556,7 @@ func TestHandleDynamicTool_FallsBackWhenSessionRuntimeUnavailable(t *testing.T) 
 	}
 	hub.toolExec[toolExecKey("alpha", "mcp__echo")] = runtimeDispatch("", "alpha", target, nil, 0)
 
-	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *BusMessage, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
 	if !hub.addClient(c) {
 		t.Fatal("addClient failed")
 	}
@@ -1470,7 +1592,7 @@ func TestHandleDynamicTool_ReturnsErrorWithoutImplicitKernelDefaultRuntimeFallba
 	}
 	hub.toolExec[toolExecKey("alpha", "mcp__echo")] = runtimeDispatch("", "alpha", target, nil, 0)
 
-	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *BusMessage, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
 	if !hub.addClient(c) {
 		t.Fatal("addClient failed")
 	}
@@ -1511,7 +1633,7 @@ func TestHandleDynamicToolInvokesRuntimeOwningTool(t *testing.T) {
 	}
 	hub.syncRuntimeCapability("remote", wire.Capability{Target: target, Tools: []wire.ToolSpec{{Name: "fs_read"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker})
 
-	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *BusMessage, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
 	if !hub.addClient(c) {
 		t.Fatal("addClient failed")
 	}
@@ -1541,7 +1663,7 @@ func TestHandleDynamicTool_ReturnsTenantForbiddenWhenDefaultRuntimeDisallowed(t 
 	}
 	target := wire.Target{Kind: wire.TargetKindPlugin, ID: "fs"}
 	hub.syncRuntimeCapability("remote", wire.Capability{Target: target, Tools: []wire.ToolSpec{{Name: "mcp__echo"}}, State: wire.CapabilityStateReady, Source: wire.CapabilitySourceWorker})
-	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
+	c := &Client{hub: hub, name: "test", tenantID: "alpha", session: "s1", recvCh: make(chan *BusMessage, 4), receives: map[string]bool{TopicToolResult: true}, sends: map[string]bool{}, state: ClientJoined, done: make(chan struct{})}
 	if !hub.addClient(c) {
 		t.Fatal("addClient failed")
 	}
@@ -1557,16 +1679,16 @@ func TestHandleDynamicTool_ReturnsTenantForbiddenWhenDefaultRuntimeDisallowed(t 
 func TestJoinBindsSessionTenantAndRejectsUnknownTenant(t *testing.T) {
 	hub := NewHub(json.RawMessage(`[]`), nil)
 	hub.SetTenantStore(tenant.NewMemoryStore(tenant.Tenant{ID: "alpha", CreatedAt: time.Now()}))
-	c := &Client{hub: hub, name: "test", recvCh: make(chan *Message, 4), receives: map[string]bool{TopicSessionInit: true}, sends: map[string]bool{}, state: ClientProtocolReady, done: make(chan struct{})}
+	c := &Client{hub: hub, name: "test", recvCh: make(chan *BusMessage, 4), receives: map[string]bool{TopicSessionInit: true}, sends: map[string]bool{}, state: ClientProtocolReady, done: make(chan struct{})}
 	if !hub.addClient(c) {
 		t.Fatal("addClient failed")
 	}
-	hub.handleJoin(c, &Message{Type: string(MsgJoin), Session: "s1", TenantID: "missing"})
+	hub.handleJoin(c, &BusMessage{Type: string(MsgJoin), Session: "s1", TenantID: "missing"})
 	msg := waitForMessage(t, c.recvCh)
 	if msg.Type != string(MsgError) || msg.Text != "tenant_unknown" {
 		t.Fatalf("unexpected unknown tenant response: %+v", msg)
 	}
-	hub.handleJoin(c, &Message{Type: string(MsgJoin), Session: "s1", TenantID: "alpha"})
+	hub.handleJoin(c, &BusMessage{Type: string(MsgJoin), Session: "s1", TenantID: "alpha"})
 	msg = waitForMessage(t, c.recvCh)
 	if msg.Type != string(MsgJoined) || msg.TenantID != "alpha" {
 		t.Fatalf("unexpected joined response: %+v", msg)

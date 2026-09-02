@@ -135,15 +135,17 @@ class ApprovalFlowInstalled(unittest.TestCase):
                 self.assertRegex(str(second_persisted["text"]), r"^turn-\d+-done$")
                 self.assertIsNone(second_persisted["ask"])
 
-            history = home / "tenants" / self.tenant_id / "state" / "sessions" / session / "history.jsonl"
-            text = history.read_text(encoding="utf-8")
-            self.assertIn('"id": "call-1", "name": "exec_run"', text)
-            self.assertIn('"id": "call-2", "name": "exec_run"', text)
-            self.assertIn('"id": "call-3", "name": "exec_run"', text)
-            self.assertIn('"id": "call-4", "name": "exec_run"', text)
-            self.assertIn('delayed', text)
-            self.assertIn('reconnect', text)
-            self.assertGreaterEqual(text.count('approved'), 2)
+            tool_results = [
+                result
+                for turn in (first, reconnected, persisted, second_persisted)
+                for result in turn["tool_results"]
+            ]
+            self.assertEqual([result.get("id") for result in tool_results], ["call-1", "call-2", "call-3", "call-4"])
+            self.assertTrue(all(result.get("name") == "exec_run" for result in tool_results))
+            outputs = [str(result.get("output") or "") for result in tool_results]
+            self.assertIn("delayed", outputs[0])
+            self.assertIn("reconnect", outputs[1])
+            self.assertGreaterEqual(sum("approved" in output for output in outputs), 2)
             driver_log = log_path.read_text(encoding="utf-8", errors="replace")
             self.assertNotIn("runtime_unavailable", driver_log)
             self.assertNotIn("unknown tool", driver_log)
@@ -156,107 +158,106 @@ class ApprovalFlowInstalled(unittest.TestCase):
                 permissions_cfg.write_text(original_permissions_cfg, encoding="utf-8")
 
     def connect_client(self, session: str, *, timeout: float = 20) -> TestbedClient:
-        deadline = time.time() + timeout
-        last_tools: set[str] = set()
-        client = TestbedClient(self.url, name=f"testbed-approvals-{session}", meta={"tabula.client_role": "user"})
-        while time.time() < deadline:
-            client.close()
-            client.connect(
-                sends=["message.user", "tool.call", "exchange.approve"],
-                receives=["session.init", "message.user", "tool.result", "error", "usage.update", "stream.start", "stream.delta", "stream.end", "turn.done", "tool.call", "exchange.approve"],
-            )
-            client.join(session, tenant_id=self.tenant_id)
-            last_tools = {tool.get("name") for tool in client.tools() if tool.get("name")}
-            if "exec_run" in last_tools:
-                return client
-            time.sleep(0.2)
-        client.close()
-        raise AssertionError(f"exec_run not advertised in time; tools={sorted(last_tools)}")
+        client = TestbedClient(self.url, name=f"testbed-approvals-{session}")
+        self.connect_session(client, session, timeout=timeout)
+        return client
+
+    def connect_session(self, client: TestbedClient, session: str, *, timeout: float) -> None:
+        client.connect(sends=["exchange.approve"], receives=["exchange.approve"])
+        client.create_session(session, tenant_id=self.tenant_id)
+        snapshot = client.get_session(session, tenant_id=self.tenant_id)
+        client.subscribe(session, tenant_id=self.tenant_id, after_cursor=snapshot["data"]["cursor"])
+        client.send_extension({"type": "join"})
+        joined = client.recv(op="extension.event", timeout=timeout)
+        self.assertEqual(joined.get("data", {}).get("type"), "joined")
 
     def run_turn(self, client: TestbedClient, text: str, *, approval_choice: str | None, approval_delay: float = 0.0, timeout: float = 20) -> dict[str, object]:
-        client.send_message(text)
+        client.submit_input(f"input-{time.time_ns()}", {"type": "text", "text": text})
         deadline = time.time() + timeout
         exchange_request = None
         chunks: list[str] = []
+        tool_results: list[dict[str, object]] = []
         while time.time() < deadline:
-            msg = client.recv(timeout=max(0.1, deadline - time.time()))
-            msg_type = msg.get("type")
-            if msg_type == "request" and msg.get("topic") == "exchange.approve":
-                candidate = {"id": msg.get("id", ""), **(msg.get("data") if isinstance(msg.get("data"), dict) else {})}
-                if approval_choice is None:
-                    raise AssertionError(f"unexpected approval request: {candidate}")
-                exchange_request = candidate
-                options = candidate.get("options") if isinstance(candidate.get("options"), list) else []
-                self.assertIn(approval_choice, options)
-                if approval_delay > 0:
-                    time.sleep(approval_delay)
-                client._send({
-                    "type": "reply",
-                    "topic": "exchange.approve",
-                    "id": candidate.get("id", ""),
-                    "data": {"choice": approval_choice, "index": options.index(approval_choice), "approved": approval_choice.startswith("allow")},
-                })
+            try:
+                msg = client.recv(timeout=min(0.25, max(0.1, deadline - time.time())))
+            except TimeoutError:
                 continue
-            if msg_type == "event" and msg.get("topic") == "stream.delta":
-                data = msg.get("data") if isinstance(msg.get("data"), dict) else {}
-                chunks.append(str(data.get("text") or ""))
+            if self.collect_turn_event(msg, chunks, tool_results):
+                return {"text": "".join(chunks), "ask": exchange_request, "tool_results": tool_results}
+            if msg.get("op") != "extension.event":
                 continue
-            if msg_type == "error":
-                raise AssertionError(f"kernel error during turn: {msg}")
-            if msg_type == "event" and msg.get("topic") == "turn.done":
-                if exchange_request is not None and not chunks:
-                    continue
-                return {"text": "".join(chunks), "ask": exchange_request}
-        raise AssertionError(f"timed out waiting for turn completion after {text!r}")
+            extension = msg.get("data") if isinstance(msg.get("data"), dict) else {}
+            if extension.get("type") != "request" or extension.get("topic") != "exchange.approve":
+                continue
+            candidate = {"id": extension.get("id") or msg.get("id", ""), **(extension.get("data") if isinstance(extension.get("data"), dict) else {})}
+            if approval_choice is None:
+                raise AssertionError(f"unexpected approval request: {candidate}")
+            exchange_request = candidate
+            options = candidate.get("options") if isinstance(candidate.get("options"), list) else []
+            self.assertIn(approval_choice, options)
+            if approval_delay > 0:
+                time.sleep(approval_delay)
+            client.send_extension({"type": "reply", "topic": "exchange.approve", "id": candidate["id"], "data": {"choice": approval_choice, "index": options.index(approval_choice), "approved": approval_choice.startswith("allow")}})
+        raise AssertionError(f"timed out waiting for durable session execution after {text!r}")
 
     def run_turn_with_approval_reconnect(self, client: TestbedClient, session: str, text: str, *, timeout: float = 20) -> dict[str, object]:
-        client.send_message(text)
+        client.submit_input(f"input-{time.time_ns()}", {"type": "text", "text": text})
         deadline = time.time() + timeout
         chunks: list[str] = []
+        tool_results: list[dict[str, object]] = []
         first_request = None
         while time.time() < deadline:
             msg = client.recv(timeout=max(0.1, deadline - time.time()))
-            if msg.get("type") == "request" and msg.get("topic") == "exchange.approve":
-                first_request = {"id": msg.get("id", ""), **(msg.get("data") if isinstance(msg.get("data"), dict) else {})}
-                break
-            if msg.get("type") == "event" and msg.get("topic") == "stream.delta":
-                data = msg.get("data") if isinstance(msg.get("data"), dict) else {}
-                chunks.append(str(data.get("text") or ""))
+            self.collect_turn_event(msg, chunks, tool_results)
+            if msg.get("op") != "extension.event":
                 continue
-            if msg.get("type") == "error":
-                raise AssertionError(f"kernel error before reconnect approval: {msg}")
+            extension = msg.get("data") if isinstance(msg.get("data"), dict) else {}
+            if extension.get("type") == "request" and extension.get("topic") == "exchange.approve":
+                first_request = {"id": extension.get("id") or msg.get("id", ""), **(extension.get("data") if isinstance(extension.get("data"), dict) else {})}
+                break
         if first_request is None:
             raise AssertionError(f"timed out waiting for approval request before reconnect after {text!r}")
 
         client.close()
-        reconnected = self.connect_client(session, timeout=max(5, deadline - time.time()))
-        client.ws = reconnected.ws
-        client.init = reconnected.init
-        reconnected.ws = None
-
-        resent = client.wait_for(lambda m: m.get("type") == "request" and m.get("topic") == "exchange.approve", timeout=max(0.1, deadline - time.time()))
-        resent_request = {"id": resent.get("id", ""), **(resent.get("data") if isinstance(resent.get("data"), dict) else {})}
+        self.connect_session(client, session, timeout=max(5, deadline - time.time()))
+        resent = client.wait_for(
+            lambda msg: msg.get("op") == "extension.event"
+            and isinstance(msg.get("data"), dict)
+            and msg["data"].get("type") == "request"
+            and msg["data"].get("topic") == "exchange.approve",
+            timeout=max(0.1, deadline - time.time()),
+        )
+        extension = resent["data"]
+        resent_request = {"id": extension.get("id") or resent.get("id", ""), **(extension.get("data") if isinstance(extension.get("data"), dict) else {})}
         self.assertEqual(resent_request.get("question"), first_request.get("question"))
         options = resent_request.get("options") if isinstance(resent_request.get("options"), list) else []
         self.assertIn("allow once", options)
-        client._send({
-            "type": "reply",
-            "topic": "exchange.approve",
-            "id": resent_request.get("id", ""),
-            "data": {"choice": "allow once", "index": options.index("allow once"), "approved": True},
-        })
+        client.send_extension({"type": "reply", "topic": "exchange.approve", "id": resent_request["id"], "data": {"choice": "allow once", "index": options.index("allow once"), "approved": True}})
 
         while time.time() < deadline:
             msg = client.recv(timeout=max(0.1, deadline - time.time()))
-            if msg.get("type") == "event" and msg.get("topic") == "stream.delta":
-                data = msg.get("data") if isinstance(msg.get("data"), dict) else {}
-                chunks.append(str(data.get("text") or ""))
-                continue
-            if msg.get("type") == "error":
-                raise AssertionError(f"kernel error after reconnect approval: {msg}")
-            if msg.get("type") == "event" and msg.get("topic") == "turn.done":
-                return {"text": "".join(chunks), "first_request_id": first_request.get("id"), "resent_request_id": resent_request.get("id")}
+            if self.collect_turn_event(msg, chunks, tool_results):
+                return {
+                    "text": "".join(chunks),
+                    "first_request_id": first_request.get("id"),
+                    "resent_request_id": resent_request.get("id"),
+                    "tool_results": tool_results,
+                }
         raise AssertionError(f"timed out waiting for turn completion after approval reconnect for {text!r}")
+
+    def collect_turn_event(self, msg: dict, chunks: list[str], tool_results: list[dict[str, object]]) -> bool:
+        if msg.get("kind") != "event":
+            return False
+        committed = msg.get("data") if isinstance(msg.get("data"), dict) else {}
+        event = committed.get("data") if isinstance(committed.get("data"), dict) else {}
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        if msg.get("op") == "stream.delta":
+            chunks.append(str(payload.get("text") or ""))
+        elif msg.get("op") == "tool.result":
+            tool_results.append(dict(payload))
+        return msg.get("op") == "turn.state_changed" and event.get("state") in {
+            "completed", "failed", "cancelled", "discarded", "recovery_required",
+        }
 
     def start_driver(self, session: str, stub_dir: Path) -> tuple[subprocess.Popen[bytes], object, Path]:
         home = Path(self.tabula_home)

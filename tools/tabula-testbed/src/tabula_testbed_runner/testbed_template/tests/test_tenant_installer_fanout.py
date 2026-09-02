@@ -50,7 +50,8 @@ class TenantInstallerFanoutSmoke(unittest.TestCase):
 
     def make_client(self, session: str, tenant_id: str) -> TestbedClient:
         client = TestbedClient(self.url, name=f"testbed-{tenant_id}")
-        client.connect_join(session, tenant_id=tenant_id)
+        client.connect()
+        client.create_session(session, tenant_id=tenant_id)
         return client
 
     def assert_tenant_runtime_surface(self, tenant_id: str) -> None:
@@ -62,7 +63,6 @@ class TenantInstallerFanoutSmoke(unittest.TestCase):
 
     def assert_tenant_invoke(self, tenant_id: str, note: str) -> dict:
         with self.make_client(f"testbed-fanout-{tenant_id}", tenant_id) as client:
-            client.wait_tools({"testbed_tenant_note"}, session=f"testbed-fanout-{tenant_id}", tenant_id=tenant_id)
             payload = client.call_tool("testbed_tenant_note", {"note": note}, timeout=10).json()
             self.assertTrue(payload["ok"], payload)
             self.assertEqual(payload["tenant_id"], tenant_id, payload)

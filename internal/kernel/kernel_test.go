@@ -10,9 +10,11 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
 	runtimemock "github.com/bamanoz/tabula/internal/runtime/mock"
 	runtimeconfig "github.com/bamanoz/tabula/internal/runtime/registryconfig"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
@@ -26,7 +28,18 @@ var testUpgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-const testShellToolName = "test_shell"
+const (
+	testShellToolName  = "test_shell"
+	testExtensionTopic = "test.message"
+)
+
+var testExtensionCommandID atomic.Uint64
+var testWebSocketScopes sync.Map
+
+type testWebSocketScope struct {
+	tenantID string
+	session  string
+}
 
 // testEnv bundles a Hub + httptest server + WS client factory for tests.
 type testEnv struct {
@@ -71,7 +84,7 @@ func TestBroadcastToSessionStampsSessionAndTenantForAllReceivers(t *testing.T) {
 	member := addCaptureClient(t, env.Hub, "member", "main", []string{TopicStreamDelta}, nil)
 	global := addCaptureClient(t, env.Hub, "global", "", nil, []string{TopicStreamDelta})
 
-	env.Hub.broadcastToSession("default", "main", TopicStreamDelta, &Message{Type: string(MsgEvent), Topic: TopicStreamDelta, Data: mustMarshalRaw(map[string]any{"text": "hi"})}, nil)
+	env.Hub.broadcastToSession("default", "main", TopicStreamDelta, &BusMessage{Type: string(MsgEvent), Topic: TopicStreamDelta, Data: mustMarshalRaw(map[string]any{"text": "hi"})}, nil)
 
 	memberMsg := waitForMessage(t, member.recvCh)
 	if memberMsg.Session != "main" {
@@ -86,60 +99,6 @@ func TestBroadcastToSessionStampsSessionAndTenantForAllReceivers(t *testing.T) {
 	}
 	if globalMsg.TenantID != tenant.DefaultID {
 		t.Fatalf("expected global receiver tenant=%q, got %q", tenant.DefaultID, globalMsg.TenantID)
-	}
-}
-
-func TestBroadcastToTurnReceiversDeliversToOneReceiver(t *testing.T) {
-	env := newTestEnv(t)
-	driver := addCaptureClient(t, env.Hub, "driver", "child", []string{TopicMessageUser}, nil)
-	driver.sends = map[string]bool{TopicTurnDone: true}
-
-	delivered := env.Hub.broadcastToTurnReceivers(tenant.DefaultID, "child", &Message{Type: string(MsgEvent), Topic: TopicMessageUser, Data: mustMarshalRaw(map[string]any{"text": "run once"})}, nil, nil)
-
-	if delivered != 1 {
-		t.Fatalf("expected one turn receiver delivery, got %d", delivered)
-	}
-	msg := waitForMessage(t, driver.recvCh)
-	if msg.Session != "child" || msg.Topic != TopicMessageUser {
-		t.Fatalf("unexpected message: %+v", msg)
-	}
-}
-
-func TestBroadcastToTurnReceiversRejectsAmbiguousReceivers(t *testing.T) {
-	env := newTestEnv(t)
-	first := addCaptureClient(t, env.Hub, "first-driver", "child", []string{TopicMessageUser}, nil)
-	second := addCaptureClient(t, env.Hub, "second-driver", "child", []string{TopicMessageUser}, nil)
-	first.sends = map[string]bool{TopicTurnDone: true}
-	second.sends = map[string]bool{TopicTurnDone: true}
-
-	delivered := env.Hub.broadcastToTurnReceivers(tenant.DefaultID, "child", &Message{Type: string(MsgEvent), Topic: TopicMessageUser, Data: mustMarshalRaw(map[string]any{"text": "run once"})}, nil, nil)
-
-	if delivered != 0 {
-		t.Fatalf("expected ambiguous turn receiver delivery to fail closed, got %d", delivered)
-	}
-	if got := readCaptureMessageTimeout(first.recvCh, 50*time.Millisecond); got != nil {
-		t.Fatalf("first driver received ambiguous turn input: %+v", got)
-	}
-	if got := readCaptureMessageTimeout(second.recvCh, 50*time.Millisecond); got != nil {
-		t.Fatalf("second driver received ambiguous turn input: %+v", got)
-	}
-}
-
-func TestNonManagedUserMessageTargetsSingleTurnReceiver(t *testing.T) {
-	env := newTestEnv(t)
-	bootstrap := addCaptureClient(t, env.Hub, "child-bootstrap", "child", []string{TopicSessionInit}, nil)
-	driver := addCaptureClient(t, env.Hub, "driver", "child", []string{TopicMessageUser}, nil)
-	observer := addCaptureClient(t, env.Hub, "observer", "child", []string{TopicMessageUser}, nil)
-	driver.sends = map[string]bool{TopicTurnDone: true}
-
-	env.Hub.handleUserMessage(bootstrap, &Message{Type: string(MsgEvent), Topic: TopicMessageUser, Data: mustMarshalRaw(map[string]any{"text": "run once"})})
-
-	msg := waitForMessage(t, driver.recvCh)
-	if msg.Session != "child" || msg.Topic != TopicMessageUser {
-		t.Fatalf("unexpected turn receiver message: %+v", msg)
-	}
-	if got := readCaptureMessageTimeout(observer.recvCh, 50*time.Millisecond); got == nil {
-		t.Fatal("observer did not receive mirrored user message")
 	}
 }
 
@@ -159,30 +118,45 @@ func (e *testEnv) dial() *websocket.Conn {
 	return conn
 }
 
-// connect dials + sends hello + reads hello_ack response.
+// connect opens an authenticated protocol v4 connection.
 func (e *testEnv) connect(name string, sends, receives []string) *websocket.Conn {
-	conn, _ := e.connectAck(name, sends, receives)
+	conn, _ := e.connectWithID(name, sends, receives)
 	return conn
 }
 
-func (e *testEnv) connectAck(name string, sends, receives []string) (*websocket.Conn, Message) {
+func (e *testEnv) connectWithID(name string, sends, receives []string) (*websocket.Conn, string) {
+	return e.connectOpen(name, sends, receives, nil, nil, map[string]any{})
+}
+
+func (e *testEnv) connectOpen(name string, sends, receives, receivesGlobal []string, hooks []khooks.Subscription, meta map[string]any) (*websocket.Conn, string) {
 	e.t.Helper()
 	conn := e.dial()
-	writeJSON(e.t, conn, Message{
-		V:    ProtocolVersion,
-		Type: string(MsgHello),
+	requestID := fmt.Sprintf("test-open-%d", testExtensionCommandID.Add(1))
+	if err := conn.WriteJSON(ClientEnvelope{
+		V: ClientProtocolVersion, Kind: "command", Op: "connection.open", ID: requestID,
 		Data: mustMarshalRaw(map[string]any{
-			"name":           name,
-			"send_topics":    sends,
-			"receive_topics": receives,
-			"auth_token":     e.Token,
+			"name": name, "send_topics": sends, "receive_topics": receives,
+			"receive_global_topics": receivesGlobal, "hooks": hooks,
+			"auth_token": e.Token, "meta": meta,
 		}),
-	})
-	msg := readMsg(e.t, conn)
-	if msg.Type != string(MsgHelloAck) {
-		e.t.Fatalf("expected hello_ack, got %s", msg.Type)
+	}); err != nil {
+		e.t.Fatalf("connection.open failed: %v", err)
 	}
-	return conn, msg
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var envelope ClientEnvelope
+	if err := conn.ReadJSON(&envelope); err != nil {
+		e.t.Fatalf("connection.open read failed: %v", err)
+	}
+	if envelope.Kind != "result" || envelope.Op != "connection.open" || envelope.ID != requestID {
+		e.t.Fatalf("expected connection.open result, got %+v", envelope)
+	}
+	var data struct {
+		ClientID string `json:"client_id"`
+	}
+	if err := json.Unmarshal(envelope.Data, &data); err != nil {
+		e.t.Fatalf("invalid connection.open result: %v", err)
+	}
+	return conn, data.ClientID
 }
 
 // connectAndJoin dials + connect + join.
@@ -193,7 +167,8 @@ func (e *testEnv) connectAndJoin(name, session string, sends, receives []string)
 func (e *testEnv) connectAndJoinTenant(name, tenantID, session string, sends, receives []string) *websocket.Conn {
 	e.t.Helper()
 	conn := e.connect(name, sends, receives)
-	writeJSON(e.t, conn, Message{Type: "join", TenantID: tenantID, Session: session})
+	testWebSocketScopes.Store(conn, testWebSocketScope{tenantID: tenantID, session: session})
+	writeJSON(e.t, conn, BusMessage{Type: "join", TenantID: tenantID, Session: session})
 	msg := readMsg(e.t, conn)
 	if msg.Type != "joined" {
 		e.t.Fatalf("expected joined, got %s", msg.Type)
@@ -217,100 +192,109 @@ func (e *testEnv) disconnectClient(name string) {
 // writeJSON sends a JSON message on a WS connection.
 func writeJSON(t *testing.T, conn *websocket.Conn, v any) {
 	t.Helper()
-	if msg, ok := v.(Message); ok && msg.V == 0 {
-		msg.V = ProtocolVersion
-		v = msg
+	if msg, ok := v.(BusMessage); ok {
+		scope, _ := testWebSocketScopes.Load(conn)
+		bound, _ := scope.(testWebSocketScope)
+		if msg.TenantID == "" {
+			msg.TenantID = bound.tenantID
+			if msg.TenantID == "" {
+				msg.TenantID = tenant.DefaultID
+			}
+		}
+		if msg.Session == "" {
+			msg.Session = bound.session
+		}
+		if BusMessageType(msg.Type) == MsgJoin {
+			testWebSocketScopes.Store(conn, testWebSocketScope{tenantID: msg.TenantID, session: msg.Session})
+		}
+		payload := map[string]any{}
+		raw, err := json.Marshal(msg)
+		if err != nil || json.Unmarshal(raw, &payload) != nil {
+			t.Fatalf("encode extension message failed: %v", err)
+		}
+		delete(payload, "tenant_id")
+		delete(payload, "session")
+		v = ClientEnvelope{
+			V: ClientProtocolVersion, Kind: "command", Op: "extension.send",
+			ID:       fmt.Sprintf("test-ext-%d", testExtensionCommandID.Add(1)),
+			TenantID: msg.TenantID, SessionID: msg.Session, Data: mustMarshalRaw(payload),
+		}
 	}
 	if err := conn.WriteJSON(v); err != nil {
 		t.Fatalf("writeJSON failed: %v", err)
 	}
 }
 
-// readMsg reads one JSON message with a timeout.
-func readMsg(t *testing.T, conn *websocket.Conn) Message {
+// readMsg reads one extension message with a timeout.
+func readMsg(t *testing.T, conn *websocket.Conn) BusMessage {
 	t.Helper()
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	var msg Message
-	if err := conn.ReadJSON(&msg); err != nil {
-		t.Fatalf("readMsg failed: %v", err)
+	msg := readMsgTimeout(t, conn, 5*time.Second)
+	if msg == nil {
+		t.Fatal("readMsg timed out")
 	}
-	return msg
+	return *msg
 }
 
-// readMsgTimeout reads one JSON message with a custom timeout. Returns nil on timeout.
-func readMsgTimeout(t *testing.T, conn *websocket.Conn, d time.Duration) *Message {
+// readMsgTimeout reads one extension message with a custom timeout. Returns nil on timeout.
+func readMsgTimeout(t *testing.T, conn *websocket.Conn, d time.Duration) *BusMessage {
 	t.Helper()
-	_ = conn.SetReadDeadline(time.Now().Add(d))
-	var msg Message
-	if err := conn.ReadJSON(&msg); err != nil {
-		return nil
+	deadline := time.Now().Add(d)
+	for {
+		_ = conn.SetReadDeadline(deadline)
+		var envelope ClientEnvelope
+		if err := conn.ReadJSON(&envelope); err != nil {
+			return nil
+		}
+		if envelope.Kind == "result" && envelope.Op == "extension.send" {
+			continue
+		}
+		if envelope.Kind != "event" || envelope.Op != "extension.event" {
+			msg := &BusMessage{Type: envelope.Kind, Topic: envelope.Op, ID: envelope.ID, TenantID: envelope.TenantID, Session: envelope.SessionID, Data: envelope.Data}
+			if envelope.Kind == "error" {
+				var data struct {
+					Message string `json:"message"`
+				}
+				_ = json.Unmarshal(envelope.Data, &data)
+				msg.Text = data.Message
+			}
+			return msg
+		}
+		var msg BusMessage
+		if err := json.Unmarshal(envelope.Data, &msg); err != nil {
+			t.Fatalf("decode extension event failed: %v", err)
+		}
+		msg.TenantID = envelope.TenantID
+		msg.Session = envelope.SessionID
+		if msg.ID == "" {
+			msg.ID = envelope.ID
+		}
+		return &msg
 	}
-	return &msg
 }
 
-func helloClientID(t *testing.T, msg Message) string {
-	t.Helper()
-	var data struct {
-		ClientID string `json:"client_id"`
-	}
-	if err := json.Unmarshal(msg.Data, &data); err != nil {
-		t.Fatalf("invalid hello_ack data: %v", err)
-	}
-	if data.ClientID == "" {
-		t.Fatalf("hello_ack missing client_id: %+v", msg)
-	}
-	return data.ClientID
+func isUserMessage(msg *BusMessage) bool {
+	return msg != nil && msg.Type == string(MsgEvent) && msg.Topic == testExtensionTopic
 }
 
-func isUserMessage(msg *Message) bool {
-	return msg != nil && msg.Type == string(MsgEvent) && msg.Topic == TopicMessageUser
-}
-
-func isSessionInit(msg *Message) bool {
+func isSessionInit(msg *BusMessage) bool {
 	return msg != nil && msg.Type == string(MsgEvent) && msg.Topic == TopicSessionInit
 }
 
-func preferredRuntimeFromMeta(t *testing.T, raw json.RawMessage) string {
-	t.Helper()
-	var meta map[string]any
-	if err := json.Unmarshal(raw, &meta); err != nil {
-		t.Fatalf("invalid meta: %v", err)
-	}
-	kernel, ok := meta["kernel"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing kernel meta: %+v", meta)
-	}
-	runtimeID, _ := kernel[preferredRuntimeKernelMetaKey].(string)
-	return runtimeID
+func userMessage(text string) BusMessage {
+	return BusMessage{Type: string(MsgEvent), Topic: testExtensionTopic, Data: mustMarshalRaw(map[string]any{"text": text})}
 }
 
-func userMessage(text string) Message {
-	return Message{Type: string(MsgEvent), Topic: TopicMessageUser, Data: mustMarshalRaw(map[string]any{"text": text})}
-}
-
-func toolCall(id, name string, input json.RawMessage) Message {
-	return Message{Type: string(MsgRequest), Topic: TopicToolCall, ID: id, Name: name, Input: input}
-}
-
-func turnDone() Message {
-	return Message{Type: string(MsgEvent), Topic: TopicTurnDone}
-}
-
-func turnCancel() Message {
-	return Message{Type: string(MsgEvent), Topic: TopicTurnCancel}
-}
-
-func turnSteer(text string) Message {
-	return Message{Type: string(MsgEvent), Topic: TopicTurnSteer, Data: mustMarshalRaw(map[string]any{"text": text})}
+func toolCall(id, name string, input json.RawMessage) BusMessage {
+	return BusMessage{Type: string(MsgRequest), Topic: TopicToolCall, ID: id, Name: name, Input: input}
 }
 
 func isToolResult(msg any) bool {
 	switch m := msg.(type) {
-	case Message:
+	case BusMessage:
 		return m.Type == string(MsgReply) && m.Topic == TopicToolResult
-	case *Message:
+	case *BusMessage:
 		return m != nil && m.Type == string(MsgReply) && m.Topic == TopicToolResult
-	case **Message:
+	case **BusMessage:
 		return m != nil && *m != nil && (*m).Type == string(MsgReply) && (*m).Topic == TopicToolResult
 	default:
 		return false
@@ -319,28 +303,26 @@ func isToolResult(msg any) bool {
 
 // --- Tests ---
 
-func TestConnectJoinHandshake(t *testing.T) {
+func TestConnectionOpenAndExtensionJoin(t *testing.T) {
 	env := newTestEnv(t)
 
 	// First client → c1
-	conn1, ack1 := env.connectAck("client-a", []string{TopicMessageUser}, []string{TopicMessageUser})
-	if clientID := helloClientID(t, ack1); clientID != "c1" {
+	conn1, clientID := env.connectWithID("client-a", []string{testExtensionTopic}, []string{testExtensionTopic})
+	if clientID != "c1" {
 		t.Errorf("expected c1, got %s", clientID)
 	}
-	writeJSON(t, conn1, Message{Type: "join", Session: "main"})
+	writeJSON(t, conn1, BusMessage{Type: "join", Session: "main"})
 	msg1 := readMsg(t, conn1)
 	if msg1.Type != "joined" || msg1.Session != "main" {
 		t.Errorf("expected joined main, got type=%s session=%s", msg1.Type, msg1.Session)
 	}
 
-	_, ack2 := env.connectAck("client-b", []string{TopicMessageUser}, []string{TopicMessageUser})
-	clientID := helloClientID(t, ack2)
+	_, clientID = env.connectWithID("client-b", []string{testExtensionTopic}, []string{testExtensionTopic})
 	if clientID != "c2" {
 		t.Errorf("expected c2, got %s", clientID)
 	}
 
-	_, ack3 := env.connectAck("client-c", []string{TopicMessageUser}, []string{TopicMessageUser})
-	clientID = helloClientID(t, ack3)
+	_, clientID = env.connectWithID("client-c", []string{testExtensionTopic}, []string{testExtensionTopic})
 	if clientID != "c3" {
 		t.Errorf("expected c3, got %s", clientID)
 	}
@@ -348,40 +330,23 @@ func TestConnectJoinHandshake(t *testing.T) {
 
 func TestConnectRequiresKernelClientToken(t *testing.T) {
 	env := newTestEnv(t)
-
-	missing := env.dial()
-	writeJSON(t, missing, Message{
-		V:    ProtocolVersion,
-		Type: string(MsgHello),
-		Data: mustMarshalRaw(map[string]any{
-			"name":        "missing-token",
-			"send_topics": []string{TopicMessageUser},
-		}),
-	})
-	msg := readMsg(t, missing)
-	if msg.Type != "error" {
-		t.Fatalf("expected error for missing token, got %s", msg.Type)
-	}
-	if !strings.Contains(msg.Text, "invalid kernel client token") {
-		t.Fatalf("unexpected missing-token error: %q", msg.Text)
-	}
-
-	wrong := env.dial()
-	writeJSON(t, wrong, Message{
-		V:    ProtocolVersion,
-		Type: string(MsgHello),
-		Data: mustMarshalRaw(map[string]any{
-			"name":        "wrong-token",
-			"send_topics": []string{TopicMessageUser},
-			"auth_token":  "bad-token",
-		}),
-	})
-	msg = readMsg(t, wrong)
-	if msg.Type != "error" {
-		t.Fatalf("expected error for wrong token, got %s", msg.Type)
-	}
-	if !strings.Contains(msg.Text, "invalid kernel client token") {
-		t.Fatalf("unexpected wrong-token error: %q", msg.Text)
+	for name, token := range map[string]string{"missing-token": "", "wrong-token": "bad-token"} {
+		t.Run(name, func(t *testing.T) {
+			conn := env.dial()
+			if err := conn.WriteJSON(ClientEnvelope{
+				V: ClientProtocolVersion, Kind: "command", Op: "connection.open", ID: name,
+				Data: mustMarshalRaw(map[string]any{"name": name, "auth_token": token, "meta": map[string]any{}}),
+			}); err != nil {
+				t.Fatalf("write connection.open: %v", err)
+			}
+			msg := readMsg(t, conn)
+			if msg.Type != "error" || msg.Topic != "connection.open" {
+				t.Fatalf("expected connection.open error, got %+v", msg)
+			}
+			if !strings.Contains(msg.Text, "client authentication failed") {
+				t.Fatalf("unexpected authentication error: %q", msg.Text)
+			}
+		})
 	}
 }
 
@@ -389,7 +354,7 @@ func TestInitOnJoin(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Client that receives init
-	conn := env.connectAndJoin("driver", "main", []string{TopicMessageUser}, []string{TopicSessionInit, TopicMessageUser})
+	conn := env.connectAndJoin("driver", "main", []string{testExtensionTopic}, []string{TopicSessionInit, testExtensionTopic})
 	init := readMsg(t, conn)
 	if init.Type != string(MsgEvent) || init.Topic != TopicSessionInit {
 		t.Fatalf("expected session.init, got %+v", init)
@@ -411,8 +376,8 @@ func TestJoinPersistsSessionStateUnderTenantDir(t *testing.T) {
 	))
 	env.Hub.SetSessionStore(NewDiskSessionStore(home))
 
-	conn := env.connect("driver", []string{TopicMessageUser}, []string{TopicSessionInit, TopicMessageUser})
-	writeJSON(t, conn, Message{Type: "join", Session: "tenant-s1", TenantID: "alpha"})
+	conn := env.connect("driver", []string{testExtensionTopic}, []string{TopicSessionInit, testExtensionTopic})
+	writeJSON(t, conn, BusMessage{Type: "join", Session: "tenant-s1", TenantID: "alpha"})
 	if msg := readMsg(t, conn); msg.Type != "joined" || msg.TenantID != "alpha" {
 		t.Fatalf("expected joined alpha, got %+v", msg)
 	}
@@ -564,7 +529,7 @@ func TestRuntimeCatalogUpdateRefreshesJoinedClients(t *testing.T) {
 		t.Fatalf("RegisterHello: %v", err)
 	}
 
-	driver := env.connectAndJoin("driver", "main", []string{TopicMessageUser}, []string{TopicSessionInit})
+	driver := env.connectAndJoin("driver", "main", []string{testExtensionTopic}, []string{TopicSessionInit})
 	initial := readMsg(t, driver)
 	if !isSessionInit(&initial) || !strings.Contains(string(initial.Tools), `"mcp_call"`) {
 		t.Fatalf("expected initial mcp_call init tools, got %+v", initial)
@@ -591,7 +556,7 @@ func TestInitNotSentWithoutReceive(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Client without init in receives
-	conn := env.connectAndJoin("gateway", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
+	conn := env.connectAndJoin("gateway", "main", []string{testExtensionTopic}, []string{testExtensionTopic})
 
 	// Should NOT receive init — expect timeout
 	msg := readMsgTimeout(t, conn, 200*time.Millisecond)
@@ -604,13 +569,13 @@ func TestMessageRouting(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Client A: sender
-	connA := env.connectAndJoin("sender", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
+	connA := env.connectAndJoin("sender", "main", []string{testExtensionTopic}, []string{testExtensionTopic})
 	// Client B: receiver in same session
-	connB := env.connectAndJoin("receiver", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
+	connB := env.connectAndJoin("receiver", "main", []string{testExtensionTopic}, []string{testExtensionTopic})
 	// Client C: different session
-	connC := env.connectAndJoin("other-session", "sub-1", []string{TopicMessageUser}, []string{TopicMessageUser})
-	// Client D: same session, does NOT receive TopicMessageUser
-	connD := env.connectAndJoin("no-msg", "main", []string{TopicMessageUser}, []string{"error"})
+	connC := env.connectAndJoin("other-session", "sub-1", []string{testExtensionTopic}, []string{testExtensionTopic})
+	// Client D: same session, does NOT receive testExtensionTopic
+	connD := env.connectAndJoin("no-msg", "main", []string{testExtensionTopic}, []string{"error"})
 
 	// A sends message
 	writeJSON(t, connA, userMessage("hello"))
@@ -645,9 +610,9 @@ func TestCrossSessionRouting(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Client in "main" session
-	connMain := env.connectAndJoin("main-client", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
+	connMain := env.connectAndJoin("main-client", "main", []string{testExtensionTopic}, []string{testExtensionTopic})
 	// Client in "sub-1" session
-	connSub := env.connectAndJoin("sub-client", "sub-1", []string{TopicMessageUser}, []string{TopicMessageUser})
+	connSub := env.connectAndJoin("sub-client", "sub-1", []string{testExtensionTopic}, []string{testExtensionTopic})
 
 	// Sub sends message with explicit session="main"
 	crossSessionMessage := userMessage("result from sub")
@@ -671,13 +636,13 @@ func TestCrossSessionRouting(t *testing.T) {
 func TestSendsValidation(t *testing.T) {
 	env := newTestEnv(t)
 
-	// Client that can only send TopicMessageUser
-	connSender := env.connectAndJoin("limited", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
+	// Client that can only send testExtensionTopic
+	connSender := env.connectAndJoin("limited", "main", []string{testExtensionTopic}, []string{testExtensionTopic})
 	// Receiver in same session
-	connRecv := env.connectAndJoin("recv", "main", []string{TopicMessageUser}, []string{TopicStreamDelta, TopicMessageUser})
+	connRecv := env.connectAndJoin("recv", "main", []string{testExtensionTopic}, []string{TopicStreamDelta, testExtensionTopic})
 
 	// Try to send stream.delta (not in sends list) — should be ignored
-	writeJSON(t, connSender, Message{Type: string(MsgEvent), Topic: TopicStreamDelta, Data: mustMarshalRaw(map[string]any{"text": "hacked"})})
+	writeJSON(t, connSender, BusMessage{Type: string(MsgEvent), Topic: TopicStreamDelta, Data: mustMarshalRaw(map[string]any{"text": "hacked"})})
 	time.Sleep(50 * time.Millisecond)
 
 	msg := readMsgTimeout(t, connRecv, 200*time.Millisecond)
@@ -690,28 +655,13 @@ func TestReceivesGlobal(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Client A: joined to "main" session, sends messages
-	connA := env.connectAndJoin("sender", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
+	connA := env.connectAndJoin("sender", "main", []string{testExtensionTopic}, []string{testExtensionTopic})
 
-	// Client B: NOT joined to any session, but has receives_global: [TopicMessageUser]
-	connB := env.dial()
-	writeJSON(t, connB, Message{
-		V:    ProtocolVersion,
-		Type: string(MsgHello),
-		Data: mustMarshalRaw(map[string]any{
-			"name":           "global-listener",
-			"send_topics":    []string{},
-			"receive_topics": []string{},
-			"global_topics":  []string{TopicMessageUser},
-			"auth_token":     env.Token,
-		}),
-	})
-	msgConnected := readMsg(t, connB)
-	if msgConnected.Type != string(MsgHelloAck) {
-		t.Fatalf("expected hello_ack, got %s", msgConnected.Type)
-	}
+	// Client B: NOT joined to any session, but has receives_global: [testExtensionTopic]
+	connB, _ := env.connectOpen("global-listener", nil, nil, []string{testExtensionTopic}, nil, map[string]any{})
 
 	// Client C: NOT joined, no receives_global — should NOT receive
-	connC := env.connect("no-global", []string{}, []string{TopicMessageUser})
+	connC := env.connect("no-global", []string{}, []string{testExtensionTopic})
 
 	// A sends message to its session ("main")
 	writeJSON(t, connA, userMessage("hello global"))
@@ -732,8 +682,8 @@ func TestReceivesGlobal(t *testing.T) {
 
 func TestRoutedMessagesOverwriteKernelMeta(t *testing.T) {
 	env := newTestEnv(t)
-	sender := env.connectAndJoin("sender", "main", []string{TopicMessageUser}, []string{})
-	receiver := env.connectAndJoin("receiver", "main", []string{}, []string{TopicMessageUser})
+	sender := env.connectAndJoin("sender", "main", []string{testExtensionTopic}, []string{})
+	receiver := env.connectAndJoin("receiver", "main", []string{}, []string{testExtensionTopic})
 
 	msg := userMessage("hello")
 	msg.Meta = mustMarshalRaw(map[string]any{
@@ -768,84 +718,6 @@ func TestRoutedMessagesOverwriteKernelMeta(t *testing.T) {
 	}
 }
 
-func TestUserMessagesGetTurnCorrelationID(t *testing.T) {
-	env := newTestEnv(t)
-	sender := env.connectAndJoin("sender", "main", []string{TopicMessageUser}, []string{})
-	receiver := env.connectAndJoin("receiver", "main", []string{}, []string{TopicMessageUser})
-
-	writeJSON(t, sender, userMessage("hello"))
-	routed := readMsg(t, receiver)
-	var meta map[string]any
-	if err := json.Unmarshal(routed.Meta, &meta); err != nil {
-		t.Fatalf("invalid routed meta: %v", err)
-	}
-	turnCorrelationID, _ := meta[turnCorrelationMetaKey].(string)
-	if turnCorrelationID == "" {
-		t.Fatalf("expected %s in routed meta, got %+v", turnCorrelationMetaKey, meta)
-	}
-	if !strings.HasPrefix(turnCorrelationID, "tc-") {
-		t.Fatalf("expected generated turn correlation id, got %q", turnCorrelationID)
-	}
-}
-
-func TestUserMessagesStampPreferredRuntimeAndQueuedTurnsUpdateOnDispatch(t *testing.T) {
-	hub := NewHub(nil, nil)
-	gatewayA := addCaptureClient(t, hub, "gateway-a", "main", nil, nil)
-	gatewayA.meta = json.RawMessage(`{"tabula.runtime_id":"rt-aaaaaaaaaaaaaaaaaaaa"}`)
-	gatewayB := addCaptureClient(t, hub, "gateway-b", "main", nil, nil)
-	gatewayB.meta = json.RawMessage(`{"tabula.runtime_id":"rt-bbbbbbbbbbbbbbbbbbbb"}`)
-	driver := addCaptureClient(t, hub, "driver", "main", []string{TopicMessageUser}, nil)
-	driver.sends[TopicTurnDone] = true
-
-	first := userMessage("first")
-	hub.handleUserMessage(gatewayA, &first)
-	routedFirst := waitForMessage(t, driver.recvCh)
-	if got := preferredRuntimeFromMeta(t, routedFirst.Meta); got != "rt-aaaaaaaaaaaaaaaaaaaa" {
-		t.Fatalf("first routed preferred runtime = %q", got)
-	}
-	if got := hub.sessionPreferredRuntime("default", "main"); got != "rt-aaaaaaaaaaaaaaaaaaaa" {
-		t.Fatalf("session preferred runtime after first turn = %q", got)
-	}
-
-	second := userMessage("second")
-	hub.handleUserMessage(gatewayB, &second)
-	if got := hub.sessionPreferredRuntime("default", "main"); got != "rt-aaaaaaaaaaaaaaaaaaaa" {
-		t.Fatalf("queued turn should not change active preferred runtime yet, got %q", got)
-	}
-	if msg := readCaptureMessageTimeout(driver.recvCh, 100*time.Millisecond); msg != nil {
-		t.Fatalf("queued turn should not dispatch before turn.done, got %+v", msg)
-	}
-
-	hub.forwardSessionMessage(driver, &Message{Type: string(MsgEvent), Topic: TopicTurnDone, Session: "main", TenantID: tenant.DefaultID})
-	routedSecond := waitForMessage(t, driver.recvCh)
-	if got := preferredRuntimeFromMeta(t, routedSecond.Meta); got != "rt-bbbbbbbbbbbbbbbbbbbb" {
-		t.Fatalf("queued routed preferred runtime = %q", got)
-	}
-	if got := hub.sessionPreferredRuntime("default", "main"); got != "rt-bbbbbbbbbbbbbbbbbbbb" {
-		t.Fatalf("session preferred runtime after queued dispatch = %q", got)
-	}
-}
-
-func TestTurnSteerStampsPreferredRuntimeMeta(t *testing.T) {
-	hub := NewHub(nil, nil)
-	gateway := addCaptureClient(t, hub, "gateway", "main", nil, nil)
-	gateway.meta = json.RawMessage(`{"tabula.runtime_id":"rt-cccccccccccccccccccc"}`)
-	driver := addCaptureClient(t, hub, "driver", "main", []string{TopicTurnSteer}, nil)
-
-	steer := turnSteer("nudge")
-	hub.handleTurnSteer(gateway, &steer)
-	routed := waitForMessage(t, driver.recvCh)
-	if routed.Topic != TopicTurnSteer {
-		t.Fatalf("expected routed steer, got %+v", routed)
-	}
-	if got := preferredRuntimeFromMeta(t, routed.Meta); got != "rt-cccccccccccccccccccc" {
-		t.Fatalf("steer preferred runtime = %q", got)
-	}
-	if got := hub.sessionPreferredRuntime("default", "main"); got != "rt-cccccccccccccccccccc" {
-		t.Fatalf("session preferred runtime after steer = %q", got)
-	}
-}
-
 func TestExchangeReplyRequiresEligibleResponder(t *testing.T) {
 	testExchangeReplyRequiresEligibleResponder(t, TopicExchangeChoose)
 	testExchangeReplyRequiresEligibleResponder(t, TopicExchangeApprove)
@@ -859,13 +731,13 @@ func TestExchangeApproveHelperReachesTenantSessionResponder(t *testing.T) {
 	responder.sends[TopicExchangeApprove] = true
 	help.sends[TopicExchangeApprove] = true
 
-	hub.handleExchangeRequest(help, &Message{Type: string(MsgRequest), Topic: TopicExchangeApprove, ID: "approve-1", Session: "s1", TenantID: "tenant-a"})
+	hub.handleExchangeRequest(help, &BusMessage{Type: string(MsgRequest), Topic: TopicExchangeApprove, ID: "approve-1", Session: "s1", TenantID: "tenant-a"})
 
 	request := waitForMessage(t, responder.recvCh)
 	if request.Type != string(MsgRequest) || request.Topic != TopicExchangeApprove || request.ID != "approve-1" {
 		t.Fatalf("expected approval request to responder, got %+v", request)
 	}
-	hub.handleExchangeReply(responder, &Message{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: "approve-1", Data: mustMarshalRaw(map[string]any{"choice": "allow once", "index": 0})})
+	hub.handleExchangeReply(responder, &BusMessage{Type: string(MsgReply), Topic: TopicExchangeApprove, ID: "approve-1", Data: mustMarshalRaw(map[string]any{"choice": "allow once", "index": 0})})
 	reply := waitForMessage(t, help.recvCh)
 	if reply.Type != string(MsgReply) || reply.Topic != TopicExchangeApprove || reply.ID != "approve-1" {
 		t.Fatalf("expected approval reply to helper, got %+v", reply)
@@ -879,9 +751,9 @@ func TestTenantSessionsWithSameIDAreIsolated(t *testing.T) {
 		tenant.Tenant{ID: "beta", CreatedAt: time.Now()},
 	))
 
-	alphaSender := env.connectAndJoinTenant("alpha-sender", "alpha", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
-	alphaReceiver := env.connectAndJoinTenant("alpha-receiver", "alpha", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
-	betaReceiver := env.connectAndJoinTenant("beta-receiver", "beta", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
+	alphaSender := env.connectAndJoinTenant("alpha-sender", "alpha", "main", []string{testExtensionTopic}, []string{testExtensionTopic})
+	alphaReceiver := env.connectAndJoinTenant("alpha-receiver", "alpha", "main", []string{testExtensionTopic}, []string{testExtensionTopic})
+	betaReceiver := env.connectAndJoinTenant("beta-receiver", "beta", "main", []string{testExtensionTopic}, []string{testExtensionTopic})
 
 	alphaSession, ok := env.Hub.sessions.Get("main", "alpha")
 	if !ok {
@@ -895,7 +767,7 @@ func TestTenantSessionsWithSameIDAreIsolated(t *testing.T) {
 		t.Fatal("expected distinct live session objects per tenant")
 	}
 
-	writeJSON(t, alphaSender, Message{Type: string(MsgEvent), Topic: TopicMessageUser, Data: mustMarshalRaw(map[string]any{"text": "hello alpha"})})
+	writeJSON(t, alphaSender, BusMessage{Type: string(MsgEvent), Topic: testExtensionTopic, Data: mustMarshalRaw(map[string]any{"text": "hello alpha"})})
 	received := readMsg(t, alphaReceiver)
 	if eventText(&received) != "hello alpha" {
 		t.Fatalf("expected alpha receiver to get tenant message, got %+v", received)
@@ -927,8 +799,7 @@ func testExchangeReplyRequiresEligibleResponder(t *testing.T, topic string) {
 	secondResponder.sends[topic] = true
 	attacker.sends[topic] = true
 
-	hub.HandleMessage(requester, &Message{
-		V:     ProtocolVersion,
+	hub.HandleBusMessage(requester, &BusMessage{
 		Type:  string(MsgRequest),
 		Topic: topic,
 		ID:    "ex-1",
@@ -947,13 +818,13 @@ func testExchangeReplyRequiresEligibleResponder(t *testing.T, topic string) {
 		t.Fatalf("attacker should not receive exchange request, got %+v", msg)
 	}
 
-	hub.HandleMessage(attacker, &Message{V: ProtocolVersion, Type: string(MsgReply), Topic: topic, ID: "ex-1", Data: mustMarshalRaw(map[string]any{"choice": "yes"})})
+	hub.HandleBusMessage(attacker, &BusMessage{Type: string(MsgReply), Topic: topic, ID: "ex-1", Data: mustMarshalRaw(map[string]any{"choice": "yes"})})
 	_ = readCaptureMessageTimeout(attacker.recvCh, 100*time.Millisecond) // spoof rejection is allowed but not required by callers.
 	if msg := readCaptureMessageTimeout(requester.recvCh, 100*time.Millisecond); msg != nil {
 		t.Fatalf("requester should not receive spoofed reply, got %+v", msg)
 	}
 
-	hub.HandleMessage(responder, &Message{V: ProtocolVersion, Type: string(MsgReply), Topic: topic, ID: "ex-1", Data: mustMarshalRaw(map[string]any{"choice": "yes", "index": 0})})
+	hub.HandleBusMessage(responder, &BusMessage{Type: string(MsgReply), Topic: topic, ID: "ex-1", Data: mustMarshalRaw(map[string]any{"choice": "yes", "index": 0})})
 	reply := waitForMessage(t, requester.recvCh)
 	if reply.Type != string(MsgReply) || reply.Topic != topic || reply.ID != "ex-1" {
 		t.Fatalf("expected exchange reply for requester, got %+v", reply)
@@ -962,7 +833,7 @@ func testExchangeReplyRequiresEligibleResponder(t *testing.T, topic string) {
 	if resolved.Type != string(MsgEvent) || resolved.Topic != topic || resolved.ID != "ex-1" {
 		t.Fatalf("expected exchange resolved event for other responder, got %+v", resolved)
 	}
-	hub.HandleMessage(secondResponder, &Message{V: ProtocolVersion, Type: string(MsgReply), Topic: topic, ID: "ex-1", Data: mustMarshalRaw(map[string]any{"choice": "no"})})
+	hub.HandleBusMessage(secondResponder, &BusMessage{Type: string(MsgReply), Topic: topic, ID: "ex-1", Data: mustMarshalRaw(map[string]any{"choice": "no"})})
 	errorMsg := waitForMessage(t, secondResponder.recvCh)
 	if errorMsg.Type != string(MsgError) || errorMsg.Text != "client not allowed to answer exchange" {
 		t.Fatalf("expected stale exchange reply rejection, got %+v", errorMsg)
@@ -975,10 +846,9 @@ func TestLateExchangeApprovalReplyAfterRequesterDisconnectIsRejected(t *testing.
 	ui := addCaptureClient(t, hub, "gateway-web", "main", []string{TopicExchangeApprove, string(MsgError)}, []string{TopicExchangeApprove, string(MsgError)})
 	approval.sends[TopicExchangeApprove] = true
 	ui.sends[TopicExchangeApprove] = true
-	ui.meta = mustMarshalRaw(map[string]any{"tabula.client_role": "user", "tabula.managed": true})
+	ui.meta = mustMarshalRaw(map[string]any{"tabula.client_role": "user"})
 
-	hub.HandleMessage(approval, &Message{
-		V:     ProtocolVersion,
+	hub.HandleBusMessage(approval, &BusMessage{
 		Type:  string(MsgRequest),
 		Topic: TopicExchangeApprove,
 		ID:    "approval-late-1",
@@ -995,8 +865,7 @@ func TestLateExchangeApprovalReplyAfterRequesterDisconnectIsRejected(t *testing.
 
 	// A late browser reply for the old exchange id must be rejected instead of
 	// being delivered to a new or missing requester.
-	hub.HandleMessage(ui, &Message{
-		V:     ProtocolVersion,
+	hub.HandleBusMessage(ui, &BusMessage{
 		Type:  string(MsgReply),
 		Topic: TopicExchangeApprove,
 		ID:    "approval-late-1",
@@ -1008,7 +877,7 @@ func TestLateExchangeApprovalReplyAfterRequesterDisconnectIsRejected(t *testing.
 	}
 }
 
-func TestPickExchangeResponderPrefersManagedUIClient(t *testing.T) {
+func TestPickExchangeResponderPrefersUserClient(t *testing.T) {
 	hub := NewHub(nil, nil)
 	requester := addCaptureClient(t, hub, "requester", "main", []string{TopicExchangeChoose}, []string{TopicExchangeChoose, string(MsgError)})
 	generic := addCaptureClient(t, hub, "generic", "main", []string{TopicExchangeChoose}, nil)
@@ -1018,10 +887,9 @@ func TestPickExchangeResponderPrefersManagedUIClient(t *testing.T) {
 	ui.sends[TopicExchangeChoose] = true
 	generic.id = 1
 	ui.id = 2
-	ui.meta = mustMarshalRaw(map[string]any{"tabula.client_role": "user", "tabula.managed": true})
+	ui.meta = mustMarshalRaw(map[string]any{"tabula.client_role": "user"})
 
-	hub.HandleMessage(requester, &Message{
-		V:     ProtocolVersion,
+	hub.HandleBusMessage(requester, &BusMessage{
 		Type:  string(MsgRequest),
 		Topic: TopicExchangeChoose,
 		ID:    "ex-ui",
@@ -1030,14 +898,14 @@ func TestPickExchangeResponderPrefersManagedUIClient(t *testing.T) {
 
 	req := waitForMessage(t, ui.recvCh)
 	if req.ID != "ex-ui" || req.Topic != TopicExchangeChoose {
-		t.Fatalf("expected managed UI responder to receive exchange, got %+v", req)
+		t.Fatalf("expected user responder to receive exchange, got %+v", req)
 	}
 	if msg := readCaptureMessageTimeout(generic.recvCh, 100*time.Millisecond); msg != nil {
 		t.Fatalf("generic responder should not receive exchange when UI responder exists, got %+v", msg)
 	}
 }
 
-func TestPickExchangeResponderFansOutToAllEqualPreferredUIClients(t *testing.T) {
+func TestPickExchangeResponderFansOutToAllEqualUserClients(t *testing.T) {
 	hub := NewHub(nil, nil)
 	requester := addCaptureClient(t, hub, "requester", "main", []string{TopicExchangeChoose}, []string{TopicExchangeChoose, string(MsgError)})
 	older := addCaptureClient(t, hub, "gateway-old", "main", []string{TopicExchangeChoose}, nil)
@@ -1047,11 +915,10 @@ func TestPickExchangeResponderFansOutToAllEqualPreferredUIClients(t *testing.T) 
 	newer.sends[TopicExchangeChoose] = true
 	older.id = 10
 	newer.id = 11
-	older.meta = mustMarshalRaw(map[string]any{"tabula.client_role": "user", "tabula.managed": true})
-	newer.meta = mustMarshalRaw(map[string]any{"tabula.client_role": "user", "tabula.managed": true})
+	older.meta = mustMarshalRaw(map[string]any{"tabula.client_role": "user"})
+	newer.meta = mustMarshalRaw(map[string]any{"tabula.client_role": "user"})
 
-	hub.HandleMessage(requester, &Message{
-		V:     ProtocolVersion,
+	hub.HandleBusMessage(requester, &BusMessage{
 		Type:  string(MsgRequest),
 		Topic: TopicExchangeChoose,
 		ID:    "ex-newest",
@@ -1060,11 +927,11 @@ func TestPickExchangeResponderFansOutToAllEqualPreferredUIClients(t *testing.T) 
 
 	req := waitForMessage(t, newer.recvCh)
 	if req.ID != "ex-newest" || req.Topic != TopicExchangeChoose {
-		t.Fatalf("expected newest managed UI responder to receive exchange, got %+v", req)
+		t.Fatalf("expected newest user responder to receive exchange, got %+v", req)
 	}
 	olderReq := waitForMessage(t, older.recvCh)
 	if olderReq.ID != "ex-newest" || olderReq.Topic != TopicExchangeChoose {
-		t.Fatalf("expected older managed UI responder to also receive exchange, got %+v", olderReq)
+		t.Fatalf("expected older user responder to also receive exchange, got %+v", olderReq)
 	}
 }
 
@@ -1073,7 +940,7 @@ func TestNotConnected(t *testing.T) {
 
 	// Dial raw WS, don't send connect — send message directly
 	conn := env.dial()
-	connRecv := env.connectAndJoin("recv", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
+	connRecv := env.connectAndJoin("recv", "main", []string{testExtensionTopic}, []string{testExtensionTopic})
 
 	writeJSON(t, conn, userMessage("sneaky"))
 	time.Sleep(50 * time.Millisecond)
@@ -1088,8 +955,8 @@ func TestNotJoined(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Connect but don't join
-	connSender := env.connect("no-join", []string{TopicMessageUser}, []string{TopicMessageUser})
-	connRecv := env.connectAndJoin("recv", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
+	connSender := env.connect("no-join", []string{testExtensionTopic}, []string{testExtensionTopic})
+	connRecv := env.connectAndJoin("recv", "main", []string{testExtensionTopic}, []string{testExtensionTopic})
 
 	writeJSON(t, connSender, userMessage("no session"))
 	time.Sleep(50 * time.Millisecond)
@@ -1234,9 +1101,9 @@ func TestInvalidExecCommand(t *testing.T) {
 func TestMultipleClientsInSession(t *testing.T) {
 	env := newTestEnv(t)
 
-	sender := env.connectAndJoin("sender", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
-	recv1 := env.connectAndJoin("recv1", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
-	recv2 := env.connectAndJoin("recv2", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
+	sender := env.connectAndJoin("sender", "main", []string{testExtensionTopic}, []string{testExtensionTopic})
+	recv1 := env.connectAndJoin("recv1", "main", []string{testExtensionTopic}, []string{testExtensionTopic})
+	recv2 := env.connectAndJoin("recv2", "main", []string{testExtensionTopic}, []string{testExtensionTopic})
 
 	writeJSON(t, sender, userMessage("broadcast"))
 	time.Sleep(50 * time.Millisecond)
@@ -1261,9 +1128,9 @@ func TestMultipleClientsInSession(t *testing.T) {
 func TestClientDisconnect(t *testing.T) {
 	env := newTestEnv(t)
 
-	conn1 := env.connectAndJoin("will-disconnect", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
-	conn2 := env.connectAndJoin("stays", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
-	conn3 := env.connectAndJoin("sender", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
+	conn1 := env.connectAndJoin("will-disconnect", "main", []string{testExtensionTopic}, []string{testExtensionTopic})
+	conn2 := env.connectAndJoin("stays", "main", []string{testExtensionTopic}, []string{testExtensionTopic})
+	conn3 := env.connectAndJoin("sender", "main", []string{testExtensionTopic}, []string{testExtensionTopic})
 
 	// Disconnect conn1
 	conn1.Close()
@@ -1284,9 +1151,9 @@ func TestSlowClientDropsMessages(t *testing.T) {
 	env := newTestEnv(t)
 
 	// Create a "slow" client that never reads
-	slowConn := env.connectAndJoin("slow", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
-	sender := env.connectAndJoin("sender", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
-	fast := env.connectAndJoin("fast", "main", []string{TopicMessageUser}, []string{TopicMessageUser})
+	slowConn := env.connectAndJoin("slow", "main", []string{testExtensionTopic}, []string{testExtensionTopic})
+	sender := env.connectAndJoin("sender", "main", []string{testExtensionTopic}, []string{testExtensionTopic})
+	fast := env.connectAndJoin("fast", "main", []string{testExtensionTopic}, []string{testExtensionTopic})
 
 	// Stop reading from slow client (simulate slow consumer)
 	// Just flood messages — sendCh is 64 deep, so 100 should overflow
@@ -1319,15 +1186,15 @@ func TestCriticalToolResultWaitsForSlowInternalClient(t *testing.T) {
 	c := &Client{
 		hub:      hub,
 		name:     "slow-internal",
-		recvCh:   make(chan *Message, 1),
+		recvCh:   make(chan *BusMessage, 1),
 		receives: map[string]bool{TopicToolResult: true},
 		done:     make(chan struct{}),
 		state:    ClientJoined,
 	}
-	c.recvCh <- &Message{Type: string(MsgEvent), Topic: TopicSessionInit}
+	c.recvCh <- &BusMessage{Type: string(MsgEvent), Topic: TopicSessionInit}
 	done := make(chan bool, 1)
 	go func() {
-		done <- c.queueMsg(&Message{Type: string(MsgReply), Topic: TopicToolResult, ID: "tool-1", Name: "fs_read"})
+		done <- c.queueMsg(&BusMessage{Type: string(MsgReply), Topic: TopicToolResult, ID: "tool-1", Name: "fs_read"})
 	}()
 	select {
 	case delivered := <-done:
@@ -1357,7 +1224,7 @@ func TestConcurrentMessages(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		c := env.connectAndJoin(
 			fmt.Sprintf("client-%d", i), "main",
-			[]string{TopicMessageUser}, []string{TopicMessageUser},
+			[]string{testExtensionTopic}, []string{testExtensionTopic},
 		)
 		clients = append(clients, c)
 	}
@@ -1387,288 +1254,6 @@ func TestConcurrentMessages(t *testing.T) {
 		if received != 9 {
 			t.Errorf("client-%d: expected 9 messages, got %d", i, received)
 		}
-	}
-}
-
-func TestSessionBusyQueuesConcurrentRootMessagesAndDispatchesAfterDone(t *testing.T) {
-	env := newTestEnv(t)
-	gateway := env.connectAndJoin("gateway", "main",
-		[]string{TopicMessageUser, TopicTurnCancel},
-		[]string{"error"})
-	driver := env.connectAndJoin("driver", "main",
-		[]string{TopicTurnDone},
-		[]string{TopicMessageUser, TopicTurnCancel})
-
-	writeJSON(t, gateway, userMessage("first"))
-	first := readMsg(t, driver)
-	if !isUserMessage(&first) || messageText(&first) != "first" {
-		t.Fatalf("expected first turn message, got %+v", first)
-	}
-
-	sess, ok := env.Hub.sessions.Get("main", "default")
-	if !ok {
-		t.Fatal("session main should exist")
-	}
-	if !sess.IsBusy() {
-		t.Fatal("session should be busy after first root message")
-	}
-
-	writeJSON(t, gateway, turnCancel())
-	cancel := readMsg(t, driver)
-	if cancel.Type != string(MsgEvent) || cancel.Topic != TopicTurnCancel {
-		t.Fatalf("expected cancel to reach driver, got %+v", cancel)
-	}
-	if !sess.CancelRequested() {
-		t.Fatal("session should remember cancel request while turn is inflight")
-	}
-
-	writeJSON(t, gateway, userMessage("second"))
-	if errMsg := readMsgTimeout(t, gateway, 100*time.Millisecond); errMsg != nil {
-		t.Fatalf("expected queued message without busy error, got %+v", errMsg)
-	}
-	if got := sess.PendingInputCount(); got != 1 {
-		t.Fatalf("pending input count = %d, want 1", got)
-	}
-
-	writeJSON(t, driver, turnDone())
-	second := readMsg(t, driver)
-	if !isUserMessage(&second) || messageText(&second) != "second" {
-		t.Fatalf("expected queued second message after done, got %+v", second)
-	}
-	if !sess.IsBusy() {
-		t.Fatal("session should stay busy while queued turn is dispatched")
-	}
-	if sess.CancelRequested() {
-		t.Fatal("cancel state should reset before queued turn")
-	}
-	if got := sess.PendingInputCount(); got != 0 {
-		t.Fatalf("pending input count = %d, want 0", got)
-	}
-
-	writeJSON(t, driver, turnDone())
-	time.Sleep(50 * time.Millisecond)
-	if sess.IsBusy() {
-		t.Fatal("session should stop being busy after queued turn done")
-	}
-
-	writeJSON(t, gateway, userMessage("third"))
-	third := readMsg(t, driver)
-	if !isUserMessage(&third) || messageText(&third) != "third" {
-		t.Fatalf("expected turn to resume after done, got %+v", third)
-	}
-}
-
-func TestUserMessageQueuesUntilTurnReceiverJoins(t *testing.T) {
-	env := newTestEnv(t)
-	gateway := env.connectAndJoin("gateway", "main",
-		[]string{TopicMessageUser},
-		[]string{"error"})
-	var gatewayClient *Client
-	for _, client := range env.Hub.clients.All() {
-		if client.name == "gateway" {
-			gatewayClient = client
-			break
-		}
-	}
-	if gatewayClient == nil {
-		t.Fatal("gateway client should exist")
-	}
-	gatewayClient.meta = mustMarshalRaw(map[string]any{
-		"tabula.client_role": "user",
-		"tabula.managed":     true,
-	})
-
-	writeJSON(t, gateway, userMessage("first"))
-	status := readMsg(t, gateway)
-	if status.Type != string(MsgEvent) || status.Topic != TopicSessionStatus {
-		t.Fatalf("gateway expected waiting status, got %+v", status)
-	}
-	var statusData map[string]any
-	if err := json.Unmarshal(status.Data, &statusData); err != nil {
-		t.Fatalf("unmarshal waiting status data: %v", err)
-	}
-	if statusData["state"] != "waiting_for_driver" || statusData["reason"] != "turn_receiver_unavailable" {
-		t.Fatalf("unexpected waiting status data: %#v", statusData)
-	}
-	sess, ok := env.Hub.sessions.Get("main", "default")
-	if !ok {
-		t.Fatal("session main should exist")
-	}
-	if got := sess.PendingInputCount(); got != 1 {
-		t.Fatalf("pending input count = %d, want 1", got)
-	}
-	if sess.IsBusy() {
-		t.Fatal("session should not be busy before a turn-capable receiver joins")
-	}
-
-	driver := env.connectAndJoin("driver", "main",
-		[]string{TopicTurnDone},
-		[]string{TopicMessageUser})
-
-	delivered := readMsg(t, driver)
-	if !isUserMessage(&delivered) || messageText(&delivered) != "first" {
-		t.Fatalf("expected queued first message after driver join, got %+v", delivered)
-	}
-	if got := sess.PendingInputCount(); got != 0 {
-		t.Fatalf("pending input count after driver join = %d, want 0", got)
-	}
-	if !sess.IsBusy() {
-		t.Fatal("session should be busy after queued input dispatch")
-	}
-}
-
-func TestQueuedFollowUpBroadcastsBackToOriginalSenderWhenDispatched(t *testing.T) {
-	hub := NewHub(nil, nil)
-	gateway := addCaptureClient(t, hub, "gateway", "main", []string{TopicMessageUser}, nil)
-	driver := addCaptureClient(t, hub, "driver", "main", []string{TopicMessageUser}, nil)
-	queued := userMessage("queued")
-	queued.Session = "main"
-	queued.TenantID = "default"
-
-	hub.dispatchQueuedInput("default", "main", queuedInput{message: &queued, exclude: gateway})
-
-	queuedEcho := waitForMessage(t, gateway.recvCh)
-	if !isUserMessage(queuedEcho) || messageText(queuedEcho) != "queued" {
-		t.Fatalf("expected queued message echo for original sender, got %+v", queuedEcho)
-	}
-	queuedForDriver := waitForMessage(t, driver.recvCh)
-	if !isUserMessage(queuedForDriver) || messageText(queuedForDriver) != "queued" {
-		t.Fatalf("expected queued message for driver, got %+v", queuedForDriver)
-	}
-}
-
-func TestTurnCancelClearsQueuedFollowUpMessages(t *testing.T) {
-	env := newTestEnv(t)
-	gateway := env.connectAndJoin("gateway", "main",
-		[]string{TopicMessageUser, TopicTurnCancel},
-		[]string{"error"})
-	driver := env.connectAndJoin("driver", "main",
-		[]string{TopicTurnDone},
-		[]string{TopicMessageUser, TopicTurnCancel})
-
-	writeJSON(t, gateway, userMessage("first"))
-	_ = readMsg(t, driver)
-	writeJSON(t, gateway, userMessage("queued"))
-
-	sess, ok := env.Hub.sessions.Get("main", "default")
-	if !ok {
-		t.Fatal("session main should exist")
-	}
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for sess.PendingInputCount() != 1 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if got := sess.PendingInputCount(); got != 1 {
-		t.Fatalf("pending input count before cancel = %d, want 1", got)
-	}
-
-	writeJSON(t, gateway, turnCancel())
-	_ = readMsg(t, driver)
-	if got := sess.PendingInputCount(); got != 0 {
-		t.Fatalf("pending input count after cancel = %d, want 0", got)
-	}
-
-	writeJSON(t, driver, turnDone())
-	if msg := readMsgTimeout(t, driver, 100*time.Millisecond); msg != nil {
-		t.Fatalf("queued follow-up should not dispatch after cancel, got %+v", *msg)
-	}
-}
-
-func TestTurnCancelUsesExplicitTargetSession(t *testing.T) {
-	env := newTestEnv(t)
-	gateway := env.connectAndJoin("gateway", "main", []string{TopicTurnCancel}, []string{"error"})
-	driver := env.connectAndJoin("driver", "other", []string{TopicTurnDone}, []string{TopicTurnCancel})
-
-	cancel := turnCancel()
-	cancel.Session = "other"
-	writeJSON(t, gateway, cancel)
-
-	routed := readMsg(t, driver)
-	if routed.Type != string(MsgEvent) || routed.Topic != TopicTurnCancel {
-		t.Fatalf("expected explicit-session cancel to reach other driver, got %+v", routed)
-	}
-}
-
-func TestQueuedMessagesPreserveEnvelope(t *testing.T) {
-	env := newTestEnv(t)
-	gateway := env.connectAndJoin("gateway", "main",
-		[]string{TopicMessageUser},
-		[]string{"error"})
-	driver := env.connectAndJoin("driver", "main",
-		[]string{TopicTurnDone},
-		[]string{TopicMessageUser})
-
-	writeJSON(t, gateway, userMessage("first"))
-	_ = readMsg(t, driver)
-
-	meta := json.RawMessage(`{"source":"timer","timer_id":"timer-1"}`)
-	queuedInput := userMessage("queued")
-	queuedInput.ID = "timer-1"
-	queuedInput.Meta = meta
-	writeJSON(t, gateway, queuedInput)
-	writeJSON(t, driver, turnDone())
-
-	queued := readMsg(t, driver)
-	if queued.ID != "timer-1" || !isUserMessage(&queued) || messageText(&queued) != "queued" {
-		t.Fatalf("queued message envelope not preserved: %+v meta=%s", queued, string(queued.Meta))
-	}
-	var gotMeta map[string]any
-	if err := json.Unmarshal(queued.Meta, &gotMeta); err != nil {
-		t.Fatalf("queued message meta is invalid: %v", err)
-	}
-	if gotMeta["source"] != "timer" || gotMeta["timer_id"] != "timer-1" {
-		t.Fatalf("queued message user meta not preserved: %+v", gotMeta)
-	}
-	if _, ok := gotMeta["kernel"].(map[string]any); !ok {
-		t.Fatalf("queued message missing kernel meta: %+v", gotMeta)
-	}
-}
-
-func TestTurnSteerBypassesSessionQueueDuringActiveTurn(t *testing.T) {
-	env := newTestEnv(t)
-	gateway := env.connectAndJoin("gateway", "main",
-		[]string{TopicMessageUser, TopicTurnSteer},
-		[]string{"error"})
-	driver := env.connectAndJoin("driver", "main",
-		[]string{TopicTurnDone},
-		[]string{TopicMessageUser, TopicTurnSteer})
-
-	writeJSON(t, gateway, userMessage("first"))
-	_ = readMsg(t, driver)
-
-	steer := turnSteer("steer now")
-	steer.ID = "steer-1"
-	writeJSON(t, gateway, steer)
-
-	routed := readMsg(t, driver)
-	if routed.Type != string(MsgEvent) || routed.Topic != TopicTurnSteer || routed.ID != "steer-1" || messageText(&routed) != "steer now" {
-		t.Fatalf("expected steer to bypass queue, got %+v", routed)
-	}
-
-	writeJSON(t, driver, turnDone())
-	if msg := readMsgTimeout(t, driver, 100*time.Millisecond); msg != nil {
-		t.Fatalf("steer should not be redispatched after turn.done, got %+v", *msg)
-	}
-}
-
-func TestTurnSteerWaitsForActiveToolCallToFinish(t *testing.T) {
-	hub := NewHub(nil, nil)
-	gateway := addTenantCaptureClient(t, hub, "default", "gateway", "main", nil, nil)
-	driver := addTenantCaptureClient(t, hub, "default", "driver", "main", []string{TopicTurnSteer}, nil)
-
-	hub.recordToolStarted("default", "main", "tool-1", "subagent_spawn")
-	steer := turnSteer("after tool")
-	steer.ID = "steer-1"
-	hub.handleTurnSteer(gateway, &steer)
-
-	if msg := readCaptureMessageTimeout(driver.recvCh, 100*time.Millisecond); msg != nil {
-		t.Fatalf("steer should wait while tool call is active, got %+v", msg)
-	}
-
-	hub.recordToolTerminal("default", "main", "tool-1", "subagent_spawn", "completed")
-	msg := waitForMessage(t, driver.recvCh)
-	if msg.Topic != TopicTurnSteer || msg.ID != "steer-1" || messageText(msg) != "after tool" {
-		t.Fatalf("expected deferred steer after tool terminal, got %+v", msg)
 	}
 }
 
@@ -1724,7 +1309,7 @@ func TestGoroutineLeaks(t *testing.T) {
 	env := newTestEnv(t)
 	for i := 0; i < 5; i++ {
 		c := env.connectAndJoin(fmt.Sprintf("c%d", i), "main",
-			[]string{TopicMessageUser}, []string{TopicMessageUser})
+			[]string{testExtensionTopic}, []string{testExtensionTopic})
 		c.Close()
 	}
 	time.Sleep(500 * time.Millisecond)
@@ -1876,35 +1461,24 @@ func TestMaxClients(t *testing.T) {
 	}
 }
 
-// --- Protocol version and message validation tests ---
+// --- Protocol v4 validation tests ---
 
-func TestProtocolVersionInConnectedResponse(t *testing.T) {
-	env := newTestEnv(t)
-	_, msg := env.connectAck("versioned-client", []string{TopicMessageUser}, []string{TopicSessionInit})
-	if msg.Type != string(MsgHelloAck) {
-		t.Fatalf("expected hello_ack, got %s", msg.Type)
-	}
-	if msg.V != ProtocolVersion {
-		t.Errorf("expected version %d, got %d", ProtocolVersion, msg.V)
-	}
-}
-
-func TestLegacyClientRejected(t *testing.T) {
+func TestProtocolV3ClientRejected(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.dial()
 	// Version 0 (omitted) — must be rejected; clients must declare PROTOCOL_VERSION.
 	writeRawJSON(t, conn, map[string]any{
-		"type": string(MsgHello),
+		"type": "hello",
 		"data": map[string]any{
 			"name":        "legacy-client",
-			"send_topics": []string{TopicMessageUser},
+			"send_topics": []string{testExtensionTopic},
 		},
 	})
 	msg := readMsg(t, conn)
 	if msg.Type != "error" {
 		t.Fatalf("expected error for missing protocol version, got %s", msg.Type)
 	}
-	if !strings.Contains(msg.Text, "unsupported protocol version") {
+	if !strings.Contains(msg.Text, "unknown field \"type\"") {
 		t.Errorf("unexpected error text: %q", msg.Text)
 	}
 }
@@ -1919,103 +1493,15 @@ func writeRawJSON(t *testing.T, conn *websocket.Conn, v any) {
 func TestUnsupportedProtocolVersionRejected(t *testing.T) {
 	env := newTestEnv(t)
 	conn := env.dial()
-	writeJSON(t, conn, Message{
-		V:    999, // future incompatible version
-		Type: string(MsgHello),
-		Data: mustMarshalRaw(map[string]any{
-			"name":        "future-client",
-			"send_topics": []string{TopicMessageUser},
-			"auth_token":  env.Token,
-		}),
+	writeRawJSON(t, conn, ClientEnvelope{
+		V: 999, Kind: "command", Op: "connection.open", ID: "future-client",
+		Data: mustMarshalRaw(map[string]any{"name": "future-client", "auth_token": env.Token, "meta": map[string]any{}}),
 	})
 	msg := readMsg(t, conn)
 	if msg.Type != "error" {
 		t.Fatalf("expected error for unsupported version, got %s", msg.Type)
 	}
-	if !strings.Contains(msg.Text, "unsupported protocol version") {
+	if !strings.Contains(msg.Text, "v must be 4") {
 		t.Errorf("unexpected error text: %q", msg.Text)
-	}
-}
-
-func TestValidateMessageMissingType(t *testing.T) {
-	err := validateMessage(&Message{})
-	if err == nil {
-		t.Fatal("expected error for missing type")
-	}
-	if !strings.Contains(err.Error(), "missing message type") {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-func TestValidateHelloMissingName(t *testing.T) {
-	err := validateMessage(&Message{V: ProtocolVersion, Type: string(MsgHello), Data: mustMarshalRaw(map[string]any{})})
-	if err == nil {
-		t.Fatal("expected error for hello without name")
-	}
-	if !strings.Contains(err.Error(), "missing name") {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-func TestValidateJoinMissingSession(t *testing.T) {
-	err := validateMessage(&Message{V: ProtocolVersion, Type: "join"})
-	if err == nil {
-		t.Fatal("expected error for join without session")
-	}
-	if !strings.Contains(err.Error(), "missing session") {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-func TestValidateToolCallMissingFields(t *testing.T) {
-	err := validateMessage(&Message{V: ProtocolVersion, Type: string(MsgRequest), Topic: TopicToolCall})
-	if err == nil {
-		t.Fatal("expected error for tool.call without id/name")
-	}
-	if !strings.Contains(err.Error(), "missing id") {
-		t.Errorf("unexpected error: %v", err)
-	}
-
-	err = validateMessage(&Message{V: ProtocolVersion, Type: string(MsgRequest), Topic: TopicToolCall, ID: "t1"})
-	if err == nil {
-		t.Fatal("expected error for tool.call without name")
-	}
-	if !strings.Contains(err.Error(), "missing name") {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-func TestValidateHookReplyMissingFields(t *testing.T) {
-	err := validateMessage(&Message{V: ProtocolVersion, Type: "hook_reply"})
-	if err == nil {
-		t.Fatal("expected error for hook_reply without id/action")
-	}
-	if !strings.Contains(err.Error(), "missing id") {
-		t.Errorf("unexpected error: %v", err)
-	}
-
-	err = validateMessage(&Message{V: ProtocolVersion, Type: "hook_reply", ID: "h1"})
-	if err == nil {
-		t.Fatal("expected error for hook_reply without action")
-	}
-	if !strings.Contains(err.Error(), "missing action") {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-func TestValidateValidMessages(t *testing.T) {
-	valid := []*Message{
-		{V: ProtocolVersion, Type: string(MsgHello), Data: mustMarshalRaw(map[string]any{"name": "test", "send_topics": []string{TopicMessageUser}})},
-		{V: ProtocolVersion, Type: "join", Session: "main"},
-		{V: ProtocolVersion, Type: string(MsgEvent), Topic: TopicMessageUser, Data: mustMarshalRaw(map[string]any{"text": "hello"})},
-		{V: ProtocolVersion, Type: string(MsgRequest), Topic: TopicToolCall, ID: "t1", Name: "shell_exec"},
-		{V: ProtocolVersion, Type: "hook_reply", ID: "h1", Action: "pass"},
-		{V: ProtocolVersion, Type: string(MsgEvent), Topic: TopicTurnDone},
-		{V: ProtocolVersion, Type: string(MsgEvent), Topic: TopicTurnCancel},
-	}
-	for _, msg := range valid {
-		if err := validateMessage(msg); err != nil {
-			t.Errorf("expected valid message %+v, got error: %v", msg, err)
-		}
 	}
 }

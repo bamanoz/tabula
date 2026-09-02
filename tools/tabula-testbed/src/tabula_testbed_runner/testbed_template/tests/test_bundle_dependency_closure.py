@@ -16,11 +16,8 @@ class BundleDependencyClosureSmoke(unittest.TestCase):
 
     def test_capability_executes_transitively_installed_dependency(self) -> None:
         with TestbedClient(self.url, name="testbed-bundle-dependency") as client:
-            client.connect_join("testbed-bundle-dependency")
-            client.wait_tools(
-                {"dependency_capability_status", "testbed_echo"},
-                session="testbed-bundle-dependency",
-            )
+            client.connect()
+            client.create_session("testbed-bundle-dependency")
             capability = client.call_tool("dependency_capability_status", {}, timeout=10).json()
             dependency = client.call_tool("testbed_echo", {"text": "transitive"}, timeout=10).json()
 

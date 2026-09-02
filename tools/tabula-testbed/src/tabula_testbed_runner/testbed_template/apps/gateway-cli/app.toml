@@ -1,9 +1,0 @@
-id = "gateway-cli"
-name = "Testbed Gateway CLI"
-version = "0.1.0"
-runtime = "python"
-entry = "run.py"
-
-[bus]
-sends = ["message", "tool_use"]
-receives = ["init", "message", "tool_result", "error"]

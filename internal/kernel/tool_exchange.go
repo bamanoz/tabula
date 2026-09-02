@@ -7,7 +7,8 @@ import (
 	khooks "github.com/bamanoz/tabula/internal/kernel/hooks"
 )
 
-func (s *ToolService) suspendForExchange(tenantID, session, toolID, toolName string, input, meta json.RawMessage, turnCorrelationID string, blocked *khooks.DispatchDecision) {
+func (s *ToolService) suspendForExchange(tenantID, session, toolID, toolName string, input, meta json.RawMessage, correlation toolAttemptContext, blocked *khooks.DispatchDecision) {
+	turnCorrelationID := correlation.TurnCorrelationID
 	exchangeID := exchangeIDFromPayload(blocked.Payload)
 	if exchangeID == "" {
 		exchangeID = generateExchangeID()
@@ -25,13 +26,14 @@ func (s *ToolService) suspendForExchange(tenantID, session, toolID, toolName str
 		Input:             append(json.RawMessage(nil), input...),
 		Meta:              append(json.RawMessage(nil), meta...),
 		TurnCorrelationID: turnCorrelationID,
+		AttemptContext:    correlation,
 	}
 	s.mu.Lock()
 	s.pendingCalls[exchangeID] = pending
 	s.mu.Unlock()
 	s.hub.Logger.Info("tool call suspended for exchange", "exchange_id", exchangeID, "tool", toolName, "tool_call_id", toolID, "turn_correlation_id", turnCorrelationID, "tenant_id", tenantID, "session", session)
-	s.hub.recordToolSuspended(tenantID, session, toolID, toolName, exchangeID)
-	s.hub.broadcastToSession(tenantID, session, "tool.suspended", &Message{Type: string(MsgEvent), Topic: "tool.suspended", ID: toolID, Name: toolName, Data: mustMarshalRaw(map[string]any{"exchange_id": exchangeID, "tool_call_id": toolID, "tool": toolName, "reason": blocked.Reason})}, nil)
+	s.hub.recordToolSuspended(tenantID, session, toolID, toolName, exchangeID, correlation)
+	s.hub.broadcastToSession(tenantID, session, "tool.suspended", &BusMessage{Type: string(MsgEvent), Topic: "tool.suspended", ID: toolID, Name: toolName, Data: mustMarshalRaw(map[string]any{"exchange_id": exchangeID, "tool_call_id": toolID, "tool": toolName, "reason": blocked.Reason})}, nil)
 	s.hub.requestExchangeForPendingTool(pending, blocked)
 }
 
@@ -46,7 +48,12 @@ func (s *ToolService) resolvePendingExchange(exchangeID string) bool {
 		return false
 	}
 	releaseBlockedHookDecision(pending.BlockedDecision)
-	s.hub.broadcastToSession(pending.TenantID, pending.Session, "tool.resumed", &Message{Type: string(MsgEvent), Topic: "tool.resumed", ID: pending.ToolID, Name: pending.ToolName, Data: mustMarshalRaw(map[string]any{"exchange_id": exchangeID, "tool_call_id": pending.ToolID, "tool": pending.ToolName})}, nil)
+	if err := s.hub.validateToolAttempt(pending.TenantID, pending.Session, pending.AttemptContext); err != nil {
+		s.hub.Logger.Warn("stale suspended tool exchange rejected", "exchange_id", exchangeID, "tool", pending.ToolName, "tool_call_id", pending.ToolID, "turn_id", pending.AttemptContext.TurnID, "attempt_id", pending.AttemptContext.AttemptID, "driver_generation", pending.AttemptContext.DriverGeneration, "err", err)
+		s.hub.recordToolTerminal(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, "fenced", pending.AttemptContext)
+		return true
+	}
+	s.hub.broadcastToSession(pending.TenantID, pending.Session, "tool.resumed", &BusMessage{Type: string(MsgEvent), Topic: "tool.resumed", ID: pending.ToolID, Name: pending.ToolName, Data: mustMarshalRaw(map[string]any{"exchange_id": exchangeID, "tool_call_id": pending.ToolID, "tool": pending.ToolName})}, nil)
 
 	inputWithReply := markToolInputExchangeReply(pending.Input, pending.ExchangeReply)
 	hookPayload, _ := json.Marshal(map[string]any{
@@ -56,19 +63,19 @@ func (s *ToolService) resolvePendingExchange(exchangeID string) bool {
 	effectiveInput := inputFromToolHookPayload(effectivePayload, inputWithReply)
 	if blocked != nil {
 		if blocked.Pending {
-			s.suspendForExchange(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, effectiveInput, pending.Meta, pending.TurnCorrelationID, blocked)
+			s.suspendForExchange(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, effectiveInput, pending.Meta, pending.AttemptContext, blocked)
 			return true
 		}
 		s.hub.Logger.Warn("tool call blocked by policy after exchange", "tool", pending.ToolName, "tool_call_id", pending.ToolID, "turn_correlation_id", pending.TurnCorrelationID, "tenant_id", pending.TenantID, "session", pending.Session, "input_bytes", len(pending.Input))
-		s.hub.sendToolResultForTool(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, buildNotInvokedToolResult(blocked), nil, false)
+		s.hub.sendToolResultForTool(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, buildNotInvokedToolResult(blocked), nil, false, pending.AttemptContext)
 		return true
 	}
 	if !ok {
-		s.hub.sendToolResultForTool(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, buildNotInvokedToolResult(&khooks.DispatchDecision{Reason: "tool hook dispatch did not complete after exchange"}), nil, false)
+		s.hub.sendToolResultForTool(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, buildNotInvokedToolResult(&khooks.DispatchDecision{Reason: "tool hook dispatch did not complete after exchange"}), nil, false, pending.AttemptContext)
 		return true
 	}
 	s.broadcastFinalizedToolCall(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, effectiveInput, pending.Meta, nil)
-	s.handleDynamicToolWithMeta(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, effectiveInput, pending.Meta, pending.TurnCorrelationID)
+	s.handleDynamicToolWithAttempt(pending.TenantID, pending.Session, pending.ToolID, pending.ToolName, effectiveInput, pending.Meta, pending.AttemptContext)
 	return true
 }
 

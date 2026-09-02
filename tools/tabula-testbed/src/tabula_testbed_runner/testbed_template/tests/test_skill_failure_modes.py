@@ -14,13 +14,12 @@ class SkillFailureModesSmoke(unittest.TestCase):
 
     def make_client(self, name: str, session: str = "testbed-skill-failure") -> TestbedClient:
         client = TestbedClient(self.url, name=name)
-        client.connect_join(session)
+        client.connect()
+        client.create_session(session)
         return client
 
     def test_nonzero_and_sdk_failure_envelopes_surface_to_caller(self):
         with self.make_client("testbed-skill-failure") as client:
-            client.wait_tools({"testbed_fail", "testbed_cold_python_sdk_fail", "testbed_cold_node"}, session="testbed-skill-failure")
-
             nonzero = client.call_tool("testbed_fail", {"message": "boom"}, timeout=10).json()
             self.assertEqual(nonzero, {"ok": False, "error": "boom"})
 
@@ -33,7 +32,6 @@ class SkillFailureModesSmoke(unittest.TestCase):
 
     def test_timed_out_skill_call_returns_timeout(self):
         with self.make_client("testbed-skill-timeout") as client:
-            client.wait_tools({"testbed_cold_python_hang"}, session="testbed-skill-failure")
             timed_out = client.call_tool("testbed_cold_python_hang", {"sleep_ms": 30000}, timeout=35).output
             self.assertIn("ERROR: invoke timed out", timed_out)
 

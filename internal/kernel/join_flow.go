@@ -19,12 +19,17 @@ type joinPlan struct {
 	tenantID      string
 	clientMeta    json.RawMessage
 	context       string
-	joined        *Message
-	memberJoined  *Message
+	joined        *BusMessage
+	memberJoined  *BusMessage
 	blockedReason string
 }
 
-// buildJoinPlan resolves session_start policy and prepares protocol-visible join messages.
+func (h *Hub) handleJoin(c *Client, msg *BusMessage) {
+	plan := h.buildJoinPlan(c, msg.Session, msg.TenantID)
+	h.applyJoinPlan(c, plan)
+}
+
+// buildJoinPlan resolves session_start policy and prepares extension-visible join messages.
 func (h *Hub) buildJoinPlan(c *Client, session, tenantID string) joinPlan {
 	tenantID = strings.TrimSpace(tenantID)
 	if tenantID == "" {
@@ -34,12 +39,12 @@ func (h *Hub) buildJoinPlan(c *Client, session, tenantID string) joinPlan {
 		session:    session,
 		tenantID:   tenantID,
 		clientMeta: append(json.RawMessage(nil), c.meta...),
-		joined: &Message{
+		joined: &BusMessage{
 			Type:     string(MsgJoined),
 			Session:  session,
 			TenantID: tenantID,
 		},
-		memberJoined: &Message{
+		memberJoined: &BusMessage{
 			Type:    string(MsgEvent),
 			Topic:   TopicSessionMemberJoined,
 			Name:    c.name,
@@ -53,7 +58,7 @@ func (h *Hub) buildJoinPlan(c *Client, session, tenantID string) joinPlan {
 
 func (h *Hub) applyJoinPlan(c *Client, plan joinPlan) {
 	if plan.blockedReason != "" {
-		c.SendMsg(&Message{
+		c.SendMsg(&BusMessage{
 			Type: string(MsgError),
 			Text: plan.blockedReason,
 		})
@@ -78,11 +83,6 @@ func (h *Hub) applyJoinPlan(c *Client, plan joinPlan) {
 	h.resendPendingSuspendedExchanges(c, plan.tenantID, plan.session)
 
 	h.policy.SessionJoin(plan.session, plan.tenantID, c.name, plan.clientMeta)
-	if c.canReceive(TopicMessageUser) && c.canSend(TopicTurnDone) {
-		if queued, ok := h.beginQueuedInput(plan.tenantID, plan.session); ok {
-			h.dispatchQueuedInput(plan.tenantID, plan.session, queued)
-		}
-	}
 }
 
 func (h *Hub) leaveCurrentSession(c *Client, nextTenantID, nextSession string) {
@@ -118,9 +118,6 @@ func (h *Hub) finalizeJoinPlan(c *Client, plan *joinPlan) {
 	}
 	if h.sessions != nil {
 		sess, created := h.sessions.GetOrCreateStatus(plan.session, plan.tenantID)
-		if created {
-			h.observePersistedSessionRestart(sess)
-		}
 		sess.AddClient(c.name)
 		sess.BindPreferredRuntime(clientmeta.Decode(c.meta).RuntimeID)
 		if created {
@@ -147,7 +144,7 @@ func (h *Hub) finalizeJoinPlan(c *Client, plan *joinPlan) {
 
 }
 
-func (h *Hub) buildInitAfterJoin(c *Client, plan joinPlan) *Message {
+func (h *Hub) buildInitAfterJoin(c *Client, plan joinPlan) *BusMessage {
 	if !c.canReceive(TopicSessionInit) {
 		return nil
 	}
@@ -157,8 +154,8 @@ func (h *Hub) buildInitAfterJoin(c *Client, plan joinPlan) *Message {
 	return h.initMessage(context, tools, meta)
 }
 
-func (h *Hub) initMessage(context string, tools json.RawMessage, meta json.RawMessage) *Message {
-	msg := &Message{
+func (h *Hub) initMessage(context string, tools json.RawMessage, meta json.RawMessage) *BusMessage {
+	msg := &BusMessage{
 		Type:    string(MsgEvent),
 		Topic:   TopicSessionInit,
 		Context: context,

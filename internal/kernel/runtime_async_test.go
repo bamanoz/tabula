@@ -44,21 +44,59 @@ func TestHubRuntimeAsyncSinkRedactsStructuredPluginLogFields(t *testing.T) {
 	}
 }
 
-func TestBusMessagePreservesMessageEnvelopeFields(t *testing.T) {
-	msg := busMessage(TopicMessageUser, "sess-1", json.RawMessage(`{"id":"msg-1","text":"hello","meta":{"source":"sessions"}}`))
+func TestDriverLifecycleLogIncludesExitDiagnostics(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	hub := NewHub(json.RawMessage(`[]`), logger)
+	hub.runtimes = NewRuntimeRegistry()
+	if err := hub.runtimes.Configure(
+		[]runtimeconfig.Definition{{ID: "local", Backend: "local"}},
+		map[string]runtimeconfig.Binding{"alpha": {AllowedRuntimes: []string{"local"}, DefaultRuntime: "local"}},
+	); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	if err := hub.runtimes.RegisterHello("local", runtimemock.New(), nil, 0, []string{"alpha"}); err != nil {
+		t.Fatalf("RegisterHello: %v", err)
+	}
 
-	if msg.ID != "msg-1" {
-		t.Fatalf("ID = %q, want msg-1", msg.ID)
+	if err := (hubRuntimeAsyncSink{hub: hub}).DriverLifecycleNoticed("local", wire.DriverLifecycle{
+		TenantID:          "alpha",
+		SessionID:         "session-1",
+		ComponentID:       "driver",
+		DesiredGeneration: 3,
+		DriverInstanceID:  "drv-1",
+		State:             wire.DriverLifecycleExited,
+		ExitCode:          1,
+		Message:           "worker stderr captured: RuntimeError",
+	}); err != nil {
+		t.Fatalf("DriverLifecycleNoticed: %v", err)
 	}
-	if messageText(msg) != "hello" {
-		t.Fatalf("Text = %q, want hello", messageText(msg))
+
+	got := buf.String()
+	for _, want := range []string{
+		"driver process lifecycle",
+		"tenant_id=alpha",
+		"session_id=session-1",
+		"driver_instance_id=drv-1",
+		"state=exited",
+		"exit_code=1",
+		`diagnostic="worker stderr captured: RuntimeError"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected log output to contain %q, got %q", want, got)
+		}
 	}
-	var meta map[string]string
-	if err := json.Unmarshal(msg.Meta, &meta); err != nil {
-		t.Fatalf("unmarshal meta: %v", err)
+}
+
+func TestBusMessagePreservesExtensionPayload(t *testing.T) {
+	payload := json.RawMessage(`{"id":"msg-1","text":"hello","meta":{"source":"sessions"}}`)
+	msg := busMessage(testExtensionTopic, "sess-1", payload)
+
+	if msg.Type != testExtensionTopic || msg.Session != "sess-1" {
+		t.Fatalf("unexpected extension envelope: %+v", msg)
 	}
-	if meta["source"] != "sessions" {
-		t.Fatalf("meta[source] = %q, want sessions", meta["source"])
+	if string(msg.Payload) != string(payload) {
+		t.Fatalf("payload = %s, want %s", msg.Payload, payload)
 	}
 }
 

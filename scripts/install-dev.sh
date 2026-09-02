@@ -109,11 +109,10 @@ fi
 "$VENV/bin/pip" install -q -e "$REPO_ROOT/tools/tabula-distro"
 echo "    Python dependencies installed"
 
-# Record the local platform venv for host-side launch scripts. Docker falls
-# back to $TABULA_HOME/.venv when this path does not exist inside the container.
-if [ ! -f "$TABULA_HOME/.env" ] || ! grep -qF 'TABULA_VENV=' "$TABULA_HOME/.env"; then
-  printf 'TABULA_VENV=%s\n' "$VENV" >> "$TABULA_HOME/.env"
-fi
+# Record the local platform venv and executable search path for managed runtime
+# workers. Refresh installer-owned entries while preserving every other value.
+TABULA_PATH_VALUE="$VENV/bin:$BIN_DIR:$PATH"
+"$SCRIPT_DIR/write-runtime-env.sh" "$TABULA_HOME/.env" "$VENV" "$TABULA_PATH_VALUE"
 
 # Go binaries
 echo "==> Building Go binaries"
@@ -151,8 +150,6 @@ fi
 
 PATH_LINE="export PATH=\"$TABULA_HOME/bin:\$PATH\""
 HOME_LINE="export TABULA_HOME=\"$TABULA_HOME\""
-TABULA_PATH_VALUE="$TABULA_HOME/.venv/bin:$TABULA_HOME/bin:$PATH"
-TABULA_PATH_VALUE="$VENV/bin:$TABULA_HOME/bin:$PATH"
 TABULA_PATH_LINE="export TABULA_PATH=\"$TABULA_PATH_VALUE\""
 
 if [ -n "$SHELL_RC" ]; then

@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 
+	"github.com/bamanoz/tabula/internal/agent"
 	runtimeauth "github.com/bamanoz/tabula/internal/runtime/auth"
 	"github.com/bamanoz/tabula/internal/runtime/codec"
 	runtimeconn "github.com/bamanoz/tabula/internal/runtime/conn"
 	"github.com/bamanoz/tabula/internal/runtime/wire"
+	"github.com/bamanoz/tabula/internal/tenant"
 )
 
 // RuntimeAttachOptions configures the authenticated Runtime API listener path.
@@ -19,11 +22,16 @@ type RuntimeAttachOptions struct {
 	RuntimePIDFunc func(runtimeID string) int
 }
 
+type runtimeReconciliation struct {
+	attachmentDone <-chan struct{}
+	cancel         context.CancelFunc
+}
+
 // ServeAuthenticatedRuntime validates the first Hello frame, writes HelloAck,
 // registers the accepted runtime in the Hub read model, and then watches the
 // post-handshake stream until it disconnects. M2-07 will promote the attached
 // connection from read-model evidence to plugin dispatch routing.
-func (h *Hub) ServeAuthenticatedRuntime(ctx context.Context, c *codec.Conn, opts RuntimeAttachOptions) error {
+func (h *Hub) ServeAuthenticatedRuntime(ctx context.Context, c *codec.Conn, opts RuntimeAttachOptions) (err error) {
 	if h == nil {
 		return fmt.Errorf("kernel: nil Hub")
 	}
@@ -56,39 +64,167 @@ func (h *Hub) ServeAuthenticatedRuntime(ctx context.Context, c *codec.Conn, opts
 	}
 	attachedConn := runtimeconn.NewWithSink(c, hello.RuntimeID, h.runtimeAsyncSink())
 	defer attachedConn.Close()
-	runtimePID := opts.RuntimePID
-	if opts.RuntimePIDFunc != nil {
-		runtimePID = opts.RuntimePIDFunc(hello.RuntimeID)
+	registered := false
+	setupErr := func() error {
+		unlock := h.lockRuntimeLifecycle(hello.RuntimeID)
+		defer unlock()
+
+		runtimePID := opts.RuntimePID
+		if opts.RuntimePIDFunc != nil {
+			runtimePID = opts.RuntimePIDFunc(hello.RuntimeID)
+		}
+		if registerErr := h.runtimes.RegisterHello(hello.RuntimeID, attachedConn, hello.Capabilities, runtimePID, hello.TenantsServed); registerErr != nil {
+			return registerErr
+		}
+		registered = true
+		for _, capability := range hello.Capabilities {
+			h.syncRuntimeCapability(hello.RuntimeID, capability)
+		}
+		h.rebuildHookIndex()
+		if runtimeCapabilitiesHaveHook(hello.Capabilities, "before_prompt_build") {
+			h.scheduleRuntimeCatalogRefreshForTenants(hello.TenantsServed, true)
+		}
+		return nil
+	}()
+	if registered {
+		defer func() {
+			h.detachRuntimeConnection(context.WithoutCancel(ctx), hello.RuntimeID, attachedConn.Done(), opts.Logger, err)
+		}()
 	}
-	if err := h.runtimes.RegisterHello(hello.RuntimeID, attachedConn, hello.Capabilities, runtimePID, hello.TenantsServed); err != nil {
-		return err
+	if setupErr != nil {
+		return setupErr
 	}
-	for _, capability := range hello.Capabilities {
-		h.syncRuntimeCapability(hello.RuntimeID, capability)
-	}
-	h.rebuildHookIndex()
-	if runtimeCapabilitiesHaveHook(hello.Capabilities, "before_prompt_build") {
-		h.scheduleRuntimeCatalogRefreshForTenants(hello.TenantsServed, true)
-	}
+	h.startRuntimeReconciliation(ctx, hello.RuntimeID, hello.TenantsServed, attachedConn.Done())
 	if opts.Logger != nil {
 		opts.Logger.Info("runtime attached", "runtime_id", hello.RuntimeID)
 	}
 	select {
 	case <-attachedConn.Done():
-		err = nil
+		return nil
 	case <-ctx.Done():
-		err = ctx.Err()
+		return ctx.Err()
 	}
-	tenants := h.runtimes.TenantsServed(hello.RuntimeID)
-	rebuildContext := h.runtimeHasHook(hello.RuntimeID, "before_prompt_build")
-	h.runtimes.MarkDetached(hello.RuntimeID, err)
-	removedTools := h.removeRuntimeTools(hello.RuntimeID)
+}
+
+func (h *Hub) startRuntimeReconciliation(ctx context.Context, runtimeID string, tenantsServed []string, attachmentDone <-chan struct{}) {
+	driverSupervisor := h.driverSupervisor
+	execution := h.execution
+	tenantStore := h.tenants
+	if driverSupervisor == nil && execution == nil {
+		return
+	}
+	reconcileCtx, cancel := context.WithCancel(ctx)
+	reconciliation := &runtimeReconciliation{
+		attachmentDone: attachmentDone,
+		cancel:         cancel,
+	}
+	h.runtimeReconcileMu.Lock()
+	if h.runtimeReconcile == nil {
+		h.runtimeReconcile = make(map[string]*runtimeReconciliation)
+	}
+	previous := h.runtimeReconcile[runtimeID]
+	h.runtimeReconcile[runtimeID] = reconciliation
+	h.runtimeReconcileMu.Unlock()
+	if previous != nil {
+		previous.cancel()
+	}
+	go func() {
+		defer h.finishRuntimeReconciliation(runtimeID, reconciliation)
+		h.reconcileAttachedRuntime(reconcileCtx, runtimeID, tenantsServed, tenantStore, driverSupervisor, execution)
+	}()
+}
+
+func (h *Hub) reconcileAttachedRuntime(ctx context.Context, runtimeID string, tenantsServed []string, tenantStore tenant.Store, driverSupervisor *agent.DriverSupervisor, execution *ExecutionCoordinator) {
+	if tenantStore == nil {
+		h.logRuntimeReconciliationError(ctx, "runtime tenant reconciliation setup failed", runtimeID, fmt.Errorf("tenant store is not configured"))
+		return
+	}
+	tenants, err := tenantStore.List()
+	if err != nil {
+		h.logRuntimeReconciliationError(ctx, "runtime tenant reconciliation setup failed", runtimeID, err)
+		return
+	}
+	tenantIDs := make([]string, 0, len(tenants))
+	for _, tenant := range tenants {
+		if runtimeServesTenant(tenantsServed, tenant.ID) {
+			tenantIDs = append(tenantIDs, tenant.ID)
+		}
+	}
+	if driverSupervisor != nil {
+		if err := driverSupervisor.ReconcileRuntime(ctx, tenantIDs, runtimeID); err != nil {
+			h.logRuntimeReconciliationError(ctx, "runtime driver reconciliation failed", runtimeID, err)
+		}
+	}
+	if execution != nil {
+		if err := execution.ReconcileRuntime(ctx, tenantIDs, runtimeID); err != nil {
+			h.logRuntimeReconciliationError(ctx, "runtime execution reconciliation failed", runtimeID, err)
+		}
+	}
+}
+
+func (h *Hub) logRuntimeReconciliationError(ctx context.Context, message, runtimeID string, err error) {
+	if ctx.Err() == nil && h.Logger != nil {
+		h.Logger.Warn(message, "runtime_id", runtimeID, "error", err)
+	}
+}
+
+func (h *Hub) finishRuntimeReconciliation(runtimeID string, reconciliation *runtimeReconciliation) {
+	h.runtimeReconcileMu.Lock()
+	if h.runtimeReconcile[runtimeID] == reconciliation {
+		delete(h.runtimeReconcile, runtimeID)
+	}
+	h.runtimeReconcileMu.Unlock()
+}
+
+func (h *Hub) cancelRuntimeReconciliation(runtimeID string, attachmentDone <-chan struct{}) {
+	h.runtimeReconcileMu.Lock()
+	reconciliation := h.runtimeReconcile[runtimeID]
+	if reconciliation != nil && reconciliation.attachmentDone == attachmentDone {
+		delete(h.runtimeReconcile, runtimeID)
+	} else {
+		reconciliation = nil
+	}
+	h.runtimeReconcileMu.Unlock()
+	if reconciliation != nil {
+		reconciliation.cancel()
+	}
+}
+
+func (h *Hub) lockRuntimeLifecycle(runtimeID string) func() {
+	h.runtimeLifecycleMu.Lock()
+	lock := h.runtimeLifecycleLock[runtimeID]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		h.runtimeLifecycleLock[runtimeID] = lock
+	}
+	h.runtimeLifecycleMu.Unlock()
+	lock.Lock()
+	return lock.Unlock
+}
+
+func (h *Hub) detachRuntimeConnection(ctx context.Context, runtimeID string, done <-chan struct{}, logger *slog.Logger, cause error) {
+	unlock := h.lockRuntimeLifecycle(runtimeID)
+	defer unlock()
+	if !h.runtimes.AttachmentCurrent(runtimeID, done) {
+		return
+	}
+	h.cancelRuntimeReconciliation(runtimeID, done)
+	tenants := h.runtimes.TenantsServed(runtimeID)
+	if h.driverLeases != nil {
+		if disconnectErr := h.driverLeases.DisconnectRuntime(ctx, tenants, runtimeID); disconnectErr != nil && logger != nil {
+			logger.Warn("mark detached runtime driver leases suspect", "runtime_id", runtimeID, "tenants", tenants, "err", disconnectErr)
+		}
+	}
+	rebuildContext := h.runtimeHasHook(runtimeID, "before_prompt_build")
+	if !h.runtimes.MarkDetachedIfCurrent(runtimeID, done, cause) {
+		return
+	}
+	removedTools := h.removeRuntimeTools(runtimeID)
 	h.rebuildHookIndex()
 	h.scheduleRuntimeCatalogRefreshForTenants(tenants, rebuildContext)
-	if opts.Logger != nil {
-		opts.Logger.Warn("runtime detached", "runtime_id", hello.RuntimeID, "tenants", tenants, "removed_tools", removedTools, "err", err)
+	if logger != nil {
+		logger.Warn("runtime detached", "runtime_id", runtimeID, "tenants", tenants, "removed_tools", removedTools, "err", cause)
 	}
-	return err
 }
 
 // SnapshotRuntimes returns a JSON snapshot of Runtime API attachments.
@@ -125,7 +261,12 @@ func (h *Hub) DetachRuntimeForRevoke(runtimeID string) {
 	if h == nil || h.runtimes == nil {
 		return
 	}
+	unlock := h.lockRuntimeLifecycle(runtimeID)
+	defer unlock()
 	conn := h.runtimes.RuntimeConn(runtimeID)
+	if closer, ok := conn.(interface{ Done() <-chan struct{} }); ok {
+		h.cancelRuntimeReconciliation(runtimeID, closer.Done())
+	}
 	if conn != nil {
 		_ = conn.Close()
 	}

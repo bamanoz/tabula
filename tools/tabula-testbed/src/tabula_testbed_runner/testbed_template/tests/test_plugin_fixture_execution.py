@@ -17,7 +17,8 @@ class PluginFixtureExecutionSmoke(unittest.TestCase):
 
     def make_client(self, name: str, session: str = "testbed-plugin-fixture") -> TestbedClient:
         client = TestbedClient(self.url, name=name)
-        client.connect_join(session)
+        client.connect()
+        client.create_session(session)
         return client
 
     def assert_env_payload(self, payload: dict, _tool: str, plugin_name: str) -> None:
@@ -37,7 +38,7 @@ class PluginFixtureExecutionSmoke(unittest.TestCase):
         if os.name != "nt":
             expected["testbed_cold_bash"] = "testbed-cold-bash"
         with self.make_client("testbed-plugin-fixture") as client:
-            client.wait_tools(set(expected), session="testbed-plugin-fixture")
+
             for tool, plugin_name in expected.items():
                 payload = client.call_tool(tool, {"text": "first"}, timeout=10).json()
                 self.assert_env_payload(payload, tool, plugin_name)
@@ -45,7 +46,7 @@ class PluginFixtureExecutionSmoke(unittest.TestCase):
     def test_large_fixture_payload_survives_runtime_transport(self):
         requested = (1 << 20) + 8192
         with self.make_client("testbed-plugin-fixture-large") as client:
-            client.wait_tools({"tool_result_read", "testbed_cold_python_large"}, session="testbed-plugin-fixture")
+
             output = client.call_tool("testbed_cold_python_large", {"bytes": requested}, timeout=30).output
             self.assertTrue(output.startswith("large:"), len(output))
             self.assertNotIn("[truncated: runtime tool result exceeded", output)

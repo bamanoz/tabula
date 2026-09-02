@@ -36,8 +36,9 @@ class WorkspaceFSTenantDivergence(unittest.TestCase):
 
     def make_client(self, tenant_id: str) -> TestbedClient:
         client = TestbedClient(self.url, name=f"testbed-fs-{tenant_id}")
-        client.connect_join(f"testbed-fs-{tenant_id}", tenant_id=tenant_id)
-        client.wait_tools({"fs_read", "fs_write", "fs_glob"}, session=f"testbed-fs-{tenant_id}", tenant_id=tenant_id)
+        client.connect()
+        client.create_session(f"testbed-fs-{tenant_id}", tenant_id=tenant_id)
+
         return client
 
     def test_each_tenant_uses_its_own_workspace_root(self) -> None:

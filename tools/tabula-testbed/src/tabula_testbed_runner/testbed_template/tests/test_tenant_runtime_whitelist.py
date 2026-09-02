@@ -35,7 +35,8 @@ class TenantRuntimeWhitelistSmoke(unittest.TestCase):
 
     def make_client(self, name: str, session: str, tenant_id: str) -> TestbedClient:
         client = TestbedClient(self.url, name=name)
-        client.connect_join(session, tenant_id=tenant_id)
+        client.connect()
+        client.create_session(session, tenant_id=tenant_id)
         return client
 
     def status_json(self) -> dict:
@@ -46,14 +47,12 @@ class TenantRuntimeWhitelistSmoke(unittest.TestCase):
 
     def test_runtime_allows_alpha_and_rejects_beta_before_skill_execution(self) -> None:
         with self.make_client("testbed-whitelist-alpha", "testbed-whitelist-alpha", "alpha") as alpha:
-            alpha.wait_tools({"testbed_tenant_note"}, session="testbed-whitelist-alpha", tenant_id="alpha")
             result = alpha.call_tool("testbed_tenant_note", {"note": "alpha-ok"}, timeout=10).json()
             self.assertTrue(result["ok"], result)
             self.assertEqual(result["tenant_id"], "alpha", result)
 
         beta_state_path = Path(self.tabula_home) / "tenants" / "beta" / "state" / "skills" / "testbed-cold-python" / "tenant-note.txt"
         with self.make_client("testbed-whitelist-beta", "testbed-whitelist-beta", "beta") as beta:
-            beta.wait_tools({"testbed_tenant_note"}, session="testbed-whitelist-beta", tenant_id="beta")
             denied = beta.call_tool("testbed_tenant_note", {"note": "must-not-write"}, timeout=10)
 
         self.assertIn("ERROR:", denied.output)

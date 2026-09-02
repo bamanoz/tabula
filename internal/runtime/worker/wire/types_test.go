@@ -22,10 +22,32 @@ func TestWorkerFrameRoundTripEveryType(t *testing.T) {
 		&WorkerToolsUpdated{Op: OpToolsUpdated, Revision: 2, Tools: []runtimewire.ToolSpec{{Name: "run"}}, Removed: []string{"old_run"}},
 		&WorkerSend{Op: OpSend, Channel: "bus", Type: "worker_event", Payload: []byte(`{"ok":true}`)},
 		&WorkerLog{Op: OpLog, Level: "info", Message: "worker ready", Fields: []byte(`{"worker":1}`)},
-		&WorkerShutdown{Op: OpShutdown, Reason: "test"},
+		&WorkerShutdown{Op: OpShutdown, Reason: "test", Final: true},
 		&WorkerError{Op: OpError, Error: WorkerErrorBody{Code: "panic", Message: "boom"}},
 	}
 
+	for _, frame := range frames {
+		var buf bytes.Buffer
+		if err := WriteFrame(&buf, frame); err != nil {
+			t.Fatalf("WriteFrame(%T): %v", frame, err)
+		}
+		_, decoded, err := ReadFrame(bufio.NewReader(&buf))
+		if err != nil {
+			t.Fatalf("ReadFrame(%T): %v", frame, err)
+		}
+		if !reflect.DeepEqual(frame, decoded) {
+			t.Fatalf("round trip mismatch for %T\nwant: %#v\n got: %#v", frame, frame, decoded)
+		}
+	}
+}
+
+func TestWorkerToolFramesRoundTrip(t *testing.T) {
+	fence := runtimewire.DriverFence{DriverInstanceID: "driver", LeaseID: "lease", Generation: 2}
+	scope := WorkerAttemptScope{TenantID: "tenant", SessionID: "session", TurnID: "turn", AttemptID: "attempt", CorrelationID: "tool-1", TurnCorrelationID: "turn", Fence: fence, Generation: 2}
+	frames := []any{
+		&WorkerToolCall{Op: OpToolCall, WorkerAttemptScope: scope, ToolCallID: "call-1", Name: "search", Input: []byte(`{"query":"x"}`)},
+		&WorkerToolResult{Op: OpToolResult, WorkerAttemptScope: scope, ToolCallID: "call-1", Output: "found", Artifact: []byte(`{"ref":"a"}`), Truncated: true},
+	}
 	for _, frame := range frames {
 		var buf bytes.Buffer
 		if err := WriteFrame(&buf, frame); err != nil {

@@ -20,6 +20,7 @@ from tabula_testbed_runner.runner import (
     runtime_tenants_for_suites,
     selected_bundles,
     set_runtime_tenants,
+    stop_detached_plugin_processes,
     SuiteSpec,
     virtualenv_layout,
     verify_kernel_config,
@@ -56,6 +57,21 @@ class RunnerProtocolMarkerTests(unittest.TestCase):
             self.assertFalse(old.exists())
             self.assertTrue(current.exists())
             self.assertTrue(unrelated.exists())
+
+    def test_stop_detached_plugin_processes_stops_recorded_pids(self) -> None:
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            first = root / "run" / "plugins" / "gateway-api" / "gateway-api.pid"
+            second = root / "run" / "plugins" / "gateway-web" / "gateway-web.pid"
+            invalid = root / "run" / "plugins" / "broken" / "broken.pid"
+            for path, value in ((first, "123\n"), (second, "456\n"), (invalid, "not-a-pid\n")):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(value, encoding="utf-8")
+
+            with mock.patch("tabula_testbed_runner.runner.stop_process") as stop:
+                stop_detached_plugin_processes(root)
+
+            self.assertEqual([call.args[0] for call in stop.call_args_list], [123, 456])
 
     def test_component_filters_do_not_narrow_baseline_set_bundles(self) -> None:
         manifest = {

@@ -90,9 +90,9 @@ Current Tabula contracts already provide most lifecycle seams.
   `internal/kernel/policy.go:138` and `internal/kernel/helpers.go:122-148`.
 - ADR 0009 makes each project-scoped tenant pin one exact immutable distro
   generation and isolate config, sessions, state, cache, logs, and workers.
-- The collaboration bundle exports `tabula_session_sdk`; its ledger API is
-  implemented in
-  `tabula-bundles/collaboration/sessions/sdk/python/src/tabula_ledger/__init__.py:25-79`.
+- The extensions bundle exports `tabula_client_sdk`; protocol-v4 `session.get`,
+  `session.subscribe`, and `session.record.*` are the generic session read and
+  auxiliary-record surfaces for bundle consumers.
 - The productivity bundle already owns `cron`, `todo`, and `wait`; the async
   bundle owns deferred calls and tool-result artifacts. Their bundle manifests
   depend only on generic extension SDKs.
@@ -120,13 +120,13 @@ Current Tabula contracts already provide most lifecycle seams.
 Behavioral bundles have no dependency on one another:
 
 ```text
-continuity  -> extensions, collaboration
-activity    -> extensions, collaboration
-reflection  -> extensions, collaboration
-initiative  -> extensions, collaboration
+continuity  -> extensions
+activity    -> extensions
+reflection  -> extensions
+initiative  -> extensions
              optional: productivity, subagents, activity
 
-evolution   -> extensions, collaboration
+evolution   -> extensions
              required generic primitives when implemented:
                subagent orchestration SDK
                durable task/scheduling API
@@ -136,10 +136,10 @@ evolution   -> extensions, collaboration
              optional: reflection, activity, continuity
 ```
 
-`collaboration` is used only for generic tenant/session ledger access. A
-capability may replace that dependency with another generic event API if a later
-issue establishes one. No behavioral bundle may import another behavioral
-bundle's private package or state files.
+`tabula_client_sdk` is the generic tenant/session protocol surface. Behavioral
+capabilities reconstruct canonical transcript evidence from committed events and
+store bounded opaque diagnostics with session records when needed. No behavioral
+bundle may import another behavioral bundle's private package or state files.
 
 Bundle dependency declarations are transitive install contracts, not runtime
 service discovery. Optional integrations use capability discovery and degrade
@@ -421,8 +421,8 @@ candidate, known-good, or rollback APIs.
 **Recovery component:** `evolution-supervisor` runs outside candidate-mutated
 code. It owns activation marker reconciliation, health timeout, boot-loop
 counter, retained known-good release rollback, and recovery receipts. It does not own
-campaign strategy or code generation. Existing `tabula.guardian` remains an
-unrelated disposable test distro.
+campaign strategy or code generation. Existing test distros remain outside this
+scope.
 
 **Breakers:** evolution pauses on repeated failures, repeated identical
 non-progress objectives, unavailable accounting, budget reserve, active
@@ -558,7 +558,7 @@ or recovery regressions cannot be accepted with unit tests alone.
   of this architecture issue.
 - Porting Ouroboros prompts, constitution, identity, default goals, or product
   language into generic Tabula components.
-- Using `tabula.guardian` as evolution recovery infrastructure.
+- Using a product-specific distro as evolution recovery infrastructure.
 
 ## Approval
 

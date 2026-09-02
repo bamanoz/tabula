@@ -92,12 +92,11 @@ setups. The kernel is not the product. The assembled environment is.
 
 ## Built-in distros
 
-Tabula currently ships three distros in the
+Tabula currently ships two distros in the
 [`tabula-distrib`](https://github.com/bamanoz/tabula-distrib) repo:
 
 - `code`
 - `claw`
-- `guardian`
 
 They share the same kernel and protocol, but they are different products.
 
@@ -155,48 +154,6 @@ Philosophy:
 - composable skills and plugins
 - the agent can extend itself by writing new components
 - acts like a living personal environment, not a single-purpose tool
-
-### `guardian`
-
-Focused distro for sandboxed Python execution.
-
-What it is for:
-
-- controlled code execution
-- data analysis inside a sandbox
-- narrow, auditable runtime
-- environments where tool sprawl is a liability
-
-What it includes:
-
-- one primary tool: `execute_code`
-- minimal CLI gateway
-- driver plugin tuned for guardian
-- dedicated sandbox image build during install
-- fixed templates for system / tools / guidelines / safety
-
-What it does **not** include:
-
-- files
-- MCP
-- memory
-- Telegram
-- sessions
-- hooks / observer
-- broad general-purpose tool surface
-
-How it works:
-
-- installer materialization builds a fixed runtime
-- does not depend on broad dynamic discovery the way general-purpose distros do
-- exposes one tool and a small prompt surface
-
-Philosophy:
-
-- narrow capability surface
-- strong operational clarity
-- sandbox first
-- optimized for one job, not general companionship
 
 ## Distros vs bundles vs skills/plugins
 
@@ -372,6 +329,6 @@ Skills and plugins are how an agent grows.
 Bundles are how capabilities are shared.
 Distros are how complete agents become recognizable products.
 
-Today there are three maintained distros (`code`, `claw`, `guardian`).
+Today there are two maintained distros (`code`, `claw`).
 That is enough to demonstrate the model — coding-tuned / general-purpose /
 sandboxed — but not enough to call the ecosystem mature yet.

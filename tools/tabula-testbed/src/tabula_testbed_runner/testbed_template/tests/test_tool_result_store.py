@@ -21,8 +21,9 @@ class ToolResultStorePluginSmoke(unittest.TestCase):
         session = "testbed-tool-result-store"
         requested = 20000
         with TestbedClient(self.url, name="testbed-tool-result-store") as client:
-            client.connect_join(session)
-            client.wait_tools({"tool_result_read", "testbed_cold_python_large"}, session=session)
+            client.connect()
+            client.create_session(session)
+
             output = client.call_tool("testbed_cold_python_large", {"bytes": requested}, timeout=30).output
             match = re.search(r"artifact://[A-Za-z0-9_.-]+", output)
             self.assertIsNotNone(match, output)

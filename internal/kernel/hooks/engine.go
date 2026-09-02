@@ -488,6 +488,10 @@ func (e *Engine) dispatchModifyingFrom(event string, payload json.RawMessage, te
 		}
 		switch Action(result.Action) {
 		case ActionSuspend:
+			if !secure {
+				e.recordAudit(DispatchAudit{Event: event, TenantID: tenantID, Session: session, Target: entry.sub.Name(), HookID: outcome.hookID, ReplyAction: result.Action, DispatchEffect: "event_blocked", Reason: result.Reason, Status: "reply", DurationMs: outcome.durationMs, TimeoutMs: outcome.timeoutMs, Payload: current})
+				return nil, false, &DispatchDecision{Event: event, Target: entry.sub.Name(), HookID: outcome.hookID, ReplyAction: result.Action, Reason: result.Reason, Status: outcome.status}
+			}
 			e.recordAudit(DispatchAudit{Event: event, TenantID: tenantID, Session: session, Target: entry.sub.Name(), HookID: outcome.hookID, ReplyAction: result.Action, DispatchEffect: "tool_suspended", Reason: result.Reason, Status: "reply", DurationMs: outcome.durationMs, TimeoutMs: outcome.timeoutMs, Payload: current})
 			attrs := hookLogAttrs(event, entry.sub.Name(), current, tenantID, session)
 			attrs = append(attrs, "reason", result.Reason)

@@ -11,7 +11,7 @@ import time
 import tomllib
 import unittest
 
-from tabula_testbed import TestbedClient
+from tabula_testbed import ProtocolError, TestbedClient
 
 
 class MultiDistroTenantsInstalled(unittest.TestCase):
@@ -44,7 +44,10 @@ class MultiDistroTenantsInstalled(unittest.TestCase):
         cls._install_tenant("code-immune-project", cls.code_immune_source, cls.code_immune_workspace)
         cls._install_tenant("claw-project", cls.claw_source, cls.claw_workspace)
         cls._wait_for_tenant_tools("code-project", {"fs_list", "todo_read", "codegraph_search"})
-        cls._wait_for_tenant_tools("code-immune-project", {"fs_read"})
+        cls._wait_for_tenant_tools(
+            "code-immune-project",
+            {"fs_read", "continuity_current", "activity_current", "reflection_list", "initiative_list", "evolution_campaign_list"},
+        )
         cls._wait_for_tenant_tools("claw-project", {"fs_list", "fs_read", "todo_read", "subagent_list"})
 
     @classmethod
@@ -105,18 +108,19 @@ class MultiDistroTenantsInstalled(unittest.TestCase):
 
     @classmethod
     def _wait_for_tenant_tools(cls, tenant: str, tools: set[str]) -> None:
+        probes = {
+            "codegraph_search": {"query": "testbed readiness"},
+            "fs_read": {"path": "missing-testbed-readiness-file"},
+        }
         deadline = time.monotonic() + 45
         last_error: Exception | None = None
         while time.monotonic() < deadline:
             try:
                 with TestbedClient(cls.url, name=f"testbed-ready-{tenant}") as client:
-                    client.connect_join(f"testbed-ready-{tenant}", tenant_id=tenant)
-                    client.wait_tools(
-                        tools,
-                        timeout=5,
-                        session=f"testbed-ready-{tenant}",
-                        tenant_id=tenant,
-                    )
+                    client.connect()
+                    client.create_session(f"testbed-ready-{tenant}", tenant_id=tenant)
+                    for tool in tools:
+                        client.call_tool(tool, probes.get(tool, {}), timeout=5)
                     return
             except Exception as exc:
                 last_error = exc
@@ -125,23 +129,14 @@ class MultiDistroTenantsInstalled(unittest.TestCase):
 
     def _client(self, tenant: str, session: str = "shared-session") -> TestbedClient:
         client = TestbedClient(self.url, name=f"testbed-{tenant}")
-        client.connect_join(session, tenant_id=tenant)
+        client.connect()
+        client.create_session(session, tenant_id=tenant)
         return client
 
-    def _catalog(self, tenant: str) -> set[str]:
-        with self._client(tenant, session=f"catalog-{tenant}") as client:
-            return {str(tool.get("name")) for tool in client.tools() if tool.get("name")}
-
-    def _stable_catalog(self, tenant: str) -> set[str]:
-        deadline = time.monotonic() + 15
-        previous: set[str] | None = None
-        while time.monotonic() < deadline:
-            current = self._catalog(tenant)
-            if current == previous:
-                return current
-            previous = current
-            time.sleep(0.5)
-        raise AssertionError(f"tenant {tenant} catalog did not stabilize")
+    def _assert_tool_unavailable(self, tenant: str, tool: str, input: dict | None = None) -> None:
+        with self._client(tenant, session=f"unavailable-{tenant}-{tool}") as client:
+            with self.assertRaises(ProtocolError):
+                client.call_tool(tool, input or {}, timeout=15)
 
     def _resolved_tenant(self, workspace: Path) -> str:
         script = (
@@ -159,23 +154,20 @@ class MultiDistroTenantsInstalled(unittest.TestCase):
         ).strip()
 
     def test_real_tools_catalogs_workspaces_sessions_and_state_are_isolated(self) -> None:
-        code_catalog = self._catalog("code-project")
-        claw_catalog = self._catalog("claw-project")
-        self.assertIn("codegraph_search", code_catalog)
-        self.assertNotIn("subagent_list", code_catalog)
-        self.assertIn("subagent_list", claw_catalog)
-        self.assertNotIn("codegraph_search", claw_catalog)
+        self._wait_for_tenant_tools(
+            "code-immune-project",
+            {"continuity_current", "activity_current", "reflection_list", "initiative_list", "evolution_campaign_list"},
+        )
+        self._wait_for_tenant_tools("code-project", {"codegraph_search"})
+        self._wait_for_tenant_tools("claw-project", {"subagent_list"})
+        self._assert_tool_unavailable("code-project", "subagent_list")
+        self._assert_tool_unavailable("claw-project", "codegraph_search", {"query": "forbidden"})
 
         for tenant, marker in (
             ("code-project", "code-only.txt"),
             ("claw-project", "claw-only.txt"),
         ):
             with self._client(tenant) as client:
-                client.wait_tools(
-                    {"fs_list", "todo_read", "todo_write"},
-                    session="shared-session",
-                    tenant_id=tenant,
-                )
                 listing = client.call_tool("fs_list", {}, timeout=15).json()
                 names = {entry["name"] for entry in listing["entries"]}
                 self.assertIn(marker, names)
@@ -221,9 +213,6 @@ class MultiDistroTenantsInstalled(unittest.TestCase):
             script = skill_dir / "scripts" / "check.sh"
             content = "---\nname: installed-test\ndescription: Installed skill tool test\n---\n\nOriginal body.\n"
             with self._client(tenant, session=f"skills-{tenant}") as client:
-                catalog = {str(tool.get("name")) for tool in client.tools() if tool.get("name")}
-                self.assertTrue({"skill_read", "skill_write", "skill_edit", "skill_delete"}.issubset(catalog), catalog)
-
                 runtime = client.call_tool("skill_read", {"path": str(runtime_skill)}, timeout=15)
                 self.assertTrue(runtime.ok, runtime.output)
                 self.assertIn("name: tabula-guide", runtime.json()["content"])
@@ -295,7 +284,8 @@ class MultiDistroTenantsInstalled(unittest.TestCase):
                     timeout=15,
                 )
         claw_state = claw_state_path.read_bytes()
-        before_catalog = self._stable_catalog("claw-project")
+        claw_tools = {"fs_list", "fs_read", "todo_read", "subagent_list"}
+        self._wait_for_tenant_tools("claw-project", claw_tools)
 
         script = (
             "from pathlib import Path; "
@@ -317,8 +307,7 @@ class MultiDistroTenantsInstalled(unittest.TestCase):
         self.assertEqual((claw_root / "install.lock.json").read_bytes(), claw_lock)
         self.assertEqual((claw_root / "plugins").resolve(), claw_plugins)
         self.assertEqual(claw_state_path.read_bytes(), claw_state)
-        self._wait_for_tenant_tools("claw-project", before_catalog)
-        self.assertEqual(self._stable_catalog("claw-project"), before_catalog)
+        self._wait_for_tenant_tools("claw-project", claw_tools)
 
     def test_tenant_selection_follows_cwd_binding(self) -> None:
         self.assertEqual(self._resolved_tenant(self.code_workspace), "code-project")

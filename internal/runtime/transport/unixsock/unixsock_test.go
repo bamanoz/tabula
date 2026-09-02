@@ -254,6 +254,10 @@ func (socketHandler) Reload(_ context.Context, in wire.Reload) (wire.ReloadAck, 
 	return wire.ReloadAck{Op: wire.OpReloadAck, EvictedTargets: []wire.Target{*in.Target}}, nil
 }
 
+func (socketHandler) PrepareTenant(_ context.Context, in wire.PrepareTenant) (wire.PrepareTenantAck, error) {
+	return wire.PrepareTenantAck{Op: wire.OpPrepareTenantAck, RequestID: in.RequestID}, nil
+}
+
 func (socketHandler) HookEvent(_ context.Context, in wire.HookEvent) (wire.HookEventReply, error) {
 	return wire.HookEventReply{Op: wire.OpHookEventReply, CallID: in.CallID, Action: wire.HookActionOK}, nil
 }

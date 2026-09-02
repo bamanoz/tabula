@@ -2,34 +2,20 @@
 
 Approval flow in Tabula is generic: any tool whose ``before_tool_call``
 permissions evaluate to ``ask`` can suspend the tool call in the kernel.
-The kernel opens an ``exchange.approve`` exchange for an interactive UI that
-has joined the session and bound ``exchange.approve`` capability. In headless
-tests we stand in for that UI by running a small background WebSocket client
-that auto-answers each request.
-
-This module is intentionally tool-agnostic. Tests can target any tool that
-goes through the same hook path (``exec_run``, ``exec_run_background``,
-``fs_write``-with-ask, MCP tools, future tools), provided they bind the
-generic ``exchange.approve`` topic.
-
-Kernel policy requires a client to be joined to a session before it can
-send replies on an exchange topic (see ``policy.go`` ``CanSend`` rule
-``client not in a session``). The responder therefore joins the same
-session whose tool calls are expected to trigger approvals; the real
-approval UIs (ACP gateway, web gateway) follow the same model.
+The responder uses protocol-v4 ``connection.open`` and durable session
+operations through :class:`TestbedClient`. Approval prompts and replies remain
+extension traffic because they are non-authoritative UI exchanges.
 """
 
 from __future__ import annotations
 
-import json
 import socket
 import threading
 from typing import Any, Callable
 
-import websocket
 from websocket import WebSocketTimeoutException
 
-from .client import kernel_auth_token
+from .client import ProtocolError, TestbedClient
 
 APPROVE_TOPIC = "exchange.approve"
 
@@ -37,29 +23,7 @@ ApprovalFn = Callable[[dict[str, Any]], bool]
 
 
 class ApprovalResponder:
-    """Background WS client that answers ``exchange.approve`` requests.
-
-    Use as a context manager around any block that is expected to trigger a
-    ``before_tool_call`` approval. Each incoming ``exchange.approve``
-    request is logged into :attr:`requests` and a reply is sent back using
-    either the static ``approved`` argument or the ``approved_fn`` callback
-    when finer-grained per-request decisions are needed.
-
-    Parameters
-    ----------
-    url:
-        Kernel WebSocket URL (e.g. ``ws://127.0.0.1:8089/ws``).
-    session:
-        Session id to join. Must match the session whose tool calls will
-        trigger approval prompts.
-    tenant_id:
-        Tenant id to join with. Defaults to ``"default"``.
-    approved / approved_fn:
-        Static answer or per-request callback returning the protocol-level
-        approval boolean.
-    name:
-        Client name for logging/diagnostics on the kernel side.
-    """
+    """Background client that answers ``exchange.approve`` requests."""
 
     def __init__(
         self,
@@ -82,6 +46,7 @@ class ApprovalResponder:
         self._ready = threading.Event()
         self._thread: threading.Thread | None = None
         self._error: BaseException | None = None
+        self._client: TestbedClient | None = None
 
     @property
     def handled(self) -> bool:
@@ -100,6 +65,8 @@ class ApprovalResponder:
 
     def __exit__(self, *_exc: object) -> None:
         self._stop.set()
+        if self._client is not None:
+            self._client.close()
         if self._thread is not None:
             self._thread.join(timeout=5)
         if self._error is not None:
@@ -111,73 +78,54 @@ class ApprovalResponder:
         return bool(self.approved)
 
     def _run(self) -> None:
+        client = TestbedClient(self.url, name=self.name)
+        self._client = client
         try:
-            ws = websocket.create_connection(self.url, timeout=10)
-        except BaseException as exc:  # noqa: BLE001 - propagate to test thread
-            self._error = exc
-            self._ready.set()
-            return
-        try:
-            ws.send(json.dumps({
-                "v": 3,
-                "type": "hello",
-                "data": {
-                    "name": self.name,
-                    "send_topics": [APPROVE_TOPIC],
-                    "receive_topics": [APPROVE_TOPIC],
-                    "auth_token": kernel_auth_token(),
-                },
-            }))
-            ack = json.loads(ws.recv())
-            if ack.get("type") != "hello_ack":
-                raise RuntimeError(f"approver hello_ack expected, got {ack!r}")
-            ws.send(json.dumps({
-                "v": 3,
-                "type": "join",
-                "session": self.session,
-                "tenant_id": self.tenant_id,
-            }))
-            # Drain post-join messages until we see `joined`. Kernel may
-            # also emit `session.init`, `session.member_joined`, etc. — we
-            # only need confirmation that the join succeeded.
-            ws.settimeout(5)
+            client.connect(sends=[APPROVE_TOPIC], receives=[APPROVE_TOPIC])
+            try:
+                snapshot = client.get_session(self.session, tenant_id=self.tenant_id)
+            except ProtocolError as exc:
+                if exc.code != "not_found":
+                    raise
+                client.create_session(self.session, tenant_id=self.tenant_id)
+                snapshot = client.get_session(self.session, tenant_id=self.tenant_id)
+            cursor = snapshot.get("data", {}).get("cursor", "cur_0")
+            client.subscribe(self.session, tenant_id=self.tenant_id, after_cursor=cursor)
+
+            client.send_extension({"type": "join"})
             while True:
-                joined = json.loads(ws.recv())
-                jtype = joined.get("type")
-                if jtype == "joined":
+                joined = client.recv(op="extension.event")
+                extension = joined.get("data") if isinstance(joined.get("data"), dict) else {}
+                if extension.get("type") == "joined":
                     break
-                if jtype == "error":
-                    raise RuntimeError(f"approver join failed: {joined!r}")
-            ws.settimeout(0.25)
+
             self._ready.set()
             while not self._stop.is_set():
                 try:
-                    raw = ws.recv()
+                    msg = client.recv(timeout=0.25)
                 except (TimeoutError, socket.timeout, WebSocketTimeoutException):
                     continue
-                if not raw:
+                if msg.get("kind") != "event" or msg.get("op") != "extension.event":
                     continue
-                msg = json.loads(raw)
-                if msg.get("type") != "request" or msg.get("topic") != APPROVE_TOPIC:
+                extension = msg.get("data") if isinstance(msg.get("data"), dict) else {}
+                if extension.get("type") != "request" or extension.get("topic") != APPROVE_TOPIC:
                     continue
-                payload = msg.get("data") if isinstance(msg.get("data"), dict) else {}
+                payload = extension.get("data") if isinstance(extension.get("data"), dict) else {}
                 self.requests.append(payload)
-                ws.send(json.dumps({
-                    "v": 3,
-                    "type": "reply",
-                    "topic": APPROVE_TOPIC,
-                    "id": msg.get("id"),
-                    "session": msg.get("session") or self.session,
-                    "data": {"approved": self._decide(payload)},
-                }))
+                client.send_extension(
+                    {
+                        "type": "reply",
+                        "topic": APPROVE_TOPIC,
+                        "id": extension.get("id") or msg.get("id"),
+                        "data": {"approved": self._decide(payload)},
+                    }
+                )
         except BaseException as exc:  # noqa: BLE001 - propagate to test thread
-            self._error = exc
+            if not self._stop.is_set():
+                self._error = exc
             self._ready.set()
         finally:
-            try:
-                ws.close()
-            except Exception:
-                pass
+            client.close()
 
 
 __all__ = ["ApprovalResponder", "APPROVE_TOPIC"]

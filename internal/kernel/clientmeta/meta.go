@@ -9,7 +9,6 @@ import (
 
 type Meta struct {
 	Role      string `json:"tabula.client_role"`
-	Managed   bool   `json:"tabula.managed"`
 	RuntimeID string `json:"tabula.runtime_id"`
 }
 

@@ -21,6 +21,10 @@ func (h *Hub) dispatchHookExcept(event string, payload json.RawMessage, tenantID
 		h.Logger.Warn("unknown hook event", "event", event)
 		return payload, true
 	}
+	if err := h.validateHookAttemptPayload(event, payload, tenantID, session); err != nil {
+		h.Logger.Warn("hook dispatch rejected by attempt fence", "event", event, "tenant_id", tenantID, "session", session, "err", err)
+		return nil, false
+	}
 
 	h.Logger.Debug("dispatching hook", "event", event, "type", def.Type, "session", session)
 	result, ok := h.hooks.DispatchExcept(event, payload, tenantID, session, exclude)
@@ -31,11 +35,11 @@ func (h *Hub) dispatchHookExcept(event string, payload json.RawMessage, tenantID
 	return result, ok
 }
 
-func (h *Hub) handleHookResult(sender *Client, msg *Message) {
+func (h *Hub) handleHookResult(sender *Client, msg *BusMessage) {
 	h.hooks.HandleResult(sender, hookMessageFromKernel(msg))
 }
 
-func hookMessageFromKernel(msg *Message) *khooks.Message {
+func hookMessageFromKernel(msg *BusMessage) *khooks.Message {
 	if msg == nil {
 		return nil
 	}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/bamanoz/tabula/internal/runtime/host/daemon"
 	"github.com/bamanoz/tabula/internal/runtime/host/dialer"
+	"github.com/bamanoz/tabula/internal/runtime/host/driver"
 	"github.com/bamanoz/tabula/internal/runtime/host/pool"
 )
 
@@ -37,13 +38,15 @@ func startCmd(args []string, stderr io.Writer) int {
 	logger.Info("runtime manifest store loaded", "plugin_dirs", len(runtimePluginDirs(cfg.Runtime)), "skill_dirs", len(runtimeSkillDirs(cfg.Runtime)), "capabilities", len(cfg.ManifestStore.Capabilities()))
 	workerPool := pool.New(cfg.Kernel.ID, cfg.ManifestStore, cfg.Policy, cfg.PoolOptions)
 	workerPool.SetLogger(logger)
+	driverSupervisor := driver.New(cfg.Kernel.ID, cfg.ManifestStore, cfg.Policy, driver.SpawnEnv(cfg.PoolOptions.TabulaHome, cfg.PoolOptions.KernelURL, cfg.PoolOptions.PythonPath))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	defer workerPool.Close()
+	defer driverSupervisor.Close()
 	if err := dialer.Run(ctx, dialer.Options{
 		Kernel:    cfg.Kernel,
 		RuntimeID: cfg.RuntimeID,
-		Handler:   daemon.NewHandler(daemon.Options{Store: cfg.ManifestStore, Pool: workerPool}),
+		Handler:   daemon.NewHandler(daemon.Options{Store: cfg.ManifestStore, Pool: workerPool, Driver: driverSupervisor}),
 		Logger:    logger,
 		Reconnect: true,
 	}); err != nil {

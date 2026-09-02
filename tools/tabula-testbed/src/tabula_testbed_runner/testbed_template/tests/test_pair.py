@@ -15,13 +15,13 @@ class PairInstalled(unittest.TestCase):
     url = "ws://localhost:8089/ws"
     tabula_home = ""
 
-    def test_telegram_alias_approves_canonical_gateway_token(self):
+    def test_gateway_web_alias_approves_canonical_gateway_token(self):
         home = Path(self.tabula_home)
         self.assertTrue((home / "plugins" / "pair" / "plugin.toml").is_file(), "pair plugin missing")
         state_dir = home / "data" / "pair"
         state_dir.mkdir(parents=True, exist_ok=True)
         token = "PRX-TESTAA-BB0001"
-        state_file = state_dir / "telegram-gateway.json"
+        state_file = state_dir / "gateway-web.json"
         state_file.write_text(
             json.dumps({
                 "authorized": [],
@@ -31,17 +31,18 @@ class PairInstalled(unittest.TestCase):
         )
 
         with TestbedClient(self.url, name="testbed-pair") as client:
-            client.connect_join("testbed-pair")
-            client.wait_tools({"pair_approve", "pair_list"}, session="testbed-pair")
-            approved = client.call_tool("pair_approve", {"gateway": "telegram", "token": token}, timeout=10).json()
-            listed = client.call_tool("pair_list", {"gateway": "telegram"}, timeout=10).json()
+            client.connect()
+            client.create_session("testbed-pair")
+
+            approved = client.call_tool("pair_approve", {"gateway": "gateway-web", "token": token}, timeout=10).json()
+            listed = client.call_tool("pair_list", {"gateway": "gateway-web"}, timeout=10).json()
 
         self.assertTrue(approved["ok"], approved)
-        self.assertEqual(approved["gateway"], "telegram-gateway")
+        self.assertEqual(approved["gateway"], "gateway-web")
         self.assertEqual(approved["state_file"], str(state_file))
         self.assertEqual(approved["authorized"], [4242])
         self.assertEqual(approved["pending"], [])
-        self.assertEqual(listed["gateway"], "telegram-gateway")
+        self.assertEqual(listed["gateway"], "gateway-web")
         self.assertEqual(listed["authorized"], [4242])
         self.assertEqual(json.loads(state_file.read_text(encoding="utf-8"))["authorized"], [4242])
 

@@ -33,8 +33,9 @@ class WorkspaceNoProjectRoot(unittest.TestCase):
 
     def test_tenant_without_project_root_falls_back_to_tabula_home(self) -> None:
         with TestbedClient(self.url, name="testbed-no-project-root") as client:
-            client.connect_join("testbed-no-project-root", tenant_id="gamma")
-            client.wait_tools({"fs_read", "fs_write", "exec_run"}, session="testbed-no-project-root", tenant_id="gamma")
+            client.connect()
+            client.create_session("testbed-no-project-root", tenant_id="gamma")
+
             path = Path(self.tabula_home) / "fallback.txt"
             client.call_tool("fs_write", {"path": str(path), "content": "fallback"}, timeout=10).json()
             self.assertEqual(client.call_tool("fs_read", {"path": str(path)}, timeout=10).json()["content"], "fallback")

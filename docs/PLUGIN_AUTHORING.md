@@ -175,7 +175,13 @@ Supported worker operations:
 | runtime → worker | `shutdown` | request graceful exit |
 
 The worker protocol is versioned by the Runtime API / SDK release pair. See
-`docs/PROTOCOL.md` for the current wire shapes.
+`docs/PROTOCOL.md` for the current wire shapes. A `shutdown` frame with
+`final = true` means the runtime itself is exiting; absent or false means only
+the worker is being replaced. Detached child-process supervisors must stop
+children on final shutdown and may preserve them for replacement workers under
+the same runtime process. Persist the owning runtime PID (`os.getppid()` for a
+direct Python worker child), reject adoption from a different runtime PID, and
+monitor that PID so abrupt runtime loss does not orphan the child.
 
 ## Minimal Python worker example
 

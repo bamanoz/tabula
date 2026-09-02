@@ -395,7 +395,8 @@ for raw in sys.stdin:
         Path(victim["worktree"]).joinpath("src", "value.txt").write_text("reviewed\n", encoding="utf-8")
         assert first_review is not None
         with TestbedClient(self.url, name="evolution-reviewer-attack") as reviewer:
-            reviewer.connect_join(first_review["job"]["session"], tenant_id="default")
+            reviewer.connect()
+            reviewer.create_session(first_review["job"]["session"], tenant_id="default")
             self.assert_tool_error(
                 reviewer.call_tool(
                     "change_abort",
@@ -575,8 +576,9 @@ for raw in sys.stdin:
             "evolution_activate",
         }
         with TestbedClient(self.url, name="evolution-installed") as client:
-            client.connect_join("evolution-installed", tenant_id="default")
-            client.wait_tools(tools, session="evolution-installed", tenant_id="default")
+            client.connect()
+            client.create_session("evolution-installed", tenant_id="default")
+
             self.exercise_change_control_attacks(client, external_root)
             self.reviewed_change(client)
             self.call(
@@ -667,8 +669,8 @@ for raw in sys.stdin:
             )
             distro_release = distro_success["supervisor_receipt"]["active_release"]
             self.assertEqual(distro_success["phase"], "absorbed")
-            client.refresh_init("evolution-installed", tenant_id="default")
-            client.wait_tools({"testbed_echo"}, session="evolution-installed", tenant_id="default", timeout=30)
+
+
             self.assertEqual(self.call(client, "testbed_echo", {"text": "evolved"})["text"], "evolved")
 
             distro_failed = self.activate_candidate(

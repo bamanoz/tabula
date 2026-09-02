@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -71,7 +70,6 @@ class CompactionSmoke(unittest.TestCase):
     def test_driver_history_compacts_and_restores_after_restart(self):
         home = Path(self.tabula_home)
         session = "testbed-compaction"
-        history_path = home / "tenants" / "default" / "state" / "sessions" / session / "history.jsonl"
         stub_dir = home / "data" / "testbed" / "fake-openai"
         stub_dir.mkdir(parents=True, exist_ok=True)
         (stub_dir / "openai.py").write_text(FAKE_OPENAI, encoding="utf-8")
@@ -98,29 +96,32 @@ api = "chat_completions"
         proc, log_handle, log_path = self.start_driver(session, stub_dir)
         try:
             with TestbedClient(self.url, name="testbed-compaction-client") as client:
-                client.connect_join(session)
+                client.connect()
+                client.create_session(session)
+                events = self.session_events(client, session)
                 payload = "x" * 4096
                 for turn in range(1, 4):
-                    client.send_message(f"turn {turn} {payload}")
-                    self.wait_for_assistant_count(history_path, turn, proc, log_path)
+                    client.submit_input(f"input-{time.time_ns()}", {"type": "text", "text": f"turn {turn} {payload}"})
+                    self.wait_for_assistant_count(client, events, turn, proc, log_path)
 
-                entries = self.wait_for_history_entries(history_path, proc, log_path)
-                compactions = [entry for entry in entries if entry.get("type") == "compaction"]
-                self.assertTrue(compactions, self.format_driver_log(log_path))
-                self.assertIn("fake summary", compactions[-1].get("summary", ""))
+                self.wait_for_compaction(client, events, proc, log_path)
+                compactions = [event for event in events if event.get("type") == "compaction"]
+                summary = self.event_payload(compactions[-1]).get("text") or self.event_payload(compactions[-1]).get("summary") or ""
+                self.assertIn("fake summary", summary)
 
             self.stop_driver(proc)
             log_handle.close()
 
             proc, log_handle, log_path = self.start_driver(session, stub_dir, suffix="-restart")
             with TestbedClient(self.url, name="testbed-compaction-client-restart") as client:
-                client.connect_join(session)
-                client.send_message("after restart")
-                self.wait_for_assistant_count(history_path, 4, proc, log_path)
+                client.connect()
+                client.get_session(session)
+                events = self.session_events(client, session)
+                client.submit_input(f"input-{time.time_ns()}", {"type": "text", "text": "after restart"})
+                self.wait_for_assistant_count(client, events, 4, proc, log_path)
 
-            entries = self.read_history(history_path)
-            self.assertEqual(self.assistant_turn_count(entries), 4)
-            self.assertTrue(any(entry.get("type") == "compaction" for entry in entries))
+            self.assertEqual(self.assistant_turn_count(events), 4)
+            self.assertTrue(any(event.get("type") == "compaction" for event in events))
         finally:
             self.stop_driver(proc)
             log_handle.close()
@@ -165,47 +166,54 @@ api = "chat_completions"
             proc.kill()
             proc.wait(timeout=5)
 
-    def read_history(self, history_path: Path) -> list[dict]:
-        if not history_path.is_file():
-            return []
-        entries = []
-        for line in history_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line:
-                entries.append(json.loads(line))
-        return entries
+    def session_events(self, client: TestbedClient, session: str) -> list[dict]:
+        reply = client.subscribe(session, after_cursor="cur_0", limit=256)
+        return list(reply.get("data", {}).get("events", []))
 
-    def wait_for_history_entries(self, history_path: Path, proc: subprocess.Popen[bytes], log_path: Path, *, timeout: float = 10) -> list[dict]:
+    def event_payload(self, event: dict) -> dict:
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        payload = data.get("payload")
+        return payload if isinstance(payload, dict) else {}
+
+    def receive_event(self, client: TestbedClient, events: list[dict], *, timeout: float) -> None:
+        try:
+            msg = client.recv(timeout=timeout)
+        except TimeoutError:
+            return
+        if msg.get("kind") != "event":
+            return
+        event = msg.get("data") if isinstance(msg.get("data"), dict) else {}
+        if event.get("event_id") and not any(item.get("event_id") == event.get("event_id") for item in events):
+            events.append(event)
+
+    def wait_for_compaction(self, client: TestbedClient, events: list[dict], proc: subprocess.Popen[bytes], log_path: Path, *, timeout: float = 10) -> None:
         deadline = time.time() + timeout
-        last_entries: list[dict] = []
         while time.time() < deadline:
             self.assertIsNone(proc.poll(), self.format_driver_log(log_path))
-            last_entries = self.read_history(history_path)
-            if last_entries:
-                return last_entries
-            time.sleep(0.1)
-        raise AssertionError(f"timed out waiting for driver history\n{self.format_driver_log(log_path)}")
+            if any(event.get("type") == "compaction" for event in events):
+                return
+            self.receive_event(client, events, timeout=max(0.1, deadline - time.time()))
+        raise AssertionError(f"timed out waiting for compaction event\n{self.format_driver_log(log_path)}")
 
-    def wait_for_assistant_count(self, history_path: Path, expected: int, proc: subprocess.Popen[bytes], log_path: Path, *, timeout: float = 10) -> None:
+    def wait_for_assistant_count(self, client: TestbedClient, events: list[dict], expected: int, proc: subprocess.Popen[bytes], log_path: Path, *, timeout: float = 10) -> None:
         deadline = time.time() + timeout
         while time.time() < deadline:
-            entries = self.wait_for_history_entries(history_path, proc, log_path, timeout=max(0.2, deadline - time.time()))
-            assistant_count = self.assistant_turn_count(entries)
-            if assistant_count >= expected:
+            self.assertIsNone(proc.poll(), self.format_driver_log(log_path))
+            if self.assistant_turn_count(events) >= expected:
                 return
-            time.sleep(0.1)
+            self.receive_event(client, events, timeout=max(0.1, deadline - time.time()))
         raise AssertionError(
-            f"timed out waiting for assistant history count >= {expected}\n{self.format_driver_log(log_path)}"
+            f"timed out waiting for assistant event count >= {expected}\n{self.format_driver_log(log_path)}"
         )
 
-    def assistant_turn_count(self, entries: list[dict]) -> int:
-        count = 0
-        for entry in entries:
-            if entry.get("type") == "assistant_turn":
-                count += 1
-            elif entry.get("role") == "assistant" and "text" in entry:
-                count += 1
-        return count
+    def assistant_turn_count(self, events: list[dict]) -> int:
+        turns = set()
+        for event in events:
+            if event.get("type") != "stream.delta" or not self.event_payload(event).get("text"):
+                continue
+            data = event.get("data") if isinstance(event.get("data"), dict) else {}
+            turns.add((data.get("turn_id"), data.get("attempt_id")))
+        return len(turns)
 
     def format_driver_log(self, log_path: Path) -> str:
         if not log_path.is_file():

@@ -9,7 +9,7 @@ Complete the independent `evolution` bundle with campaign control, planner/build
 
 Evolution changes declared source repositories, never installed runtime trees. It produces sealed artifacts and activation requests. `evolution-supervisor` is the external activation and recovery authority: it quiesces the current runtime, activates candidates, starts the resulting runtime, observes health from outside candidate code, commits healthy releases, and restores retained known-good releases after failure.
 
-Existing `tabula.guardian` test distro is unrelated and must not be used as this recovery component.
+Existing test distros are unrelated and must not be used as this recovery component.
 
 ## Required discovery and design
 

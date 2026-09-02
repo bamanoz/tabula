@@ -59,7 +59,7 @@ Use `bundle` for distribution units. Do not use it for the runtime worker proces
 
 A WebSocket participant connected to the kernel. Clients can send and receive protocol messages according to policy. Examples include gateways, drivers, test clients, and local development tools.
 
-Client protocol version is currently `ProtocolVersion = 3` in `internal/kernel/protocol.go`.
+Kernel WebSocket clients use protocol v4, defined by `ClientProtocolVersion = 4` and strict envelopes in `internal/kernel/client_v4.go`.
 
 ### Distro
 
@@ -81,7 +81,7 @@ Use `kernel hub` or `Hub` only for this coordinator, not for the whole CLI.
 
 ### Hook
 
-A kernel event subscription and reply mechanism used for policy gates, approvals, and side-channel interaction. Hooks are not general tool calls. Hook subscribers have priorities and optional timeouts. Hook engine/model code lives in `internal/kernel/hooks/`; `internal/kernel` adapts clients/runtime targets and records session ledger audit events.
+A kernel event subscription and reply mechanism used for policy gates, approvals, and side-channel interaction. Hooks are not general tool calls. Hook subscribers have priorities and optional timeouts. Hook engine/model code lives in `internal/kernel/hooks/`; `internal/kernel` adapts clients/runtime targets and appends auxiliary session audit records.
 
 ### Kernel
 
@@ -119,7 +119,7 @@ Kernel-side read model of attached runtimes (`internal/kernel.RuntimeRegistry`).
 
 ### Session
 
-A tenant-scoped conversation/execution context tracked by the kernel. Sessions have lifecycle state such as `active`, `idle`, `closing`, and `suspended_stuck`. Session snapshots are persisted under tenant state and used for liveness/diagnostics.
+A tenant-scoped conversation/execution aggregate owned by the kernel. Canonical state, turns, attempts, committed events, cursors, and auxiliary records are persisted in the kernel SQLite session repository. Clients reconstruct state with protocol-v4 `session.get`, `session.subscribe`, and `session.record.list` rather than reading tenant files.
 
 Use `session` for kernel lifecycle contexts, not for process IDs or UI tabs unless backed by kernel session state.
 
